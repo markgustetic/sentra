@@ -21,6 +21,16 @@ jobs:
         if: matrix.os == 'ubuntu-latest'
         with:
           files: coverage.out
+  integration:
+    runs-on: ubuntu-latest
+    needs: test
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.24'
+          cache: true
+      - run: go test -tags=integration -race -count=1 ./internal/blobstore
   lint:
     runs-on: ubuntu-latest
     steps:
