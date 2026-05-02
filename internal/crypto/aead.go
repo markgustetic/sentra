@@ -17,15 +17,15 @@ const (
 	// Seal and Open. AES-256 requires 32 bytes.
 	KeyLen = 32
 
-	// NonceSize is the number of random nonce bytes carried in each
+	// nonceSize is the number of random nonce bytes carried in each
 	// sealed blob. AES-GCM consumes only the first 12 bytes; the
 	// remaining 12 are reserved for a future XChaCha20 swap (which
 	// uses 24-byte nonces) and cost one extra dozen bytes per blob.
-	NonceSize = 24
+	nonceSize = 24
 
-	// HeaderSize is the fixed-size prefix on every sealed blob:
+	// headerSize is the fixed-size prefix on every sealed blob:
 	// one version byte + the full 24-byte nonce.
-	HeaderSize = 1 + NonceSize
+	headerSize = 1 + nonceSize
 )
 
 // ErrInvalidKey is returned when the caller passes a key of the wrong
@@ -57,12 +57,12 @@ func Seal(key, plaintext []byte) ([]byte, error) {
 		return nil, fmt.Errorf("crypto: new gcm: %w", err)
 	}
 
-	nonce := make([]byte, NonceSize)
+	nonce := make([]byte, nonceSize)
 	if _, err := rand.Read(nonce); err != nil {
 		return nil, fmt.Errorf("crypto: read random nonce: %w", err)
 	}
 
-	out := make([]byte, 0, HeaderSize+len(plaintext)+gcm.Overhead())
+	out := make([]byte, 0, headerSize+len(plaintext)+gcm.Overhead())
 	out = append(out, BlobVersion)
 	out = append(out, nonce...)
 	// Append GCM output (ciphertext || tag) directly onto out so we
@@ -78,14 +78,14 @@ func Open(key, sealed []byte) ([]byte, error) {
 	if len(key) != KeyLen {
 		return nil, ErrInvalidKey
 	}
-	if len(sealed) < HeaderSize {
+	if len(sealed) < headerSize {
 		return nil, ErrSealedTooShort
 	}
 	if sealed[0] != BlobVersion {
 		return nil, fmt.Errorf("crypto: unknown blob version 0x%02x", sealed[0])
 	}
-	nonce := sealed[1:HeaderSize]
-	ciphertext := sealed[HeaderSize:]
+	nonce := sealed[1:headerSize]
+	ciphertext := sealed[headerSize:]
 
 	block, err := aes.NewCipher(key)
 	if err != nil {

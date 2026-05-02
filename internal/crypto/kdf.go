@@ -12,15 +12,22 @@ import "golang.org/x/crypto/argon2"
 
 // KDFParams configures Argon2id key derivation.
 //
-// Memory is in KiB. Threads is the parallelism factor. KeyLen is the
-// number of output bytes. Defaults come from DefaultKDFParams; the
-// parameters are stored in the encrypted repo config so future bumps do
-// not break existing repos.
+// Defaults come from DefaultKDFParams; the parameters are stored in the
+// encrypted repo config so future bumps do not break existing repos.
 type KDFParams struct {
-	Time    uint32
-	Memory  uint32 // KiB
+	// Time is the number of passes Argon2id makes over memory.
+	// Higher values increase the cost of brute-force attacks linearly.
+	Time uint32
+	// Memory is the working-set size in KiB. 64 MiB is the design
+	// default. Watch the unit: setting this to "64*1024*1024" instead
+	// of "64*1024" requests 64 GiB and will OOM the process.
+	Memory uint32
+	// Threads is the parallelism factor (lanes). Increasing this
+	// reduces wall-clock time on the legitimate side without
+	// proportionally raising attacker cost.
 	Threads uint8
-	KeyLen  uint32
+	// KeyLen is the output length in bytes. 32 (AES-256) for sentra.
+	KeyLen uint32
 }
 
 // DefaultKDFParams returns the parameters used at sentra init time:
