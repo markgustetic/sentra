@@ -15,7 +15,8 @@ func TestRoot_Version(t *testing.T) {
 		t.Fatalf("execute: %v", err)
 	}
 	got := buf.String()
-	if !strings.Contains(got, "1.2.3") {
-		t.Errorf("expected version in output, got %q", got)
+	want := "1.2.3 (commit abc123, built 2026-01-01)"
+	if !strings.Contains(got, want) {
+		t.Errorf("expected version output to contain %q, got %q", want, got)
 	}
 }
