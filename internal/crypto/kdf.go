@@ -8,7 +8,12 @@
 // extra entropy for a future XChaCha20 swap.
 package crypto
 
-import "golang.org/x/crypto/argon2"
+import (
+	"errors"
+	"fmt"
+
+	"golang.org/x/crypto/argon2"
+)
 
 // KDFParams configures Argon2id key derivation.
 //
@@ -40,4 +45,23 @@ func DefaultKDFParams() KDFParams {
 // the resulting key. The output length is p.KeyLen.
 func DeriveKEK(passphrase, salt []byte, p KDFParams) []byte {
 	return argon2.IDKey(passphrase, salt, p.Time, p.Memory, p.Threads, p.KeyLen)
+}
+
+// Validate checks that the parameters are within sane bounds. Loaded
+// configs are run through this to prevent a corrupted on-disk config
+// from triggering pathological allocations.
+func (p KDFParams) Validate() error {
+	if p.Time == 0 {
+		return errors.New("crypto: KDFParams.Time must be > 0")
+	}
+	if p.Threads == 0 {
+		return errors.New("crypto: KDFParams.Threads must be > 0")
+	}
+	if p.KeyLen != 32 {
+		return fmt.Errorf("crypto: KDFParams.KeyLen must be 32, got %d", p.KeyLen)
+	}
+	if p.Memory == 0 || p.Memory > 1<<24 { // ceiling 16 GiB in KiB
+		return fmt.Errorf("crypto: KDFParams.Memory out of range: %d KiB", p.Memory)
+	}
+	return nil
 }
