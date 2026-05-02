@@ -6,6 +6,7 @@ linters:
   enable:
     - errcheck
     - govet
+    - gosec
     - ineffassign
     - misspell
     - staticcheck
