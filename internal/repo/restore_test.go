@@ -246,8 +246,8 @@ func TestRestore_RejectsPathTraversal(t *testing.T) {
 	}
 	// Error should mention escape/traversal/destination.
 	msg := strings.ToLower(err.Error())
-	if !(strings.Contains(msg, "escape") || strings.Contains(msg, "traversal") ||
-		strings.Contains(msg, "outside") || strings.Contains(msg, "refus")) {
+	if !strings.Contains(msg, "escape") && !strings.Contains(msg, "traversal") &&
+		!strings.Contains(msg, "outside") && !strings.Contains(msg, "refus") {
 		t.Fatalf("error did not mention traversal/escape: %v", err)
 	}
 
