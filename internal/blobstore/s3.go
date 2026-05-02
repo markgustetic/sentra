@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"path"
+	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
@@ -73,13 +74,28 @@ func (s *S3) Client() *s3.Client { return s.client }
 func (s *S3) Bucket() string { return s.cfg.Bucket }
 
 // fullKey applies cfg.Prefix to key. Result has no leading slash.
+// path.Join collapses adjacent slashes and strips trailing slashes;
+// for full keys (Put/Get/Stat/Delete) that's exactly what S3 wants.
 func (s *S3) fullKey(key string) string {
 	if s.cfg.Prefix == "" {
 		return key
 	}
-	// path.Join collapses adjacent slashes and strips a leading
-	// slash, which is what S3 wants.
 	return path.Join(s.cfg.Prefix, key)
+}
+
+// listPrefix joins cfg.Prefix and the user-supplied prefix while
+// preserving a trailing slash. Without this, path.Join("p", "data/")
+// returns "p/data" and List would match both "p/data/x" and "p/dataX",
+// diverging from the in-memory store's byte-prefix semantics.
+func (s *S3) listPrefix(prefix string) string {
+	if s.cfg.Prefix == "" {
+		return prefix
+	}
+	full := path.Join(s.cfg.Prefix, prefix)
+	if strings.HasSuffix(prefix, "/") && !strings.HasSuffix(full, "/") {
+		full += "/"
+	}
+	return full
 }
 
 // Put uploads r under key. SSE-S3 (AES256) is requested as
@@ -153,9 +169,11 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 
 // List returns every object under cfg.Prefix + prefix, with cfg.Prefix
 // stripped from the returned keys so callers see the same key space
-// they passed to Put.
+// they passed to Put. Trailing slash on prefix is preserved so that
+// byte-prefix semantics match the in-memory implementation: List(ctx,
+// "data/") matches "data/foo" but not "dataX/foo".
 func (s *S3) List(ctx context.Context, prefix string) ([]Info, error) {
-	full := s.fullKey(prefix)
+	full := s.listPrefix(prefix)
 	paginator := s3.NewListObjectsV2Paginator(s.client, &s3.ListObjectsV2Input{
 		Bucket: aws.String(s.cfg.Bucket),
 		Prefix: aws.String(full),

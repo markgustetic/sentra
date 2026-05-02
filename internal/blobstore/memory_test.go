@@ -80,10 +80,54 @@ func TestMemory_Delete(t *testing.T) {
 	}
 }
 
+func TestMemory_Stat(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	if err := s.Put(ctx, "k", strings.NewReader("hello")); err != nil {
+		t.Fatal(err)
+	}
+	got, err := s.Stat(ctx, "k")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Key != "k" {
+		t.Errorf("Key: got %q want %q", got.Key, "k")
+	}
+	if got.Size != 5 {
+		t.Errorf("Size: got %d want %d", got.Size, 5)
+	}
+}
+
 func TestMemory_StatMissingKey(t *testing.T) {
 	s := NewMemory()
 	if _, err := s.Stat(context.Background(), "nope"); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("want ErrNotFound, got %v", err)
+	}
+}
+
+// TestMemory_List_TrailingSlashSemantics locks in the byte-prefix
+// match contract documented on Store.List: "data/" must match
+// "data/foo" but not "dataX". The S3 implementation has to mirror
+// these semantics; if either impl drifts, this test catches it.
+func TestMemory_List_TrailingSlashSemantics(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	for _, k := range []string{"data/a", "data/b", "dataX/c"} {
+		if err := s.Put(ctx, k, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	got, err := s.List(ctx, "data/")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(got) != 2 {
+		t.Fatalf("List(\"data/\") want 2, got %d: %+v", len(got), got)
+	}
+	for _, info := range got {
+		if !strings.HasPrefix(info.Key, "data/") {
+			t.Errorf("unexpected key in result: %q", info.Key)
+		}
 	}
 }
 

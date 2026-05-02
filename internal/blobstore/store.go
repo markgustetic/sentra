@@ -14,8 +14,20 @@ import (
 var ErrNotFound = errors.New("blob not found")
 
 // Store is the minimal contract sentra needs from any blob backend.
-// All keys are forward-slash separated and must not start with "/".
-// Implementations are responsible for prefixing/sharding internally.
+//
+// Keys are forward-slash separated, must not start with "/", and must
+// not contain ".." segments. The in-memory implementation does not
+// currently enforce these constraints — callers are responsible for
+// clean keys. The S3 implementation will silently treat ".." as a
+// path navigator (because path.Join collapses it), so violating the
+// contract there can write outside the configured prefix.
+//
+// List returns all entries whose key begins with prefix as a literal
+// byte-prefix match (HasPrefix semantics). Callers that want to scope
+// to a "directory" should pass a trailing "/".
+//
+// All implementations must be safe for concurrent use by multiple
+// goroutines.
 type Store interface {
 	Put(ctx context.Context, key string, r io.Reader) error
 	Get(ctx context.Context, key string) (io.ReadCloser, error)
