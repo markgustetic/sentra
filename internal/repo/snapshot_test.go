@@ -220,12 +220,60 @@ func TestLoadSnapshot_Missing(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 
-	_, err := r.LoadSnapshot(ctx, "snap-doesnotexist-0000")
+	// Well-formed-but-nonexistent ID: must pass shape validation
+	// (Phase 5 review I2) and then surface ErrNotFound from the store.
+	_, err := r.LoadSnapshot(ctx, "snap-19700101T000000Z-deadbeef")
 	if err == nil {
 		t.Fatal("expected error, got nil")
 	}
 	if !errors.Is(err, blobstore.ErrNotFound) {
 		t.Fatalf("expected ErrNotFound, got %v", err)
+	}
+}
+
+// TestLoadSnapshot_RejectsInvalidID covers Phase 5 review I2: an
+// attacker / careless caller passing "../config" must not become a
+// blobstore Get on "snapshots/../config" (which path.Join collapses
+// in the S3 store, fetching the config blob and producing an opaque
+// "decompress" error). LoadSnapshot must reject the ID up-front
+// with a validation error, NOT with an ErrNotFound from the store.
+func TestLoadSnapshot_RejectsInvalidID(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	cases := []string{
+		"",
+		"../config",
+		"snap-/../etc",
+		"foo",
+		"snap-bad-id/with-slash",
+		"snap-bad-id\\with-backslash",
+		"..",
+	}
+	for _, id := range cases {
+		t.Run(id, func(t *testing.T) {
+			_, err := r.LoadSnapshot(ctx, id)
+			if err == nil {
+				t.Fatalf("LoadSnapshot(%q): expected error, got nil", id)
+			}
+			// The fix must surface its own validation error, not
+			// punt to the blobstore and return ErrNotFound. That's
+			// how we know the validator ran *before* the lookup.
+			if errors.Is(err, blobstore.ErrNotFound) {
+				t.Fatalf("LoadSnapshot(%q): got ErrNotFound — id reached the store unvalidated: %v", id, err)
+			}
+			if !strings.Contains(err.Error(), "invalid") {
+				t.Errorf("LoadSnapshot(%q): expected error mentioning 'invalid', got %v", id, err)
+			}
+			// Restore should also reject the same.
+			err = r.Restore(ctx, id, t.TempDir())
+			if err == nil {
+				t.Fatalf("Restore(%q): expected error, got nil", id)
+			}
+			if errors.Is(err, blobstore.ErrNotFound) {
+				t.Fatalf("Restore(%q): got ErrNotFound — id reached the store unvalidated: %v", id, err)
+			}
+		})
 	}
 }
 

@@ -22,6 +22,9 @@ import (
 // permission bits, never setuid/setgid/sticky to avoid re-introducing
 // surprises across user boundaries). MTime is restored best-effort.
 func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
+	if err := validateSnapshotID(snapID); err != nil {
+		return err
+	}
 	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return err

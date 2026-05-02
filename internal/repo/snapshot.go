@@ -11,7 +11,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"regexp"
 	"sort"
+	"strings"
 	"sync"
 	"time"
 
@@ -139,6 +141,9 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 // Returns blobstore.ErrNotFound (wrapped) when the snapshot does not
 // exist; callers can errors.Is against the sentinel.
 func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
+	if err := validateSnapshotID(id); err != nil {
+		return Manifest{}, err
+	}
 	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return Manifest{}, err
@@ -280,6 +285,37 @@ func newSnapshotID(t time.Time) (string, error) {
 		return "", err
 	}
 	return fmt.Sprintf("snap-%s-%s", t.UTC().Format("20060102T150405Z"), hex.EncodeToString(b[:])), nil
+}
+
+// snapshotIDPattern matches the shape produced by newSnapshotID:
+// "snap-<digits/T/Z>-<hex>". Permissive on the timestamp body so
+// older test fixtures with slightly different stamps still parse.
+var snapshotIDPattern = regexp.MustCompile(`^snap-[0-9TZ]+-[0-9a-f]+$`)
+
+// validateSnapshotID rejects any ID that could escape the
+// snapshots/ prefix or otherwise sneak past the blobstore. Phase 5
+// review I2: LoadSnapshot("../config") would otherwise become a Get
+// on "snapshots/../config" which the in-memory store treats as
+// not-found (HasPrefix mismatch) but which the S3 store collapses
+// via path.Join to fetch the config blob, producing an opaque
+// "decompress" error.
+func validateSnapshotID(id string) error {
+	if id == "" {
+		return fmt.Errorf("repo: invalid snapshot id: empty")
+	}
+	if strings.ContainsAny(id, `/\`) {
+		return fmt.Errorf("repo: invalid snapshot id %q: contains path separator", id)
+	}
+	// Reject any "." or ".." segment outright. Splitting is overkill
+	// here — the simple equality + prefix/suffix checks cover all
+	// forms after the separator check above.
+	if id == "." || id == ".." {
+		return fmt.Errorf("repo: invalid snapshot id %q: traversal segment", id)
+	}
+	if !snapshotIDPattern.MatchString(id) {
+		return fmt.Errorf("repo: invalid snapshot id %q: does not match expected shape", id)
+	}
+	return nil
 }
 
 // snapState aggregates per-snapshot state populated concurrently by
