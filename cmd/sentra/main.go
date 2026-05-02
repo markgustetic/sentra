@@ -1,9 +1,19 @@
 package main
 
-import "fmt"
+import (
+	"os"
 
-var version = "dev"
+	"github.com/markgustetic/sentra/internal/cli"
+)
+
+var (
+	version = "dev"
+	commit  = "none"
+	date    = "unknown"
+)
 
 func main() {
-	fmt.Println("sentra", version)
+	if err := cli.NewRoot(version, commit, date).Execute(); err != nil {
+		os.Exit(1)
+	}
 }
