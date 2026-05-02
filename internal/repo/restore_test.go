@@ -3,6 +3,8 @@ package repo
 import (
 	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"io/fs"
 	"os"
 	"path/filepath"
@@ -10,6 +12,10 @@ import (
 	"sort"
 	"strings"
 	"testing"
+	"time"
+
+	"github.com/markgustetic/sentra/internal/chunker"
+	"github.com/markgustetic/sentra/internal/crypto"
 )
 
 // fileFingerprint is the content + mode + size of one file relative
@@ -179,3 +185,81 @@ func TestRestore_AllowsEmptyExistingDest(t *testing.T) {
 		t.Fatalf("restore output unexpected: %+v", got)
 	}
 }
+
+// TestRestore_RejectsPathTraversal verifies that a manifest with a
+// FileEntry.Path containing ".." cannot escape the destination
+// directory. We forge a tampered manifest, write it under a fresh
+// snapshot ID, then call Restore and assert it errors out and that no
+// file appears at the would-be escape location.
+func TestRestore_RejectsPathTraversal(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "good.txt"), "harmless")
+
+	// Take a real snapshot so we have a manifest with valid chunks to
+	// borrow.
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	m, err := r.LoadSnapshot(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if len(m.Tree) != 1 {
+		t.Fatalf("expected exactly 1 entry in seed manifest, got %d", len(m.Tree))
+	}
+
+	// Tamper with the path so it tries to escape the destination.
+	m.Tree[0].Path = "../escaped.txt"
+	// Re-stamp with a new ID so it co-exists with the real snapshot.
+	tamperedID, err := newSnapshotID(time.Now().UTC())
+	if err != nil {
+		t.Fatalf("id: %v", err)
+	}
+	m.ID = tamperedID
+
+	// Re-marshal, compress, encrypt, upload at snapshots/<tamperedID>.
+	raw, err := json.Marshal(&m)
+	if err != nil {
+		t.Fatalf("marshal: %v", err)
+	}
+	compressed, err := chunker.Compress(raw)
+	if err != nil {
+		t.Fatalf("compress: %v", err)
+	}
+	sealed, err := crypto.Seal(r.repoKey, compressed)
+	if err != nil {
+		t.Fatalf("seal: %v", err)
+	}
+	if err := store.Put(ctx, snapshotPrefix+tamperedID, bytes.NewReader(sealed)); err != nil {
+		t.Fatalf("put tampered manifest: %v", err)
+	}
+
+	destParent := t.TempDir()
+	destDir := filepath.Join(destParent, "restored")
+	err = r.Restore(ctx, tamperedID, destDir)
+	if err == nil {
+		t.Fatal("expected error restoring traversal manifest, got nil")
+	}
+	// Error should mention escape/traversal/destination.
+	msg := strings.ToLower(err.Error())
+	if !(strings.Contains(msg, "escape") || strings.Contains(msg, "traversal") ||
+		strings.Contains(msg, "outside") || strings.Contains(msg, "refus")) {
+		t.Fatalf("error did not mention traversal/escape: %v", err)
+	}
+
+	// Most important: no file leaked outside destDir.
+	leakPath := filepath.Join(destParent, "escaped.txt")
+	if _, err := os.Stat(leakPath); err == nil {
+		t.Fatalf("traversal succeeded — file written at %s", leakPath)
+	} else if !os.IsNotExist(err) {
+		t.Fatalf("unexpected stat error on %s: %v", leakPath, err)
+	}
+}
+
+// silence unused-import linters when only some tests reference these
+// helpers under build flags.
+var _ = io.Discard

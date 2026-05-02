@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 
 	"github.com/markgustetic/sentra/internal/chunker"
 	"github.com/markgustetic/sentra/internal/crypto"
@@ -36,11 +37,20 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
 		return err
 	}
 
+	// Resolve destDir to its absolute, symlink-cleaned form so that
+	// safeRestorePath comparisons are stable regardless of how the
+	// caller spells the path.
+	absDest, err := filepath.Abs(destDir)
+	if err != nil {
+		return fmt.Errorf("repo: abs dest %s: %w", destDir, err)
+	}
+	absDest = filepath.Clean(absDest)
+
 	for _, fe := range m.Tree {
 		if err := ctx.Err(); err != nil {
 			return err
 		}
-		if err := r.restoreFile(ctx, repoKey, destDir, fe); err != nil {
+		if err := r.restoreFile(ctx, repoKey, absDest, fe); err != nil {
 			return err
 		}
 	}
@@ -50,10 +60,19 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
 // restoreFile writes a single FileEntry into dest, creating parent
 // directories as needed and applying mode + mtime from the manifest.
 func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe FileEntry) error {
-	dst := filepath.Join(dest, filepath.FromSlash(fe.Path))
+	// Phase 5 review C1: every FileEntry.Path comes from a manifest
+	// the caller controls (or that an attacker has tampered with).
+	// safeRestorePath rejects anything that would escape dest. The
+	// returned dst is absolute and lexically inside dest, so its
+	// parent directory is also inside dest by construction.
+	dst, err := safeRestorePath(dest, fe.Path)
+	if err != nil {
+		return err
+	}
 
-	if err := os.MkdirAll(filepath.Dir(dst), 0o755); err != nil {
-		return fmt.Errorf("repo: mkdir %s: %w", filepath.Dir(dst), err)
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("repo: mkdir %s: %w", parent, err)
 	}
 
 	// Phase 4 review I2: only permission bits from the manifest
@@ -119,6 +138,45 @@ func (r *Repo) fetchChunk(ctx context.Context, repoKey []byte, hexHash string) (
 		return nil, fmt.Errorf("repo: decompress chunk: %w", err)
 	}
 	return raw, nil
+}
+
+// safeRestorePath joins relPath under dest and verifies that the result
+// is lexically contained inside dest. It rejects:
+//
+//   - empty relPath
+//   - absolute relPath (a manifest must always store relative paths)
+//   - any joined path whose dest-relative form starts with ".." or
+//     equals ".." (which would walk above dest)
+//
+// dest must already be absolute and clean (the caller is responsible
+// for that — Restore Abs+Cleans destDir once at the top).
+//
+// We compare on lexical paths only and do NOT call EvalSymlinks: the
+// destination tree is freshly created (or empty) before restore, so
+// a symlink-based escape would require us to follow our own writes.
+// Phase 6 review can revisit if directory restore is added.
+func safeRestorePath(dest, relPath string) (string, error) {
+	if relPath == "" {
+		return "", fmt.Errorf("repo: empty path in manifest")
+	}
+	// Manifest paths are stored slash-separated and relative.
+	if filepath.IsAbs(relPath) || strings.HasPrefix(relPath, "/") {
+		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
+	}
+	joined := filepath.Join(dest, filepath.FromSlash(relPath))
+	rel, err := filepath.Rel(dest, joined)
+	if err != nil {
+		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
+	}
+	// rel may be "." for relPath == "." (which we don't want as a
+	// file target either), or start with ".." for any escape attempt.
+	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
+		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
+	}
+	if rel == "." {
+		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
+	}
+	return joined, nil
 }
 
 // ensureDestDir refuses to write into an already-populated dest
