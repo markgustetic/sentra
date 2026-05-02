@@ -23,8 +23,12 @@ type Entry struct {
 	AbsPath string
 	RelPath string
 	Size    int64
-	Mode    os.FileMode
-	MTime   time.Time
+	// Mode is the lstat mode of the file. In v1 the walker only emits
+	// regular files, so this is always a regular-file mode. The bits
+	// to care about for Phase 5's manifest are the permission bits
+	// (Mode.Perm()); type bits are constant.
+	Mode  os.FileMode
+	MTime time.Time
 }
 
 // Options tunes the walk. Zero-value Options runs with sensible
@@ -217,8 +221,11 @@ func isCacheDir(dir string) bool {
 	}
 	defer f.Close()
 
-	// The spec only requires the signature on the first line. A
-	// 256-byte buffer is generous: the canonical line is 49 bytes
+	// The spec (https://bford.info/cachedir/) requires the file to
+	// start with the 43-byte signature. Trailing content on the same
+	// line is allowed (e.g. comma-separated comment fields some tools
+	// append), so we use HasPrefix rather than equality. A 256-byte
+	// buffer is generous: the canonical first line is 49 bytes
 	// including the newline.
 	scanner := bufio.NewScanner(f)
 	scanner.Buffer(make([]byte, 0, 256), 256)
@@ -226,5 +233,5 @@ func isCacheDir(dir string) bool {
 		return false
 	}
 	first := strings.TrimRight(scanner.Text(), "\r")
-	return first == cachedirSignature
+	return strings.HasPrefix(first, cachedirSignature)
 }
