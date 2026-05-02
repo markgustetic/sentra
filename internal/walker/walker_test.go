@@ -1,0 +1,409 @@
+package walker
+
+import (
+	"context"
+	"errors"
+	"fmt"
+	"os"
+	"path/filepath"
+	"reflect"
+	"runtime"
+	"sort"
+	"sync"
+	"sync/atomic"
+	"testing"
+	"time"
+)
+
+// writeFile is a test helper: create the parent directory if needed
+// and write content with a sane mode. Reduces noise across tests.
+func writeFile(t *testing.T, path, content string) {
+	t.Helper()
+	if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+		t.Fatalf("mkdir %q: %v", filepath.Dir(path), err)
+	}
+	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
+		t.Fatalf("write %q: %v", path, err)
+	}
+}
+
+// collectPaths is a thread-safe collector for parallel walks.
+func collectPaths() (func(Entry) error, func() []string) {
+	var (
+		mu  sync.Mutex
+		out []string
+	)
+	fn := func(e Entry) error {
+		mu.Lock()
+		out = append(out, e.RelPath)
+		mu.Unlock()
+		return nil
+	}
+	get := func() []string {
+		mu.Lock()
+		defer mu.Unlock()
+		c := make([]string, len(out))
+		copy(c, out)
+		return c
+	}
+	return fn, get
+}
+
+// TestWalk_RespectsIgnore: with a project-level .sentraignore that
+// excludes "*.log", the walker should yield .sentraignore itself and
+// any non-log file, but not the .log file.
+func TestWalk_RespectsIgnore(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "keep.txt"), "k")
+	writeFile(t, filepath.Join(root, "skip.log"), "s")
+	writeFile(t, filepath.Join(root, ".sentraignore"), "*.log\n")
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	got := get()
+	sort.Strings(got)
+	want := []string{".sentraignore", "keep.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestWalk_HonorsCachedirTag: a directory with a CACHEDIR.TAG that
+// starts with the spec signature should be skipped entirely when
+// ExcludeCaches is set. We assert no entry under the cache directory
+// makes it out, including the tag file itself.
+func TestWalk_HonorsCachedirTag(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cache, "CACHEDIR.TAG"),
+		"Signature: 8a477f597d28d172789f06886806bc55\nthis directory is a cache")
+	writeFile(t, filepath.Join(cache, "junk"), "x")
+	writeFile(t, filepath.Join(cache, "nested", "deep"), "y")
+	writeFile(t, filepath.Join(root, "real.txt"), "r")
+
+	fn, get := collectPaths()
+	err := Walk(context.Background(), root, Options{ExcludeCaches: true}, fn)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, p := range get() {
+		if filepath.Dir(p) == "cache" || len(p) >= 6 && p[:6] == "cache/" {
+			t.Errorf("cache should be skipped, but got %q", p)
+		}
+	}
+}
+
+// TestWalk_HonorsCachedirTagOnlyWhenSet: without ExcludeCaches the
+// cache dir contents should be returned. This pins the opt-in
+// semantics — we don't want a default that silently drops files.
+func TestWalk_HonorsCachedirTagOnlyWhenSet(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cache, "CACHEDIR.TAG"),
+		"Signature: 8a477f597d28d172789f06886806bc55")
+	writeFile(t, filepath.Join(cache, "junk"), "x")
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	sort.Strings(got)
+	want := []string{"cache/CACHEDIR.TAG", "cache/junk"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestWalk_CachedirTagWrongSignature: a CACHEDIR.TAG file whose
+// signature doesn't match the spec must NOT cause the directory to
+// be skipped. This protects against accidentally hiding a directory
+// that happens to contain a file by that name.
+func TestWalk_CachedirTagWrongSignature(t *testing.T) {
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cache, "CACHEDIR.TAG"), "this is not a real cachedir tag")
+	writeFile(t, filepath.Join(cache, "junk"), "x")
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{ExcludeCaches: true}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	sort.Strings(got)
+	want := []string{"cache/CACHEDIR.TAG", "cache/junk"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestWalk_DoesNotFollowSymlinks: a symlink (to a file or directory)
+// is not a regular file under filepath.WalkDir's lstat semantics, so
+// the walker should ignore it and emit no entry. Following symlinks
+// is a v2 question; for now we want predictable, non-cyclic walks.
+func TestWalk_DoesNotFollowSymlinks(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "real.txt"), "r")
+
+	target := filepath.Join(root, "real.txt")
+	link := filepath.Join(root, "link.txt")
+	if err := os.Symlink(target, link); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+
+	// Also add a symlinked directory to make sure we don't recurse
+	// into the target.
+	otherDir := t.TempDir()
+	writeFile(t, filepath.Join(otherDir, "outside.txt"), "o")
+	dirLink := filepath.Join(root, "dirlink")
+	if err := os.Symlink(otherDir, dirLink); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	sort.Strings(got)
+	want := []string{"real.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v (symlinks must be skipped)", got, want)
+	}
+}
+
+// TestWalk_RespectsContextCancel: cancelling the context mid-walk
+// should surface context.Canceled. We rig fn to cancel as soon as it
+// sees an entry, then assert the returned error.
+func TestWalk_RespectsContextCancel(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 200; i++ {
+		writeFile(t, filepath.Join(root, fmt.Sprintf("f-%d.txt", i)), "x")
+	}
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+
+	var seen atomic.Int64
+	fn := func(_ Entry) error {
+		if seen.Add(1) == 1 {
+			cancel()
+		}
+		// Best-effort: return ctx error so the cancel races to
+		// surface from either the producer or fn.
+		return ctx.Err()
+	}
+
+	err := Walk(ctx, root, Options{}, fn)
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("Walk error = %v, want context.Canceled", err)
+	}
+}
+
+// TestWalk_FnErrorPropagates: the first non-nil error from fn must be
+// returned by Walk, and the walk must stop (best-effort). We don't
+// assert on exact fn-call counts because workers may have already
+// dequeued additional entries.
+func TestWalk_FnErrorPropagates(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		writeFile(t, filepath.Join(root, fmt.Sprintf("f-%d.txt", i)), "x")
+	}
+
+	sentinel := errors.New("intentional fn error")
+	fn := func(_ Entry) error { return sentinel }
+
+	err := Walk(context.Background(), root, Options{}, fn)
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Walk error = %v, want %v", err, sentinel)
+	}
+}
+
+// TestWalk_NestedDirs: deep tree with multiple levels yields all the
+// expected files. Order is unspecified (concurrent walk), so sort
+// before comparing.
+func TestWalk_NestedDirs(t *testing.T) {
+	root := t.TempDir()
+	files := []string{
+		"a.txt",
+		"dir1/b.txt",
+		"dir1/dir2/c.txt",
+		"dir1/dir2/dir3/d.txt",
+		"dir1/dir2/dir3/e.txt",
+		"sibling/f.txt",
+	}
+	for _, f := range files {
+		writeFile(t, filepath.Join(root, f), "x")
+	}
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	sort.Strings(got)
+	sort.Strings(files)
+	if !reflect.DeepEqual(got, files) {
+		t.Errorf("got %v, want %v", got, files)
+	}
+}
+
+// TestWalk_DefaultIgnoreFileName: when Options.IgnoreFile is empty,
+// the walker should default to ".sentraignore". Without this default
+// callers would have to set IgnoreFile every time.
+func TestWalk_DefaultIgnoreFileName(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "keep.txt"), "k")
+	writeFile(t, filepath.Join(root, "drop.tmp"), "d")
+	writeFile(t, filepath.Join(root, ".sentraignore"), "*.tmp\n")
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{IgnoreFile: ""}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	sort.Strings(got)
+	want := []string{".sentraignore", "keep.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestWalk_CustomIgnoreFile: a non-default ignore filename should be
+// honored. Useful for callers who want to drive the walker from a
+// different config file.
+func TestWalk_CustomIgnoreFile(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "keep.txt"), "k")
+	writeFile(t, filepath.Join(root, "drop.tmp"), "d")
+	writeFile(t, filepath.Join(root, ".myignore"), "*.tmp\n")
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{IgnoreFile: ".myignore"}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	sort.Strings(got)
+	want := []string{".myignore", "keep.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// TestWalk_ConcurrencyZeroDefaults: Options.Concurrency == 0 must not
+// hang or panic. We don't assert on a specific worker count — just
+// that the walk completes.
+func TestWalk_ConcurrencyZeroDefaults(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 20; i++ {
+		writeFile(t, filepath.Join(root, fmt.Sprintf("f-%d.txt", i)), "x")
+	}
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{Concurrency: 0}, fn); err != nil {
+		t.Fatal(err)
+	}
+	if len(get()) != 20 {
+		t.Errorf("got %d entries, want 20", len(get()))
+	}
+}
+
+// TestWalk_ConcurrencyExplicit: passing a small explicit count works.
+// Combined with -race this exercises the worker pool's safety.
+func TestWalk_ConcurrencyExplicit(t *testing.T) {
+	root := t.TempDir()
+	for i := 0; i < 100; i++ {
+		writeFile(t, filepath.Join(root, fmt.Sprintf("f-%d.txt", i)), "x")
+	}
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{Concurrency: 4}, fn); err != nil {
+		t.Fatal(err)
+	}
+	if len(get()) != 100 {
+		t.Errorf("got %d entries, want 100", len(get()))
+	}
+}
+
+// TestWalk_EntryFields: verify that Entry is populated with the
+// correct AbsPath, RelPath, Size, Mode, and a non-zero MTime. Without
+// this, downstream stages that key off mtime for change detection
+// will silently see zero values.
+func TestWalk_EntryFields(t *testing.T) {
+	root := t.TempDir()
+	rel := "subdir/hello.txt"
+	abs := filepath.Join(root, rel)
+	writeFile(t, abs, "hello, world")
+
+	var got Entry
+	var mu sync.Mutex
+	fn := func(e Entry) error {
+		mu.Lock()
+		got = e
+		mu.Unlock()
+		return nil
+	}
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatal(err)
+	}
+	if got.RelPath != "subdir/hello.txt" {
+		t.Errorf("RelPath=%q, want %q", got.RelPath, "subdir/hello.txt")
+	}
+	if got.AbsPath != abs {
+		t.Errorf("AbsPath=%q, want %q", got.AbsPath, abs)
+	}
+	if got.Size != int64(len("hello, world")) {
+		t.Errorf("Size=%d, want %d", got.Size, len("hello, world"))
+	}
+	if got.Mode.IsRegular() == false {
+		t.Errorf("Mode=%v, want regular file", got.Mode)
+	}
+	if got.MTime.IsZero() {
+		t.Error("MTime is zero")
+	}
+	if time.Since(got.MTime) > time.Hour {
+		t.Errorf("MTime=%v looks too old for a file we just created", got.MTime)
+	}
+}
+
+// TestWalk_ConcurrencyDefaultsToGOMAXPROCS smokes the GOMAXPROCS
+// branch by checking that Concurrency==0 produces multiple goroutines
+// when GOMAXPROCS > 1. We can't directly observe the worker count, so
+// we settle for "the walk completes in a reasonable time" — really
+// just a regression guard.
+func TestWalk_ConcurrencyDefaultsToGOMAXPROCS(t *testing.T) {
+	if runtime.GOMAXPROCS(0) < 2 {
+		t.Skip("needs GOMAXPROCS >= 2 to be meaningful")
+	}
+	root := t.TempDir()
+	for i := 0; i < 50; i++ {
+		writeFile(t, filepath.Join(root, fmt.Sprintf("f-%d.txt", i)), "x")
+	}
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{Concurrency: 0}, fn); err != nil {
+		t.Fatal(err)
+	}
+	if len(get()) != 50 {
+		t.Errorf("got %d, want 50", len(get()))
+	}
+}
+
+// TestWalk_RootDoesNotExist surfaces an I/O error from the walk
+// itself, not a silent zero-result success.
+func TestWalk_RootDoesNotExist(t *testing.T) {
+	bogus := filepath.Join(t.TempDir(), "no-such-dir")
+	err := Walk(context.Background(), bogus, Options{}, func(Entry) error { return nil })
+	if err == nil {
+		t.Fatal("expected error for non-existent root, got nil")
+	}
+}
