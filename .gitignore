@@ -1,0 +1,12 @@
+bin/
+dist/
+*.test
+*.out
+.vscode/
+.idea/
+*.swp
+.DS_Store
+
+# Local config / secrets
+sentra.yaml
+.sentraignore

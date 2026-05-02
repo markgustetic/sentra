@@ -1,0 +1,25 @@
+# Sample .sentraignore — copy to .sentraignore at the root of any
+# directory you back up. Patterns support a small "**" glob.
+
+# build artifacts
+build/**
+dist/**
+target/**
+out/**
+
+# language ecosystems
+node_modules/**
+.venv/**
+__pycache__/**
+*.pyc
+
+# editors / OS
+.DS_Store
+**/.DS_Store
+.idea/**
+.vscode/**
+
+# logs and temp
+*.log
+*.tmp
+*.swp
