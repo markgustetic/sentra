@@ -32,6 +32,13 @@ var (
 	decOnce sync.Once
 	decoder *zstd.Decoder
 	decErr  error
+
+	// decoderPool keeps a *zstd.Decoder per max-decoded-size so that
+	// DecompressLimit doesn't pay constructor cost per call. zstd's
+	// WithDecoderMaxMemory is set on the decoder, not per DecodeAll,
+	// so we cannot share one decoder across different caps.
+	decoderPoolMu sync.Mutex
+	decoderPool   = map[uint64]*zstd.Decoder{}
 )
 
 func getEncoder() (*zstd.Encoder, error) {
@@ -53,6 +60,24 @@ func getDecoder() (*zstd.Decoder, error) {
 	return decoder, decErr
 }
 
+// getLimitedDecoder returns a cached decoder configured with the given
+// max-decoded-size cap, lazily creating one on first use. Concurrent
+// callers with the same cap share a single decoder; *zstd.Decoder is
+// safe for concurrent use of DecodeAll.
+func getLimitedDecoder(maxDecoded uint64) (*zstd.Decoder, error) {
+	decoderPoolMu.Lock()
+	defer decoderPoolMu.Unlock()
+	if d, ok := decoderPool[maxDecoded]; ok {
+		return d, nil
+	}
+	d, err := zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecoded))
+	if err != nil {
+		return nil, err
+	}
+	decoderPool[maxDecoded] = d
+	return d, nil
+}
+
 // Compress returns the zstd-compressed form of in. It is safe for
 // concurrent use. Empty input is allowed and produces a valid empty
 // zstd frame.
@@ -70,9 +95,32 @@ func Compress(in []byte) ([]byte, error) {
 }
 
 // Decompress returns the zstd-decompressed form of in. It returns an
-// error for any input that is not a valid zstd frame. Concurrent-safe.
+// error for any input that is not a valid zstd frame, or whose decoded
+// size exceeds the chunk cap (8 MiB, 2x our chunk max). Concurrent-safe.
+//
+// Use this for chunk decompression where the plaintext is bounded.
+// For manifests, see DecompressLimit.
 func Decompress(in []byte) ([]byte, error) {
 	dec, err := getDecoder()
+	if err != nil {
+		return nil, fmt.Errorf("chunker: zstd decoder init: %w", err)
+	}
+	out, err := dec.DecodeAll(in, nil)
+	if err != nil {
+		return nil, fmt.Errorf("chunker: zstd decode: %w", err)
+	}
+	return out, nil
+}
+
+// DecompressLimit decompresses in with a configurable maximum decoded
+// size. For chunks use Decompress (8 MiB cap). For manifests, callers
+// should pass a generous bound (e.g. 1 GiB) — manifests are unbounded
+// by file count but the cap prevents zip-bomb expansion.
+//
+// Concurrent-safe; decoders are pooled by maxDecoded so repeated
+// callers with the same cap share state.
+func DecompressLimit(in []byte, maxDecoded uint64) ([]byte, error) {
+	dec, err := getLimitedDecoder(maxDecoded)
 	if err != nil {
 		return nil, fmt.Errorf("chunker: zstd decoder init: %w", err)
 	}
