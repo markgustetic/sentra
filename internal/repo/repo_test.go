@@ -189,6 +189,42 @@ func TestOpen_RejectsBadKDFParams(t *testing.T) {
 	}
 }
 
+// TestKeyOrErr_ReturnsDefensiveCopy verifies the Phase 5 review C2
+// fix: keyOrErr must return a copy of the live key (so callers
+// holding the slice don't see the bytes zeroed by Close), not a
+// slice header pointing into r.repoKey.
+func TestKeyOrErr_ReturnsDefensiveCopy(t *testing.T) {
+	ctx := context.Background()
+	store := blobstore.NewMemory()
+	r, err := Init(ctx, store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+
+	captured, err := r.keyOrErr()
+	if err != nil {
+		t.Fatalf("keyOrErr: %v", err)
+	}
+	// Snapshot the captured copy so we can check that mutating r.repoKey
+	// does NOT affect the captured slice.
+	before := make([]byte, len(captured))
+	copy(before, captured)
+
+	// Now Close() — this zeroes r.repoKey in place. If keyOrErr had
+	// returned a slice header into r.repoKey, the captured slice would
+	// be 32 zeros now too.
+	if err := r.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+	if !bytes.Equal(before, captured) {
+		t.Fatal("captured key changed after Close — keyOrErr aliased the live key")
+	}
+	// And the original repoKey is zeroed.
+	if r.repoKey != nil {
+		t.Fatalf("repoKey not nilled after Close")
+	}
+}
+
 func TestRepo_AfterClose_ReturnsErrClosed(t *testing.T) {
 	ctx := context.Background()
 	store := blobstore.NewMemory()

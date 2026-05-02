@@ -16,9 +16,15 @@ import (
 // future phase will introduce an index file (see design doc) so we
 // can answer this without a manifest fan-out.
 func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
-	if _, err := r.keyOrErr(); err != nil {
+	// We don't use the key directly here — LoadSnapshot below grabs
+	// its own copy — but we still call keyOrErr so List returns
+	// ErrClosed promptly when the repo has been closed. The defensive
+	// copy is wiped immediately.
+	k, err := r.keyOrErr()
+	if err != nil {
 		return nil, err
 	}
+	zeroize(k)
 	entries, err := r.store.List(ctx, snapshotPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("repo: list snapshots: %w", err)

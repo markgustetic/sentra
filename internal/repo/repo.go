@@ -183,19 +183,42 @@ func (r *Repo) Config() RepoConfig { return r.cfg }
 // subsystems (e.g. the agent's orphan-blob check).
 func (r *Repo) Store() blobstore.Store { return r.store }
 
-// keyOrErr returns the repo key under read-lock or ErrClosed if Close
-// has been called. Internal helper for snapshot/restore code paths.
+// keyOrErr returns a *defensive copy* of the repo key, or ErrClosed
+// if Close has been called. Callers must zeroize the returned copy
+// when done — see zeroize().
 //
-// The returned slice is the live key; do not mutate it. Callers must
-// not retain it past the function call to avoid racing with a
-// concurrent Close.
+// Phase 5 review C2: returning the live slice header was unsafe.
+// CreateSnapshot fans out concurrent Seal calls that capture the
+// slice. If Close ran while a goroutine still held the captured
+// slice, the backing array was zeroed in place — but the captured
+// slice still pointed at it, now 32 zero bytes. crypto.Seal happily
+// encrypts under that all-zero key, producing chunks that are
+// silently un-decryptable with the real key (and trivially
+// decryptable for anyone with the all-zero key — i.e. anyone). The
+// fix is to hand each caller its own copy and let them zeroize after
+// the operation completes. The lock is still needed to read the live
+// slice atomically with respect to Close.
 func (r *Repo) keyOrErr() ([]byte, error) {
 	r.keyMu.RLock()
 	defer r.keyMu.RUnlock()
 	if r.repoKey == nil {
 		return nil, ErrClosed
 	}
-	return r.repoKey, nil
+	cp := make([]byte, len(r.repoKey))
+	copy(cp, r.repoKey)
+	return cp, nil
+}
+
+// zeroize overwrites b with zero bytes. Used by snapshot/restore
+// callers to clear a defensive copy of the repo key once done.
+//
+// Best-effort: the Go runtime / GC may have already moved the buffer.
+// We still zero the live slice to collapse the leak window from
+// "until GC" to "until next allocation".
+func zeroize(b []byte) {
+	for i := range b {
+		b[i] = 0
+	}
 }
 
 // newRepoID returns a random hex string used as the repo's stable

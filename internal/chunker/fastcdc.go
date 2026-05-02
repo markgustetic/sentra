@@ -30,20 +30,24 @@ import (
 	fastcdc "github.com/jotfs/fastcdc-go"
 )
 
-// newChunkerMu serializes calls to fastcdc.NewChunker. The library
-// XORs a package-level "gear" table by the configured Seed in its
-// constructor, even when Seed is zero — which is a write that races
-// with concurrent reads from another goroutine's NewChunker on the
-// same table. We never use Seed, so once a single constructor has
-// run the read+write reduce to no-ops, but the race detector still
-// flags every concurrent pair. Holding this mutex for the duration
-// of the constructor (microseconds) is cheaper than every alternative
-// (forking the upstream library, pre-warming a chunker pool, etc.).
+// chunkerMu serializes ChunkAll against itself. The fastcdc-go
+// library writes a package-level "gear" table inside NewChunker
+// (XOR-by-Seed; we never set Seed so the writes are no-ops) and
+// reads the same table during Chunker.Next. Even the no-op writes
+// are flagged by the race detector when they overlap with another
+// goroutine's reads, so we hold this mutex for the entire chunking
+// pipeline rather than just NewChunker. This trades intra-package
+// parallelism for race-detector cleanliness; ChunkAll is already
+// memory-bounded by the file it ingests, so the parallel-snapshot
+// case still gets per-file isolation through the walker's worker
+// pool calling other parts of the snapshot pipeline (encrypt,
+// upload, hash) in parallel.
 //
 // Discovered during Phase 5 integration when Walk's worker pool
 // concurrently invokes ChunkAll. Surface this in any future review
-// of the chunker package.
-var newChunkerMu sync.Mutex
+// of the chunker package; the right long-term fix is upstreaming a
+// patch to fastcdc-go.
+var chunkerMu sync.Mutex
 
 // Chunk size targets follow the design: ~1 MiB average, with a
 // quartered minimum (256 KiB) and a quadrupled maximum (4 MiB). These
@@ -86,13 +90,14 @@ type Chunk struct {
 // before the next is read. The streaming variant can avoid the per-call
 // copy because the callback contract bounds the slice's lifetime.
 func ChunkAll(r io.Reader) ([]Chunk, error) {
-	newChunkerMu.Lock()
+	chunkerMu.Lock()
+	defer chunkerMu.Unlock()
+
 	c, err := fastcdc.NewChunker(r, fastcdc.Options{
 		AverageSize: avgChunkSize,
 		MinSize:     minChunkSize,
 		MaxSize:     maxChunkSize,
 	})
-	newChunkerMu.Unlock()
 	if err != nil {
 		return nil, fmt.Errorf("chunker: new fastcdc: %w", err)
 	}

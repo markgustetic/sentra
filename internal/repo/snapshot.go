@@ -62,6 +62,10 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
+	// Phase 5 review C2: keyOrErr returns a defensive copy. Zero it
+	// when the operation completes so the key is not retained past
+	// CreateSnapshot's lifetime (independent of GC timing).
+	defer zeroize(repoKey)
 
 	absRoot, err := filepath.Abs(root)
 	if err != nil {
@@ -139,6 +143,7 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
+	defer zeroize(repoKey)
 	rc, err := r.store.Get(ctx, snapshotPrefix+id)
 	if err != nil {
 		// Preserve the sentinel for errors.Is callers.

@@ -26,6 +26,10 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
 	if err != nil {
 		return err
 	}
+	// Phase 5 review C2: keyOrErr returns a defensive copy; zero it
+	// at function exit so the key is not retained past Restore.
+	defer zeroize(repoKey)
+
 	m, err := r.LoadSnapshot(ctx, snapID)
 	if err != nil {
 		return err

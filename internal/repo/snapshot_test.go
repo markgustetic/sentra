@@ -1,14 +1,19 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/crypto"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -232,5 +237,119 @@ func TestCreateSnapshot_AfterCloseFails(t *testing.T) {
 	_, err := r.CreateSnapshot(ctx, t.TempDir(), SnapshotOptions{})
 	if !errors.Is(err, ErrClosed) {
 		t.Fatalf("expected ErrClosed, got %v", err)
+	}
+}
+
+// TestRepo_CloseDuringSnapshot_DoesNotCorruptChunks verifies the
+// Phase 5 review C2 fix: if Close() races with an in-flight
+// CreateSnapshot, chunks must NEVER be encrypted under the all-zero
+// key. Either the snapshot completes correctly (chunks decryptable
+// with the original key) or it fails with a clear error — but it must
+// not silently produce zero-key ciphertext that the original key
+// can't decrypt and a future attacker with the all-zero key could.
+func TestRepo_CloseDuringSnapshot_DoesNotCorruptChunks(t *testing.T) {
+	ctx := context.Background()
+	store := blobstore.NewMemory()
+	r, err := Init(ctx, store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	// Save a copy of the original key so we can decrypt manually
+	// after Close has zeroed the live one.
+	origKey := make([]byte, len(r.repoKey))
+	copy(origKey, r.repoKey)
+
+	// Big enough tree to take measurable time to chunk-encrypt: ~64 MiB
+	// across ~16 files of 4 MiB random bytes. Random bytes don't
+	// compress so we stress the encrypt path without zstd shortcuts.
+	root := t.TempDir()
+	const fileCount = 16
+	const fileSize = 4 << 20 // 4 MiB
+	for i := 0; i < fileCount; i++ {
+		buf := make([]byte, fileSize)
+		// Deterministic-but-incompressible: simple PRNG seeded by index.
+		seed := byte(i + 1)
+		for j := range buf {
+			seed = seed*31 + 7
+			buf[j] = seed
+		}
+		path := filepath.Join(root, "file", "i", fmt.Sprintf("blob-%02d.bin", i))
+		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
+			t.Fatalf("mkdir: %v", err)
+		}
+		if err := os.WriteFile(path, buf, 0o600); err != nil {
+			t.Fatalf("write: %v", err)
+		}
+	}
+
+	// Kick off Close from a goroutine after a small delay. The
+	// timing here is best-effort; the assertion below holds
+	// regardless of whether Close lands during, before, or after
+	// the snapshot finishes.
+	go func() {
+		// Sleep long enough for some chunks to flow but short enough
+		// that we usually catch in-flight Seal calls.
+		time.Sleep(20 * time.Millisecond)
+		_ = r.Close()
+	}()
+
+	snap, snapErr := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+
+	// Open a fresh handle that we control — we're going to fetch and
+	// decrypt chunks manually with origKey.
+	zeroKey := make([]byte, len(origKey)) // 32 zero bytes
+
+	// Walk every chunk in the data prefix and confirm none decrypts
+	// under the all-zero key. If any do, the bug is live.
+	infos, err := store.List(ctx, "data/")
+	if err != nil {
+		t.Fatalf("list data: %v", err)
+	}
+	for _, info := range infos {
+		rc, err := store.Get(ctx, info.Key)
+		if err != nil {
+			t.Fatalf("get %s: %v", info.Key, err)
+		}
+		sealed, err := io.ReadAll(rc)
+		rc.Close()
+		if err != nil {
+			t.Fatalf("read %s: %v", info.Key, err)
+		}
+		if _, err := crypto.Open(zeroKey, sealed); err == nil {
+			t.Fatalf("CRITICAL: chunk %s decrypts under all-zero key — Close race corrupted ciphertext", info.Key)
+		}
+	}
+
+	if snapErr != nil {
+		// Fine: snapshot bailed out cleanly with ErrClosed (or a
+		// wrapped version). The data we wrote so far is still
+		// trustworthy (we just verified above), so the test passes.
+		if !errors.Is(snapErr, ErrClosed) {
+			t.Logf("snapshot failed with non-ErrClosed error %v — acceptable as long as no zero-key chunks were written", snapErr)
+		}
+		return
+	}
+
+	// If the snapshot succeeded, we should be able to re-Open the
+	// repo and Restore byte-identical content. This is the strongest
+	// possible "not corrupted" assertion.
+	r2, err := Open(ctx, store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("re-open: %v", err)
+	}
+	defer r2.Close()
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := r2.Restore(ctx, snap.ID, dst); err != nil {
+		t.Fatalf("restore after race: %v", err)
+	}
+	want := treeFingerprint(t, root)
+	got := treeFingerprint(t, dst)
+	if len(want) != len(got) {
+		t.Fatalf("file count: want %d got %d", len(want), len(got))
+	}
+	for i := range want {
+		if !bytes.Equal(want[i].data, got[i].data) {
+			t.Fatalf("%q content mismatch after race", want[i].rel)
+		}
 	}
 }
