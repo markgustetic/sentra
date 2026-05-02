@@ -832,6 +832,12 @@ Goal: concurrent fs walk that respects `.sentraignore` and emits a stream of fil
 
 Goal: snapshot create / list / restore against the in-memory store; this stitches crypto + chunker + walker + blobstore together.
 
+**Carry-overs from Phase 1 review (must address inside this phase):**
+
+- `*Repo.Close()` must zero the in-memory `repoKey` (currently held for the lifetime of a process). Best-effort defense in depth — Go's GC will reclaim memory, but heap dumps or core files between use and GC could leak keys.
+- Add `KDFParams.Validate()` (in `internal/crypto/kdf.go`) and call it on config load. Sanity bounds: `Time > 0`, `Threads > 0`, `Memory < 1<<24` KiB (16 GiB ceiling) — protects against a corrupted config that would OOM the process. The Validate method itself is a Phase 5 task because it needs config-load-time integration.
+- When wrapping the repo key in `config`, include the blob version byte (and ideally the full header) in the AEAD `additionalData`. This ties the wire-format version cryptographically to the ciphertext so a future v2 cannot be confused with a v1 reinterpretation. Implication for Phase 1: a follow-up `SealWithAAD` / `OpenWithAAD` may need to be added when v2 lands; for v1 with a single version, plain `Seal`/`Open` is acceptable.
+
 ### Task 5.1: Manifest types
 
 **Files:**
