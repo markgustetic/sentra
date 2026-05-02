@@ -131,14 +131,23 @@ JSON, then zstd-compressed, then encrypted, stored at `snapshots/<id>`:
     {
       "path": "foo/bar.txt",
       "size": 1234,
-      "mode": "0644",
+      "mode": 420,
       "mtime": "2026-05-02T15:04:05Z",
-      "chunks": ["sha256:...", "sha256:..."]
+      "chunks": ["abc123def...", "deadbeef..."]
     }
   ],
   "stats": {"files": 1234, "bytes": 5000000000, "new_bytes": 120000000}
 }
 ```
+
+Two notes on the wire format that diverge from earlier drafts of this
+section. First, `mode` is the numeric value of Go's `os.FileMode` (e.g.
+`420` decimal == `0o644` octal), not a stringified octal literal — it
+serializes naturally with `encoding/json` and is more compact. Second,
+each chunks entry is bare hex of the SHA-256 of the (plaintext) chunk,
+not prefixed with `"sha256:"` — the prefix is redundant given the
+schema and would inflate every manifest by ~7 bytes per chunk reference.
+The implementation in `internal/repo/manifest.go` is authoritative.
 
 ### Index files
 
