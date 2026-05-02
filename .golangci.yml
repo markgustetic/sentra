@@ -1,27 +1,44 @@
+version: "2"
 run:
-  timeout: 5m
   tests: true
-
 linters:
-  disable-all: true
+  default: none
   enable:
     - errcheck
     - govet
     - ineffassign
-    - staticcheck
-    - unused
-    - gosimple
     - misspell
+    - staticcheck
     - unconvert
+    - unused
+  settings:
+    staticcheck:
+      checks:
+        - all
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+      - legacy
+      - std-error-handling
+    paths:
+      - bin
+      - dist
+      - third_party$
+      - builtin$
+      - examples$
+formatters:
+  enable:
     - gofmt
-
-linters-settings:
-  gofmt:
-    simplify: true
-  staticcheck:
-    checks: ["all"]
-
-issues:
-  exclude-dirs:
-    - bin
-    - dist
+  settings:
+    gofmt:
+      simplify: true
+  exclusions:
+    generated: lax
+    paths:
+      - bin
+      - dist
+      - third_party$
+      - builtin$
+      - examples$
