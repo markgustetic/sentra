@@ -44,7 +44,11 @@ func getEncoder() (*zstd.Encoder, error) {
 func getDecoder() (*zstd.Decoder, error) {
 	decOnce.Do(func() {
 		// Decoder with nil reader supports the DecodeAll fast path.
-		decoder, decErr = zstd.NewReader(nil)
+		// Cap the decoded size at 8 MiB (2x our chunk max). Without
+		// this, a malformed or hostile blob could expand to the
+		// library's 64 GiB default and exhaust process memory.
+		const maxDecodedSize = 8 << 20
+		decoder, decErr = zstd.NewReader(nil, zstd.WithDecoderMaxMemory(maxDecodedSize))
 	})
 	return decoder, decErr
 }

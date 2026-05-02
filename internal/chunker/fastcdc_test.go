@@ -3,6 +3,7 @@ package chunker
 import (
 	"bytes"
 	"crypto/sha256"
+	"encoding/binary"
 	"errors"
 	"testing"
 )
@@ -187,4 +188,118 @@ type errReader struct{ err error }
 
 func (e errReader) Read(_ []byte) (int, error) {
 	return 0, e.err
+}
+
+// randomBytes returns n bytes from a deterministic SHA-256 chain
+// seeded by seed. We deliberately use a hash chain (not math/rand) so
+// the bytes look random to FastCDC's gear hash, the test is fully
+// reproducible across machines and Go versions, and gosec doesn't
+// flag the (here-fine) use of a weak RNG.
+func randomBytes(t *testing.T, n int, seed uint64) []byte {
+	t.Helper()
+	var seedBytes [8]byte
+	binary.BigEndian.PutUint64(seedBytes[:], seed)
+	h := sha256.Sum256(seedBytes[:])
+	out := make([]byte, 0, n)
+	for len(out) < n {
+		out = append(out, h[:]...)
+		h = sha256.Sum256(h[:])
+	}
+	return out[:n]
+}
+
+// TestChunker_RandomMultiChunk exercises the algorithm on input that
+// actually triggers content-defined boundaries.
+//
+// The smaller, repeating-content tests above pass even when ChunkAll
+// returns a single max-size chunk, because uniform content has no
+// boundary-defining fingerprints. This test uses 16 MiB of random
+// data and asserts: (a) we produce multiple chunks, (b) chunking is
+// deterministic, (c) every chunk's hash matches its data, and (d)
+// concatenating the chunks reproduces the input byte-for-byte.
+func TestChunker_RandomMultiChunk(t *testing.T) {
+	const size = 16 << 20 // 16 MiB
+	data := randomBytes(t, size, 0xC0DEFEED)
+
+	a, err := ChunkAll(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) < 4 {
+		t.Fatalf("expected multiple chunks for 16 MiB random input, got %d", len(a))
+	}
+
+	b, err := ChunkAll(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(a) != len(b) {
+		t.Fatalf("non-deterministic chunk count: %d vs %d", len(a), len(b))
+	}
+	for i := range a {
+		if !bytes.Equal(a[i].Hash, b[i].Hash) {
+			t.Fatalf("chunk %d hash mismatch across runs", i)
+		}
+	}
+
+	var buf bytes.Buffer
+	for _, c := range a {
+		want := sha256.Sum256(c.Data)
+		if !bytes.Equal(c.Hash, want[:]) {
+			t.Fatal("hash != sha256(data)")
+		}
+		buf.Write(c.Data)
+	}
+	if !bytes.Equal(buf.Bytes(), data) {
+		t.Fatalf("reassembly mismatch: %d vs %d bytes", buf.Len(), len(data))
+	}
+}
+
+// TestChunker_RandomInsertion_ShiftResistance is the actual shift-
+// resistance test. It inserts a single byte at the midpoint of a
+// random stream — a true shift, not a modify-in-place — and asserts
+// that few new chunks are introduced. This is the property that
+// makes content-defined chunking valuable for incremental backups
+// of files that grow at the front (e.g. log files prepended to).
+func TestChunker_RandomInsertion_ShiftResistance(t *testing.T) {
+	const size = 16 << 20
+	data := randomBytes(t, size, 0xC0DEFEED)
+
+	mid := size / 2
+	mod := make([]byte, 0, size+1)
+	mod = append(mod, data[:mid]...)
+	mod = append(mod, 0xFF)
+	mod = append(mod, data[mid:]...)
+
+	a, err := ChunkAll(bytes.NewReader(data))
+	if err != nil {
+		t.Fatal(err)
+	}
+	b, err := ChunkAll(bytes.NewReader(mod))
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	original := map[string]struct{}{}
+	for _, c := range a {
+		original[string(c.Hash)] = struct{}{}
+	}
+
+	// Allow up to ~3 new chunks: the chunk straddling the insertion
+	// point plus its immediate neighbors. More than that means the
+	// algorithm is failing to re-synchronize after the shift.
+	maxNew := 3
+	newChunks := 0
+	for _, c := range b {
+		if _, ok := original[string(c.Hash)]; !ok {
+			newChunks++
+		}
+	}
+	if newChunks > maxNew {
+		t.Fatalf("insertion shift produced %d new chunks (max %d): "+
+			"FastCDC is not re-synchronizing", newChunks, maxNew)
+	}
+	if len(b) < 4 {
+		t.Fatalf("expected multiple chunks after insertion, got %d", len(b))
+	}
 }

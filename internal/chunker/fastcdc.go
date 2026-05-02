@@ -56,6 +56,19 @@ type Chunk struct {
 //
 // The caller owns the returned Data slices; they will not be aliased
 // to subsequent chunker state.
+//
+// MEMORY CEILING: ChunkAll holds every chunk in memory simultaneously
+// (~1 MiB each). For an N-byte file the resident set is O(N). This is
+// fine for manifests, indexes, and small files but will OOM on real
+// backup workloads (multi-GiB databases, photo libraries, etc.).
+//
+// TODO(phase-5): land a streaming variant
+//
+//	func ChunkStream(r io.Reader, fn func(Chunk) error) error
+//
+// where each chunk is delivered to the callback for hash+encrypt+upload
+// before the next is read. The streaming variant can avoid the per-call
+// copy because the callback contract bounds the slice's lifetime.
 func ChunkAll(r io.Reader) ([]Chunk, error) {
 	c, err := fastcdc.NewChunker(r, fastcdc.Options{
 		AverageSize: avgChunkSize,
