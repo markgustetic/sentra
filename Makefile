@@ -1,4 +1,4 @@
-.PHONY: build test lint fmt vet tidy clean
+.PHONY: build test integration lint fmt vet tidy clean
 
 GO ?= go
 BIN := bin/sentra
