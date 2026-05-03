@@ -279,6 +279,45 @@ func TestInit_AcceptsBucketFlag(t *testing.T) {
 	}
 }
 
+// TestInit_EnvPassphraseSkipsPrompt verifies the production wiring's
+// contract: when SENTRA_PASSPHRASE is set, the passphrase resolver
+// short-circuits to that value and never invokes the interactive
+// prompt. We assert this by passing a panicking-prompt fake — if the
+// prompt fires, the test would crash.
+//
+// This test stands in for "scripts can run sentra non-interactively
+// when SENTRA_PASSPHRASE is set", which is the user-facing contract
+// of issue I1.
+func TestInit_EnvPassphraseSkipsPrompt(t *testing.T) {
+	chDir(t, t.TempDir())
+	t.Setenv("SENTRA_PASSPHRASE", "from-env-1234")
+	store := blobstore.NewMemory()
+	deps := InitDeps{
+		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		// Production builds the Passphrase callback by calling
+		// config.Resolve under the hood. We exercise the same wiring
+		// here: a Resolve call that would fall through to the prompt
+		// if env weren't set must NOT call the prompt when env IS set.
+		Passphrase: func() ([]byte, error) {
+			return config.Resolve(config.ResolveOptions{
+				Prompt: func() ([]byte, error) {
+					panic("prompt should not be called when SENTRA_PASSPHRASE is set")
+				},
+			})
+		},
+		Stdout: io.Discard,
+	}
+	cmd := NewInit(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--bucket", "test"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+}
+
 // TestInit_ForceMergesExistingConfig with --force re-bootstraps the
 // repo using the existing sentra.yaml as the base for the store
 // settings (so the user doesn't have to re-pass every flag). New
