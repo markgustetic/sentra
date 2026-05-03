@@ -38,18 +38,21 @@ func newTestProvider(t *testing.T, server *httptest.Server, model string) *anthr
 	}
 }
 
-// TestAnthropic_RequiresAPIKey: NewAnthropic with no APIKey and no env
-// var should return a clear error rather than silently producing a
-// client that 401s on every request.
-func TestAnthropic_RequiresAPIKey(t *testing.T) {
+// TestAnthropic_RequiresCredential: NewAnthropic with no APIKey and
+// no env var should return a clear error rather than silently
+// producing a client that 401s on every request.
+func TestAnthropic_RequiresCredential(t *testing.T) {
 	t.Setenv("ANTHROPIC_API_KEY", "")
 	t.Setenv("ANTHROPIC_AUTH_TOKEN", "")
 	_, err := NewAnthropic(AnthropicConfig{Model: "claude-sonnet-4-6"})
 	if err == nil {
-		t.Fatal("NewAnthropic with no API key returned nil error")
+		t.Fatal("NewAnthropic with no credential returned nil error")
 	}
-	if !strings.Contains(strings.ToLower(err.Error()), "api key") {
-		t.Errorf("error should mention API key, got: %v", err)
+	msg := strings.ToLower(err.Error())
+	// Error should help the user understand which env vars to set.
+	if !strings.Contains(msg, "credential") &&
+		!strings.Contains(msg, "anthropic_api_key") {
+		t.Errorf("error should mention credential or env var, got: %v", err)
 	}
 }
 

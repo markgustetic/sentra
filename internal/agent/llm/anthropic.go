@@ -75,15 +75,15 @@ func NewAnthropic(cfg AnthropicConfig) (Provider, error) {
 		return nil, errors.New("llm: AnthropicConfig.Model is required")
 	}
 
-	apiKey := cfg.APIKey
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_API_KEY")
-	}
-	if apiKey == "" {
-		apiKey = os.Getenv("ANTHROPIC_AUTH_TOKEN")
-	}
-	if apiKey == "" {
-		return nil, errors.New("llm: Anthropic API key not set (provide AnthropicConfig.APIKey or ANTHROPIC_API_KEY)")
+	// Credential resolution: prefer cfg.APIKey when set; otherwise let
+	// the SDK's DefaultClientOptions read ANTHROPIC_API_KEY (sent as
+	// X-Api-Key) or ANTHROPIC_AUTH_TOKEN (sent as Authorization Bearer)
+	// and pick the right header for each. Fast-fail if no credential
+	// is present so callers see a clean error instead of a runtime 401.
+	if cfg.APIKey == "" &&
+		os.Getenv("ANTHROPIC_API_KEY") == "" &&
+		os.Getenv("ANTHROPIC_AUTH_TOKEN") == "" {
+		return nil, errors.New("llm: Anthropic credential not set (provide AnthropicConfig.APIKey, ANTHROPIC_API_KEY, or ANTHROPIC_AUTH_TOKEN)")
 	}
 
 	mt := cfg.MaxTokens
@@ -91,7 +91,11 @@ func NewAnthropic(cfg AnthropicConfig) (Provider, error) {
 		mt = defaultMaxTokens
 	}
 
-	client := anthropic.NewClient(option.WithAPIKey(apiKey))
+	var opts []option.RequestOption
+	if cfg.APIKey != "" {
+		opts = append(opts, option.WithAPIKey(cfg.APIKey))
+	}
+	client := anthropic.NewClient(opts...)
 	return &anthropicProvider{
 		client:    &client,
 		model:     cfg.Model,
@@ -258,6 +262,10 @@ func validateMessages(msgs []Message) error {
 //   - HTTP errors (4xx/5xx) are surfaced via stream.Err() too.
 //   - Malformed input_json buffers (rare — only happens if the model
 //     emits non-JSON) are returned as a wrapped error.
+//   - On any error during streaming, the accumulated text is returned
+//     but tool calls are NOT finalized (they're parsed only if the
+//     stream completes cleanly). Callers that want partial tool-call
+//     visibility must run a successful Generate.
 func (p *anthropicProvider) Generate(ctx context.Context, sys string, msgs []Message, tools []Tool, stream chan<- string) ([]ToolCall, string, error) {
 	if err := validateMessages(msgs); err != nil {
 		return nil, "", err
