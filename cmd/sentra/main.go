@@ -58,6 +58,13 @@ func main() {
 	}
 	root.AddCommand(cli.NewRestore(restoreDeps))
 
+	diffDeps := cli.DiffDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptOpenPassphrase,
+		Stdout:     os.Stdout,
+	}
+	root.AddCommand(cli.NewDiff(diffDeps))
+
 	if err := root.Execute(); err != nil {
 		// cobra prints the error itself when SilenceErrors is false;
 		// we just need to propagate the non-zero exit so scripts can
