@@ -2,6 +2,7 @@ package ui
 
 import (
 	"fmt"
+	"sync"
 
 	"github.com/charmbracelet/bubbles/progress"
 	tea "github.com/charmbracelet/bubbletea"
@@ -20,6 +21,13 @@ import (
 //     dispatches the returned tea.Cmd through its Update loop so
 //     the bar animates smoothly between updates.
 type ByteProgress struct {
+	// mu guards every field below it. ByteProgress is shared between
+	// the goroutine that calls Add (typically a walker worker pool
+	// inside repo.CreateSnapshot) and the goroutine that calls
+	// Render to repaint the bar to stderr. The mutex is what makes
+	// the ProgressReporter contract's "safe for concurrent calls"
+	// promise true for the inline-CLI implementation.
+	mu       sync.Mutex
 	progress progress.Model
 	total    int64
 	done     int64
@@ -42,8 +50,11 @@ func NewByteProgress(total int64) *ByteProgress {
 // done is clamped to [0, total]. If total is zero, the bar is set to
 // 100% regardless of done.
 func (p *ByteProgress) SetDone(done int64) tea.Cmd {
+	p.mu.Lock()
 	p.done = done
-	return p.progress.SetPercent(p.percent())
+	pct := p.percentLocked()
+	p.mu.Unlock()
+	return p.progress.SetPercent(pct)
 }
 
 // Render returns the formatted progress string. Layout:
@@ -53,21 +64,36 @@ func (p *ByteProgress) SetDone(done int64) tea.Cmd {
 // The percentage in the trailing parens is integer-rounded; the bar
 // itself includes its own continuous percentage from bubbles. We use
 // integer percent here so smoke tests have a stable substring.
+//
+// Render is the single place that touches the underlying bubbles
+// progress.Model — that model isn't concurrency-safe, so Add only
+// updates the byte counters and we drive the model from Render
+// instead. Inline-mode callers paint from one goroutine (the
+// ticker), so this is fine; tea-mode callers should drive the model
+// through SetDone in their Update loop.
 func (p *ByteProgress) Render() string {
-	pct := p.percent()
+	p.mu.Lock()
+	pct := p.percentLocked()
+	done := p.done
+	total := p.total
+	p.mu.Unlock()
+	// Discard the returned tea.Cmd — inline callers don't have an
+	// Update loop. The model still advances its internal state for
+	// the next ViewAs call, which is what matters here.
+	_ = p.progress.SetPercent(pct)
 	bar := p.progress.ViewAs(pct)
 	return fmt.Sprintf("%s %s / %s (%d%%)",
 		bar,
-		FormatBytes(p.done),
-		FormatBytes(p.total),
+		FormatBytes(done),
+		FormatBytes(total),
 		int(pct*100+0.5),
 	)
 }
 
-// percent returns the fraction of work done in [0, 1]. Zero total is
-// treated as complete (1.0) so the rendered output reads sensibly
-// instead of NaN'ing through fmt.
-func (p *ByteProgress) percent() float64 {
+// percentLocked returns the fraction of work done in [0, 1]. Zero
+// total is treated as complete (1.0) so the rendered output reads
+// sensibly instead of NaN'ing through fmt. Caller must hold p.mu.
+func (p *ByteProgress) percentLocked() float64 {
 	if p.total <= 0 {
 		return 1.0
 	}

@@ -63,14 +63,23 @@ func (r *RecordingReporter) Snapshot() (total, done int64, events int) {
 // Total binds *ByteProgress to the ProgressReporter interface so a
 // CLI command can pass it to repo.CreateSnapshot directly.
 func (p *ByteProgress) Total(n int64) {
+	p.mu.Lock()
 	p.total = n
+	p.mu.Unlock()
 }
 
 // Add binds *ByteProgress to the ProgressReporter interface. It
-// applies a positive delta to the done count and updates the
-// underlying bubbles progress model. The returned tea.Cmd is
-// discarded in inline mode; tea-mode callers should call SetDone
-// directly instead so they receive the cmd.
+// applies a positive delta to the done count under the mutex; the
+// underlying bubbles progress model is NOT touched here because
+// progress.Model.SetPercent is not concurrency-safe and Add is
+// called from the walker's worker pool. The bar is repainted at
+// Render time, which inline mode calls from a single ticker
+// goroutine — the only place SetPercent is safely callable.
+//
+// Concurrent calls are safe: the load + store of done is serialized
+// under p.mu so two walker workers never observe a torn value.
 func (p *ByteProgress) Add(delta int64) {
-	p.SetDone(p.done + delta)
+	p.mu.Lock()
+	p.done += delta
+	p.mu.Unlock()
 }

@@ -35,6 +35,14 @@ func main() {
 	}
 	root.AddCommand(cli.NewInit(initDeps))
 
+	backupDeps := cli.BackupDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptOpenPassphrase,
+		Stdout:     os.Stdout,
+		Stderr:     os.Stderr,
+	}
+	root.AddCommand(cli.NewBackup(backupDeps))
+
 	if err := root.Execute(); err != nil {
 		// cobra prints the error itself when SilenceErrors is false;
 		// we just need to propagate the non-zero exit so scripts can
@@ -65,4 +73,12 @@ func newS3Store(ctx context.Context, cfg *config.Config) (blobstore.Store, error
 // friction of a confirm prompt is the right call.
 func promptInitPassphrase() ([]byte, error) {
 	return ui.PromptPassphraseWithConfirm("Set repository passphrase", minPassphraseLen)
+}
+
+// promptOpenPassphrase is the passphrase callback used by every
+// post-init command (backup, snapshots, restore, diff). It does NOT
+// re-prompt for confirmation — that's only useful when *setting* a
+// passphrase. A typo just means the repo won't open.
+func promptOpenPassphrase() ([]byte, error) {
+	return ui.PromptPassphrase("Repository passphrase", 0)
 }
