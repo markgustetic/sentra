@@ -43,7 +43,7 @@ func TestRenderTable_BasicShape(t *testing.T) {
 func TestRenderTable_HandlesShortRow(t *testing.T) {
 	headers := []string{"A", "B", "C", "D"}
 	rows := [][]string{
-		{"x", "y"},          // 2 cells, header has 4
+		{"x", "y"},           // 2 cells, header has 4
 		{"p", "q", "r", "s"}, // matching length
 	}
 
