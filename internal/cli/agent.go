@@ -401,9 +401,29 @@ func dispatchAction(ctx context.Context, r *repo.Repo, rec agent.Recommendation,
 		return nil
 
 	case "add_to_ignore":
-		// Append the target to .sentraignore (relative to cwd). We
-		// open with O_APPEND so concurrent invocations don't truncate
-		// each other's writes; the file is created if missing.
+		// Append the target to .sentraignore (relative to cwd) only
+		// when it isn't already present. Reading existing entries into
+		// a set keeps repeated runs idempotent — without dedupe, the
+		// file would accumulate duplicates each time the model
+		// re-recommends the same pattern.
+		//
+		// Comments and blank lines are ignored when building the set;
+		// trailing whitespace and CRLF endings are trimmed before
+		// comparing so a manually-edited file with `\r\n` or padding
+		// still matches.
+		target := strings.TrimSpace(rec.Target)
+		if target == "" {
+			fmt.Fprintf(out, "  - %s: empty target, skipped\n", rec.ID)
+			return nil
+		}
+		existing, err := readIgnorePatterns(".sentraignore")
+		if err != nil {
+			return fmt.Errorf("read .sentraignore: %w", err)
+		}
+		if _, dup := existing[target]; dup {
+			fmt.Fprintf(out, "  - %s: %q already in .sentraignore, skipped\n", rec.ID, target)
+			return nil
+		}
 		f, err := os.OpenFile(".sentraignore", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
 		if err != nil {
 			return fmt.Errorf("open .sentraignore: %w", err)
@@ -418,10 +438,10 @@ func dispatchAction(ctx context.Context, r *repo.Repo, rec agent.Recommendation,
 				return fmt.Errorf("write .sentraignore: %w", err)
 			}
 		}
-		if _, err := f.WriteString(rec.Target + "\n"); err != nil {
+		if _, err := f.WriteString(target + "\n"); err != nil {
 			return fmt.Errorf("write .sentraignore: %w", err)
 		}
-		fmt.Fprintf(out, "  - %s: added %q to .sentraignore\n", rec.ID, rec.Target)
+		fmt.Fprintf(out, "  - %s: added %q to .sentraignore\n", rec.ID, target)
 		return nil
 
 	case "flag_secret":
@@ -446,6 +466,36 @@ func truncateRationale(s string, n int) string {
 		return s
 	}
 	return s[:n-3] + "..."
+}
+
+// readIgnorePatterns reads path and returns the set of trimmed
+// non-comment, non-blank lines as map keys. Used by the add_to_ignore
+// dispatch to dedupe against patterns the user (or a previous agent
+// run) already added.
+//
+// Each line is stripped of trailing CR (handles CRLF endings from
+// Windows-edited files) and surrounding whitespace before insertion;
+// '#'-prefixed lines are ignored as comments. Returns an empty map
+// (not nil) when the file does not exist so callers can do a direct
+// membership lookup without a nil check.
+func readIgnorePatterns(path string) (map[string]struct{}, error) {
+	out := make(map[string]struct{})
+	body, err := os.ReadFile(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return out, nil
+		}
+		return nil, err
+	}
+	for _, line := range strings.Split(string(body), "\n") {
+		// Strip CR for CRLF, then trim whitespace.
+		clean := strings.TrimSpace(strings.TrimRight(line, "\r"))
+		if clean == "" || strings.HasPrefix(clean, "#") {
+			continue
+		}
+		out[clean] = struct{}{}
+	}
+	return out, nil
 }
 
 // HuhAgentConfirm is the production Confirm callback for the agent's

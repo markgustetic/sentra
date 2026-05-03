@@ -458,6 +458,129 @@ func TestAgentScan_ApplyAllowsWipeWithFlag(t *testing.T) {
 	}
 }
 
+// TestAgentScan_AddToIgnore_AppendsNewPattern: starting from no
+// .sentraignore (or an empty one), an add_to_ignore action writes
+// the target as a single line.
+func TestAgentScan_AddToIgnore_AppendsNewPattern(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "cache_dirs", Severity: "warn", Target: "build/",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"add_to_ignore","target":"build/","severity":"warn","rationale":"build artifacts"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	body, err := os.ReadFile(".sentraignore")
+	if err != nil {
+		t.Fatalf("read .sentraignore: %v", err)
+	}
+	got := strings.Split(strings.TrimSpace(string(body)), "\n")
+	if len(got) != 1 || got[0] != "build/" {
+		t.Errorf(".sentraignore should contain exactly 'build/', got %q", body)
+	}
+}
+
+// TestAgentScan_AddToIgnore_SkipsExistingPattern: when the target
+// pattern is ALREADY in the file, the action must NOT append a
+// duplicate. Repeated runs over the same recommendation must converge.
+func TestAgentScan_AddToIgnore_SkipsExistingPattern(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	// Pre-populate .sentraignore with the exact pattern the action
+	// will recommend, so the test exercises the dedupe path.
+	if err := os.WriteFile(".sentraignore", []byte("node_modules/\n"), 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "cache_dirs", Severity: "warn", Target: "node_modules/",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"add_to_ignore","target":"node_modules/","severity":"warn","rationale":"cache"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	body, err := os.ReadFile(".sentraignore")
+	if err != nil {
+		t.Fatalf("read .sentraignore: %v", err)
+	}
+	// Count non-empty trimmed lines that match the target.
+	count := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.TrimSpace(line) == "node_modules/" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one 'node_modules/' line, got %d. Full body: %q", count, body)
+	}
+}
+
+// TestAgentScan_AddToIgnore_HonorsTrailingWhitespace: existing entries
+// may have trailing whitespace, CRLF line endings, or pure spaces;
+// after trimming, an exact-pattern match is still a no-op.
+func TestAgentScan_AddToIgnore_HonorsTrailingWhitespace(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	// Write the existing entry with trailing whitespace and a CRLF
+	// line ending. The dedupe logic must trim before comparing.
+	if err := os.WriteFile(".sentraignore", []byte("node_modules/   \r\n"), 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "cache_dirs", Severity: "warn", Target: "node_modules/",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"add_to_ignore","target":"node_modules/","severity":"warn","rationale":"cache"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	body, err := os.ReadFile(".sentraignore")
+	if err != nil {
+		t.Fatalf("read .sentraignore: %v", err)
+	}
+	count := 0
+	for _, line := range strings.Split(string(body), "\n") {
+		if strings.TrimSpace(strings.TrimRight(line, "\r")) == "node_modules/" {
+			count++
+		}
+	}
+	if count != 1 {
+		t.Errorf("expected exactly one 'node_modules/' line after dedupe of whitespace-padded existing entry, got %d. Body: %q",
+			count, body)
+	}
+}
+
 // TestAgentScan_BudgetExhausted_Error: the orchestrator surfaces
 // ErrBudgetExhausted; the CLI should propagate it as an error rather
 // than silently exiting clean.
