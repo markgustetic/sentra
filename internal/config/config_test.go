@@ -1,0 +1,177 @@
+package config
+
+import (
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+)
+
+const fixtureYAML = `
+repo:
+  s3:
+    bucket: my-backups
+    prefix: sentra/
+    region: us-west-2
+    profile: default
+    endpoint_url: ""
+agent:
+  provider: anthropic
+  model: claude-sonnet-4-6
+  max_findings_to_llm: 50
+backup:
+  ignore_file: .sentraignore
+  exclude_caches: true
+retention:
+  keep_last: 10
+  keep_daily: 7
+  keep_weekly: 4
+  keep_monthly: 6
+`
+
+func writeYAML(t *testing.T, dir, body string) string {
+	t.Helper()
+	path := filepath.Join(dir, "sentra.yaml")
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write fixture: %v", err)
+	}
+	return path
+}
+
+// TestLoad_Fixture parses a complete fixture and asserts every field
+// makes the round trip from YAML to the struct fields.
+func TestLoad_Fixture(t *testing.T) {
+	path := writeYAML(t, t.TempDir(), fixtureYAML)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "my-backups" {
+		t.Errorf("Bucket: got %q, want my-backups", cfg.Repo.S3.Bucket)
+	}
+	if cfg.Repo.S3.Prefix != "sentra/" {
+		t.Errorf("Prefix: got %q", cfg.Repo.S3.Prefix)
+	}
+	if cfg.Repo.S3.Region != "us-west-2" {
+		t.Errorf("Region: got %q", cfg.Repo.S3.Region)
+	}
+	if cfg.Repo.S3.Profile != "default" {
+		t.Errorf("Profile: got %q", cfg.Repo.S3.Profile)
+	}
+	if cfg.Repo.S3.EndpointURL != "" {
+		t.Errorf("EndpointURL: got %q", cfg.Repo.S3.EndpointURL)
+	}
+	if cfg.Agent.Provider != "anthropic" {
+		t.Errorf("Provider: got %q", cfg.Agent.Provider)
+	}
+	if cfg.Agent.Model != "claude-sonnet-4-6" {
+		t.Errorf("Model: got %q", cfg.Agent.Model)
+	}
+	if cfg.Agent.MaxFindingsToLLM != 50 {
+		t.Errorf("MaxFindingsToLLM: got %d", cfg.Agent.MaxFindingsToLLM)
+	}
+	if cfg.Backup.IgnoreFile != ".sentraignore" {
+		t.Errorf("IgnoreFile: got %q", cfg.Backup.IgnoreFile)
+	}
+	if !cfg.Backup.ExcludeCaches {
+		t.Errorf("ExcludeCaches: got false")
+	}
+	if cfg.Retention.KeepLast != 10 {
+		t.Errorf("KeepLast: got %d", cfg.Retention.KeepLast)
+	}
+	if cfg.Retention.KeepDaily != 7 {
+		t.Errorf("KeepDaily: got %d", cfg.Retention.KeepDaily)
+	}
+	if cfg.Retention.KeepWeekly != 4 {
+		t.Errorf("KeepWeekly: got %d", cfg.Retention.KeepWeekly)
+	}
+	if cfg.Retention.KeepMonthly != 6 {
+		t.Errorf("KeepMonthly: got %d", cfg.Retention.KeepMonthly)
+	}
+}
+
+// TestLoad_EnvOverlay verifies SENTRA_* env vars override fields from the
+// YAML file. Documented contract: the env vars use double-underscore as a
+// nesting separator (so SENTRA_REPO__S3__BUCKET maps to repo.s3.bucket).
+// We start with a fixture that says "my-backups" and override with the env.
+func TestLoad_EnvOverlay(t *testing.T) {
+	path := writeYAML(t, t.TempDir(), fixtureYAML)
+	t.Setenv("SENTRA_REPO__S3__BUCKET", "override-bucket")
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "override-bucket" {
+		t.Errorf("env override failed: got %q, want override-bucket", cfg.Repo.S3.Bucket)
+	}
+	// Other fields must still come from the file.
+	if cfg.Repo.S3.Region != "us-west-2" {
+		t.Errorf("Region clobbered: got %q", cfg.Repo.S3.Region)
+	}
+}
+
+// TestLoad_Missing returns Defaults() with no error when the file does
+// not exist. This is the path used when sentra.yaml hasn't been
+// initialised yet.
+func TestLoad_Missing(t *testing.T) {
+	cfg, err := Load(filepath.Join(t.TempDir(), "no-such-file.yaml"))
+	if err != nil {
+		t.Fatalf("expected no error for missing file, got %v", err)
+	}
+	def := Defaults()
+	if cfg.Backup.IgnoreFile != def.Backup.IgnoreFile {
+		t.Errorf("IgnoreFile: got %q, want default %q", cfg.Backup.IgnoreFile, def.Backup.IgnoreFile)
+	}
+	if !cfg.Backup.ExcludeCaches {
+		t.Errorf("default ExcludeCaches should be true")
+	}
+	if cfg.Agent.MaxFindingsToLLM != 50 {
+		t.Errorf("MaxFindingsToLLM default: got %d", cfg.Agent.MaxFindingsToLLM)
+	}
+	if cfg.Retention.KeepLast != 10 {
+		t.Errorf("KeepLast default: got %d", cfg.Retention.KeepLast)
+	}
+	if cfg.Retention.KeepDaily != 7 {
+		t.Errorf("KeepDaily default: got %d", cfg.Retention.KeepDaily)
+	}
+	if cfg.Retention.KeepWeekly != 4 {
+		t.Errorf("KeepWeekly default: got %d", cfg.Retention.KeepWeekly)
+	}
+	if cfg.Retention.KeepMonthly != 6 {
+		t.Errorf("KeepMonthly default: got %d", cfg.Retention.KeepMonthly)
+	}
+}
+
+// TestLoad_Malformed surfaces a parse error for invalid YAML rather
+// than silently returning Defaults().
+func TestLoad_Malformed(t *testing.T) {
+	path := writeYAML(t, t.TempDir(), "this is: : not yaml: : :")
+	_, err := Load(path)
+	if err == nil {
+		t.Fatal("expected error from malformed YAML, got nil")
+	}
+	if !strings.Contains(err.Error(), "yaml") && !strings.Contains(err.Error(), "parse") {
+		// Don't be too precious about the exact message — koanf
+		// surfaces its underlying yaml.v3 errors which can change.
+		t.Logf("error message: %v", err)
+	}
+}
+
+// TestDefaults gives the documented set of defaults. Any change here is
+// a user-visible change and should be deliberate.
+func TestDefaults(t *testing.T) {
+	d := Defaults()
+	if d.Backup.IgnoreFile != ".sentraignore" {
+		t.Errorf("IgnoreFile: got %q", d.Backup.IgnoreFile)
+	}
+	if !d.Backup.ExcludeCaches {
+		t.Errorf("ExcludeCaches: got false, want true")
+	}
+	if d.Agent.MaxFindingsToLLM != 50 {
+		t.Errorf("MaxFindingsToLLM: got %d", d.Agent.MaxFindingsToLLM)
+	}
+	if d.Retention.KeepLast != 10 || d.Retention.KeepDaily != 7 ||
+		d.Retention.KeepWeekly != 4 || d.Retention.KeepMonthly != 6 {
+		t.Errorf("retention defaults wrong: %+v", d.Retention)
+	}
+}
