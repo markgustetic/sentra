@@ -77,6 +77,14 @@ func main() {
 	}
 	root.AddCommand(cli.NewDiff(diffDeps))
 
+	pruneDeps := cli.PruneDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptOpenPassphrase(rootFlags),
+		Stdout:     os.Stdout,
+		Confirm:    cli.HuhConfirm,
+	}
+	root.AddCommand(cli.NewPrune(pruneDeps))
+
 	if err := root.Execute(); err != nil {
 		// cobra prints the error itself when SilenceErrors is false;
 		// we just need to propagate the non-zero exit so scripts can
