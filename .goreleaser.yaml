@@ -1,0 +1,170 @@
+# goreleaser v2 config for sentra.
+#
+# Local snapshot:
+#   goreleaser release --snapshot --clean \
+#     --skip=publish,sign,sbom,docker
+#
+# Real release runs in CI on `v*` tag push (.github/workflows/release.yml).
+version: 2
+
+project_name: sentra
+
+before:
+  hooks:
+    - go mod tidy
+
+builds:
+  - id: sentra
+    main: ./cmd/sentra
+    binary: sentra
+    env:
+      - CGO_ENABLED=0
+    flags:
+      - -trimpath
+    ldflags:
+      - -s -w
+      - -X main.version={{ .Version }}
+      - -X main.commit={{ .Commit }}
+      - -X main.date={{ .Date }}
+    goos:
+      - linux
+      - darwin
+      - windows
+    goarch:
+      - amd64
+      - arm64
+    ignore:
+      - goos: windows
+        goarch: arm64
+
+archives:
+  - id: sentra
+    ids:
+      - sentra
+    name_template: >-
+      {{ .ProjectName }}_{{ .Version }}_
+      {{- if eq .Os "darwin" }}macos
+      {{- else }}{{ .Os }}{{ end }}_
+      {{- if eq .Arch "amd64" }}x86_64
+      {{- else }}{{ .Arch }}{{ end }}
+    formats:
+      - tar.gz
+    format_overrides:
+      - goos: windows
+        formats:
+          - zip
+    files:
+      - LICENSE
+      - README.md
+      - docs/**/*
+
+checksum:
+  name_template: checksums.txt
+  algorithm: sha256
+
+snapshot:
+  version_template: "{{ incpatch .Version }}-snapshot-{{ .ShortCommit }}"
+
+changelog:
+  use: github
+  sort: asc
+  groups:
+    - title: Features
+      regexp: "^.*feat[(\\w)]*:+.*$"
+      order: 0
+    - title: Bug fixes
+      regexp: "^.*fix[(\\w)]*:+.*$"
+      order: 1
+    - title: Refactoring
+      regexp: "^.*refactor[(\\w)]*:+.*$"
+      order: 2
+    - title: Documentation
+      regexp: "^.*docs[(\\w)]*:+.*$"
+      order: 3
+    - title: Other
+      order: 999
+  filters:
+    exclude:
+      - "^chore:"
+      - "^test:"
+      - "^ci:"
+      - Merge pull request
+      - Merge branch
+
+release:
+  github:
+    owner: markgustetic
+    name: sentra
+  prerelease: auto
+  draft: false
+  name_template: "v{{ .Version }}"
+  header: |
+    # sentra {{ .Tag }}
+
+    Encrypted, deduplicated, agent-aware backups for S3 and S3-compatible
+    storage. See the [README](https://github.com/markgustetic/sentra) and
+    [QUICKSTART](https://github.com/markgustetic/sentra/blob/main/docs/QUICKSTART.md)
+    to get started.
+
+  footer: |
+    ---
+    Container image: `ghcr.io/markgustetic/sentra:{{ .Version }}`
+    Homebrew: `brew install markgustetic/tap/sentra`
+
+# Homebrew tap formula. The tap repo (markgustetic/homebrew-tap) is updated
+# automatically using the HOMEBREW_TAP_TOKEN PAT.
+homebrew_casks:
+  - name: sentra
+    ids:
+      - sentra
+    repository:
+      owner: markgustetic
+      name: homebrew-tap
+      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+    directory: Casks
+    homepage: "https://github.com/markgustetic/sentra"
+    description: "Encrypted, deduplicated, agent-aware backups for S3"
+    license: "MIT"
+
+dockers_v2:
+  - id: sentra
+    ids:
+      - sentra
+    images:
+      - "ghcr.io/markgustetic/sentra"
+    tags:
+      - "{{ .Version }}"
+      - latest
+    dockerfile: Dockerfile
+    platforms:
+      - linux/amd64
+      - linux/arm64
+    labels:
+      org.opencontainers.image.title: "{{ .ProjectName }}"
+      org.opencontainers.image.description: "Encrypted, deduplicated, agent-aware backups for S3"
+      org.opencontainers.image.url: "https://github.com/markgustetic/sentra"
+      org.opencontainers.image.source: "https://github.com/markgustetic/sentra"
+      org.opencontainers.image.version: "{{ .Version }}"
+      org.opencontainers.image.created: "{{ .Date }}"
+      org.opencontainers.image.revision: "{{ .FullCommit }}"
+      org.opencontainers.image.licenses: "MIT"
+
+# cosign keyless signing of the checksums file via GitHub OIDC.
+signs:
+  - cmd: cosign
+    artifacts: checksum
+    signature: "${artifact}.sig"
+    certificate: "${artifact}.pem"
+    args:
+      - sign-blob
+      - "--output-certificate=${certificate}"
+      - "--output-signature=${signature}"
+      - "${artifact}"
+      - "--yes"
+
+# SBOMs via syft. One per archive (covers the binary + bundled docs).
+sboms:
+  - id: archive
+    artifacts: archive
+    documents:
+      - "${artifact}.sbom.json"
