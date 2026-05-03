@@ -230,10 +230,16 @@ func (a *AgentView) spawnScan() tea.Cmd {
 // Cleanup cancels any in-flight scan. Safe to call even when no
 // scan is running; idempotent. The App invokes this on quit so the
 // LLM call doesn't outlive the TUI process by a network round-trip.
-func (a *AgentView) Cleanup() {
+//
+// Value receiver (not pointer) so the App's cleanup() type assertion
+// works against the tea.Model-typed field directly. context.CancelFunc
+// is a function value — copying the AgentView still copies the same
+// underlying closure pointer, so calling cancel on the copy cancels
+// the original context. We don't bother nilling a.cancel here for
+// the same reason: the value's copy is throwaway.
+func (a AgentView) Cleanup() {
 	if a.cancel != nil {
 		a.cancel()
-		a.cancel = nil
 	}
 }
 

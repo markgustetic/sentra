@@ -1,10 +1,14 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/markgustetic/sentra/internal/agent"
 )
 
 // newTestApp constructs an App with no repo or provider — every view
@@ -100,6 +104,45 @@ func TestApp_WindowSizeMsg(t *testing.T) {
 	got := updated.(App)
 	if got.width != 100 || got.height != 40 {
 		t.Errorf("size: got (%d,%d), want (100,40)", got.width, got.height)
+	}
+}
+
+// TestApp_QuitCancelsAgentScan asserts that the App's quit handler
+// invokes AgentView.Cleanup, which cancels any in-flight scan's
+// context. Without this, pressing q during an LLM streaming call
+// leaks the network round-trip past process exit.
+//
+// We don't construct a real LLM-backed AgentView; we install a
+// runner that blocks on its ctx and observes the cancellation.
+func TestApp_QuitCancelsAgentScan(t *testing.T) {
+	app := newTestApp(t)
+
+	// Build an AgentView whose runner blocks until its ctx is cancelled,
+	// then drive it through Update directly (the 's' start-scan key is
+	// intercepted by the App and routed to the snapshots view, so we
+	// have to start the scan at the sub-view level).
+	cancelled := make(chan struct{}, 1)
+	agentView := NewAgentViewWithRunner(Deps{}, func(ctx context.Context, _ chan<- string) ([]agent.Recommendation, error) {
+		<-ctx.Done()
+		cancelled <- struct{}{}
+		return nil, ctx.Err()
+	})
+	updated, _ := agentView.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	// The goroutine started inside spawnScan and is now blocking on
+	// our runner's <-ctx.Done(). We do NOT invoke the returned cmd
+	// here — that's the waitForAgentEvent select, which would block
+	// the test goroutine waiting for a token that never comes.
+
+	// Install the post-scan-started agent view back into the App and
+	// then send the App `q` to trigger cleanup().
+	app.agent = updated
+	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+
+	select {
+	case <-cancelled:
+		// Runner observed ctx cancellation — good.
+	case <-time.After(2 * time.Second):
+		t.Fatal("agent runner did not see ctx cancel after q; cleanup() failed")
 	}
 }
 

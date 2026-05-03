@@ -270,15 +270,15 @@ func (m App) renderBottomBar() string {
 
 // cleanup releases resources held by sub-views. Today only AgentView
 // needs it (in-flight scan ctx-cancel); other sub-views are stateless.
-// We type-assert against an internal interface so we can quietly skip
-// sub-views that don't need cleanup.
+// We type-assert each sub-view against an internal interface so we
+// can quietly skip ones that don't need cleanup.
 func (m App) cleanup() {
 	type cleaner interface{ Cleanup() }
-	// AgentView is the only sub-view with cleanup needs as of v1.
-	// Type-assertion is *AgentView because Cleanup is a pointer
-	// receiver — but App stores models as tea.Model values, so we
-	// need to take the address of the field.
-	if c, ok := any(&m.agent).(cleaner); ok {
+	// AgentView.Cleanup is a value-receiver method, so the AgentView
+	// value stored in m.agent's tea.Model interface satisfies the
+	// cleaner interface directly. Sub-views without Cleanup are
+	// quietly skipped.
+	if c, ok := m.agent.(cleaner); ok {
 		c.Cleanup()
 	}
 }

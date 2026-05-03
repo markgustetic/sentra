@@ -270,7 +270,7 @@ func (r *Repo) captureFile(
 	state *snapState,
 	progress ui.ProgressReporter,
 ) (*FileEntry, int64, error) {
-	// TODO: streaming for large files — chunker.ChunkAll buffers
+	// Future: streaming for large files — chunker.ChunkAll buffers
 	// the entire file in memory (one ~1 MiB Chunk per slot). For
 	// multi-GiB files we want a chunker.ChunkStream variant that
 	// hashes-encrypts-uploads each chunk before reading the next.

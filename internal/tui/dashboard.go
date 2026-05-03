@@ -35,7 +35,7 @@ type DashboardData struct {
 
 // Dashboard is the home view: four panels showing repo summary, last
 // snapshot, agent state, and a placeholder for the timeline sparkline
-// (real implementation deferred — see TODO(post-v1) below).
+// (real implementation deferred — see Future below).
 type Dashboard struct {
 	deps Deps
 	data DashboardData
@@ -184,7 +184,7 @@ func (d Dashboard) renderAgentPanel() string {
 // implementation would walk snapshot byte sizes and render an inline
 // braille sparkline; that's gold-plating for v1 and is deferred.
 //
-// TODO(post-v1): replace with a proper sparkline of snapshot sizes
+// Future: replace with a proper sparkline of snapshot sizes
 // over time. Suggested approach: bucket snapshots by week, render
 // each bucket's NewBytes via the unicode block-characters scale.
 func (d Dashboard) renderTimelinePanel() string {

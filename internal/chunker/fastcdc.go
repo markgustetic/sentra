@@ -82,7 +82,7 @@ type Chunk struct {
 // fine for manifests, indexes, and small files but will OOM on real
 // backup workloads (multi-GiB databases, photo libraries, etc.).
 //
-// TODO(phase-5): land a streaming variant
+// Future: land a streaming variant
 //
 //	func ChunkStream(r io.Reader, fn func(Chunk) error) error
 //

@@ -70,7 +70,7 @@ const cachedirSignature = "Signature: 8a477f597d28d172789f06886806bc55"
 // walk surfaces as ctx.Err() (typically context.Canceled).
 //
 // Symlinks are not followed (treated as non-regular and silently
-// skipped). TODO(future): symlink policy.
+// skipped). Future: symlink policy.
 func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) error {
 	if opts.IgnoreFile == "" {
 		opts.IgnoreFile = defaultIgnoreFile
@@ -120,7 +120,7 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 				// Belt-and-braces: WalkDir.d.Type already filters
 				// non-regular entries, but a TOCTOU race could
 				// still hand us a now-symlink. Skip silently.
-				// TODO(future): symlink policy.
+				// Future: symlink policy.
 				if !info.Mode().IsRegular() {
 					continue
 				}
@@ -187,7 +187,7 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 			// entry on the worker side. The worker still re-checks
 			// after a fresh Lstat for the size/mtime fields.
 			if !d.Type().IsRegular() {
-				// TODO(future): symlink policy. For v1 we just
+				// Future: symlink policy. For v1 we just
 				// drop them.
 				return nil
 			}
