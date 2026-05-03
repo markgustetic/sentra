@@ -242,8 +242,8 @@ make integration # spins MinIO via testcontainers; Linux only
 make lint        # golangci-lint run
 ```
 
-Go 1.24+ is required. The codebase is `internal/`-only — no public Go API
-shipped in v1.
+Go 1.25+ is required (the dependency ecosystem moved past 1.24 mid-Phase 13).
+The codebase is `internal/`-only — no public Go API shipped in v1.
 
 ## Releasing
 
