@@ -3,12 +3,15 @@ package repo
 import (
 	"context"
 	"fmt"
+	"sort"
 )
 
 // DiffResult is the structured output of Repo.Diff. Each slice is a
 // list of paths from the file trees of the two snapshots being
-// compared. Sorting order is whatever the source manifests already
-// stored — callers that need a stable order should sort themselves.
+// compared, sorted lexicographically. Determinism matters because
+// (idA, idB) → DiffResult is the input to the Phase 11 agent's tool-
+// call cache; non-deterministic order would invalidate that cache on
+// every identical call.
 type DiffResult struct {
 	// Added paths are present in B but not in A.
 	Added []string
@@ -78,6 +81,14 @@ func (r *Repo) Diff(ctx context.Context, idA, idB string) (DiffResult, error) {
 			out.Removed = append(out.Removed, path)
 		}
 	}
+	// Sort all three slices so the result is byte-identical for
+	// repeated calls on the same inputs. The CLI was already sorting
+	// before printing, but downstream callers (notably the Phase 11
+	// agent) need deterministic order at the API boundary so cache
+	// hashes are stable.
+	sort.Strings(out.Added)
+	sort.Strings(out.Removed)
+	sort.Strings(out.Changed)
 	return out, nil
 }
 

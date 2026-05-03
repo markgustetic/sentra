@@ -86,6 +86,67 @@ func TestDiff_IdenticalSnapshots(t *testing.T) {
 	}
 }
 
+// TestDiff_DeterministicOrder asserts that calling Diff repeatedly on
+// the same input pair returns byte-identical slices each time. Map
+// iteration order in Go is randomized, so the previous implementation
+// happened to pass tests that pre-sorted, but the underlying repo
+// API was non-deterministic — fatal for the agent path that hashes
+// (idA, idB) → tool-result for prompt caching.
+func TestDiff_DeterministicOrder(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+	root := t.TempDir()
+	// Many entries so map iteration randomness has many degrees of
+	// freedom to expose itself.
+	for i := 0; i < 50; i++ {
+		writeFile(t, filepath.Join(root, "kept", fileN(i)), "kept")
+		writeFile(t, filepath.Join(root, "removed", fileN(i)), "rm")
+		writeFile(t, filepath.Join(root, "changed", fileN(i)), "v1")
+	}
+	a, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot A: %v", err)
+	}
+	if err := os.RemoveAll(filepath.Join(root, "removed")); err != nil {
+		t.Fatalf("removeall: %v", err)
+	}
+	for i := 0; i < 50; i++ {
+		writeFile(t, filepath.Join(root, "added", fileN(i)), "added")
+		writeFile(t, filepath.Join(root, "changed", fileN(i)), "v2 longer")
+	}
+	b, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot B: %v", err)
+	}
+
+	first, err := r.Diff(ctx, a.ID, b.ID)
+	if err != nil {
+		t.Fatalf("Diff: %v", err)
+	}
+	for i := 0; i < 9; i++ {
+		got, err := r.Diff(ctx, a.ID, b.ID)
+		if err != nil {
+			t.Fatalf("Diff iter %d: %v", i, err)
+		}
+		if !equalStrings(got.Added, first.Added) {
+			t.Fatalf("Added order changed on iter %d:\nfirst: %v\ngot:   %v", i, first.Added, got.Added)
+		}
+		if !equalStrings(got.Removed, first.Removed) {
+			t.Fatalf("Removed order changed on iter %d:\nfirst: %v\ngot:   %v", i, first.Removed, got.Removed)
+		}
+		if !equalStrings(got.Changed, first.Changed) {
+			t.Fatalf("Changed order changed on iter %d:\nfirst: %v\ngot:   %v", i, first.Changed, got.Changed)
+		}
+	}
+}
+
+// fileN is a small helper that gives 50 distinct filenames in a
+// natural-looking order (so a deterministic sort visibly differs from
+// a randomized map walk for human inspection on failure).
+func fileN(i int) string {
+	return "file-" + string(rune('a'+i%26)) + string(rune('a'+(i/26)%26)) + ".txt"
+}
+
 // TestDiff_RejectsBadID surfaces repo.validateSnapshotID for both
 // arguments — a CLI caller pasting in "../config" must not reach the
 // store with that path.
