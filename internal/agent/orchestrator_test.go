@@ -1,8 +1,11 @@
 package agent
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -294,4 +297,217 @@ func drainStream(stream <-chan string) string {
 		sb.WriteString(s)
 	}
 	return sb.String()
+}
+
+// captureFindingsHeuristic is a Heuristic that records the Input it
+// received on Run, so tests can assert on what the orchestrator
+// populated. Returns no findings of its own.
+type captureFindingsHeuristic struct {
+	gotInput heuristics.Input
+}
+
+func (c *captureFindingsHeuristic) Name() string { return "capture" }
+func (c *captureFindingsHeuristic) Run(_ context.Context, in heuristics.Input) ([]heuristics.Finding, error) {
+	c.gotInput = in
+	return nil, nil
+}
+
+// agentWithRealOrphanHeuristic builds an Agent with a real OrphanBlobs
+// heuristic and a (default) fake provider. Callers swap the provider
+// when they need scripted output; otherwise an unscripted Provider
+// will error if invoked, which is what the no-false-orphans test wants.
+func agentWithRealOrphanHeuristic(t *testing.T) (*Agent, *repo.Repo, *llm.FakeProvider) {
+	t.Helper()
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("repo init: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	registry := heuristics.NewRegistry(heuristics.NewOrphanBlobs())
+	provider := &llm.FakeProvider{}
+	return &Agent{
+		Repo:       r,
+		Heuristics: registry,
+		Provider:   provider,
+		Config: Config{
+			MaxFindingsToLLM: 50,
+			MaxToolCalls:     5,
+			Model:            "test-model",
+		},
+	}, r, provider
+}
+
+// TestScan_PopulatesLiveBlobs_NoFalseOrphans:
+// production's defaultHeuristics() includes OrphanBlobs, which treats
+// nil LiveBlobs as "empty live set" — that flags every blob in data/
+// as orphaned. The orchestrator must populate Input.LiveBlobs from
+// the repo's snapshots so a real-world scan against a freshly created
+// snapshot does NOT generate spurious orphan findings.
+//
+// We use an UNSCRIPTED FakeProvider: if the orchestrator forgot to
+// populate LiveBlobs, the heuristic emits findings, the orchestrator
+// calls the provider, and Generate fails with ErrFakeProviderExhausted.
+// That failure mode is exactly the bug we want to surface.
+func TestScan_PopulatesLiveBlobs_NoFalseOrphans(t *testing.T) {
+	a, r, provider := agentWithRealOrphanHeuristic(t)
+
+	// Build a directory with a real file and snapshot it. Every chunk
+	// the snapshot uploads MUST end up in Input.LiveBlobs, otherwise
+	// orphan_blobs flags it.
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("body for chunking"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{Tag: "test"}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// Sanity: the snapshot uploaded at least one chunk; otherwise the
+	// "no false orphans" claim is vacuous.
+	dataEntries, err := r.Store().List(context.Background(), "data/")
+	if err != nil {
+		t.Fatalf("list data: %v", err)
+	}
+	if len(dataEntries) == 0 {
+		t.Fatal("expected at least one data/ blob from the snapshot")
+	}
+
+	recs, err := a.Scan(context.Background(), src, nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("expected 0 recommendations (no findings), got %d: %+v", len(recs), recs)
+	}
+	// Provider must NOT have been called: zero findings → no LLM round trip.
+	if len(provider.Calls) != 0 {
+		t.Errorf("Provider must not be called when there are no findings, got %d calls — bug: orchestrator missing LiveBlobs caused false orphan findings",
+			len(provider.Calls))
+	}
+}
+
+// TestScan_PopulatesLiveBlobs_SurfacesRealOrphan: the orchestrator
+// must NOT mask real orphans. Set up a repo, snapshot it normally,
+// then add an extra unreferenced data/ blob directly to the store.
+// orphan_blobs should surface a finding for that key, and (since the
+// initial Generate sees that finding's payload) the provider's first
+// call must include the orphan key in the user message.
+func TestScan_PopulatesLiveBlobs_SurfacesRealOrphan(t *testing.T) {
+	a, r, _ := agentWithRealOrphanHeuristic(t)
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{Tag: "test"}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// Drop an unreferenced blob into data/ — the perfect orphan.
+	orphanKey := "data/zz/zz" + strings.Repeat("0", 62)
+	if err := r.Store().Put(context.Background(), orphanKey, bytes.NewReader([]byte("unreferenced"))); err != nil {
+		t.Fatalf("put orphan: %v", err)
+	}
+
+	provider := &llm.FakeProvider{Steps: []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"none","target":"` + orphanKey + `","severity":"warn","rationale":"orphan"}]`},
+	}}
+	a.Provider = provider
+
+	recs, err := a.Scan(context.Background(), src, nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("expected 1 recommendation surfacing the orphan, got %d: %+v", len(recs), recs)
+	}
+	if recs[0].Target != orphanKey {
+		t.Errorf("orphan target mismatch: got %s, want %s", recs[0].Target, orphanKey)
+	}
+	// And the initial user message that went to the LLM should contain
+	// the orphan key — verifies the orchestrator passed the right
+	// findings to the provider.
+	if len(provider.Calls) != 1 {
+		t.Fatalf("expected 1 provider call, got %d", len(provider.Calls))
+	}
+	hasOrphanInMsgs := false
+	for _, m := range provider.Calls[0].Msgs {
+		if strings.Contains(m.Content, orphanKey) {
+			hasOrphanInMsgs = true
+		}
+	}
+	if !hasOrphanInMsgs {
+		t.Errorf("expected the initial user message to mention orphan key %s; msgs=%+v",
+			orphanKey, provider.Calls[0].Msgs)
+	}
+
+	// The findings sent to the LLM should reflect EXACTLY ONE orphan —
+	// the one we deliberately seeded. If LiveBlobs were missing/empty,
+	// the snapshot's chunks would also surface as "orphans" and the
+	// total finding count would be > 1.
+	initialUser := ""
+	for _, m := range provider.Calls[0].Msgs {
+		if m.Role == llm.RoleUser {
+			initialUser = m.Content
+			break
+		}
+	}
+	wantPrefix := "Heuristic findings (1 total):"
+	if !strings.Contains(initialUser, wantPrefix) {
+		t.Errorf("expected exactly one finding (the seeded orphan); user msg did not contain %q.\nGot: %s",
+			wantPrefix, initialUser)
+	}
+}
+
+// TestScan_PopulatesInput_SnapshotsAndLiveBlobs is a unit-level check
+// that verifies the orchestrator hands the heuristic an Input
+// populated with both Snapshots and LiveBlobs (the fields that, if
+// missing, cause the C1 false-orphan bug).
+func TestScan_PopulatesInput_SnapshotsAndLiveBlobs(t *testing.T) {
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("repo init: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("body for chunking"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{Tag: "t"}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	cap := &captureFindingsHeuristic{}
+	provider := &llm.FakeProvider{}
+	a := &Agent{
+		Repo:       r,
+		Heuristics: heuristics.NewRegistry(cap),
+		Provider:   provider,
+		Config: Config{
+			MaxFindingsToLLM: 50,
+			MaxToolCalls:     5,
+			Model:            "test",
+		},
+	}
+	if _, err := a.Scan(context.Background(), src, nil); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+
+	if len(cap.gotInput.Snapshots) != 1 {
+		t.Errorf("Input.Snapshots: got %d, want 1", len(cap.gotInput.Snapshots))
+	}
+	if cap.gotInput.LiveBlobs == nil {
+		t.Fatal("Input.LiveBlobs is nil; orchestrator must populate it")
+	}
+	// Sanity: at least one live blob keyed under data/.
+	if len(cap.gotInput.LiveBlobs) == 0 {
+		t.Errorf("Input.LiveBlobs is empty; expected ≥1 chunk reference")
+	}
+	for k := range cap.gotInput.LiveBlobs {
+		if !strings.HasPrefix(k, "data/") {
+			t.Errorf("LiveBlobs key %q not prefixed with data/", k)
+		}
+	}
 }

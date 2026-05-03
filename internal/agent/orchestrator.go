@@ -148,16 +148,34 @@ Hard rules:
 func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]Recommendation, error) {
 	cfg := a.Config.Defaults()
 
-	// Phase 1: run heuristics. We don't pass walker.Entry / LiveBlobs
-	// because the Phase 11 design has the orchestrator scope minimal:
-	// individual heuristics that need a walk are configured separately
-	// in the CLI. The Input here is intentionally sparse.
+	// Phase 1: assemble the heuristic Input.
+	//
+	// Snapshots and LiveBlobs are populated here so OrphanBlobs (and any
+	// other heuristic that needs the live set) can run without each
+	// caller re-deriving the same data. Critically, OrphanBlobs treats a
+	// nil LiveBlobs as "empty live set" and would flag every chunk in
+	// data/ as orphaned — thousands of false positives on a real repo.
+	// Computing it once here keeps the orchestrator the single source
+	// of truth for that side of the input contract.
+	//
+	// Walked entries are intentionally left empty for v1: the
+	// orchestrator doesn't yet have a working-directory context, and
+	// the heuristics that need a Walked tree (cache_dirs, secrets,
+	// large_files, stale_paths, dup_paths) gracefully no-op on empty
+	// input. Wiring in a walk is a Phase 12 concern.
+	snaps, err := a.Repo.ListSnapshots(ctx)
+	if err != nil {
+		return nil, fmt.Errorf("agent: list snapshots: %w", err)
+	}
+	liveBlobs, err := computeLiveBlobs(ctx, a.Repo, snaps)
+	if err != nil {
+		return nil, fmt.Errorf("agent: compute live blobs: %w", err)
+	}
+
 	in := heuristics.Input{
-		Repo: a.Repo,
-		// Walker entries / LiveBlobs are filled in by callers that need
-		// them. The orchestrator's tests use stubHeuristics that don't
-		// touch Input fields, and the production wiring (Phase 11.3)
-		// builds a richer Input before calling Scan.
+		Repo:      a.Repo,
+		Snapshots: snaps,
+		LiveBlobs: liveBlobs,
 	}
 	findings, err := a.Heuristics.Run(ctx, in)
 	if err != nil {
@@ -336,4 +354,45 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// computeLiveBlobs loads each snapshot's manifest and unions every
+// chunk hash into a chunk-key set the heuristics consume. Keys are the
+// "data/<aa>/<hex>" form returned by blobstore.List, matching the
+// shape OrphanBlobs expects so membership tests are direct map
+// lookups (no per-key translation step).
+//
+// Mirrors repo.chunkKey (unexported) so the orchestrator doesn't need
+// to import an internal helper. If repo ever changes the on-disk
+// chunk-key shape, this duplication MUST be updated to match.
+func computeLiveBlobs(ctx context.Context, r *repo.Repo, snaps []repo.SnapshotInfo) (map[string]struct{}, error) {
+	out := make(map[string]struct{})
+	for _, s := range snaps {
+		if err := ctx.Err(); err != nil {
+			return nil, err
+		}
+		m, err := r.LoadSnapshot(ctx, s.ID)
+		if err != nil {
+			return nil, fmt.Errorf("load snapshot %s: %w", s.ID, err)
+		}
+		for _, fe := range m.Tree {
+			for _, hexHash := range fe.Chunks {
+				out[chunkKeyFor(hexHash)] = struct{}{}
+			}
+		}
+	}
+	return out, nil
+}
+
+// chunkKeyFor returns the blobstore key shape used for chunk blobs:
+// "data/<aa>/<hex>". This duplicates repo.chunkKey deliberately — the
+// repo package keeps it unexported because it's an implementation
+// detail of the on-disk format, but the agent needs the same shape to
+// feed OrphanBlobs.LiveBlobs. A 0–1 char input yields a sentinel "00"
+// shard so we never panic; SHA-256 hex is always 64 chars in practice.
+func chunkKeyFor(hexHash string) string {
+	if len(hexHash) < 2 {
+		return "data/00/" + hexHash
+	}
+	return "data/" + hexHash[:2] + "/" + hexHash
 }
