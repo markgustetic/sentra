@@ -97,6 +97,21 @@ func main() {
 	}
 	root.AddCommand(cli.NewAgent(agentDeps))
 
+	// `sentra ui` and the bare-sentra default. The deps share most
+	// of their construction with the other open-passphrase commands;
+	// the only ui-specific piece is the Run hook that actually starts
+	// the Bubbletea program. Wiring SetUIAsDefault makes bare
+	// `sentra` fall through to the TUI per the design doc.
+	uiDeps := cli.UIDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptOpenPassphrase(rootFlags),
+		Stdout:     os.Stdout,
+		Provider:   newAgentProvider(),
+		Run:        cli.DefaultUIRunner,
+	}
+	root.AddCommand(cli.NewUI(uiDeps))
+	cli.SetUIAsDefault(root, uiDeps)
+
 	if err := root.Execute(); err != nil {
 		// cobra prints the error itself when SilenceErrors is false;
 		// we just need to propagate the non-zero exit so scripts can
