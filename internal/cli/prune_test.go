@@ -210,6 +210,79 @@ func TestPrune_NothingToDelete(t *testing.T) {
 	}
 }
 
+// TestPrune_RefusesWipeAllWithoutAllFlag: explicit --keep-*=0 with
+// --apply --yes would otherwise wipe the repo silently. The safety
+// rail forces the user to acknowledge with --all.
+func TestPrune_RefusesWipeAllWithoutAllFlag(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, store, _, out := pruneFixture(t, "hunter2", 3)
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--keep-last", "0",
+		"--keep-daily", "0",
+		"--keep-weekly", "0",
+		"--keep-monthly", "0",
+		"--apply", "--yes",
+	})
+
+	if err := cmd.Execute(); err == nil {
+		t.Fatalf("expected error for wipe-all without --all, got nil; output=%q", out.String())
+	} else if !strings.Contains(err.Error(), "--all") {
+		t.Errorf("error should mention --all, got %v", err)
+	}
+
+	// Repo state must be unchanged.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(snaps) != 3 {
+		t.Errorf("snapshot count must be unchanged when guard fires: got %d, want 3", len(snaps))
+	}
+}
+
+// TestPrune_AllFlagAllowsWipe: with --all explicitly passed, the
+// guard releases and the repo is wiped as the user requested.
+func TestPrune_AllFlagAllowsWipe(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, store, _, out := pruneFixture(t, "hunter2", 3)
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--keep-last", "0",
+		"--keep-daily", "0",
+		"--keep-weekly", "0",
+		"--keep-monthly", "0",
+		"--apply", "--yes", "--all",
+	})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute with --all: %v", err)
+	}
+
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 0 {
+		t.Errorf("expected 0 snapshots after wipe, got %d", len(snaps))
+	}
+}
+
 // TestPrune_RegisteredOnRoot verifies users see `prune` in --help.
 func TestPrune_RegisteredOnRoot(t *testing.T) {
 	deps := PruneDeps{

@@ -63,6 +63,7 @@ type pruneFlags struct {
 
 	apply   bool
 	yes     bool
+	all     bool
 	cfgPath string
 }
 
@@ -120,6 +121,8 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 		"actually delete snapshots and reclaim storage (default: dry-run)")
 	cmd.Flags().BoolVar(&flags.yes, "yes", false,
 		"skip the interactive confirm prompt (use with --apply for scripts)")
+	cmd.Flags().BoolVar(&flags.all, "all", false,
+		"required when the policy would drop every snapshot (safety rail)")
 	cmd.Flags().StringVar(&flags.cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	return cmd
@@ -214,6 +217,14 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	if !flags.apply {
 		fmt.Fprintln(out, ui.Subtle.Render("Re-run with --apply to delete; --yes to skip the confirm prompt."))
 		return nil
+	}
+
+	// Safety rail: refuse to wipe the entire repo unless the user
+	// explicitly opts in with --all. This catches the "all keep-*=0"
+	// footgun where a user (or a bad cron config) would otherwise
+	// silently delete every snapshot.
+	if len(keep) == 0 && !flags.all {
+		return errors.New("prune would drop every snapshot; pass --all to confirm")
 	}
 
 	// Apply path: confirm (unless --yes), then DeleteSnapshot each
