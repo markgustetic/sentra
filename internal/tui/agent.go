@@ -15,11 +15,12 @@ import (
 )
 
 // agentRunner is the hook that actually runs the orchestrator. It
-// receives the stream channel the view created so reasoning tokens
-// arrive on the same path as production. Tests inject a closure
-// that pushes scripted output and returns canned recommendations
-// without touching the real Provider.
-type agentRunner func(stream chan<- string) ([]agent.Recommendation, error)
+// receives the cancelable ctx the view created (cancelled when the
+// user quits or switches away from the scan) plus the stream channel
+// for reasoning tokens. Tests inject a closure that pushes scripted
+// output and returns canned recommendations without touching the
+// real Provider.
+type agentRunner func(ctx context.Context, stream chan<- string) ([]agent.Recommendation, error)
 
 // tokenMsg is one streamed reasoning token — the agent sends the
 // model's text mid-flight on the stream channel; the view's reader
@@ -68,6 +69,11 @@ type AgentView struct {
 	// after delivering one msg and Bubbletea wouldn't re-invoke it.
 	stream chan string
 	doneCh chan agentDoneMsg
+	// cancel cancels the in-flight scan's context. Called from
+	// Cleanup() when the user quits the TUI mid-scan; without it,
+	// the LLM call stays running and the goroutine leaks until the
+	// network round-trip finishes (potentially minutes).
+	cancel context.CancelFunc
 }
 
 // NewAgentView constructs the agent view with a production runner
@@ -78,7 +84,7 @@ func NewAgentView(deps Deps) AgentView {
 	if deps.Provider == nil || deps.Repo == nil {
 		return baseAgentView(deps, nil)
 	}
-	runner := func(stream chan<- string) ([]agent.Recommendation, error) {
+	runner := func(ctx context.Context, stream chan<- string) ([]agent.Recommendation, error) {
 		// Production heuristics: same set the CLI wires. Importing
 		// from cmd/sentra would create a cycle; this duplication is
 		// minor and acceptable for v1.
@@ -89,7 +95,7 @@ func NewAgentView(deps Deps) AgentView {
 			Provider:   deps.Provider,
 			Config:     agent.Config{}.Defaults(),
 		}
-		return a.Scan(context.Background(), ".", stream)
+		return a.Scan(ctx, ".", stream)
 	}
 	return baseAgentView(deps, runner)
 }
@@ -207,16 +213,28 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *AgentView) spawnScan() tea.Cmd {
 	stream := make(chan string, 32)
 	doneCh := make(chan agentDoneMsg, 1)
+	ctx, cancel := context.WithCancel(context.Background())
 	a.stream = stream
 	a.doneCh = doneCh
+	a.cancel = cancel
 
 	go func() {
-		recs, err := a.run(stream)
+		recs, err := a.run(ctx, stream)
 		close(stream)
 		doneCh <- agentDoneMsg{recs: recs, err: err}
 	}()
 
 	return waitForAgentEvent(stream, doneCh)
+}
+
+// Cleanup cancels any in-flight scan. Safe to call even when no
+// scan is running; idempotent. The App invokes this on quit so the
+// LLM call doesn't outlive the TUI process by a network round-trip.
+func (a *AgentView) Cleanup() {
+	if a.cancel != nil {
+		a.cancel()
+		a.cancel = nil
+	}
 }
 
 // waitForAgentEvent returns a cmd that selects on the stream and

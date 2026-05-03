@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -16,7 +17,7 @@ import (
 // boolean would create with -race enabled).
 func TestAgentView_StartsScan(t *testing.T) {
 	calledCh := make(chan struct{}, 1)
-	a := NewAgentViewWithRunner(Deps{}, func(_ chan<- string) ([]agent.Recommendation, error) {
+	a := NewAgentViewWithRunner(Deps{}, func(_ context.Context, _ chan<- string) ([]agent.Recommendation, error) {
 		calledCh <- struct{}{}
 		return nil, nil
 	})
@@ -40,7 +41,7 @@ func TestAgentView_StartsScan(t *testing.T) {
 // exercise the goroutine that drains a channel; we send the token
 // messages directly to keep the test deterministic.
 func TestAgentView_StreamsTokens(t *testing.T) {
-	a := NewAgentViewWithRunner(Deps{}, func(_ chan<- string) ([]agent.Recommendation, error) {
+	a := NewAgentViewWithRunner(Deps{}, func(_ context.Context, _ chan<- string) ([]agent.Recommendation, error) {
 		return nil, nil
 	})
 	updated := tea.Model(a)
@@ -57,7 +58,7 @@ func TestAgentView_StreamsTokens(t *testing.T) {
 // non-empty recommendation list and asserts the table reflects them.
 // The recommendation IDs must appear somewhere in the rendered view.
 func TestAgentView_ShowsRecommendations(t *testing.T) {
-	a := NewAgentViewWithRunner(Deps{}, func(_ chan<- string) ([]agent.Recommendation, error) {
+	a := NewAgentViewWithRunner(Deps{}, func(_ context.Context, _ chan<- string) ([]agent.Recommendation, error) {
 		return nil, nil
 	})
 	recs := []agent.Recommendation{
@@ -81,7 +82,7 @@ func TestAgentView_ShowsRecommendations(t *testing.T) {
 // error renders the error rather than crashing. The user must be
 // able to see what went wrong.
 func TestAgentView_HandlesError(t *testing.T) {
-	a := NewAgentViewWithRunner(Deps{}, func(_ chan<- string) ([]agent.Recommendation, error) {
+	a := NewAgentViewWithRunner(Deps{}, func(_ context.Context, _ chan<- string) ([]agent.Recommendation, error) {
 		return nil, nil
 	})
 	updated, _ := a.Update(agentDoneMsg{err: errSentinel("boom: api key missing")})

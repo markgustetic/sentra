@@ -2,10 +2,13 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/agent/llm"
@@ -122,7 +125,16 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 // DefaultUIRunner is the production launcher: wraps the App in a
 // tea.Program with alt-screen and runs it. Wiring this up here
 // keeps the cmd/sentra main.go terse.
+//
+// Refuses to launch when stdout isn't a TTY: alt-screen escape codes
+// would otherwise be written into a pipe, file, or CI log, polluting
+// the consumer's stdout with no useful output. Scripts piping
+// `sentra` should call a JSON-emitting subcommand (`snapshots --json`,
+// `agent scan --json`) instead.
 func DefaultUIRunner(app tui.App) error {
+	if !term.IsTerminal(os.Stdout.Fd()) {
+		return errors.New("sentra ui requires a terminal; pipe to a subcommand like `sentra snapshots --json` for non-interactive use")
+	}
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err := p.Run()
 	return err

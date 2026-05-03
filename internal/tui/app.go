@@ -131,13 +131,17 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.KeyMsg:
 		// Quit keys take precedence so a panicked sub-view can't
 		// trap the user. Both `q` and Ctrl+C produce QuitMsg —
-		// matches conventional terminal app expectations.
+		// matches conventional terminal app expectations. Before
+		// quitting, cancel any in-flight agent scan so the LLM call
+		// doesn't outlive the TUI process.
 		if msg.Type == tea.KeyCtrlC {
+			m.cleanup()
 			return m, tea.Quit
 		}
 		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
 			switch msg.Runes[0] {
 			case 'q':
+				m.cleanup()
 				return m, tea.Quit
 			case '?':
 				m.help = !m.help
@@ -262,6 +266,21 @@ func (m App) renderBottomBar() string {
 		)
 	}
 	return ui.Subtle.Render("?:help  q:quit")
+}
+
+// cleanup releases resources held by sub-views. Today only AgentView
+// needs it (in-flight scan ctx-cancel); other sub-views are stateless.
+// We type-assert against an internal interface so we can quietly skip
+// sub-views that don't need cleanup.
+func (m App) cleanup() {
+	type cleaner interface{ Cleanup() }
+	// AgentView is the only sub-view with cleanup needs as of v1.
+	// Type-assertion is *AgentView because Cleanup is a pointer
+	// receiver — but App stores models as tea.Model values, so we
+	// need to take the address of the field.
+	if c, ok := any(&m.agent).(cleaner); ok {
+		c.Cleanup()
+	}
 }
 
 // joinSpaces inserts a two-space separator between elements. Used by
