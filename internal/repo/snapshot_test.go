@@ -266,7 +266,7 @@ func TestLoadSnapshot_RejectsInvalidID(t *testing.T) {
 				t.Errorf("LoadSnapshot(%q): expected error mentioning 'invalid', got %v", id, err)
 			}
 			// Restore should also reject the same.
-			err = r.Restore(ctx, id, t.TempDir())
+			err = r.Restore(ctx, id, t.TempDir(), RestoreOptions{})
 			if err == nil {
 				t.Fatalf("Restore(%q): expected error, got nil", id)
 			}
@@ -387,7 +387,7 @@ func TestRepo_CloseDuringSnapshot_DoesNotCorruptChunks(t *testing.T) {
 	}
 	defer r2.Close()
 	dst := filepath.Join(t.TempDir(), "restored")
-	if err := r2.Restore(ctx, snap.ID, dst); err != nil {
+	if err := r2.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
 		t.Fatalf("restore after race: %v", err)
 	}
 	want := treeFingerprint(t, root)

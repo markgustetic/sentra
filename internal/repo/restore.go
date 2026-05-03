@@ -11,7 +11,19 @@ import (
 
 	"github.com/markgustetic/sentra/internal/chunker"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/ui"
 )
+
+// RestoreOptions tunes a Restore call. The zero value runs with no
+// progress reporting and is otherwise equivalent to the pre-Phase-7
+// signature.
+type RestoreOptions struct {
+	// Progress receives Total() once at the start with the manifest's
+	// total plaintext bytes (Stats.Bytes) and Add(size) per file
+	// written. Nil is treated as a NopReporter, so callers that don't
+	// care about progress can leave it unset.
+	Progress ui.ProgressReporter
+}
 
 // Restore writes every file in snapshot snapID into destDir. It
 // refuses to clobber an existing non-empty directory: if destDir
@@ -21,7 +33,10 @@ import (
 // Permissions are restored from the manifest (Mode.Perm() — only
 // permission bits, never setuid/setgid/sticky to avoid re-introducing
 // surprises across user boundaries). MTime is restored best-effort.
-func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
+//
+// If opts.Progress is non-nil, Restore calls Total() once with the
+// manifest's stat sum and Add(size) per file restored.
+func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts RestoreOptions) error {
 	if err := validateSnapshotID(snapID); err != nil {
 		return err
 	}
@@ -32,6 +47,11 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
 	// Phase 5 review C2: keyOrErr returns a defensive copy; zero it
 	// at function exit so the key is not retained past Restore.
 	defer zeroize(repoKey)
+
+	progress := opts.Progress
+	if progress == nil {
+		progress = ui.NopReporter{}
+	}
 
 	m, err := r.LoadSnapshot(ctx, snapID)
 	if err != nil {
@@ -53,6 +73,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
 	}
 	absDest = filepath.Clean(absDest)
 
+	progress.Total(m.Stats.Bytes)
 	for _, fe := range m.Tree {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -60,6 +81,10 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string) error {
 		if err := r.restoreFile(ctx, repoKey, absDest, fe); err != nil {
 			return err
 		}
+		// Report the file's plaintext size after a successful write.
+		// One Add per file is granular enough for inline progress
+		// without flooding the reporter.
+		progress.Add(fe.Size)
 	}
 	return nil
 }

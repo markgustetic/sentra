@@ -78,7 +78,7 @@ func TestRestore_RoundTrip(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "restored")
-	if err := r.Restore(ctx, snap.ID, dst); err != nil {
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 
@@ -124,7 +124,7 @@ func TestRestore_RefusesNonEmptyDest(t *testing.T) {
 	// dst exists and is non-empty.
 	writeFile(t, filepath.Join(dst, "leftover.txt"), "stale")
 
-	if err := r.Restore(ctx, snap.ID, dst); err == nil {
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err == nil {
 		t.Fatal("expected error restoring into non-empty dir, got nil")
 	}
 }
@@ -149,7 +149,7 @@ func TestRestore_NestedDirectories(t *testing.T) {
 	}
 
 	dst := filepath.Join(t.TempDir(), "fresh")
-	if err := r.Restore(ctx, snap.ID, dst); err != nil {
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	want := treeFingerprint(t, src)
@@ -177,7 +177,7 @@ func TestRestore_AllowsEmptyExistingDest(t *testing.T) {
 	}
 
 	dst := t.TempDir() // exists, empty
-	if err := r.Restore(ctx, snap.ID, dst); err != nil {
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
 		t.Fatalf("restore: %v", err)
 	}
 	got := treeFingerprint(t, dst)
@@ -240,7 +240,7 @@ func TestRestore_RejectsPathTraversal(t *testing.T) {
 
 	destParent := t.TempDir()
 	destDir := filepath.Join(destParent, "restored")
-	err = r.Restore(ctx, tamperedID, destDir)
+	err = r.Restore(ctx, tamperedID, destDir, RestoreOptions{})
 	if err == nil {
 		t.Fatal("expected error restoring traversal manifest, got nil")
 	}
