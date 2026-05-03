@@ -146,6 +146,120 @@ func TestBackup_ProgressOnStderr(t *testing.T) {
 	}
 }
 
+// TestBackup_HonorsConfigBackupSettings is the end-to-end check that
+// sentra.yaml's `backup.exclude_caches: false` and `backup.ignore_file`
+// actually flow through to the underlying walk. Set ExcludeCaches=false
+// and a CACHEDIR.TAG-marked dir; verify files inside the cache dir
+// are part of the snapshot tree.
+func TestBackup_HonorsConfigBackupSettings(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	// Write a sentra.yaml that turns off cache exclusion.
+	body := "repo:\n  s3:\n    bucket: ignored\nbackup:\n  ignore_file: .sentraignore\n  exclude_caches: false\n"
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+
+	src := filepath.Join(dir, "src")
+	cache := filepath.Join(src, "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "CACHEDIR.TAG"),
+		[]byte("Signature: 8a477f597d28d172789f06886806bc55\n"), 0o600); err != nil {
+		t.Fatalf("write tag: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "junk.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write real: %v", err)
+	}
+
+	deps, store, out, _ := backupFixture(t, "hunter2")
+	cmd := NewBackup(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{src})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// Pull the snapshot manifest and verify cache contents made it in.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots: got %d, want 1", len(snaps))
+	}
+	m, err := r.LoadSnapshot(context.Background(), snaps[0].ID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	gotPaths := make(map[string]bool)
+	for _, fe := range m.Tree {
+		gotPaths[fe.Path] = true
+	}
+	for _, want := range []string{"cache/CACHEDIR.TAG", "cache/junk.txt", "real.txt"} {
+		if !gotPaths[want] {
+			t.Errorf("expected %q in snapshot tree, got %v", want, gotPaths)
+		}
+	}
+}
+
+// TestBackup_DefaultExcludesCaches asserts the same plumbing in the
+// other direction: with the documented default (exclude_caches: true)
+// the cache directory is skipped.
+func TestBackup_DefaultExcludesCaches(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	// Default config — backup.exclude_caches: true is in Defaults().
+	writeBackupConfigFile(t, dir)
+
+	src := filepath.Join(dir, "src")
+	cache := filepath.Join(src, "cache")
+	if err := os.MkdirAll(cache, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "CACHEDIR.TAG"),
+		[]byte("Signature: 8a477f597d28d172789f06886806bc55\n"), 0o600); err != nil {
+		t.Fatalf("write tag: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(cache, "junk.txt"), []byte("inside"), 0o600); err != nil {
+		t.Fatalf("write junk: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "real.txt"), []byte("outside"), 0o600); err != nil {
+		t.Fatalf("write real: %v", err)
+	}
+
+	deps, store, out, _ := backupFixture(t, "hunter2")
+	cmd := NewBackup(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{src})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+	snaps, _ := r.ListSnapshots(context.Background())
+	m, _ := r.LoadSnapshot(context.Background(), snaps[0].ID)
+	for _, fe := range m.Tree {
+		if strings.HasPrefix(fe.Path, "cache/") {
+			t.Errorf("cache should be skipped by default, got %q in tree", fe.Path)
+		}
+	}
+}
+
 // TestBackup_RequiresPath enforces the positional argument: zero
 // args is a usage error, not a silent no-op.
 func TestBackup_RequiresPath(t *testing.T) {

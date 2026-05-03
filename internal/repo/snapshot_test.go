@@ -14,6 +14,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 func writeFile(t *testing.T, path, content string) {
@@ -24,6 +25,15 @@ func writeFile(t *testing.T, path, content string) {
 	if err := os.WriteFile(path, []byte(content), 0o600); err != nil {
 		t.Fatalf("write %s: %v", path, err)
 	}
+}
+
+// walkerOptionsExcludeCaches builds the walker options struct used by
+// the SnapshotOptions Walker test cases. We always set IgnoreFile so
+// the resulting struct is non-zero — the repo's resolveWalkerOptions
+// treats a zero Options as "use legacy default ExcludeCaches=true",
+// so opting OUT of cache exclusion requires non-zero options.
+func walkerOptionsExcludeCaches(b bool) walker.Options {
+	return walker.Options{IgnoreFile: ".sentraignore", ExcludeCaches: b}
 }
 
 func newTestRepo(t *testing.T) (*Repo, blobstore.Store) {
@@ -92,6 +102,90 @@ func TestCreateSnapshot_RoundTrip(t *testing.T) {
 		if len(fe.Chunks) == 0 {
 			t.Errorf("tree[%d] %q: empty chunks", i, fe.Path)
 		}
+	}
+}
+
+// TestCreateSnapshot_HonorsWalkerOptions verifies that
+// SnapshotOptions.Walker is plumbed into the underlying walker call.
+// Specifically: with ExcludeCaches=false and a CACHEDIR.TAG-marked
+// directory, the snapshot must include the cache contents — the
+// previous hardcoded ExcludeCaches=true would silently drop them.
+func TestCreateSnapshot_HonorsWalkerOptions(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cache, "CACHEDIR.TAG"),
+		"Signature: 8a477f597d28d172789f06886806bc55\n")
+	writeFile(t, filepath.Join(cache, "junk.txt"), "still important")
+	writeFile(t, filepath.Join(root, "real.txt"), "x")
+
+	// With ExcludeCaches=false, the cache dir must be walked in full.
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{
+		Walker: walkerOptionsExcludeCaches(false),
+	})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	loaded, err := r.LoadSnapshot(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	got := make(map[string]bool)
+	for _, fe := range loaded.Tree {
+		got[fe.Path] = true
+	}
+	for _, want := range []string{"cache/CACHEDIR.TAG", "cache/junk.txt", "real.txt"} {
+		if !got[want] {
+			t.Errorf("expected %q in snapshot tree, got %v", want, got)
+		}
+	}
+}
+
+// TestCreateSnapshot_DefaultExcludeCaches retains the previous default
+// behavior so callers passing a zero SnapshotOptions still get the
+// CACHEDIR.TAG-honoring walk that was hardcoded before this change.
+func TestCreateSnapshot_DefaultExcludeCaches(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	root := t.TempDir()
+	cache := filepath.Join(root, "cache")
+	if err := os.Mkdir(cache, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(cache, "CACHEDIR.TAG"),
+		"Signature: 8a477f597d28d172789f06886806bc55\n")
+	writeFile(t, filepath.Join(cache, "junk.txt"), "skip me")
+	writeFile(t, filepath.Join(root, "real.txt"), "x")
+
+	// Zero-value SnapshotOptions: cache dir should be skipped per the
+	// preserved default. real.txt is the only file in the snapshot.
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("create: %v", err)
+	}
+	loaded, err := r.LoadSnapshot(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	for _, fe := range loaded.Tree {
+		if strings.HasPrefix(fe.Path, "cache/") {
+			t.Errorf("cache dir should be skipped by default, got %q", fe.Path)
+		}
+	}
+	found := false
+	for _, fe := range loaded.Tree {
+		if fe.Path == "real.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("real.txt missing from snapshot tree: %+v", loaded.Tree)
 	}
 }
 

@@ -39,6 +39,31 @@ type SnapshotOptions struct {
 	// Nil is treated as a NopReporter, so callers that don't care
 	// about progress can leave it unset.
 	Progress ui.ProgressReporter
+
+	// Walker tunes the directory walk: ignore-file name and the
+	// CACHEDIR.TAG opt-in. The zero value preserves the previous
+	// hardcoded behaviour ({ExcludeCaches: true, IgnoreFile: ""},
+	// which the walker treats as ".sentraignore"). See
+	// defaultWalkerOptions for the canonical zero-value handling.
+	Walker walker.Options
+}
+
+// resolveWalkerOptions returns the user-provided walker options if
+// any field has been set; otherwise the legacy defaults
+// ({ExcludeCaches: true}, which preserves pre-config behaviour).
+//
+// Detection: "zero value" means Concurrency==0, IgnoreFile=="", and
+// ExcludeCaches==false. CLI callers that want to disable cache
+// exclusion explicitly pass an IgnoreFile (typically the configured
+// value, defaulting to ".sentraignore") so the options are non-zero
+// and the explicit ExcludeCaches=false is honored. The repo's own
+// tests that don't care just use SnapshotOptions{} and get the
+// legacy behaviour for free.
+func resolveWalkerOptions(opts walker.Options) walker.Options {
+	if opts.Concurrency == 0 && opts.IgnoreFile == "" && !opts.ExcludeCaches {
+		return walker.Options{ExcludeCaches: true}
+	}
+	return opts
 }
 
 // SnapshotInfo is the lightweight summary returned by CreateSnapshot
@@ -95,6 +120,12 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	}
 	absRoot = filepath.Clean(absRoot)
 
+	// Resolve walker options once: zero-value SnapshotOptions.Walker
+	// preserves the previous hardcoded ExcludeCaches=true behaviour;
+	// non-zero values flow through untouched (this is how the CLI
+	// drives ignore_file / exclude_caches from sentra.yaml).
+	walkerOpts := resolveWalkerOptions(opts.Walker)
+
 	// Pre-walk to estimate total bytes for the progress reporter. Stat-
 	// only — no chunking, no I/O on file contents — so it's cheap
 	// relative to the chunk-and-upload pass that follows. The estimate
@@ -107,7 +138,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// so we accumulate the estimate via atomic.AddInt64 to keep the
 	// race detector happy without paying for a mutex.
 	var estimated atomic.Int64
-	preErr := walker.Walk(ctx, absRoot, walker.Options{ExcludeCaches: true},
+	preErr := walker.Walk(ctx, absRoot, walkerOpts,
 		func(e walker.Entry) error {
 			estimated.Add(e.Size)
 			return nil
@@ -126,7 +157,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// second Stat will already see the blob the first one Put.
 	state := &snapState{}
 
-	walkErr := walker.Walk(ctx, absRoot, walker.Options{ExcludeCaches: true},
+	walkErr := walker.Walk(ctx, absRoot, walkerOpts,
 		func(e walker.Entry) error {
 			fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, progress)
 			if err != nil {
