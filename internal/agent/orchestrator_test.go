@@ -299,6 +299,146 @@ func drainStream(stream <-chan string) string {
 	return sb.String()
 }
 
+// TestParseRecommendations_PlainArray: the canonical happy path —
+// the model emits a bare JSON array, no wrapping. Must parse cleanly.
+func TestParseRecommendations_PlainArray(t *testing.T) {
+	in := `[{"id":"r1","action":"flag_secret","target":"/x","severity":"warn","rationale":"hi"}]`
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r1" || recs[0].Action != "flag_secret" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_FencedJSON: the model wraps the array in a
+// ```json … ``` code fence (Anthropic's Sonnet does this often, even
+// after explicit instructions not to). Must strip the fence and parse.
+func TestParseRecommendations_FencedJSON(t *testing.T) {
+	in := "```json\n[{\"id\":\"r1\",\"action\":\"none\",\"target\":\"/x\",\"severity\":\"info\",\"rationale\":\"hi\"}]\n```"
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r1" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_FencedNoLang: the model emits a generic
+// ``` … ``` fence with no language tag.
+func TestParseRecommendations_FencedNoLang(t *testing.T) {
+	in := "```\n[{\"id\":\"r2\",\"action\":\"none\",\"target\":\"/y\",\"severity\":\"info\",\"rationale\":\"k\"}]\n```"
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r2" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_ProsePrefix: the model prepends an English
+// sentence to the array. The parser scans for the first '[' and parses
+// from there.
+func TestParseRecommendations_ProsePrefix(t *testing.T) {
+	in := "Here are my findings:\n[{\"id\":\"r3\",\"action\":\"none\",\"target\":\"/z\",\"severity\":\"info\",\"rationale\":\"k\"}]"
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r3" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_ProseSuffix: the model appends prose after
+// the array. The parser scans to the LAST ']' and trims.
+func TestParseRecommendations_ProseSuffix(t *testing.T) {
+	in := "[{\"id\":\"r4\",\"action\":\"none\",\"target\":\"/q\",\"severity\":\"info\",\"rationale\":\"k\"}]\nHope this helps!"
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r4" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_SingleObject: a single Recommendation
+// object (not an array) is auto-wrapped to a one-element slice.
+// Anthropic's Haiku occasionally returns this shape.
+func TestParseRecommendations_SingleObject(t *testing.T) {
+	in := `{"id":"r5","action":"none","target":"/s","severity":"info","rationale":"k"}`
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r5" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_GarbageReturnsClearError: random text with
+// no JSON shape returns ErrInvalidResponse, with a snippet of the
+// response body for debugging. Empty body still maps to a clear error.
+func TestParseRecommendations_GarbageReturnsClearError(t *testing.T) {
+	cases := []string{
+		"this is not json at all",
+		"",
+		"   \n  ",
+		"{not even valid",
+	}
+	for _, in := range cases {
+		_, err := parseRecommendations(in)
+		if err == nil {
+			t.Errorf("expected error for input %q, got nil", in)
+		}
+	}
+}
+
+// TestParseRecommendations_GarbageIncludesSnippet: the error message
+// for clearly-garbage input includes a snippet of the response so the
+// CLI/log surface points the operator at what went wrong.
+func TestParseRecommendations_GarbageIncludesSnippet(t *testing.T) {
+	in := "totally not json: I forgot how to format things"
+	_, err := parseRecommendations(in)
+	if err == nil {
+		t.Fatal("expected an error")
+	}
+	// The snippet should include enough characters to identify the
+	// payload when read back from a log.
+	if !strings.Contains(err.Error(), "totally not json") {
+		t.Errorf("expected snippet of the input in error, got %v", err)
+	}
+}
+
+// TestParseRecommendations_FencedSingleObject: a fenced single object
+// (Sonnet's other favorite shape) should also work.
+func TestParseRecommendations_FencedSingleObject(t *testing.T) {
+	in := "```json\n{\"id\":\"r6\",\"action\":\"none\",\"target\":\"/o\",\"severity\":\"info\",\"rationale\":\"k\"}\n```"
+	recs, err := parseRecommendations(in)
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 1 || recs[0].ID != "r6" {
+		t.Fatalf("unexpected recs: %+v", recs)
+	}
+}
+
+// TestParseRecommendations_EmptyArray: the explicit "nothing to
+// recommend" response — must remain a valid no-op result, not an error.
+func TestParseRecommendations_EmptyArray(t *testing.T) {
+	recs, err := parseRecommendations("[]")
+	if err != nil {
+		t.Fatalf("parse: %v", err)
+	}
+	if len(recs) != 0 {
+		t.Errorf("expected empty slice, got %+v", recs)
+	}
+}
+
 // captureFindingsHeuristic is a Heuristic that records the Input it
 // received on Run, so tests can assert on what the orchestrator
 // populated. Returns no findings of its own.
