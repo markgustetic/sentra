@@ -177,11 +177,33 @@ func loadDefaults(k *koanf.Koanf) error {
 	return nil
 }
 
+// reservedEnv lists SENTRA_* env-var names that must NOT bleed into
+// the koanf overlay. Their semantics are owned by code outside the
+// config schema (e.g. the passphrase resolver), and routing them
+// through the schema breaks unmarshal — SENTRA_PASSPHRASE would map
+// to the "passphrase" path, which is a struct (object), not a string.
+//
+// The transform function returns "" for these names; koanf treats an
+// empty key as "skip", so the value never reaches the tree.
+var reservedEnv = map[string]bool{
+	"SENTRA_PASSPHRASE":      true,
+	"SENTRA_PASSPHRASE_FILE": true,
+}
+
 // loadEnv layers SENTRA_* env vars on top of the koanf tree. The env
 // provider strips envPrefix and translates envDelim ("__") to "." so
 // SENTRA_REPO__S3__BUCKET becomes repo.s3.bucket.
+//
+// Reserved names (see reservedEnv) are filtered out so they don't
+// collide with config-schema keys.
 func loadEnv(k *koanf.Koanf) error {
 	provider := env.Provider(envPrefix, koanfDelim, func(s string) string {
+		// Drop reserved names entirely — they belong to other code
+		// paths (passphrase resolver, etc.) and would crash unmarshal
+		// if routed through the schema.
+		if reservedEnv[s] {
+			return ""
+		}
 		// Strip prefix, lowercase, replace double-underscore separator
 		// with the koanf delim. Anything outside the prefix is dropped
 		// upstream by env.Provider, but be defensive.

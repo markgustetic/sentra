@@ -157,6 +157,49 @@ func TestLoad_Malformed(t *testing.T) {
 	}
 }
 
+// TestLoad_IgnoresReservedEnvVars asserts that env vars whose names
+// would otherwise collide with reserved keys (notably SENTRA_PASSPHRASE,
+// which is the secret-source env, not a config key) are NOT applied to
+// the koanf overlay. Without this, koanf would route SENTRA_PASSPHRASE
+// to the "passphrase" path, which is a struct (object) — unmarshal
+// would fail with `'passphrase' expected a map or struct, got "string"`
+// and every command would error out before doing useful work.
+func TestLoad_IgnoresReservedEnvVars(t *testing.T) {
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+	cfg, err := Load(filepath.Join(t.TempDir(), "no-such-file.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	def := Defaults()
+	if cfg.Backup.IgnoreFile != def.Backup.IgnoreFile {
+		t.Errorf("IgnoreFile: got %q, want %q", cfg.Backup.IgnoreFile, def.Backup.IgnoreFile)
+	}
+	if cfg.Agent.MaxFindingsToLLM != def.Agent.MaxFindingsToLLM {
+		t.Errorf("MaxFindingsToLLM: got %d, want %d", cfg.Agent.MaxFindingsToLLM, def.Agent.MaxFindingsToLLM)
+	}
+	// Use_keyring should remain at its zero default — the env var did
+	// not (and must not) seed the Passphrase struct.
+	if cfg.Passphrase.UseKeyring {
+		t.Errorf("UseKeyring should be false, got true")
+	}
+}
+
+// TestLoad_IgnoresReservedEnvVarsWithFile checks the same blacklist
+// path through Load's file branch: even with an actual sentra.yaml on
+// disk, SENTRA_PASSPHRASE must not crash unmarshal.
+func TestLoad_IgnoresReservedEnvVarsWithFile(t *testing.T) {
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+	t.Setenv("SENTRA_PASSPHRASE_FILE", "/dev/null")
+	path := writeYAML(t, t.TempDir(), fixtureYAML)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "my-backups" {
+		t.Errorf("Bucket: got %q, want my-backups", cfg.Repo.S3.Bucket)
+	}
+}
+
 // TestDefaults gives the documented set of defaults. Any change here is
 // a user-visible change and should be deliberate.
 func TestDefaults(t *testing.T) {
