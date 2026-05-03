@@ -291,3 +291,43 @@ func TestSecrets_Name(t *testing.T) {
 		t.Errorf("Name = %q, want %q", got, want)
 	}
 }
+
+// TestSecrets_PreviewRedactsMultipleMatchesOnSameLine guards against
+// the leak where a line containing two AWS keys would only have the
+// first one redacted in the preview, exposing the second to the LLM
+// in Phase 11. EVERY match on the line — across all patterns — must
+// be replaced with [REDACTED] before windowing.
+func TestSecrets_PreviewRedactsMultipleMatchesOnSameLine(t *testing.T) {
+	//nolint:gosec // synthetic AWS-style fixtures, not real keys
+	body := "first AKIAIOSFODNN7EXAMPLE second AKIAIOSFODNN7BACKUPX\n"
+	dir := t.TempDir()
+	path := filepath.Join(dir, "creds.txt")
+	if err := os.WriteFile(path, []byte(body), 0o644); err != nil { //nolint:gosec // test fixture, not a real secret
+		t.Fatal(err)
+	}
+	entry := walker.Entry{
+		AbsPath: path,
+		RelPath: "creds.txt",
+		Size:    int64(len(body)),
+	}
+
+	h := NewSecrets()
+	got, err := h.Run(context.Background(), Input{Walked: []walker.Entry{entry}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(got) < 2 {
+		t.Fatalf("expected at least 2 findings, got %d: %+v", len(got), got)
+	}
+
+	// Every preview must redact BOTH canonical keys, regardless of
+	// which finding's preview we're inspecting.
+	for i, f := range got {
+		preview, _ := f.Details["preview"].(string)
+		for _, leak := range []string{"AKIAIOSFODNN7EXAMPLE", "AKIAIOSFODNN7BACKUPX"} {
+			if strings.Contains(preview, leak) {
+				t.Errorf("finding %d preview leaks %q: %q", i, leak, preview)
+			}
+		}
+	}
+}

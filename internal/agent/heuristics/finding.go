@@ -40,12 +40,12 @@ const (
 // pattern name, line number, ...) without forcing a sum type. The
 // LLM tools in Phase 11 marshal it to JSON.
 type Finding struct {
-	ID        string
-	Category  string
-	Severity  string
-	Target    string
-	Details   map[string]any
-	Heuristic string
+	ID        string         `json:"id"`
+	Category  string         `json:"category"`
+	Severity  string         `json:"severity"`
+	Target    string         `json:"target"`
+	Details   map[string]any `json:"details,omitempty"`
+	Heuristic string         `json:"heuristic"`
 }
 
 // Heuristic is the contract every rule implements. Run is expected to

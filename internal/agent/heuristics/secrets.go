@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"strings"
+	"sort"
 
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -186,23 +186,42 @@ func scanForSecrets(e walker.Entry) ([]Finding, error) {
 	for scanner.Scan() {
 		lineNum++
 		line := scanner.Text()
+
+		// Collect every match across every applicable pattern on this
+		// line, then redact ALL of them when constructing each preview.
+		// The naive "redact only the focal match" approach leaked a
+		// second secret on the same line if it wasn't this pattern's
+		// match. Phase 11 routes preview to the LLM (network), so any
+		// leak here is exfiltration.
+		type match struct {
+			pattern string
+			loc     []int
+		}
+		var lineMatches []match
+		var allLocs [][]int
 		for _, p := range secretPatterns {
 			if p.dotenvOnly && !isDotEnv {
 				continue
 			}
-			loc := p.rx.FindStringIndex(line)
-			if loc == nil {
-				continue
+			for _, loc := range p.rx.FindAllStringIndex(line, -1) {
+				lineMatches = append(lineMatches, match{pattern: p.name, loc: loc})
+				allLocs = append(allLocs, loc)
 			}
+		}
+		if len(lineMatches) == 0 {
+			continue
+		}
+
+		for _, m := range lineMatches {
 			out = append(out, Finding{
-				ID:       makeFindingID("secrets", fmt.Sprintf("%s:%d:%s", e.AbsPath, lineNum, p.name)),
+				ID:       makeFindingID("secrets", fmt.Sprintf("%s:%d:%s:%d", e.AbsPath, lineNum, m.pattern, m.loc[0])),
 				Category: "secrets",
 				Severity: SeverityCritical,
 				Target:   e.AbsPath,
 				Details: map[string]any{
-					"pattern": p.name,
+					"pattern": m.pattern,
 					"line":    lineNum,
-					"preview": redactPreview(line, loc),
+					"preview": redactPreview(line, m.loc, allLocs),
 				},
 			})
 		}
@@ -213,33 +232,51 @@ func scanForSecrets(e walker.Entry) ([]Finding, error) {
 	return out, nil
 }
 
-// redactPreview returns a short snippet of the matched line with the
-// match itself replaced by `[REDACTED]`. We deliberately keep at most
-// previewMaxLen characters of context so the user can see *which*
-// line the match was on without seeing the secret.
+// redactPreview returns a short snippet of line with EVERY match in
+// allLocs replaced by `[REDACTED]`, then windowed around the focal
+// match. allLocs MUST include focalLoc. The preview is at most
+// previewMaxLen characters of context so the user sees which line
+// the match was on without seeing any secret on the line.
 //
-// loc is [matchStart, matchEnd) into line, as returned by
-// regexp.FindStringIndex.
-func redactPreview(line string, loc []int) string {
-	if loc == nil || len(loc) != 2 || loc[0] < 0 || loc[1] > len(line) {
-		// Defensive: malformed location → fall back to a fixed redact
-		// so we never accidentally return the raw line.
+// Replacing all matches (not just the focal one) is critical: lines
+// like `aws_a=AKIA... aws_b=AKIA...` have two secrets, and the focal
+// match's preview must not leak the other one.
+func redactPreview(line string, focalLoc []int, allLocs [][]int) string {
+	if focalLoc == nil || len(focalLoc) != 2 || focalLoc[0] < 0 || focalLoc[1] > len(line) {
 		return "[REDACTED]"
 	}
-	prefix := line[:loc[0]]
-	suffix := line[loc[1]:]
-	redacted := prefix + "[REDACTED]" + suffix
-	// Trim the result to previewMaxLen chars centered roughly on the
-	// `[REDACTED]` marker so the user sees a useful slice.
 	const marker = "[REDACTED]"
-	idx := strings.Index(redacted, marker)
-	if idx < 0 {
-		// Should never happen given the construction above.
-		return "[REDACTED]"
+
+	// Sort allLocs by start so we can compute the focal's index in
+	// the redacted output deterministically; also so reverse-order
+	// substitution is well-defined.
+	locs := make([][]int, len(allLocs))
+	copy(locs, allLocs)
+	sort.Slice(locs, func(i, j int) bool { return locs[i][0] < locs[j][0] })
+
+	// Track focal's start position in the redacted string. Each
+	// earlier match shifts everything after it by len(marker)-(end-start).
+	focalRedactedStart := focalLoc[0]
+	for _, l := range locs {
+		if l[0] < focalLoc[0] {
+			focalRedactedStart += len(marker) - (l[1] - l[0])
+		}
 	}
-	// Take previewMaxLen chars total: half before, half after.
+
+	// Build the redacted line by replacing matches in reverse order
+	// (so earlier indices remain valid).
+	redacted := line
+	for i := len(locs) - 1; i >= 0; i-- {
+		l := locs[i]
+		if l[0] < 0 || l[1] > len(redacted) {
+			return "[REDACTED]" // defensive
+		}
+		redacted = redacted[:l[0]] + marker + redacted[l[1]:]
+	}
+
+	// Window previewMaxLen chars around the focal redaction.
 	half := previewMaxLen / 2
-	start := idx - half
+	start := focalRedactedStart - half
 	if start < 0 {
 		start = 0
 	}
