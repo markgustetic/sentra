@@ -65,6 +65,11 @@ type agentFlags struct {
 	yes          bool
 	cfgPath      string
 	maxToolCalls int
+	// allowWipe is the safety rail equivalent to `prune --all`: when an
+	// LLM recommends pruning every remaining snapshot, we refuse to
+	// apply unless the user explicitly opts in. Default false so the
+	// "scripted apply quietly wipes the repo" footgun is unreachable.
+	allowWipe bool
 }
 
 // NewAgent returns the cobra command for the `agent` parent. It owns
@@ -117,6 +122,8 @@ func NewAgentScan(deps AgentDeps) *cobra.Command {
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	cmd.Flags().IntVar(&flags.maxToolCalls, "max-tool-calls", 0,
 		"cap on LLM tool calls per scan (0 means use the agent default)")
+	cmd.Flags().BoolVar(&flags.allowWipe, "allow-wipe", false,
+		"required when prune_snapshot recommendations would empty the repo (safety rail equivalent to prune --all)")
 	return cmd
 }
 
@@ -270,6 +277,12 @@ func writeRecsJSON(w io.Writer, recs []agent.Recommendation) error {
 // user (skipped with --yes) and dispatching approved actions through
 // the action handler map. Errors on individual actions are reported
 // but don't abort the loop.
+//
+// Safety rail: tracks the remaining-snapshot count across the apply
+// loop so a sequence of prune_snapshot actions can't silently empty
+// the repo. If a prune would drop the last snapshot AND --allow-wipe
+// is not set, the action is refused with a clear error pointing at
+// the flag (mirrors `prune --all`'s contract).
 func applyRecommendations(
 	ctx context.Context,
 	r *repo.Repo,
@@ -282,6 +295,15 @@ func applyRecommendations(
 		fmt.Fprintln(out, ui.Subtle.Render("No recommendations to apply."))
 		return nil
 	}
+
+	// Snapshot count baseline: count what's currently in the repo. We
+	// decrement as prune_snapshot actions succeed; the wipe-guard
+	// triggers when the next prune would drive the count to zero.
+	currentSnaps, err := r.ListSnapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("list snapshots: %w", err)
+	}
+	remaining := len(currentSnaps)
 
 	applied, declined, errs := 0, 0, 0
 	for _, rec := range recs {
@@ -310,12 +332,30 @@ func applyRecommendations(
 			continue
 		}
 
+		// Wipe guard: an APPROVED prune that would empty the repo is
+		// refused unless --allow-wipe was explicitly passed. Placing
+		// the check AFTER confirm means a declined prune doesn't trip
+		// the rail (the user already said no, no wipe is happening) —
+		// only an approved action that crosses the safety line fails
+		// the run. Mirrors `prune --all` semantics.
+		if rec.Action == "prune_snapshot" && remaining-1 <= 0 && !flags.allowWipe {
+			return fmt.Errorf(
+				"refusing to apply %s on %q: this would prune every snapshot in the repo; pass --allow-wipe to confirm",
+				rec.Action, rec.Target)
+		}
+
 		if err := dispatchAction(ctx, r, rec, out); err != nil {
 			fmt.Fprintf(out, "  - %s: %s\n", rec.ID, ui.Danger.Render("error: "+err.Error()))
 			errs++
 			continue
 		}
 		applied++
+		// On a successful prune, decrement the live counter so the
+		// guard fires correctly on the next prune action. Other
+		// actions don't affect the snapshot count.
+		if rec.Action == "prune_snapshot" {
+			remaining--
+		}
 	}
 
 	fmt.Fprintln(out, ui.Success.Render("Apply complete"))

@@ -163,8 +163,10 @@ func TestAgentScan_JSON(t *testing.T) {
 	}
 }
 
-// TestAgentScan_Apply: --apply --yes dispatches a prune_snapshot
-// recommendation and the snapshot is gone afterwards.
+// TestAgentScan_Apply: --apply --yes --allow-wipe dispatches a
+// prune_snapshot recommendation that drops the only snapshot. The
+// --allow-wipe flag is required because the action would empty the
+// repo (see TestAgentScan_ApplyRefusesWipe for the safety rail).
 func TestAgentScan_Apply(t *testing.T) {
 	chDir(t, t.TempDir())
 	writeBackupConfigFile(t, ".")
@@ -184,7 +186,7 @@ func TestAgentScan_Apply(t *testing.T) {
 	cmd := NewAgent(deps)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	cmd.SetArgs([]string{"scan", "--apply", "--yes", "--allow-wipe"})
 
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
@@ -365,6 +367,94 @@ func TestAgent_RegisteredOnRoot(t *testing.T) {
 	}
 	if agentCmd == nil {
 		t.Fatal("agent command not registered on root")
+	}
+}
+
+// TestAgentScan_ApplyRefusesWipe: a single-snapshot repo whose only
+// recommendation is prune_snapshot must NOT be wiped by the apply path
+// without --allow-wipe. The CLI should refuse, surface a clear error
+// mentioning --allow-wipe, and leave the snapshot intact.
+//
+// Without this guard, --apply --yes on an LLM that recommends pruning
+// every snapshot silently empties the repo — same footgun the prune
+// CLI plugs with --all.
+func TestAgentScan_ApplyRefusesWipe(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "retention", Severity: "warn", Target: "snap-x",
+	}
+	deps, store, ids, out := agentFixture(t, nil, []heuristics.Finding{finding})
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"prune_snapshot","target":"` + ids[0] + `","severity":"warn","rationale":"old"}]`},
+	}
+	deps.Provider = &llm.FakeProvider{Steps: steps}
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error refusing to wipe the repo without --allow-wipe")
+	}
+	if !strings.Contains(err.Error(), "allow-wipe") {
+		t.Errorf("expected error to mention --allow-wipe, got %v", err)
+	}
+
+	// Snapshot must still exist.
+	r, oerr := repo.Open(context.Background(), store, []byte("hunter2"))
+	if oerr != nil {
+		t.Fatalf("open: %v", oerr)
+	}
+	defer r.Close()
+	snaps, lerr := r.ListSnapshots(context.Background())
+	if lerr != nil {
+		t.Fatalf("list: %v", lerr)
+	}
+	if len(snaps) != 1 {
+		t.Errorf("expected snapshot to survive refused wipe, got %d snapshots", len(snaps))
+	}
+}
+
+// TestAgentScan_ApplyAllowsWipeWithFlag: with --allow-wipe explicitly
+// passed, the same single-snapshot apply succeeds and the repo is
+// wiped. Confirms the safety rail is opt-out, not unconditional.
+func TestAgentScan_ApplyAllowsWipeWithFlag(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "retention", Severity: "warn", Target: "snap-x",
+	}
+	deps, store, ids, out := agentFixture(t, nil, []heuristics.Finding{finding})
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"prune_snapshot","target":"` + ids[0] + `","severity":"warn","rationale":"old"}]`},
+	}
+	deps.Provider = &llm.FakeProvider{Steps: steps}
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes", "--allow-wipe"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("expected success with --allow-wipe, got %v", err)
+	}
+
+	r, oerr := repo.Open(context.Background(), store, []byte("hunter2"))
+	if oerr != nil {
+		t.Fatalf("open: %v", oerr)
+	}
+	defer r.Close()
+	snaps, lerr := r.ListSnapshots(context.Background())
+	if lerr != nil {
+		t.Fatalf("list: %v", lerr)
+	}
+	if len(snaps) != 0 {
+		t.Errorf("expected 0 snapshots after --allow-wipe apply, got %d", len(snaps))
 	}
 }
 
