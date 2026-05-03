@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/markgustetic/sentra/internal/agent/heuristics"
+	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/cli"
 	"github.com/markgustetic/sentra/internal/config"
@@ -85,12 +87,74 @@ func main() {
 	}
 	root.AddCommand(cli.NewPrune(pruneDeps))
 
+	agentDeps := cli.AgentDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptOpenPassphrase(rootFlags),
+		Stdout:     os.Stdout,
+		Provider:   newAgentProvider(),
+		Heuristics: defaultHeuristics(),
+		Confirm:    cli.HuhAgentConfirm,
+	}
+	root.AddCommand(cli.NewAgent(agentDeps))
+
 	if err := root.Execute(); err != nil {
 		// cobra prints the error itself when SilenceErrors is false;
 		// we just need to propagate the non-zero exit so scripts can
 		// detect failure.
 		os.Exit(1)
 	}
+}
+
+// defaultHeuristics returns the production set of heuristics the
+// agent runs over the repo. The set mirrors Phase 9's enumeration:
+// secrets, large files, cache dirs, stale paths, dup paths, orphan
+// blobs, retention drift. Heuristics whose Input contracts the
+// orchestrator doesn't currently populate (walker results, snapshot
+// list, etc.) are still included — they're no-ops on missing input
+// rather than errors, and Phase 12's TUI wiring will populate the
+// fuller Input.
+func defaultHeuristics() []heuristics.Heuristic {
+	return []heuristics.Heuristic{
+		heuristics.NewSecrets(),
+		heuristics.NewLargeFiles(),
+		heuristics.NewCacheDirs(),
+		heuristics.NewStalePaths(),
+		heuristics.NewDupPaths(),
+		heuristics.NewOrphanBlobs(),
+		heuristics.NewRetentionDrift(),
+	}
+}
+
+// newAgentProvider returns the production LLM provider. Reads the
+// config's agent.model field at call-time (each invocation gets the
+// current sentra.yaml). If ANTHROPIC_API_KEY is missing or model is
+// blank, NewAnthropic surfaces a clear error which `sentra agent
+// scan` prints — better than a deferred 401 on first request.
+func newAgentProvider() llm.Provider {
+	cfg, _ := config.Load("sentra.yaml")
+	model := "claude-sonnet-4-6"
+	if cfg != nil && cfg.Agent.Model != "" {
+		model = cfg.Agent.Model
+	}
+	p, err := llm.NewAnthropic(llm.AnthropicConfig{Model: model})
+	if err != nil {
+		// Defer the error to scan time so the user sees a clear
+		// "missing key" message instead of `sentra` failing to start
+		// for a feature they haven't used yet. The lazy provider
+		// returns the same error from every Generate call.
+		return &lazyErrProvider{err: err}
+	}
+	return p
+}
+
+// lazyErrProvider is a Provider that fails every call with the same
+// error. Used at startup when llm.NewAnthropic fails (typically a
+// missing API key) so unrelated commands still work — only `agent
+// scan` surfaces the error, and only when actually invoked.
+type lazyErrProvider struct{ err error }
+
+func (p *lazyErrProvider) Generate(ctx context.Context, sys string, msgs []llm.Message, tools []llm.Tool, stream chan<- string) ([]llm.ToolCall, string, error) {
+	return nil, "", p.err
 }
 
 // newS3Store is the production blobstore factory. Reads the merged

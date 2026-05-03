@@ -1,0 +1,407 @@
+package cli
+
+import (
+	"bytes"
+	"context"
+	"encoding/json"
+	"errors"
+	"io"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	"github.com/markgustetic/sentra/internal/agent/heuristics"
+	"github.com/markgustetic/sentra/internal/agent/llm"
+	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/repo"
+)
+
+// agentTestStubHeuristic is a deterministic heuristic for the CLI tests.
+// Lives here because each test file gets its own _test stubs and we
+// don't want to depend on internal types in another test file.
+type agentTestStubHeuristic struct {
+	name     string
+	findings []heuristics.Finding
+}
+
+func (s *agentTestStubHeuristic) Name() string { return s.name }
+func (s *agentTestStubHeuristic) Run(ctx context.Context, in heuristics.Input) ([]heuristics.Finding, error) {
+	out := make([]heuristics.Finding, len(s.findings))
+	copy(out, s.findings)
+	return out, nil
+}
+
+// agentFixture builds an AgentDeps wired to a memory-backed repo with
+// one snapshot, a fake LLM Provider, and one stub heuristic that emits
+// the supplied findings.
+//
+// providerSteps is the script for the FakeProvider; pass a single step
+// emitting "[]" for "no recommendations" or a single step emitting a
+// JSON array of recs for the dry-run / apply tests.
+func agentFixture(t *testing.T, providerSteps []llm.FakeStep, findings []heuristics.Finding) (AgentDeps, *blobstore.Memory, []string, *bytes.Buffer) {
+	t.Helper()
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("repo init: %v", err)
+	}
+	defer r.Close()
+
+	// Make a snapshot the agent can investigate (and that --apply can
+	// prune in the prune_snapshot test).
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("body"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	s, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{Tag: "test"})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	ids := []string{s.ID}
+
+	provider := &llm.FakeProvider{Steps: providerSteps}
+	stubs := []heuristics.Heuristic{
+		&agentTestStubHeuristic{name: "stub", findings: findings},
+	}
+
+	out := &bytes.Buffer{}
+	deps := AgentDeps{
+		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+		Stdout:     out,
+		Provider:   provider,
+		Heuristics: stubs,
+		Confirm:    func(string) (bool, error) { return true, nil },
+	}
+	return deps, store, ids, out
+}
+
+// TestAgentScan_DryRun: a fake Provider emits one recommendation; the
+// CLI prints it and does NOT apply it. The repo state is unchanged.
+func TestAgentScan_DryRun(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "secrets", Severity: "critical", Target: "/x",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"none","target":"/x","severity":"info","rationale":"FYI"}]`},
+	}
+	deps, store, ids, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, "r1") {
+		t.Errorf("expected recommendation id 'r1' in output, got %q", got)
+	}
+	if !strings.Contains(got, "FYI") {
+		t.Errorf("expected rationale in output, got %q", got)
+	}
+
+	// Snapshot should still exist — dry-run does not apply.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(snaps) != 1 || snaps[0].ID != ids[0] {
+		t.Errorf("snapshots changed unexpectedly in dry-run: %+v", snaps)
+	}
+}
+
+// TestAgentScan_JSON: --json emits the recommendation array as JSON.
+func TestAgentScan_JSON(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "secrets", Severity: "critical", Target: "/x",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"none","target":"/x","severity":"info","rationale":"hi"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--json"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var recs []map[string]any
+	if err := json.Unmarshal(out.Bytes(), &recs); err != nil {
+		t.Fatalf("unmarshal: %v\noutput: %s", err, out.String())
+	}
+	if len(recs) != 1 {
+		t.Fatalf("got %d recommendations, want 1", len(recs))
+	}
+	got := recs[0]
+	for _, k := range []string{"id", "action", "target", "severity", "rationale"} {
+		if _, ok := got[k]; !ok {
+			t.Errorf("rec missing %q: %v", k, got)
+		}
+	}
+}
+
+// TestAgentScan_Apply: --apply --yes dispatches a prune_snapshot
+// recommendation and the snapshot is gone afterwards.
+func TestAgentScan_Apply(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "retention", Severity: "warn", Target: "snap-x",
+	}
+	deps, store, ids, out := agentFixture(t, nil /* set after we know IDs */, []heuristics.Finding{finding})
+
+	// We needed the snapshot ID to script the recommendation, so build
+	// the FakeProvider's response now and rewire the deps.
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"prune_snapshot","target":"` + ids[0] + `","severity":"warn","rationale":"old"}]`},
+	}
+	deps.Provider = &llm.FakeProvider{Steps: steps}
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// Snapshot should be gone.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(snaps) != 0 {
+		t.Errorf("expected 0 snapshots after apply, got %d: %+v", len(snaps), snaps)
+	}
+
+	// Output should mention applied / deleted action.
+	low := strings.ToLower(out.String())
+	if !strings.Contains(low, "applied") && !strings.Contains(low, "deleted") && !strings.Contains(low, "prune") {
+		t.Errorf("expected applied/deleted/prune in apply output, got %q", out.String())
+	}
+}
+
+// TestAgentScan_Apply_AddToIgnore: a recommendation with action
+// add_to_ignore appends the target to .sentraignore.
+func TestAgentScan_Apply_AddToIgnore(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "cache_dirs", Severity: "warn", Target: "node_modules/",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"add_to_ignore","target":"node_modules/","severity":"warn","rationale":"cache"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// .sentraignore should exist and contain "node_modules/".
+	body, err := os.ReadFile(".sentraignore")
+	if err != nil {
+		t.Fatalf("read .sentraignore: %v", err)
+	}
+	if !strings.Contains(string(body), "node_modules/") {
+		t.Errorf(".sentraignore missing 'node_modules/': %q", body)
+	}
+}
+
+// TestAgentScan_Apply_FlagSecret: flag_secret is a notification-only
+// action; it does not modify the repo but should mention the path.
+func TestAgentScan_Apply_FlagSecret(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "secrets", Severity: "critical", Target: "/x/.env",
+	}
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"flag_secret","target":"/x/.env","severity":"critical","rationale":"please rotate"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	got := out.String()
+	if !strings.Contains(got, "/x/.env") {
+		t.Errorf("expected target in output, got %q", got)
+	}
+}
+
+// TestAgentScan_NoFindings: when the heuristics emit nothing, the CLI
+// should print an "all clear" message and exit zero. The Provider
+// should not be called.
+func TestAgentScan_NoFindings(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	provider := &llm.FakeProvider{} // would error on call
+	deps, _, _, out := agentFixture(t, nil, nil)
+	deps.Provider = provider
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	got := strings.ToLower(out.String())
+	if !strings.Contains(got, "no findings") && !strings.Contains(got, "all clear") {
+		t.Errorf("expected no-findings hint in output, got %q", out.String())
+	}
+	if len(provider.Calls) != 0 {
+		t.Errorf("Provider should not be called, got %d", len(provider.Calls))
+	}
+}
+
+// TestAgentScan_ConfirmDecline: --apply without --yes, with a Confirm
+// that returns false, should NOT execute the action.
+func TestAgentScan_ConfirmDecline(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "retention", Severity: "warn", Target: "snap-x",
+	}
+	deps, store, ids, out := agentFixture(t, nil, []heuristics.Finding{finding})
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"prune_snapshot","target":"` + ids[0] + `","severity":"warn","rationale":"old"}]`},
+	}
+	deps.Provider = &llm.FakeProvider{Steps: steps}
+	deps.Confirm = func(string) (bool, error) { return false, nil }
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	// Snapshot must still exist.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 1 {
+		t.Errorf("declined confirm should leave snapshot intact, got %d", len(snaps))
+	}
+}
+
+// TestAgent_RegisteredOnRoot: `sentra agent scan` is reachable from
+// the root command's tree.
+func TestAgent_RegisteredOnRoot(t *testing.T) {
+	deps := AgentDeps{
+		NewStore:   func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },
+		Passphrase: func() ([]byte, error) { return []byte("h"), nil },
+		Stdout:     io.Discard,
+		Provider:   &llm.FakeProvider{},
+		Heuristics: nil,
+		Confirm:    func(string) (bool, error) { return true, nil },
+	}
+	root := NewRoot("v", "c", "d")
+	root.AddCommand(NewAgent(deps))
+	var agentCmd *struct{ ok bool }
+	for _, c := range root.Commands() {
+		if c.Name() == "agent" {
+			agentCmd = &struct{ ok bool }{ok: true}
+			// Verify scan subcommand exists.
+			scanFound := false
+			for _, sub := range c.Commands() {
+				if sub.Name() == "scan" {
+					scanFound = true
+					break
+				}
+			}
+			if !scanFound {
+				t.Errorf("agent has no scan subcommand")
+			}
+		}
+	}
+	if agentCmd == nil {
+		t.Fatal("agent command not registered on root")
+	}
+}
+
+// TestAgentScan_BudgetExhausted_Error: the orchestrator surfaces
+// ErrBudgetExhausted; the CLI should propagate it as an error rather
+// than silently exiting clean.
+func TestAgentScan_BudgetExhausted_Error(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "secrets", Severity: "critical", Target: "/x",
+	}
+	// Provider keeps asking for tools forever.
+	steps := make([]llm.FakeStep, 20)
+	for i := range steps {
+		steps[i] = llm.FakeStep{
+			ToolCalls: []llm.ToolCall{
+				{ID: "loop", Name: "inspect_finding", Input: map[string]any{"id": "f1"}},
+			},
+		}
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	// Pass a tighter budget via flag so the test runs quickly.
+	cmd.SetArgs([]string{"scan", "--max-tool-calls", "2"})
+
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error for budget exhaustion")
+	}
+	// Sanity: the underlying agent error is preserved (errors.Is
+	// reaches through fmt.Errorf wrapping).
+	if !errors.Is(err, errBudgetExhaustedSentinel()) {
+		t.Errorf("expected ErrBudgetExhausted, got %v", err)
+	}
+}
