@@ -90,15 +90,40 @@ func TestRenderTable_EmptyRows(t *testing.T) {
 	}
 }
 
-// TestRenderTable_NoHeaders is a defensive case: an empty header
-// slice with rows present shouldn't panic, even though it's not a
-// useful real-world input.
+// TestRenderTable_NoHeaders pins the documented behaviour: when no
+// headers are supplied, every row is normalized to 0 cells. The
+// renderer produces a header-less frame and the input cells are
+// dropped. This is intentional — RenderTable treats headers as
+// authoritative on column count — but the test must assert it
+// explicitly so we don't silently regress.
 func TestRenderTable_NoHeaders(t *testing.T) {
 	defer func() {
 		if r := recover(); r != nil {
 			t.Fatalf("RenderTable panicked on empty headers: %v", r)
 		}
 	}()
-	_ = RenderTable(nil, [][]string{{"a", "b"}})
-	_ = RenderTable([]string{}, [][]string{{"a", "b"}})
+	for _, headers := range [][]string{nil, {}} {
+		got := RenderTable(headers, [][]string{{"a", "b"}})
+		if strings.Contains(got, "a") || strings.Contains(got, "b") {
+			t.Errorf("with no headers, row data should be dropped "+
+				"(column count is authoritative); got %q", got)
+		}
+	}
+}
+
+// TestRenderTable_LongRowTruncated pins the truncation contract.
+// Cells past len(headers) are dropped rather than silently rendered
+// in some degraded form. Phase 7's tables (snapshots, agent
+// recommendations) will rely on this when row widths drift from
+// header widths during refactors.
+func TestRenderTable_LongRowTruncated(t *testing.T) {
+	headers := []string{"A", "B"}
+	rows := [][]string{{"keep1", "keep2", "drop_me"}}
+	got := RenderTable(headers, rows)
+	if !strings.Contains(got, "keep1") || !strings.Contains(got, "keep2") {
+		t.Errorf("expected first two cells to render, got %q", got)
+	}
+	if strings.Contains(got, "drop_me") {
+		t.Errorf("expected third cell to be truncated, but it appeared in %q", got)
+	}
 }
