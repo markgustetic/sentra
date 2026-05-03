@@ -59,7 +59,7 @@ func TestInit_FreshDir(t *testing.T) {
 	cmd := NewInit(deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{})
+	cmd.SetArgs([]string{"--bucket", "test-bucket"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -118,7 +118,7 @@ func TestInit_ForceOverwrites(t *testing.T) {
 	cmd := NewInit(deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{"--force"})
+	cmd.SetArgs([]string{"--force", "--bucket", "test-bucket"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -146,7 +146,7 @@ func TestInit_PrintsSummary(t *testing.T) {
 	cmd := NewInit(deps)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{})
+	cmd.SetArgs([]string{"--bucket", "test-bucket"})
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
@@ -172,5 +172,147 @@ func TestInit_RegisteredOnRoot(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("init command not registered on root")
+	}
+}
+
+// TestInit_RequiresBucketFlag refuses to run with no sentra.yaml and
+// no --bucket flag. Without this guard, `sentra init` against a
+// production S3 store has no path that produces a working config —
+// the user has no way to specify the bucket.
+func TestInit_RequiresBucketFlag(t *testing.T) {
+	chDir(t, t.TempDir())
+	// Custom deps without injecting a bucket — production wiring would
+	// fail when newS3Store sees an empty bucket. We use a NewStore that
+	// enforces the same precondition so the test fails with a clear error.
+	store := blobstore.NewMemory()
+	deps := InitDeps{
+		NewStore: func(_ context.Context, cfg *config.Config) (blobstore.Store, error) {
+			if cfg.Repo.S3.Bucket == "" {
+				return nil, errors.New("repo.s3.bucket not set")
+			}
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+		Stdout:     io.Discard,
+	}
+	cmd := NewInit(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected error when --bucket is not provided, got nil")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "bucket") {
+		t.Errorf("error should mention bucket, got %v", err)
+	}
+}
+
+// TestInit_AcceptsBucketFlag passes flag-driven values through to the
+// store factory and persists them to sentra.yaml on success.
+func TestInit_AcceptsBucketFlag(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	store := blobstore.NewMemory()
+	var captured *config.Config
+	deps := InitDeps{
+		NewStore: func(_ context.Context, cfg *config.Config) (blobstore.Store, error) {
+			captured = cfg
+			if cfg.Repo.S3.Bucket == "" {
+				return nil, errors.New("repo.s3.bucket not set")
+			}
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+		Stdout:     io.Discard,
+	}
+	cmd := NewInit(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{
+		"--bucket", "my-bucket",
+		"--endpoint-url", "http://localhost:9000",
+		"--region", "us-east-1",
+		"--prefix", "sentra/",
+	})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if captured == nil {
+		t.Fatal("NewStore not called")
+	}
+	if captured.Repo.S3.Bucket != "my-bucket" {
+		t.Errorf("bucket not passed: got %q", captured.Repo.S3.Bucket)
+	}
+	if captured.Repo.S3.EndpointURL != "http://localhost:9000" {
+		t.Errorf("endpoint not passed: got %q", captured.Repo.S3.EndpointURL)
+	}
+	if captured.Repo.S3.Region != "us-east-1" {
+		t.Errorf("region not passed: got %q", captured.Repo.S3.Region)
+	}
+	if captured.Repo.S3.Prefix != "sentra/" {
+		t.Errorf("prefix not passed: got %q", captured.Repo.S3.Prefix)
+	}
+
+	// sentra.yaml must contain the flag values so subsequent commands
+	// pick them up via config.Load.
+	body, err := os.ReadFile(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("read sentra.yaml: %v", err)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("Load(sentra.yaml): %v\nbody:\n%s", err, body)
+	}
+	if cfg.Repo.S3.Bucket != "my-bucket" {
+		t.Errorf("persisted bucket: got %q, want my-bucket", cfg.Repo.S3.Bucket)
+	}
+	if cfg.Repo.S3.EndpointURL != "http://localhost:9000" {
+		t.Errorf("persisted endpoint: got %q", cfg.Repo.S3.EndpointURL)
+	}
+	if cfg.Repo.S3.Region != "us-east-1" {
+		t.Errorf("persisted region: got %q", cfg.Repo.S3.Region)
+	}
+	if cfg.Repo.S3.Prefix != "sentra/" {
+		t.Errorf("persisted prefix: got %q", cfg.Repo.S3.Prefix)
+	}
+}
+
+// TestInit_ForceMergesExistingConfig with --force re-bootstraps the
+// repo using the existing sentra.yaml as the base for the store
+// settings (so the user doesn't have to re-pass every flag). New
+// flag values still override.
+func TestInit_ForceUsesFlagsOverYAML(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	// Pre-existing sentra.yaml says bucket-A; flag says bucket-B.
+	body := "repo:\n  s3:\n    bucket: bucket-A\n    region: us-west-2\n"
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+	store := blobstore.NewMemory()
+	var captured *config.Config
+	deps := InitDeps{
+		NewStore: func(_ context.Context, cfg *config.Config) (blobstore.Store, error) {
+			captured = cfg
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+		Stdout:     io.Discard,
+	}
+	cmd := NewInit(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--force", "--bucket", "bucket-B"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if captured.Repo.S3.Bucket != "bucket-B" {
+		t.Errorf("flag should override yaml bucket: got %q", captured.Repo.S3.Bucket)
+	}
+	// Region from yaml should still be there since the flag was not set.
+	if captured.Repo.S3.Region != "us-west-2" {
+		t.Errorf("yaml region should be preserved: got %q", captured.Repo.S3.Region)
 	}
 }
