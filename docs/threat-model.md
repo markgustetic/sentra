@@ -75,13 +75,51 @@ and the dedup story gets harder).
   invalidate previously-derived KEKs that an attacker might already
   hold.
 
+## Tampering by an operator with bucket-write access
+
+The threat: a malicious or compromised operator with bucket-write access
+modifies on-disk objects with the goal of weakening sentra's protections
+(e.g., downgrading KDF parameters so the wrapped repo key is brute-
+forceable) or impersonating a different repository.
+
+What blocks each attack:
+
+- **Chunk / manifest / index tamper.** Each blob is sealed with
+  XChaCha20-Poly1305 in the v3 envelope; the version byte is bound into
+  the AEAD's associated data. Flipping any byte of a sealed blob
+  invalidates the tag. Flipping the version byte on a v3 blob also
+  invalidates the tag (the v3 AEAD expects `AD=[0x03]`; routing to an
+  older decoder that expects `AD=nil` produces a tag failure).
+- **Config tamper.** The `config` blob is plaintext JSON (the wrapped
+  repo key inside is itself AEAD-protected, but the surrounding KDF
+  params, salt, ID, and timestamps were not historically authenticated).
+  Sentra now stores an HMAC-SHA256 over the config under a sub-key
+  derived from the passphrase-derived KEK (HKDF-Expand domain
+  `sentra/config-mac/v1`). `Open` verifies the MAC after deriving the
+  KEK; mismatch produces `ErrConfigTampered`. KDF / salt tampering
+  typically also breaks the wrapped-key unwrap (different KEK), so
+  the operator sees `ErrWrongPassphrase` first — but either way the
+  tampered config is rejected.
+- **GC vs CreateSnapshot race.** Both operations acquire a single
+  advisory lock at `meta/lock` (`PutIfAbsent`). A backup running
+  alongside an in-progress GC fails fast with `ErrRepoLocked` rather
+  than racing into an inconsistent state where the new manifest
+  references chunks GC just deleted.
+- **Legacy configs (no MAC).** Repos written by pre-MAC sentra builds
+  `Open` with a warning logged; a future `sentra passwd` will rewrite
+  the config with a MAC. This is the single migration window where
+  KDF tampering wouldn't be detected by the MAC — it's still bounded
+  by the wrap-shadow effect (downgrading KDF.Memory changes the KEK,
+  unwrap fails first).
+
 ## Out of scope for v1
 
-- **Tampering detection at the bucket level.** The per-object AEAD detects
-  tampering, but a malicious S3 operator could *delete* objects (causing
-  manifest decode failures) or *roll back* by serving an older version.
-  S3 versioning + Object Lock at the bucket level is the right answer
-  for adversarial buckets; `sentra` does not enforce them.
+- **Bucket-level rollback to a stale snapshot of the entire repo.** The
+  per-blob AEAD detects content tampering and the config MAC detects
+  tamper of the config; but a malicious operator could *delete* objects
+  or *roll back* the entire bucket to an older state. S3 versioning +
+  Object Lock at the bucket level is the right answer for adversarial
+  buckets; `sentra` does not enforce them.
 - **Side channels.** Timing of agent scans, disk-I/O patterns during
   chunking, etc. — not modeled.
 - **Post-quantum.** XChaCha20-Poly1305 and Argon2id are the v1 building blocks.
