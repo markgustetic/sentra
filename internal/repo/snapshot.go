@@ -10,6 +10,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"os"
 	"path/filepath"
 	"regexp"
@@ -333,12 +334,33 @@ func (r *Repo) finishSnapshot(
 	if err := r.putManifest(ctx, repoKey, m); err != nil {
 		return SnapshotInfo{}, err
 	}
-	return SnapshotInfo{
+
+	info := SnapshotInfo{
 		ID:        m.ID,
 		CreatedAt: m.CreatedAt,
 		Tag:       m.Tag,
 		Stats:     m.Stats,
-	}, nil
+	}
+
+	// Update the snapshot summary index so the next ListSnapshots is
+	// O(1). Failure here is non-fatal: the manifest above is the
+	// source of truth and the index will self-heal on the next
+	// ListSnapshots call (manifest fan-back rebuilds it). We still
+	// log a warning so an operator running with --log-level=info
+	// sees recurring index-write failures.
+	if err := r.updateSnapshotIndex(ctx, repoKey, func(idx *snapshotIndex) error {
+		idx.Entries = append(idx.Entries, info)
+		sortNewestFirst(idx.Entries)
+		return nil
+	}); err != nil {
+		slog.LogAttrs(ctx, slog.LevelWarn,
+			"failed to update snapshot index after CreateSnapshot",
+			slog.String("snapshot_id", info.ID),
+			slog.String("error", err.Error()),
+		)
+	}
+
+	return info, nil
 }
 
 // putManifest serializes m, compresses, encrypts, and writes it to

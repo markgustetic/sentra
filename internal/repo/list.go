@@ -3,6 +3,7 @@ package repo
 import (
 	"context"
 	"fmt"
+	"log/slog"
 	"slices"
 	"strings"
 )
@@ -11,20 +12,63 @@ import (
 // first by CreatedAt. Each entry's full file tree is *not* loaded —
 // callers wanting that should LoadSnapshot by ID.
 //
-// For v1 we download every manifest header to read its CreatedAt and
-// Stats. Acceptable while repos are tens-to-hundreds of snapshots; a
-// future phase will introduce an index file (see design doc) so we
-// can answer this without a manifest fan-out.
+// Fast path: a single GET against the snapshot index blob. Mature
+// repos with many snapshots see this as O(1) network cost. The index
+// is maintained by CreateSnapshot and DeleteSnapshot.
+//
+// Fallback path: when the index is absent (legacy repos that haven't
+// been written by an index-aware build, or a freshly-init'd one) or
+// unreadable (corrupt blob, version mismatch), ListSnapshots falls
+// back to manifest fan-out — load each snapshots/<id> blob individually.
+// On a successful fallback, the index is opportunistically rebuilt so
+// the next call is fast.
 func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
-	// We don't use the key directly here — LoadSnapshot below grabs
-	// its own copy — but we still call keyOrErr so List returns
-	// ErrClosed promptly when the repo has been closed. The defensive
-	// copy is wiped immediately.
-	k, err := r.keyOrErr()
+	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return nil, err
 	}
-	zeroize(k)
+	defer zeroize(repoKey)
+
+	// Fast path: read the index blob.
+	idx, idxErr := r.loadSnapshotIndex(ctx, repoKey)
+	if idxErr == nil && idx != nil {
+		// Defensive copy so callers can't mutate the in-memory cache.
+		out := slices.Clone(idx.Entries)
+		sortNewestFirst(out)
+		return out, nil
+	}
+	if idxErr != nil {
+		// A corrupt or version-mismatched index falls through to the
+		// manifest path; the rebuilt index from below replaces the
+		// bad blob so this is self-healing.
+		slog.LogAttrs(ctx, slog.LevelWarn,
+			"snapshot index unreadable, falling back to manifest scan",
+			slog.String("error", idxErr.Error()))
+	}
+
+	// Fallback: O(N) manifest fan-out.
+	out, err := r.listSnapshotsFromManifests(ctx)
+	if err != nil {
+		return nil, err
+	}
+	// Best-effort write of the rebuilt index so the next call is fast.
+	// A write failure is non-fatal — we already have the answer.
+	if werr := r.saveSnapshotIndex(ctx, repoKey, &snapshotIndex{Entries: out}); werr != nil {
+		slog.LogAttrs(ctx, slog.LevelWarn,
+			"failed to write snapshot index after rebuild",
+			slog.String("error", werr.Error()))
+	}
+	return out, nil
+}
+
+// listSnapshotsFromManifests is the original ListSnapshots logic,
+// retained as the fallback path for repos without an index blob and
+// for the index-rebuild path. The cost is O(N) manifest reads.
+//
+// Kept package-private — production callers go through ListSnapshots
+// which prefers the indexed path. Exported only for the test suite to
+// drive both paths independently if needed.
+func (r *Repo) listSnapshotsFromManifests(ctx context.Context) ([]SnapshotInfo, error) {
 	entries, err := r.store.List(ctx, snapshotPrefix)
 	if err != nil {
 		return nil, fmt.Errorf("repo: list snapshots: %w", err)
@@ -49,26 +93,6 @@ func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 			Stats:     m.Stats,
 		})
 	}
-	// Newest first; ties broken by ID (descending) for a stable
-	// order even when timestamps collide on coarse clocks.
-	slices.SortFunc(out, func(a, b SnapshotInfo) int {
-		// Newest first: reverse-chronological. cmp.Compare on time
-		// gives ascending; we negate to get descending. ID descending
-		// is the tie-break.
-		if !a.CreatedAt.Equal(b.CreatedAt) {
-			if a.CreatedAt.After(b.CreatedAt) {
-				return -1
-			}
-			return 1
-		}
-		// Tie-break: ID descending.
-		if a.ID > b.ID {
-			return -1
-		}
-		if a.ID < b.ID {
-			return 1
-		}
-		return 0
-	})
+	sortNewestFirst(out)
 	return out, nil
 }

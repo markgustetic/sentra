@@ -4,6 +4,8 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"log/slog"
+	"slices"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -44,28 +46,48 @@ type GCStats struct {
 // running GC once at the end, so the live set is computed from the
 // final state rather than walking the manifest tree O(N) times.
 //
+// The snapshot index is also updated to remove the entry, so the
+// next ListSnapshots stays consistent. An index update failure is
+// non-fatal — the manifest is gone (the source-of-truth delete
+// already succeeded), so the worst case is a stale entry in the
+// index that ListSnapshots will reconcile on the next manifest
+// fan-back. The warning logs the slip for diagnosis.
+//
 // Returns blobstore.ErrNotFound (wrapped) if the manifest doesn't
 // exist; callers can errors.Is against the sentinel.
 func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 	if err := validateSnapshotID(id); err != nil {
 		return err
 	}
-	// Guard with keyOrErr so a closed repo fails fast instead of
-	// silently issuing an unauthenticated Delete to the store. We
-	// don't actually need the key for delete (manifests are sealed,
-	// not the keys), but failing on Close is the contract. zeroize
-	// the defensive copy immediately.
-	k, err := r.keyOrErr()
+	// We need the repo key to update the encrypted index. Acquiring
+	// it here also serves the original purpose: a closed repo fails
+	// fast instead of silently issuing an unauthenticated Delete.
+	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return err
 	}
-	zeroize(k)
+	defer zeroize(repoKey)
 
 	if err := r.store.Delete(ctx, snapshotPrefix+id); err != nil {
 		if errors.Is(err, blobstore.ErrNotFound) {
 			return err
 		}
 		return fmt.Errorf("repo: delete snapshot %q: %w", id, err)
+	}
+
+	// Drop the entry from the snapshot index. Best-effort: see
+	// the docstring above for the failure-mode rationale.
+	if err := r.updateSnapshotIndex(ctx, repoKey, func(idx *snapshotIndex) error {
+		idx.Entries = slices.DeleteFunc(idx.Entries, func(e SnapshotInfo) bool {
+			return e.ID == id
+		})
+		return nil
+	}); err != nil {
+		slog.LogAttrs(ctx, slog.LevelWarn,
+			"failed to update snapshot index after DeleteSnapshot",
+			slog.String("snapshot_id", id),
+			slog.String("error", err.Error()),
+		)
 	}
 	return nil
 }
