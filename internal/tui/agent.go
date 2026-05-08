@@ -213,7 +213,11 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 func (a *AgentView) spawnScan() tea.Cmd {
 	stream := make(chan string, 32)
 	doneCh := make(chan agentDoneMsg, 1)
-	ctx, cancel := context.WithCancel(context.Background())
+	// Parent is deps.Ctx (App-scoped) so a 'q' quit cancels the
+	// scan via App.cleanup. The local cancel is also retained so
+	// callers can cancel a scan independently (e.g. user navigates
+	// away from the agent view without quitting).
+	ctx, cancel := context.WithCancel(ctxOrBackground(a.deps.Ctx))
 	a.stream = stream
 	a.doneCh = doneCh
 	a.cancel = cancel

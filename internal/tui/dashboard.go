@@ -75,7 +75,9 @@ func hydrateDashboardData(deps Deps) DashboardData {
 	// list shouldn't block the TUI from drawing — if List takes more
 	// than a few seconds, we render an empty dashboard and the user
 	// can re-open later.
-	ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+	//
+	// Parent is deps.Ctx (App-scoped) so a 'q' quit cancels mid-load.
+	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 5*time.Second)
 	defer cancel()
 
 	snaps, err := deps.Repo.ListSnapshots(ctx)

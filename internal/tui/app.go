@@ -10,6 +10,8 @@
 package tui
 
 import (
+	"context"
+
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -59,6 +61,14 @@ type Deps struct {
 	// because the user-facing label often comes from sentra.yaml's
 	// bucket field, not from anything inside the repo struct.
 	RepoName string
+
+	// Ctx is the parent context for all TUI-driven I/O. NewApp
+	// derives a cancellable child from this and threads the child
+	// back into every sub-view's Deps via DepsForChildren — so when
+	// the user presses 'q' the App's cleanup cancels every in-flight
+	// blobstore call. Nil falls back to context.Background() (the
+	// pre-Phase-2 behavior) so tests using `Deps{}` keep working.
+	Ctx context.Context
 }
 
 // App is the parent Bubbletea model. It owns the active view and
@@ -73,19 +83,40 @@ type App struct {
 	snapshots tea.Model
 	diff      tea.Model
 	agent     tea.Model
+
+	// cancel cancels the App-scoped context that was derived from
+	// deps.Ctx in NewApp. Sub-views derive per-call timeouts from
+	// that App-scoped context, so calling cancel() on quit
+	// terminates every in-flight blobstore call rather than letting
+	// it drain to its own per-call timeout.
+	cancel context.CancelFunc
 }
 
 // NewApp constructs the App with each sub-view pre-built from deps.
 // Sub-views are built eagerly so switching between them is a tab-key
 // away with no construction cost; for the v1 view set this is cheap
 // (each view is a few KB of state).
+//
+// NewApp wraps deps.Ctx (or context.Background() if nil) in a
+// cancellable child and stores the cancel func on the returned App.
+// Every sub-view receives Deps with that same cancellable Ctx, so
+// when the App's cleanup runs every in-flight derived context fires
+// ctx.Err() at once.
 func NewApp(deps Deps) App {
+	parent := deps.Ctx
+	if parent == nil {
+		parent = context.Background()
+	}
+	ctx, cancel := context.WithCancel(parent)
+	deps.Ctx = ctx
+
 	return App{
 		active:    ViewDashboard,
 		dashboard: NewDashboard(deps),
 		snapshots: NewSnapshots(deps),
 		diff:      NewDiff(deps),
 		agent:     NewAgentView(deps),
+		cancel:    cancel,
 	}
 }
 
@@ -268,11 +299,15 @@ func (m App) renderBottomBar() string {
 	return ui.Subtle.Render("?:help  q:quit")
 }
 
-// cleanup releases resources held by sub-views. Today only AgentView
-// needs it (in-flight scan ctx-cancel); other sub-views are stateless.
-// We type-assert each sub-view against an internal interface so we
-// can quietly skip ones that don't need cleanup.
+// cleanup releases resources held by sub-views and cancels the
+// App-scoped context so any goroutine blocked on a deps.Ctx-derived
+// blobstore call wakes up with ctx.Canceled rather than draining its
+// per-call timeout. Idempotent — quit-and-cancel followed by another
+// signal-driven cancel is a no-op the second time.
 func (m App) cleanup() {
+	if m.cancel != nil {
+		m.cancel()
+	}
 	type cleaner interface{ Cleanup() }
 	// AgentView.Cleanup is a value-receiver method, so the AgentView
 	// value stored in m.agent's tea.Model interface satisfies the

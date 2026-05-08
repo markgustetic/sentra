@@ -51,7 +51,10 @@ func NewSnapshots(deps Deps) Snapshots {
 	}
 	if deps.Repo != nil {
 		loader = func(id string) (repo.Manifest, error) {
-			ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+			// Derive from deps.Ctx (App-scoped) so a 'q' quit
+			// cancels the loader mid-flight rather than leaking the
+			// S3 call to its own per-call timeout.
+			ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 10*time.Second)
 			defer cancel()
 			return deps.Repo.LoadSnapshot(ctx, id)
 		}
@@ -78,14 +81,27 @@ func NewSnapshotsWithLoader(deps Deps, loader detailLoader) Snapshots {
 // loadSnapshotsBestEffort wraps repo.ListSnapshots with a timeout
 // and an error-swallow so a slow blobstore can't block construction.
 // Failures yield a nil slice; the view then renders the empty-state.
+//
+// The 10s timeout is per-call; the parent context comes from
+// deps.Ctx (App-scoped) so a quick quit cancels the load.
 func loadSnapshotsBestEffort(deps Deps) []repo.SnapshotInfo {
-	ctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 10*time.Second)
 	defer cancel()
 	snaps, err := deps.Repo.ListSnapshots(ctx)
 	if err != nil {
 		return nil
 	}
 	return snaps
+}
+
+// ctxOrBackground returns ctx, or context.Background() when ctx is
+// nil. Sub-views derive per-call timeouts via this helper so a
+// Deps{} (zero value used in tests) doesn't crash on a nil parent.
+func ctxOrBackground(ctx context.Context) context.Context {
+	if ctx == nil {
+		return context.Background()
+	}
+	return ctx
 }
 
 // newSnapshotsTable builds the bubbles/table with our column layout.
