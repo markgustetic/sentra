@@ -167,6 +167,61 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// s3DeleteObjectsBatch is the S3 API hard limit on keys per
+// DeleteObjects call. We chunk on this boundary internally so
+// callers can pass arbitrarily large slices.
+const s3DeleteObjectsBatch = 1000
+
+// BatchDelete removes keys via S3's DeleteObjects API in chunks of
+// up to 1000 (the API limit). Idempotent: keys that don't exist are
+// silently OK. Returns the total count of objects S3 reported as
+// successfully deleted across all chunks.
+//
+// On a partial failure, BatchDelete returns the count of keys that
+// did succeed plus an error describing the per-key failures from
+// the first failing chunk. This matches what callers like GC want:
+// they can record the partial progress and surface the error.
+func (s *S3) BatchDelete(ctx context.Context, keys []string) (int, error) {
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	deleted := 0
+	for start := 0; start < len(keys); start += s3DeleteObjectsBatch {
+		end := start + s3DeleteObjectsBatch
+		if end > len(keys) {
+			end = len(keys)
+		}
+		chunk := keys[start:end]
+		objs := make([]types.ObjectIdentifier, len(chunk))
+		for i, k := range chunk {
+			objs[i] = types.ObjectIdentifier{Key: aws.String(s.fullKey(k))}
+		}
+		// Quiet=false so the response includes per-key errors; we
+		// want to surface them rather than swallow.
+		out, err := s.client.DeleteObjects(ctx, &s3.DeleteObjectsInput{
+			Bucket: aws.String(s.cfg.Bucket),
+			Delete: &types.Delete{Objects: objs, Quiet: aws.Bool(false)},
+		})
+		if err != nil {
+			return deleted, fmt.Errorf("blobstore/s3: batch delete: %w", err)
+		}
+		deleted += len(out.Deleted)
+		if len(out.Errors) > 0 {
+			// Build a compact summary; per-key error detail isn't
+			// useful at the call-site (GC), so we surface the count
+			// and the first key/code for triage.
+			first := out.Errors[0]
+			return deleted, fmt.Errorf("blobstore/s3: batch delete: %d errors (first: key=%q code=%q msg=%q)",
+				len(out.Errors),
+				aws.ToString(first.Key),
+				aws.ToString(first.Code),
+				aws.ToString(first.Message),
+			)
+		}
+	}
+	return deleted, nil
+}
+
 // List returns every object under cfg.Prefix + prefix, with cfg.Prefix
 // stripped from the returned keys so callers see the same key space
 // they passed to Put. Trailing slash on prefix is preserved so that

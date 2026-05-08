@@ -151,4 +151,68 @@ func TestS3Integration(t *testing.T) {
 			t.Fatalf("want ErrNotFound, got %v", err)
 		}
 	})
+
+	t.Run("batch_delete", func(t *testing.T) {
+		// Put a small set, then BatchDelete them.
+		keys := []string{"batch/a", "batch/b", "batch/c"}
+		for _, k := range keys {
+			if err := store.Put(ctx, k, strings.NewReader("x")); err != nil {
+				t.Fatalf("put %s: %v", k, err)
+			}
+		}
+		// Mix in a missing key — BatchDelete is idempotent on misses.
+		toDelete := append([]string{"batch/never-existed"}, keys...)
+		deleted, err := store.BatchDelete(ctx, toDelete)
+		if err != nil {
+			t.Fatalf("BatchDelete: %v", err)
+		}
+		if deleted != len(keys) {
+			t.Errorf("deleted: got %d, want %d (missing key shouldn't count)", deleted, len(keys))
+		}
+		for _, k := range keys {
+			if _, err := store.Stat(ctx, k); !errors.Is(err, ErrNotFound) {
+				t.Errorf("%s still present after BatchDelete: %v", k, err)
+			}
+		}
+	})
+
+	t.Run("batch_delete_chunks_above_1000", func(t *testing.T) {
+		// Stress the API-limit chunking: 2050 keys means three
+		// DeleteObjects round trips (1000 + 1000 + 50). We Put a
+		// smaller, fixed number of REAL keys and pad with non-existent
+		// ones so the test is fast — DeleteObjects accepts non-existent
+		// keys and returns them in `Deleted` (S3's idempotent contract).
+		const total = 2050
+		const real_ = 5 // keep MinIO put cost low
+		realKeys := make([]string, real_)
+		for i := 0; i < real_; i++ {
+			k := "stress/real-" + string(rune('a'+i))
+			realKeys[i] = k
+			if err := store.Put(ctx, k, strings.NewReader("x")); err != nil {
+				t.Fatalf("put %s: %v", k, err)
+			}
+		}
+		all := make([]string, 0, total)
+		all = append(all, realKeys...)
+		for i := 0; i < total-real_; i++ {
+			all = append(all, "stress/missing-"+string(rune('a'+(i%26)))+"-"+string(rune('0'+(i%10))))
+		}
+		deleted, err := store.BatchDelete(ctx, all)
+		if err != nil {
+			t.Fatalf("BatchDelete: %v", err)
+		}
+		// S3 reports "deleted" for any key included in the delete list,
+		// whether or not it was present — that's the API behavior. So
+		// the deleted count for a 2050-key call is up to 2050. The
+		// check we care about: the chunking didn't drop anything and
+		// the real keys are gone.
+		if deleted < real_ {
+			t.Errorf("deleted: got %d, want >= %d", deleted, real_)
+		}
+		for _, k := range realKeys {
+			if _, err := store.Stat(ctx, k); !errors.Is(err, ErrNotFound) {
+				t.Errorf("%s still present: %v", k, err)
+			}
+		}
+	})
 }

@@ -149,37 +149,47 @@ func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error)
 		}
 	}
 
-	// Walk every data/ entry and delete the ones that aren't in the
-	// live set. We Stat first to capture the sealed-blob size so the
-	// returned DeletedBytes is meaningful even if the store doesn't
-	// expose Size on Delete.
+	// Walk every data/ entry, partition into live vs orphan, and
+	// hand the orphan key set to BatchDelete. The S3 implementation
+	// of BatchDelete uses DeleteObjects (1000 keys per request), so a
+	// 10k-orphan GC drops from ~20k round trips to ~10 — the previous
+	// implementation called Stat+Delete per orphan (Delete itself
+	// also did a redundant Stat for ErrNotFound parity).
 	dataEntries, err := r.store.List(ctx, DataPrefix)
 	if err != nil {
 		return GCStats{}, fmt.Errorf("repo: list data: %w", err)
 	}
 
 	stats := GCStats{}
+	var orphanKeys []string
 	for _, info := range dataEntries {
 		if _, ok := liveKeys[info.Key]; ok {
 			stats.LiveBlobs++
 			continue
 		}
-		// Stat before delete so DeletedBytes covers the actual
-		// sealed-blob size, not the plaintext. info.Size is what
-		// List returned but we re-Stat in case the underlying store
-		// updates size lazily — paranoia, but cheap.
+		orphanKeys = append(orphanKeys, info.Key)
+		// Sum sealed-blob sizes from the List result so DeletedBytes
+		// reflects what we're freeing in S3-billing terms. On a
+		// partial batch failure the value can slightly overstate
+		// (we attempted N, S3 confirmed M); the returned error makes
+		// that visible to the operator.
 		if size, err := lookupSize(ctx, r.store, info); err == nil {
 			stats.DeletedBytes += size
 		}
-		if err := r.store.Delete(ctx, info.Key); err != nil {
-			if errors.Is(err, blobstore.ErrNotFound) {
-				// Race-with-something-else: a parallel GC or admin
-				// cleanup got there first. Not our problem.
-				continue
-			}
-			return stats, fmt.Errorf("repo: delete %q: %w", info.Key, err)
-		}
-		stats.DeletedBlobs++
+	}
+
+	if len(orphanKeys) == 0 {
+		return stats, nil
+	}
+
+	deleted, err := r.store.BatchDelete(ctx, orphanKeys)
+	stats.DeletedBlobs = deleted
+	if err != nil {
+		// Surface the error but keep stats populated so callers can
+		// see the partial progress. BatchDelete is idempotent on
+		// missing keys (per the Store contract), so we don't need to
+		// special-case ErrNotFound here.
+		return stats, fmt.Errorf("repo: batch delete orphans: %w", err)
 	}
 	return stats, nil
 }

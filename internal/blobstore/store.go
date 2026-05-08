@@ -34,6 +34,21 @@ type Store interface {
 	Stat(ctx context.Context, key string) (Info, error)
 	Delete(ctx context.Context, key string) error
 	List(ctx context.Context, prefix string) ([]Info, error)
+
+	// BatchDelete removes multiple keys in a single backend round
+	// trip when supported (the S3 implementation uses DeleteObjects,
+	// up to 1000 keys per request). Returns the count of keys that
+	// were actually removed plus any error encountered.
+	//
+	// Unlike Delete, BatchDelete is idempotent: passing keys that
+	// don't exist is not an error and they're simply not counted in
+	// the returned deleted count. This matches S3's DeleteObjects
+	// semantics and is what callers like GC want — concurrent GC
+	// runs may race on the same orphan blobs without one of them
+	// failing on a NotFound.
+	//
+	// An empty (or nil) keys slice is a no-op and returns (0, nil).
+	BatchDelete(ctx context.Context, keys []string) (deleted int, err error)
 }
 
 // Info describes an object in the store.

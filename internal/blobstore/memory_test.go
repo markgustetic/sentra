@@ -137,3 +137,66 @@ func TestMemory_DeleteMissing(t *testing.T) {
 		t.Fatalf("want ErrNotFound, got %v", err)
 	}
 }
+
+// TestMemory_BatchDelete_HappyPath confirms that BatchDelete returns
+// the count of removed objects and that each key is gone afterwards.
+func TestMemory_BatchDelete_HappyPath(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	for _, k := range []string{"a", "b", "c", "keep"} {
+		if err := s.Put(ctx, k, strings.NewReader("x")); err != nil {
+			t.Fatal(err)
+		}
+	}
+	deleted, err := s.BatchDelete(ctx, []string{"a", "b", "c"})
+	if err != nil {
+		t.Fatalf("BatchDelete: %v", err)
+	}
+	if deleted != 3 {
+		t.Errorf("deleted: got %d, want 3", deleted)
+	}
+	// Removed keys must not be present.
+	for _, k := range []string{"a", "b", "c"} {
+		if _, err := s.Stat(ctx, k); !errors.Is(err, ErrNotFound) {
+			t.Errorf("%q still present after BatchDelete: %v", k, err)
+		}
+	}
+	// Untouched key must still be present.
+	if _, err := s.Stat(ctx, "keep"); err != nil {
+		t.Errorf("\"keep\" should still exist: %v", err)
+	}
+}
+
+// TestMemory_BatchDelete_TolerantOfMissingKeys: BatchDelete is
+// idempotent — passing already-missing keys mixed with existing ones
+// must not return an error. This matches S3's DeleteObjects behavior
+// and is what GC needs (parallel GC runs may race on the same keys).
+// The deleted count reports only keys that actually went away.
+func TestMemory_BatchDelete_TolerantOfMissingKeys(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	if err := s.Put(ctx, "exists", strings.NewReader("x")); err != nil {
+		t.Fatal(err)
+	}
+	deleted, err := s.BatchDelete(ctx, []string{"exists", "missing-1", "missing-2"})
+	if err != nil {
+		t.Fatalf("BatchDelete: %v", err)
+	}
+	if deleted != 1 {
+		t.Errorf("deleted: got %d, want 1", deleted)
+	}
+}
+
+// TestMemory_BatchDelete_EmptyInput is a trivial case — passing zero
+// keys must not error and must return zero. Saves callers from
+// having to special-case empty slices.
+func TestMemory_BatchDelete_EmptyInput(t *testing.T) {
+	s := NewMemory()
+	deleted, err := s.BatchDelete(context.Background(), nil)
+	if err != nil {
+		t.Fatalf("BatchDelete: %v", err)
+	}
+	if deleted != 0 {
+		t.Errorf("deleted: got %d, want 0", deleted)
+	}
+}

@@ -94,6 +94,28 @@ func (m *Memory) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// BatchDelete removes every key that exists. Missing keys are
+// silently skipped (idempotent contract — see Store.BatchDelete).
+// Returns the count of keys that were actually present and removed.
+func (m *Memory) BatchDelete(ctx context.Context, keys []string) (int, error) {
+	if err := ctx.Err(); err != nil {
+		return 0, err
+	}
+	if len(keys) == 0 {
+		return 0, nil
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	deleted := 0
+	for _, k := range keys {
+		if _, ok := m.data[k]; ok {
+			delete(m.data, k)
+			deleted++
+		}
+	}
+	return deleted, nil
+}
+
 // List returns all keys having the given literal prefix, sorted
 // ascending by key for stable output.
 func (m *Memory) List(ctx context.Context, prefix string) ([]Info, error) {
