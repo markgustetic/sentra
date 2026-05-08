@@ -108,12 +108,20 @@ func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 // algorithm but very rarely the user's intent. The intended override
 // for that edge is a future `--all` flag on the prune CLI.
 //
-// Concurrency: GC is not safe to run concurrently with CreateSnapshot.
-// A snapshot in flight could write a chunk *after* GC built its live
-// set, then write its manifest *after* GC finished — leaving the
-// manifest pointing at a chunk GC has just deleted. Higher layers are
-// responsible for serializing the two operations.
+// Concurrency: GC and CreateSnapshot serialize via the repo-wide
+// advisory lock at meta/lock. Acquiring the lock fails fast with
+// ErrRepoLocked when another snapshot or GC is already running,
+// rather than corrupting the live-set computation by racing with
+// a concurrent CreateSnapshot. A crashed lock-holder leaves the
+// blob behind; recovery is currently manual (delete the lock key
+// out-of-band).
 func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error) {
+	lockInfo, err := r.acquireLock(ctx, "gc")
+	if err != nil {
+		return GCStats{}, err
+	}
+	defer r.releaseLock(ctx, lockInfo)
+
 	// Same fail-on-Close contract as DeleteSnapshot. The actual key
 	// access happens inside LoadSnapshot, so the local copy here is
 	// solely a "check Closed" probe; zeroize immediately.

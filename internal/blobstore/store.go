@@ -13,6 +13,12 @@ import (
 // not exist in the store. Callers should compare with errors.Is.
 var ErrNotFound = errors.New("blob not found")
 
+// ErrAlreadyExists is returned by PutIfAbsent when the destination
+// key already holds an object. Callers can errors.Is against this
+// sentinel to distinguish "lock already taken" from a transport-
+// layer failure.
+var ErrAlreadyExists = errors.New("blob already exists")
+
 // Store is the minimal contract sentra needs from any blob backend.
 //
 // Keys are forward-slash separated, must not start with "/", and must
@@ -49,6 +55,30 @@ type Store interface {
 	//
 	// An empty (or nil) keys slice is a no-op and returns (0, nil).
 	BatchDelete(ctx context.Context, keys []string) (deleted int, err error)
+
+	// PutIfAbsent writes r at key only if no object exists at that
+	// key. Returns ErrAlreadyExists when the key is already taken,
+	// nil on a successful write, or the underlying transport error
+	// for anything else.
+	//
+	// The S3 implementation uses the `If-None-Match: *` header so
+	// the conditional check happens server-side. The in-memory
+	// implementation locks its map so concurrent PutIfAbsent calls
+	// at the same key serialize correctly.
+	//
+	// PutIfAbsent is the primitive for advisory locks: callers
+	// PutIfAbsent at a known key, run the protected operation,
+	// then Delete the key. A crashed lock-holder leaves the lock
+	// blob behind; recovery is currently manual (delete the lock
+	// key out-of-band).
+	//
+	// Caveat: at-least-once retry semantics across PutIfAbsent are
+	// awkward. If the first attempt's response is lost in transit
+	// but the write actually landed, the retry sees its own write
+	// and returns ErrAlreadyExists. RetryStore therefore does NOT
+	// retry PutIfAbsent — callers see a definitive yes-or-no on
+	// the first attempt.
+	PutIfAbsent(ctx context.Context, key string, r io.Reader) error
 }
 
 // Info describes an object in the store.

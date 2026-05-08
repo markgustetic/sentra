@@ -106,6 +106,14 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 		return SnapshotInfo{}, err
 	}
 
+	// Same advisory lock as CreateSnapshot — apply paths are
+	// snapshot-creating operations and must serialize against GC.
+	lockInfo, err := r.acquireLock(ctx, "snapshot-apply")
+	if err != nil {
+		return SnapshotInfo{}, err
+	}
+	defer r.releaseLock(ctx, lockInfo)
+
 	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return SnapshotInfo{}, err

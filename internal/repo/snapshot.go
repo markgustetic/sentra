@@ -106,6 +106,17 @@ const DataPrefix = "data/"
 // count zero — they didn't move bytes). A nil reporter is treated as
 // a NopReporter so call sites stay free of nil checks.
 func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOptions) (SnapshotInfo, error) {
+	// Acquire the repo-wide advisory lock so a concurrent GC can't
+	// see this snapshot's chunks land while it's deciding what to
+	// delete. The lock is released on every exit path (success and
+	// error) via the deferred releaseLock. ErrRepoLocked surfaces a
+	// diagnostic message naming the holder.
+	lockInfo, err := r.acquireLock(ctx, "snapshot")
+	if err != nil {
+		return SnapshotInfo{}, err
+	}
+	defer r.releaseLock(ctx, lockInfo)
+
 	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return SnapshotInfo{}, err

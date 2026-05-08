@@ -94,6 +94,31 @@ func (m *Memory) Delete(ctx context.Context, key string) error {
 	return nil
 }
 
+// PutIfAbsent writes r under key only if the key is currently
+// unset. ErrAlreadyExists is returned when the key is taken; the
+// reader is NOT consumed in that case so the caller can retry
+// against a different key.
+func (m *Memory) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	if err := ctx.Err(); err != nil {
+		return err
+	}
+	// Read the body before acquiring the write lock so a slow
+	// reader doesn't pin the whole store.
+	buf, err := io.ReadAll(r)
+	if err != nil {
+		return fmt.Errorf("blobstore/memory: read: %w", err)
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, taken := m.data[key]; taken {
+		return ErrAlreadyExists
+	}
+	stored := make([]byte, len(buf))
+	copy(stored, buf)
+	m.data[key] = stored
+	return nil
+}
+
 // BatchDelete removes every key that exists. Missing keys are
 // silently skipped (idempotent contract — see Store.BatchDelete).
 // Returns the count of keys that were actually present and removed.

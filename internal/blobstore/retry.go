@@ -317,6 +317,18 @@ func (r *RetryStore) List(ctx context.Context, prefix string) ([]Info, error) {
 	return out, err
 }
 
+// PutIfAbsent intentionally does NOT retry. The at-least-once
+// nature of the retry loop conflicts with PutIfAbsent's
+// definitive "did it land or not?" contract: a successful first
+// attempt whose response is lost in transit would, on retry, see
+// its own write and report ErrAlreadyExists — even though the
+// caller's intent succeeded. Callers (advisory locks, etc.)
+// expect a single decisive answer, so we delegate straight
+// through to the inner Store.
+func (r *RetryStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
+	return r.inner.PutIfAbsent(ctx, key, body)
+}
+
 // BatchDelete retries the inner BatchDelete call. The inner S3
 // implementation already chunks at 1000 keys/request; on retry the
 // whole input is re-sent. Idempotency is from S3's DeleteObjects.

@@ -12,6 +12,7 @@ import (
 	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/smithy-go"
 )
 
 // S3Config configures an S3-backed Store. Profile and EndpointURL are
@@ -163,6 +164,38 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 	})
 	if err != nil {
 		return fmt.Errorf("blobstore/s3: delete %q: %w", key, err)
+	}
+	return nil
+}
+
+// PutIfAbsent uses the S3 conditional-write `If-None-Match: *`
+// header so the existence check is atomic with the write
+// server-side. ErrAlreadyExists is returned on the 412 / 409
+// response that S3 emits when a key is already taken.
+//
+// MinIO and other S3-compatible servers vary in their support for
+// If-None-Match; the test suite covers MinIO via testcontainers
+// (s3_integration_test.go).
+func (s *S3) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
+		Bucket:               aws.String(s.cfg.Bucket),
+		Key:                  aws.String(s.fullKey(key)),
+		Body:                 r,
+		IfNoneMatch:          aws.String("*"),
+		ServerSideEncryption: types.ServerSideEncryptionAes256,
+	})
+	if err != nil {
+		// AWS returns PreconditionFailed (412) for an If-None-Match
+		// miss. Some S3-compatible stores surface this as the 409
+		// "already exists" code instead. Both map to the sentinel.
+		var apiErr smithy.APIError
+		if errors.As(err, &apiErr) {
+			switch apiErr.ErrorCode() {
+			case "PreconditionFailed", "ConditionalRequestConflict":
+				return ErrAlreadyExists
+			}
+		}
+		return fmt.Errorf("blobstore/s3: putifabsent %q: %w", key, err)
 	}
 	return nil
 }

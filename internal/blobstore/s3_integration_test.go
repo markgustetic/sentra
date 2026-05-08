@@ -176,6 +176,48 @@ func TestS3Integration(t *testing.T) {
 		}
 	})
 
+	t.Run("put_if_absent_fresh_succeeds", func(t *testing.T) {
+		key := "ifabsent/fresh"
+		if err := store.PutIfAbsent(ctx, key, strings.NewReader("first")); err != nil {
+			t.Fatalf("PutIfAbsent fresh: %v", err)
+		}
+		// Body must have landed.
+		rc, err := store.Get(ctx, key)
+		if err != nil {
+			t.Fatalf("Get after PutIfAbsent: %v", err)
+		}
+		defer rc.Close()
+		got, _ := io.ReadAll(rc)
+		if !bytes.Equal(got, []byte("first")) {
+			t.Errorf("body: got %q, want %q", got, "first")
+		}
+	})
+
+	t.Run("put_if_absent_conflict_returns_sentinel", func(t *testing.T) {
+		// First PutIfAbsent — establish the key.
+		key := "ifabsent/locked"
+		if err := store.PutIfAbsent(ctx, key, strings.NewReader("holder")); err != nil {
+			t.Fatalf("first PutIfAbsent: %v", err)
+		}
+		// Second attempt at the same key must return ErrAlreadyExists.
+		// MinIO support for If-None-Match varies by version. If the
+		// underlying server doesn't enforce the conditional, the
+		// second Put will succeed and we'll fail loudly below — so a
+		// failure here means either our wrapper is wrong OR the
+		// pinned MinIO image regressed; either is worth surfacing.
+		err := store.PutIfAbsent(ctx, key, strings.NewReader("interloper"))
+		if !errors.Is(err, ErrAlreadyExists) {
+			t.Fatalf("second PutIfAbsent: got %v, want ErrAlreadyExists", err)
+		}
+		// First holder's body must still be there.
+		rc, _ := store.Get(ctx, key)
+		defer rc.Close()
+		got, _ := io.ReadAll(rc)
+		if !bytes.Equal(got, []byte("holder")) {
+			t.Errorf("body after conflict: got %q, want %q", got, "holder")
+		}
+	})
+
 	t.Run("batch_delete_chunks_above_1000", func(t *testing.T) {
 		// Stress the API-limit chunking: 2050 keys means three
 		// DeleteObjects round trips (1000 + 1000 + 50). We Put a

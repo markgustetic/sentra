@@ -4,8 +4,11 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"strings"
+	"sync"
+	"sync/atomic"
 	"testing"
 )
 
@@ -198,5 +201,88 @@ func TestMemory_BatchDelete_EmptyInput(t *testing.T) {
 	}
 	if deleted != 0 {
 		t.Errorf("deleted: got %d, want 0", deleted)
+	}
+}
+
+// TestMemory_PutIfAbsent_NewKey writes to a fresh key and observes
+// the bytes on the read path — proves PutIfAbsent stores the body
+// when the key was absent.
+func TestMemory_PutIfAbsent_NewKey(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	if err := s.PutIfAbsent(ctx, "lock", strings.NewReader("payload")); err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	rc, err := s.Get(ctx, "lock")
+	if err != nil {
+		t.Fatalf("Get: %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if !bytes.Equal(got, []byte("payload")) {
+		t.Errorf("body: got %q, want %q", got, "payload")
+	}
+}
+
+// TestMemory_PutIfAbsent_ConflictReturnsSentinel covers the
+// race-loser path: a second PutIfAbsent at the same key returns
+// ErrAlreadyExists (and does NOT overwrite the existing body).
+func TestMemory_PutIfAbsent_ConflictReturnsSentinel(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	if err := s.Put(ctx, "lock", strings.NewReader("first")); err != nil {
+		t.Fatal(err)
+	}
+	err := s.PutIfAbsent(ctx, "lock", strings.NewReader("second"))
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("PutIfAbsent: got %v, want ErrAlreadyExists", err)
+	}
+	// The original body must still be there — PutIfAbsent must not
+	// have overwritten it on conflict.
+	rc, _ := s.Get(ctx, "lock")
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if !bytes.Equal(got, []byte("first")) {
+		t.Errorf("body: got %q, want %q (PutIfAbsent must not overwrite on conflict)", got, "first")
+	}
+}
+
+// TestMemory_PutIfAbsent_ConcurrentExactlyOneWins is the contract
+// that makes PutIfAbsent useful as an advisory lock primitive: 100
+// concurrent PutIfAbsent calls at the same key must succeed exactly
+// once. Anything else means there's a race window where two
+// processes could both think they own the lock.
+func TestMemory_PutIfAbsent_ConcurrentExactlyOneWins(t *testing.T) {
+	s := NewMemory()
+	ctx := context.Background()
+	const workers = 100
+
+	var wg sync.WaitGroup
+	wg.Add(workers)
+	successes := atomic.Int32{}
+	conflicts := atomic.Int32{}
+	for i := 0; i < workers; i++ {
+		i := i
+		go func() {
+			defer wg.Done()
+			err := s.PutIfAbsent(ctx, "lock",
+				strings.NewReader(fmt.Sprintf("worker-%d", i)))
+			switch {
+			case err == nil:
+				successes.Add(1)
+			case errors.Is(err, ErrAlreadyExists):
+				conflicts.Add(1)
+			default:
+				t.Errorf("worker %d: unexpected error %v", i, err)
+			}
+		}()
+	}
+	wg.Wait()
+
+	if got := successes.Load(); got != 1 {
+		t.Errorf("successes: got %d, want exactly 1", got)
+	}
+	if got := conflicts.Load(); got != workers-1 {
+		t.Errorf("conflicts: got %d, want %d", got, workers-1)
 	}
 }
