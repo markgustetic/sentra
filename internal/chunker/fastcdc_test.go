@@ -541,7 +541,7 @@ func TestChunkStream_BoundedMemory(t *testing.T) {
 	maxConcurrent := 0
 	concurrent := 0
 	err := ChunkStream(bytes.NewReader(data), func(c Chunk) error {
-		if lastData != nil && len(lastData) > 0 {
+		if len(lastData) > 0 {
 			// On a streaming impl, lastData should already be
 			// invalidated. We can't dereference it safely; just
 			// assert the slice header points to a different region

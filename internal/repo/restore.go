@@ -7,22 +7,37 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"runtime"
 	"strings"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/markgustetic/sentra/internal/chunker"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/progress"
 )
 
-// RestoreOptions tunes a Restore call. The zero value runs with no
-// progress reporting and is otherwise equivalent to the pre-Phase-7
-// signature.
+// RestoreOptions tunes a Restore call. The zero value runs with
+// no progress reporting and the default concurrency (GOMAXPROCS).
 type RestoreOptions struct {
 	// Progress receives Total() once at the start with the manifest's
 	// total plaintext bytes (Stats.Bytes) and Add(size) per file
 	// written. Nil is treated as a NopReporter, so callers that don't
 	// care about progress can leave it unset.
 	Progress progress.Reporter
+
+	// Concurrency caps the number of files restored in parallel.
+	// Each worker fetches its file's chunks sequentially and writes
+	// the destination file; multiple workers run in parallel against
+	// the blobstore.
+	//
+	// Zero means use runtime.GOMAXPROCS(0). Set to 1 for sequential
+	// restore (matches the pre-Phase-3 behavior — useful when the
+	// target filesystem is slow, the bandwidth-delay product is
+	// small, or a regression suspect needs to be ruled out).
+	//
+	// Negative values are clamped to 1.
+	Concurrency int
 }
 
 // Restore writes every file in snapshot snapID into destDir. It
@@ -75,19 +90,44 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	absDest = filepath.Clean(absDest)
 
 	reporter.Total(m.Stats.Bytes)
-	for _, fe := range m.Tree {
-		if err := ctx.Err(); err != nil {
-			return err
-		}
-		if err := r.restoreFile(ctx, repoKey, absDest, fe); err != nil {
-			return err
-		}
-		// Report the file's plaintext size after a successful write.
-		// One Add per file is granular enough for inline progress
-		// without flooding the reporter.
-		reporter.Add(fe.Size)
+
+	// Bounded concurrency at the file level: each worker restores
+	// one file (fetch its chunks in order, write the destination
+	// file). This pipelines the per-chunk Get latency that previously
+	// dominated restore wall-time — a 10K-file restore with 4 chunks
+	// per file went from 40K sequential round trips to N-way
+	// parallel. Per-file is the natural batching unit because chunks
+	// within a file are appended in order, so within-file concurrency
+	// would need a write coordinator without paying for itself.
+	concurrency := opts.Concurrency
+	switch {
+	case concurrency == 0:
+		concurrency = runtime.GOMAXPROCS(0)
+	case concurrency < 1:
+		concurrency = 1
 	}
-	return nil
+
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(concurrency)
+
+	for _, fe := range m.Tree {
+		fe := fe // capture by value for the goroutine closure
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			if err := r.restoreFile(gctx, repoKey, absDest, fe); err != nil {
+				return err
+			}
+			// Reporter is concurrency-safe (per progress.Reporter
+			// contract). Calls happen in worker-completion order
+			// rather than manifest order, but the final sum equals
+			// the manifest's Stats.Bytes either way.
+			reporter.Add(fe.Size)
+			return nil
+		})
+	}
+	return g.Wait()
 }
 
 // restoreFile writes a single FileEntry into dest, creating parent

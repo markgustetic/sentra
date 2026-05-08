@@ -5,6 +5,7 @@ import (
 	"cmp"
 	"context"
 	"encoding/json"
+	"fmt"
 	"io"
 	"io/fs"
 	"os"
@@ -184,6 +185,89 @@ func TestRestore_AllowsEmptyExistingDest(t *testing.T) {
 	got := treeFingerprint(t, dst)
 	if len(got) != 1 || got[0].rel != "x.txt" || string(got[0].data) != "value" {
 		t.Fatalf("restore output unexpected: %+v", got)
+	}
+}
+
+// TestRestore_ConcurrentMatchesSequential confirms that restoring a
+// non-trivial tree with Concurrency=1 and Concurrency=8 produces
+// byte-identical output. The fan-out path must preserve the exact
+// dedup + per-file write semantics the sequential path has.
+func TestRestore_ConcurrentMatchesSequential(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	src := t.TempDir()
+	// Mix of file sizes and content patterns so multiple files have
+	// multiple chunks, exercising the inner per-file fetch loop in
+	// parallel across workers.
+	for i := 0; i < 30; i++ {
+		writeFile(t, filepath.Join(src, fmt.Sprintf("a/%d.bin", i)),
+			strings.Repeat(fmt.Sprintf("seed-%d-", i), 1024))
+	}
+	for i := 0; i < 20; i++ {
+		writeFile(t, filepath.Join(src, fmt.Sprintf("b/%d.txt", i)),
+			fmt.Sprintf("text content %d\n", i))
+	}
+
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dstSequential := filepath.Join(t.TempDir(), "seq")
+	if err := r.Restore(ctx, snap.ID, dstSequential, RestoreOptions{Concurrency: 1}); err != nil {
+		t.Fatalf("sequential restore: %v", err)
+	}
+	dstParallel := filepath.Join(t.TempDir(), "par")
+	if err := r.Restore(ctx, snap.ID, dstParallel, RestoreOptions{Concurrency: 8}); err != nil {
+		t.Fatalf("parallel restore: %v", err)
+	}
+
+	want := treeFingerprint(t, dstSequential)
+	got := treeFingerprint(t, dstParallel)
+	if len(want) != len(got) {
+		t.Fatalf("file count: sequential=%d parallel=%d", len(want), len(got))
+	}
+	for i := range want {
+		if want[i].rel != got[i].rel {
+			t.Errorf("rel: sequential=%q parallel=%q", want[i].rel, got[i].rel)
+		}
+		if want[i].size != got[i].size {
+			t.Errorf("%q size: sequential=%d parallel=%d",
+				want[i].rel, want[i].size, got[i].size)
+		}
+		if !bytes.Equal(want[i].data, got[i].data) {
+			t.Errorf("%q content mismatch between sequential and parallel restore",
+				want[i].rel)
+		}
+	}
+}
+
+// TestRestore_ConcurrencyClamping verifies the documented clamping:
+// negative -> 1 (sequential), zero -> default (>=1). We don't pin to
+// GOMAXPROCS because the host CPU count varies; we just confirm a
+// non-zero default fires.
+func TestRestore_ConcurrencyClamping(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "x.txt"), "hello")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	// Concurrency=-1 must succeed (clamped to 1). The behavior is
+	// observable only via a successful restore — anything that
+	// errored on the negative input would imply our clamping
+	// regressed.
+	dstNeg := filepath.Join(t.TempDir(), "neg")
+	if err := r.Restore(ctx, snap.ID, dstNeg, RestoreOptions{Concurrency: -1}); err != nil {
+		t.Fatalf("Concurrency=-1: %v", err)
+	}
+	dstZero := filepath.Join(t.TempDir(), "zero")
+	if err := r.Restore(ctx, snap.ID, dstZero, RestoreOptions{Concurrency: 0}); err != nil {
+		t.Fatalf("Concurrency=0: %v", err)
 	}
 }
 
