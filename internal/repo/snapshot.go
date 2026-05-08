@@ -237,10 +237,11 @@ func (r *Repo) captureFile(
 	state *snapState,
 	reporter progress.Reporter,
 ) (*FileEntry, int64, error) {
-	// Future: streaming for large files — chunker.ChunkAll buffers
-	// the entire file in memory (one ~1 MiB Chunk per slot). For
-	// multi-GiB files we want a chunker.ChunkStream variant that
-	// hashes-encrypts-uploads each chunk before reading the next.
+	// Streaming chunker: each chunk is hashed + sealed + uploaded
+	// before the next is read, so memory stays bounded at O(1 chunk)
+	// regardless of file size. The previous ChunkAll path buffered
+	// the entire file (~1 MiB per slot, O(N) total) and would OOM
+	// on multi-GiB inputs (databases, VM disks, photo libraries).
 	f, err := os.Open(e.AbsPath) //nolint:gosec // path comes from walker, not user input
 	if err != nil {
 		if errors.Is(err, os.ErrNotExist) {
@@ -253,43 +254,52 @@ func (r *Repo) captureFile(
 	}
 	defer f.Close()
 
-	chunks, err := chunker.ChunkAll(f)
-	if err != nil {
-		return nil, 0, fmt.Errorf("repo: chunk %q: %w", e.AbsPath, err)
-	}
-
-	hashes := make([]string, 0, len(chunks))
+	var hashes []string
 	var newBytes int64
-	for _, c := range chunks {
+	streamErr := chunker.ChunkStream(f, func(c chunker.Chunk) error {
+		// Hex-encode the hash inside the callback — c.Hash is borrowed
+		// from a stack-allocated array and invalid after fn returns.
+		// The resulting string is heap-allocated and safe to retain.
 		hexHash := hex.EncodeToString(c.Hash)
 		hashes = append(hashes, hexHash)
 		key := ChunkKey(hexHash)
 		// Stat first to skip already-stored chunks. This is the
 		// content-addressed dedup that lets identical chunks across
 		// files / snapshots upload exactly once.
-		if _, err := r.store.Stat(ctx, key); err == nil {
-			continue
-		} else if !errors.Is(err, blobstore.ErrNotFound) {
-			return nil, 0, fmt.Errorf("repo: stat chunk %s: %w", key, err)
+		if _, statErr := r.store.Stat(ctx, key); statErr == nil {
+			return nil
+		} else if !errors.Is(statErr, blobstore.ErrNotFound) {
+			return fmt.Errorf("repo: stat chunk %s: %w", key, statErr)
 		}
+		// c.Data is borrowed; Compress reads it synchronously and
+		// returns a freshly-allocated []byte that we own. The borrow
+		// is no longer needed once Compress returns.
 		compressed, err := chunker.Compress(c.Data)
 		if err != nil {
-			return nil, 0, fmt.Errorf("repo: compress chunk: %w", err)
+			return fmt.Errorf("repo: compress chunk: %w", err)
 		}
 		sealed, err := crypto.Seal(repoKey, compressed)
 		if err != nil {
-			return nil, 0, fmt.Errorf("repo: seal chunk: %w", err)
+			return fmt.Errorf("repo: seal chunk: %w", err)
 		}
+		// Put consumes the reader synchronously: the in-memory store
+		// drains it on the calling goroutine, the S3 store's PutObject
+		// returns once the SDK has its own buffered copy. Either way,
+		// `sealed` is no longer in flight when Put returns.
 		if err := r.store.Put(ctx, key, bytes.NewReader(sealed)); err != nil {
-			return nil, 0, fmt.Errorf("repo: put chunk %s: %w", key, err)
+			return fmt.Errorf("repo: put chunk %s: %w", key, err)
 		}
 		sealedSize := int64(len(sealed))
 		newBytes += sealedSize
 		// Report only chunks that actually moved bytes. Deduplicated
-		// chunks above continue without an Add — that's how the
+		// chunks above return without an Add — that's how the
 		// reporter's `done` reflects "real work" rather than "fake
 		// progress through cached content."
 		reporter.Add(sealedSize)
+		return nil
+	})
+	if streamErr != nil {
+		return nil, 0, fmt.Errorf("repo: chunk %q: %w", e.AbsPath, streamErr)
 	}
 
 	return &FileEntry{

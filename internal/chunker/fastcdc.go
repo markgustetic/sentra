@@ -58,16 +58,9 @@ type Chunk struct {
 //
 // MEMORY CEILING: ChunkAll holds every chunk in memory simultaneously
 // (~1 MiB each). For an N-byte file the resident set is O(N). This is
-// fine for manifests, indexes, and small files but will OOM on real
-// backup workloads (multi-GiB databases, photo libraries, etc.).
-//
-// Future: land a streaming variant
-//
-//	func ChunkStream(r io.Reader, fn func(Chunk) error) error
-//
-// where each chunk is delivered to the callback for hash+encrypt+upload
-// before the next is read. The streaming variant can avoid the per-call
-// copy because the callback contract bounds the slice's lifetime.
+// fine for manifests, indexes, and small files; for large files use
+// ChunkStream instead — it processes chunks one at a time so memory
+// stays bounded at O(1 chunk).
 func ChunkAll(r io.Reader) ([]Chunk, error) {
 	c, err := fastcdc.NewChunker(r, fastcdc.Options{
 		AverageSize: avgChunkSize,
@@ -104,4 +97,60 @@ func ChunkAll(r io.Reader) ([]Chunk, error) {
 		})
 	}
 	return out, nil
+}
+
+// ChunkStream reads r, calls fn for each FastCDC chunk in order, and
+// returns on EOF or the callback's first non-nil error. Memory is
+// bounded at O(1 chunk) because the callback is expected to process
+// each chunk (hash + encrypt + upload, etc.) before returning; the
+// next chunker.Next call reuses the underlying buffer.
+//
+// IMPORTANT: ChunkStream does NOT copy Data or Hash on the way out.
+// Both slices are BORROWED for the duration of the callback only:
+//
+//   - Data points into the chunker's internal buffer, which is
+//     invalidated on the next Next() call.
+//   - Hash points into a stack-allocated [32]byte that goes out of
+//     scope when fn returns.
+//
+// Callbacks that need either to outlive the callback boundary must
+// copy. The two natural patterns are:
+//
+//   - Hex-encode the Hash inside the callback (the resulting string
+//     is owned by the caller). This is what repo.captureFile does.
+//   - Pass Data to a synchronous consumer (compress, encrypt, Put)
+//     that finishes before fn returns. Goroutines that touch Data
+//     must end before fn returns.
+//
+// fn's first non-nil error short-circuits the loop and is returned
+// verbatim (not wrapped) so callers can errors.Is against their own
+// domain sentinels — wrapping happens at the call site if at all.
+//
+// An empty reader returns nil with fn never being called.
+func ChunkStream(r io.Reader, fn func(Chunk) error) error {
+	c, err := fastcdc.NewChunker(r, fastcdc.Options{
+		AverageSize: avgChunkSize,
+		MinSize:     minChunkSize,
+		MaxSize:     maxChunkSize,
+	})
+	if err != nil {
+		return fmt.Errorf("chunker: new fastcdc: %w", err)
+	}
+	for {
+		chunk, err := c.Next()
+		if errors.Is(err, io.EOF) {
+			return nil
+		}
+		if err != nil {
+			return fmt.Errorf("chunker: read chunk: %w", err)
+		}
+		sum := sha256.Sum256(chunk.Data)
+		if err := fn(Chunk{
+			Hash:   sum[:],
+			Data:   chunk.Data,
+			Offset: int64(chunk.Offset),
+		}); err != nil {
+			return err
+		}
+	}
 }
