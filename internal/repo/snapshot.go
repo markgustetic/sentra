@@ -22,7 +22,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/chunker"
 	"github.com/markgustetic/sentra/internal/crypto"
-	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/progress"
 	"github.com/markgustetic/sentra/internal/walker"
 )
 
@@ -39,7 +39,7 @@ type SnapshotOptions struct {
 	// (deduplicated chunks count zero — they didn't move bytes).
 	// Nil is treated as a NopReporter, so callers that don't care
 	// about progress can leave it unset.
-	Progress ui.ProgressReporter
+	Progress progress.Reporter
 
 	// Walker tunes the directory walk: ignore-file name and the
 	// CACHEDIR.TAG opt-in. The zero value preserves the previous
@@ -114,9 +114,10 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// CreateSnapshot's lifetime (independent of GC timing).
 	defer zeroize(repoKey)
 
-	progress := opts.Progress
-	if progress == nil {
-		progress = ui.NopReporter{}
+	// Local var name avoids shadowing the imported `progress` package.
+	reporter := opts.Progress
+	if reporter == nil {
+		reporter = progress.NopReporter{}
 	}
 
 	absRoot, err := filepath.Abs(root)
@@ -152,7 +153,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	if preErr != nil {
 		return SnapshotInfo{}, fmt.Errorf("repo: pre-walk: %w", preErr)
 	}
-	progress.Total(estimated.Load())
+	reporter.Total(estimated.Load())
 
 	// We collect FileEntry values inside the walker callback and
 	// sort at the end. The walker's worker pool means callbacks fire
@@ -164,7 +165,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 
 	walkErr := walker.Walk(ctx, absRoot, walkerOpts,
 		func(e walker.Entry) error {
-			fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, progress)
+			fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, reporter)
 			if err != nil {
 				return err
 			}
@@ -233,16 +234,16 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 // and returns the FileEntry for the manifest. A nil entry means the
 // file vanished between the walk and the open — caller should skip.
 //
-// progress.Add is called once per uploaded chunk with the sealed-blob
+// reporter.Add is called once per uploaded chunk with the sealed-blob
 // size; chunks already in the store contribute zero (they didn't move
-// any bytes). progress is required (CreateSnapshot defaults to a
+// any bytes). reporter is required (CreateSnapshot defaults to a
 // NopReporter when the caller didn't supply one).
 func (r *Repo) captureFile(
 	ctx context.Context,
 	repoKey []byte,
 	e walker.Entry,
 	state *snapState,
-	progress ui.ProgressReporter,
+	reporter progress.Reporter,
 ) (*FileEntry, int64, error) {
 	// Future: streaming for large files — chunker.ChunkAll buffers
 	// the entire file in memory (one ~1 MiB Chunk per slot). For
@@ -296,7 +297,7 @@ func (r *Repo) captureFile(
 		// chunks above continue without an Add — that's how the
 		// reporter's `done` reflects "real work" rather than "fake
 		// progress through cached content."
-		progress.Add(sealedSize)
+		reporter.Add(sealedSize)
 	}
 
 	return &FileEntry{

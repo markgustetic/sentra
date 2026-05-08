@@ -12,7 +12,7 @@ import (
 	"sync"
 	"time"
 
-	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/progress"
 	"github.com/markgustetic/sentra/internal/walker"
 )
 
@@ -112,18 +112,19 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 	}
 	defer zeroize(repoKey)
 
-	progress := opts.Progress
-	if progress == nil {
-		progress = ui.NopReporter{}
+	// Local var name avoids shadowing the imported `progress` package.
+	reporter := opts.Progress
+	if reporter == nil {
+		reporter = progress.NopReporter{}
 	}
-	progress.Total(plan.Stats.Bytes)
+	reporter.Total(plan.Stats.Bytes)
 
 	state := &snapState{}
 	for _, e := range entries {
 		if err := ctx.Err(); err != nil {
 			return SnapshotInfo{}, err
 		}
-		fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, progress)
+		fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, reporter)
 		if err != nil {
 			return SnapshotInfo{}, err
 		}

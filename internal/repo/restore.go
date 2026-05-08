@@ -11,7 +11,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/chunker"
 	"github.com/markgustetic/sentra/internal/crypto"
-	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/progress"
 )
 
 // RestoreOptions tunes a Restore call. The zero value runs with no
@@ -22,7 +22,7 @@ type RestoreOptions struct {
 	// total plaintext bytes (Stats.Bytes) and Add(size) per file
 	// written. Nil is treated as a NopReporter, so callers that don't
 	// care about progress can leave it unset.
-	Progress ui.ProgressReporter
+	Progress progress.Reporter
 }
 
 // Restore writes every file in snapshot snapID into destDir. It
@@ -48,9 +48,10 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	// at function exit so the key is not retained past Restore.
 	defer zeroize(repoKey)
 
-	progress := opts.Progress
-	if progress == nil {
-		progress = ui.NopReporter{}
+	// Local var name avoids shadowing the imported `progress` package.
+	reporter := opts.Progress
+	if reporter == nil {
+		reporter = progress.NopReporter{}
 	}
 
 	m, err := r.LoadSnapshot(ctx, snapID)
@@ -73,7 +74,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	}
 	absDest = filepath.Clean(absDest)
 
-	progress.Total(m.Stats.Bytes)
+	reporter.Total(m.Stats.Bytes)
 	for _, fe := range m.Tree {
 		if err := ctx.Err(); err != nil {
 			return err
@@ -84,7 +85,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 		// Report the file's plaintext size after a successful write.
 		// One Add per file is granular enough for inline progress
 		// without flooding the reporter.
-		progress.Add(fe.Size)
+		reporter.Add(fe.Size)
 	}
 	return nil
 }

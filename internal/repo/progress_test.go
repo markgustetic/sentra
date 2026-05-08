@@ -6,7 +6,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/progress"
 )
 
 // TestCreateSnapshot_ReportsProgress verifies the Phase 6 review carry-over:
@@ -22,7 +22,7 @@ func TestCreateSnapshot_ReportsProgress(t *testing.T) {
 	writeFile(t, filepath.Join(root, "a.txt"), body)
 	writeFile(t, filepath.Join(root, "b.txt"), body)
 
-	rep := &ui.RecordingReporter{}
+	rep := &progress.RecordingReporter{}
 	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{Progress: rep})
 	if err != nil {
 		t.Fatalf("create: %v", err)
@@ -70,7 +70,7 @@ func TestRestore_ReportsProgress(t *testing.T) {
 		t.Fatalf("snapshot: %v", err)
 	}
 
-	rep := &ui.RecordingReporter{}
+	rep := &progress.RecordingReporter{}
 	dst := filepath.Join(t.TempDir(), "restored")
 	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{Progress: rep}); err != nil {
 		t.Fatalf("restore: %v", err)
