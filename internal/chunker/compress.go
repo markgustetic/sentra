@@ -13,7 +13,7 @@ import (
 )
 
 // We use SpeedDefault rather than SpeedBestCompression: chunks are
-// AES-GCM encrypted afterwards, so the marginal compression gain from
+// AEAD-encrypted afterwards, so the marginal compression gain from
 // the slowest level is rarely worth the CPU. The ratio on text-ish
 // data is already excellent at the default.
 //

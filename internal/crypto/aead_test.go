@@ -2,6 +2,8 @@ package crypto
 
 import (
 	"bytes"
+	"crypto/aes"
+	"crypto/cipher"
 	"testing"
 )
 
@@ -70,14 +72,14 @@ func TestSeal_BlobFormatHeader(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Format: [1 version][24 nonce][gcm-sealed] where gcm-sealed is
-	// plaintext + 16 byte tag.
+	// Format: [1 version][24 nonce][xchacha20poly1305-sealed] where
+	// the sealed body is plaintext + 16 byte tag.
 	wantLen := 1 + 24 + len(plaintext) + 16
 	if len(sealed) != wantLen {
 		t.Errorf("sealed length: got %d, want %d", len(sealed), wantLen)
 	}
-	if sealed[0] != 0x01 {
-		t.Errorf("version byte: got 0x%02x, want 0x01", sealed[0])
+	if sealed[0] != 0x02 {
+		t.Errorf("version byte: got 0x%02x, want 0x02", sealed[0])
 	}
 }
 
@@ -87,7 +89,7 @@ func TestOpen_RejectsTamperedCiphertext(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Flip the last byte of the GCM tag.
+	// Flip the last byte of the AEAD tag.
 	sealed[len(sealed)-1] ^= 0x01
 	if _, err := Open(key, sealed); err == nil {
 		t.Fatal("expected auth failure on tampered ciphertext")
@@ -100,10 +102,27 @@ func TestOpen_RejectsTamperedNonce(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	// Flip a byte inside the stored nonce (offset 1 = first nonce byte).
-	sealed[1] ^= 0x01
-	if _, err := Open(key, sealed); err == nil {
-		t.Fatal("expected auth failure when nonce is altered")
+	for i := 1; i <= 24; i++ {
+		t.Run("nonce_byte", func(t *testing.T) {
+			tampered := append([]byte(nil), sealed...)
+			tampered[i] ^= 0x01
+			if _, err := Open(key, tampered); err == nil {
+				t.Fatalf("expected auth failure when nonce byte %d is altered", i-1)
+			}
+		})
+	}
+}
+
+func TestOpen_LegacyAESGCMV1(t *testing.T) {
+	key := fixedKey()
+	plaintext := []byte("legacy blob")
+	sealed := sealLegacyAESGCMV1(t, key, plaintext)
+	opened, err := Open(key, sealed)
+	if err != nil {
+		t.Fatalf("open legacy v1: %v", err)
+	}
+	if !bytes.Equal(opened, plaintext) {
+		t.Fatalf("legacy round-trip: got %q want %q", opened, plaintext)
 	}
 }
 
@@ -113,7 +132,7 @@ func TestOpen_RejectsUnknownVersion(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	sealed[0] = 0x02
+	sealed[0] = 0x03
 	if _, err := Open(key, sealed); err == nil {
 		t.Fatal("expected error on unknown blob version")
 	}
@@ -170,4 +189,24 @@ func TestOpen_WrongKeyFails(t *testing.T) {
 	if _, err := Open(wrong, sealed); err == nil {
 		t.Fatal("expected auth failure with wrong key")
 	}
+}
+
+func sealLegacyAESGCMV1(t *testing.T, key, plaintext []byte) []byte {
+	t.Helper()
+	block, err := aes.NewCipher(key)
+	if err != nil {
+		t.Fatal(err)
+	}
+	gcm, err := cipher.NewGCM(block)
+	if err != nil {
+		t.Fatal(err)
+	}
+	nonce := make([]byte, 24)
+	for i := range nonce {
+		nonce[i] = byte(i + 1)
+	}
+	out := make([]byte, 0, 1+len(nonce)+len(plaintext)+gcm.Overhead())
+	out = append(out, 0x01)
+	out = append(out, nonce...)
+	return gcm.Seal(out, nonce[:gcm.NonceSize()], plaintext, nil)
 }

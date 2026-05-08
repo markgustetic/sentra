@@ -12,11 +12,12 @@ encrypted, content-addressed snapshots. It ships with a built-in agent —
 local heuristics first, an optional LLM second — that audits the repository
 and surfaces recommendations: prune candidates, ignore-list additions, secret
 findings, retention drift. It runs equally well as a scriptable CLI
-(`sentra backup ./Documents`) or a full-screen TUI (`sentra ui`).
+(`sentra backup ./Documents`, or `sentra backup plan` / `apply` for
+reviewed runs) or a full-screen TUI (`sentra ui`).
 
-- **Client-side encryption.** AES-256-GCM with per-blob random nonces. The
-  data key is derived from your passphrase via Argon2id. The S3 bucket sees
-  ciphertext, never plaintext.
+- **Client-side encryption.** New blobs use XChaCha20-Poly1305 with
+  per-blob 24-byte random nonces. The data key is derived from your
+  passphrase via Argon2id. The S3 bucket sees ciphertext, never plaintext.
 - **Content-defined dedup.** FastCDC chunking + SHA-256 content addressing.
   A 50 GiB tree with one changed file uploads ~1 MiB on the next snapshot.
 - **Versioned snapshots.** Each snapshot is an immutable, encrypted manifest
@@ -93,6 +94,14 @@ sentra init
 sentra backup ./Documents --tag weekly
 ```
 
+For a reviewed two-step run, write a JSON plan first and apply it after
+inspection:
+
+```bash
+sentra backup plan ./Documents --tag weekly --out weekly-plan.json
+sentra backup apply weekly-plan.json
+```
+
 ### 4. List snapshots
 
 ```bash
@@ -159,7 +168,9 @@ cosign verify-blob \
 | Command                         | Description                                                                |
 | ------------------------------- | -------------------------------------------------------------------------- |
 | `sentra init`                   | Create `sentra.yaml`, derive a repo key, write the encrypted config blob. |
-| `sentra backup <path>`          | Snapshot a directory. `--tag` to label, `--json` for machine output.       |
+| `sentra backup <path>`          | Snapshot a directory immediately. `--tag` to label the snapshot.           |
+| `sentra backup plan <path>`     | Write a reviewable JSON plan file for the exact file set.                  |
+| `sentra backup apply <plan>`    | Validate and snapshot from a reviewed plan file. `--yes` skips confirm.    |
 | `sentra snapshots`              | List snapshots, newest first. `--json` for scripting.                      |
 | `sentra diff <a> <b>`           | Show added / removed / changed paths between two snapshots.                |
 | `sentra restore <snap> <dest>`  | Restore a snapshot byte-identical to a destination directory.              |

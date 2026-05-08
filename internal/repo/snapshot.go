@@ -175,38 +175,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 		return SnapshotInfo{}, fmt.Errorf("repo: walk: %w", walkErr)
 	}
 
-	tree := state.snapshotTree()
-	stats := SnapshotStats{
-		Files:    len(tree),
-		Bytes:    state.totalBytes(),
-		NewBytes: state.newBytes(),
-	}
-
-	id, err := newSnapshotID(time.Now().UTC())
-	if err != nil {
-		return SnapshotInfo{}, fmt.Errorf("repo: id: %w", err)
-	}
-	host, _ := os.Hostname() // best-effort; "" on error is fine
-
-	m := Manifest{
-		Version:   ManifestVersion,
-		ID:        id,
-		CreatedAt: time.Now().UTC(),
-		Host:      host,
-		Tag:       opts.Tag,
-		Root:      absRoot,
-		Tree:      tree,
-		Stats:     stats,
-	}
-	if err := r.putManifest(ctx, repoKey, m); err != nil {
-		return SnapshotInfo{}, err
-	}
-	return SnapshotInfo{
-		ID:        m.ID,
-		CreatedAt: m.CreatedAt,
-		Tag:       m.Tag,
-		Stats:     m.Stats,
-	}, nil
+	return r.finishSnapshot(ctx, repoKey, absRoot, opts.Tag, state)
 }
 
 // LoadSnapshot fetches the manifest at snapshots/<id>, decrypts and
@@ -332,6 +301,47 @@ func (r *Repo) captureFile(
 		MTime:  e.MTime,
 		Chunks: hashes,
 	}, newBytes, nil
+}
+
+func (r *Repo) finishSnapshot(
+	ctx context.Context,
+	repoKey []byte,
+	absRoot string,
+	tag string,
+	state *snapState,
+) (SnapshotInfo, error) {
+	tree := state.snapshotTree()
+	stats := SnapshotStats{
+		Files:    len(tree),
+		Bytes:    state.totalBytes(),
+		NewBytes: state.newBytes(),
+	}
+
+	id, err := newSnapshotID(time.Now().UTC())
+	if err != nil {
+		return SnapshotInfo{}, fmt.Errorf("repo: id: %w", err)
+	}
+	host, _ := os.Hostname() // best-effort; "" on error is fine
+
+	m := Manifest{
+		Version:   ManifestVersion,
+		ID:        id,
+		CreatedAt: time.Now().UTC(),
+		Host:      host,
+		Tag:       tag,
+		Root:      absRoot,
+		Tree:      tree,
+		Stats:     stats,
+	}
+	if err := r.putManifest(ctx, repoKey, m); err != nil {
+		return SnapshotInfo{}, err
+	}
+	return SnapshotInfo{
+		ID:        m.ID,
+		CreatedAt: m.CreatedAt,
+		Tag:       m.Tag,
+		Stats:     m.Stats,
+	}, nil
 }
 
 // putManifest serializes m, compresses, encrypts, and writes it to

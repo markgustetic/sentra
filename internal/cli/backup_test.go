@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -109,6 +110,136 @@ func TestBackup_RoundTrip(t *testing.T) {
 	}
 	if snaps[0].Stats.Files != 2 {
 		t.Errorf("files: got %d, want 2", snaps[0].Stats.Files)
+	}
+}
+
+func TestBackupPlan_WritesReviewablePlanFile(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, dir)
+
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	planPath := filepath.Join(dir, "backup-plan.json")
+
+	deps, _, out, _ := backupFixture(t, "hunter2")
+	cmd := NewBackup(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"plan", src, "--out", planPath, "--tag", "planned"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(planPath) //nolint:gosec // test path under t.TempDir()
+	if err != nil {
+		t.Fatalf("read plan: %v", err)
+	}
+	var plan repo.BackupPlan
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		t.Fatalf("unmarshal plan: %v\n%s", err, raw)
+	}
+	if plan.Tag != "planned" {
+		t.Fatalf("tag: got %q want planned", plan.Tag)
+	}
+	if len(plan.Files) != 1 || plan.Files[0].Path != "a.txt" {
+		t.Fatalf("unexpected files: %+v", plan.Files)
+	}
+	if !strings.Contains(out.String(), "Plan written") {
+		t.Fatalf("output missing plan summary: %q", out.String())
+	}
+}
+
+func TestBackupApply_CreatesSnapshotFromPlan(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, dir)
+
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	planPath := filepath.Join(dir, "backup-plan.json")
+
+	deps, store, out, _ := backupFixture(t, "hunter2")
+	planCmd := NewBackup(deps)
+	planCmd.SetOut(out)
+	planCmd.SetErr(io.Discard)
+	planCmd.SetArgs([]string{"plan", src, "--out", planPath, "--tag", "planned"})
+	if err := planCmd.Execute(); err != nil {
+		t.Fatalf("plan execute: %v", err)
+	}
+	out.Reset()
+
+	applyCmd := NewBackup(deps)
+	applyCmd.SetOut(out)
+	applyCmd.SetErr(io.Discard)
+	applyCmd.SetArgs([]string{"apply", planPath, "--yes"})
+	if err := applyCmd.Execute(); err != nil {
+		t.Fatalf("apply execute: %v", err)
+	}
+
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("Open: %v", err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("List: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots: got %d want 1", len(snaps))
+	}
+	if snaps[0].Tag != "planned" {
+		t.Fatalf("snapshot tag: got %q want planned", snaps[0].Tag)
+	}
+	if !strings.Contains(out.String(), "Snapshot created from plan") {
+		t.Fatalf("output missing apply summary: %q", out.String())
+	}
+}
+
+func TestBackupApply_RejectsDrift(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, dir)
+
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatalf("mkdir: %v", err)
+	}
+	filePath := filepath.Join(src, "a.txt")
+	if err := os.WriteFile(filePath, []byte("alpha"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	planPath := filepath.Join(dir, "backup-plan.json")
+
+	deps, _, out, _ := backupFixture(t, "hunter2")
+	planCmd := NewBackup(deps)
+	planCmd.SetOut(out)
+	planCmd.SetErr(io.Discard)
+	planCmd.SetArgs([]string{"plan", src, "--out", planPath})
+	if err := planCmd.Execute(); err != nil {
+		t.Fatalf("plan execute: %v", err)
+	}
+	if err := os.WriteFile(filePath, []byte("changed"), 0o600); err != nil {
+		t.Fatalf("mutate: %v", err)
+	}
+
+	applyCmd := NewBackup(deps)
+	applyCmd.SetOut(out)
+	applyCmd.SetErr(io.Discard)
+	applyCmd.SetArgs([]string{"apply", planPath, "--yes"})
+	if err := applyCmd.Execute(); err == nil {
+		t.Fatal("expected apply to reject changed file")
 	}
 }
 

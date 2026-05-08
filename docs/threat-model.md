@@ -73,14 +73,14 @@ and the dedup story gets harder).
 
 ## Out of scope for v1
 
-- **Tampering detection at the bucket level.** AES-GCM detects per-object
+- **Tampering detection at the bucket level.** The per-object AEAD detects
   tampering, but a malicious S3 operator could *delete* objects (causing
   manifest decode failures) or *roll back* by serving an older version.
   S3 versioning + Object Lock at the bucket level is the right answer
   for adversarial buckets; `sentra` does not enforce them.
 - **Side channels.** Timing of agent scans, disk-I/O patterns during
   chunking, etc. — not modeled.
-- **Post-quantum.** AES-256 and Argon2id are the v1 building blocks.
+- **Post-quantum.** XChaCha20-Poly1305 and Argon2id are the v1 building blocks.
   Migration to a PQ-safe primitive is a future project, not a v1 lever.
 - **Untrusted plaintext input.** `sentra` is a backup tool; if the input
   filesystem is hostile, `sentra` happily encrypts and uploads whatever

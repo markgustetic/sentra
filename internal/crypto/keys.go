@@ -11,12 +11,12 @@ const (
 	// and matches Argon2id common practice.
 	SaltLen = 16
 
-	// RepoKeyLen is the length in bytes of the repo key. AES-256
-	// requires 32 bytes.
+	// RepoKeyLen is the length in bytes of the repo key. XChaCha20-
+	// Poly1305 requires 32 bytes.
 	RepoKeyLen = KeyLen
 )
 
-// GenerateRepoKey returns a fresh random 32-byte AES-256 repo key from
+// GenerateRepoKey returns a fresh random 32-byte repo key from
 // crypto/rand. The repo key encrypts every blob, manifest, and index;
 // it is itself stored encrypted (wrapped) by a passphrase-derived KEK.
 func GenerateRepoKey() ([]byte, error) {

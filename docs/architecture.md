@@ -13,7 +13,7 @@ sentra/
 │   ├── cli/                    # one file per subcommand
 │   ├── repo/                   # snapshot manifests + blob refs + indices
 │   ├── blobstore/              # interface + S3 + in-memory test impl
-│   ├── crypto/                 # AES-GCM + Argon2id key derivation
+│   ├── crypto/                 # XChaCha20-Poly1305 + Argon2id key derivation
 │   ├── chunker/                # FastCDC + zstd
 │   ├── walker/                 # concurrent fs walk + .sentraignore
 │   ├── agent/
@@ -47,7 +47,7 @@ flowchart LR
 Every object in S3 is ciphertext. The on-disk blob format is:
 
 ```
-[1 byte version][24 byte nonce][AES-256-GCM(zstd(plaintext))][16 byte tag]
+[1 byte version][24 byte nonce][XChaCha20-Poly1305(zstd(plaintext))][16 byte tag]
 ```
 
 zstd-then-encrypt: encrypted output is incompressible, so the order
@@ -63,7 +63,7 @@ flowchart TD
     PP[Passphrase] --> Argon[Argon2id<br/>m=64MiB i=3 p=4]
     Salt[16-byte random salt] --> Argon
     Argon --> KEK[Key-encryption key]
-    RepoKey[32-byte random repo key] --> Wrap{AES-GCM wrap}
+    RepoKey[32-byte random repo key] --> Wrap{AEAD wrap}
     KEK --> Wrap
     Wrap --> CfgBlob[encrypted config blob in S3]
     RepoKey -. used directly to encrypt .-> Snapshots & Manifests & Blobs
@@ -90,7 +90,7 @@ sequenceDiagram
     loop per file
         CLI->>C: stream content → chunks
         loop per chunk
-            CLI->>E: zstd then AES-GCM with repo key
+            CLI->>E: zstd then XChaCha20-Poly1305 with repo key
             E->>B: PUT data/&lt;aa&gt;/&lt;sha256&gt;<br/>(skip if exists — content addressed)
         end
     end
@@ -105,6 +105,12 @@ Dedup is implicit: identical chunks across files and snapshots map to
 the same `data/<aa>/<sha256>` key, so the second snapshot only uploads
 chunks whose content actually changed.
 
+For reviewed backups, `sentra backup plan <path> --out plan.json` runs
+the same walk and writes sorted file metadata (path, size, mode, mtime)
+to JSON without opening the repository. `sentra backup apply plan.json`
+validates the current tree still matches that reviewed plan before it
+runs the chunk/encrypt/upload portion of the flow.
+
 ## Restore flow
 
 ```mermaid
@@ -118,13 +124,13 @@ sequenceDiagram
     U->>CLI: sentra restore &lt;snap-id&gt; /tmp/restored
     CLI->>B: GET snapshots/&lt;snap-id&gt;
     B-->>CLI: encrypted manifest
-    CLI->>E: AES-GCM decrypt + zstd inflate
+    CLI->>E: AEAD decrypt + zstd inflate
     E-->>CLI: manifest with file tree + chunk hashes per file
     loop per file
         loop per chunk hash
             CLI->>B: GET data/&lt;aa&gt;/&lt;sha256&gt;
             B-->>CLI: encrypted chunk
-            CLI->>E: AES-GCM decrypt + zstd inflate
+            CLI->>E: AEAD decrypt + zstd inflate
             CLI->>FS: write chunk to file
         end
         CLI->>FS: chmod / chtimes per manifest

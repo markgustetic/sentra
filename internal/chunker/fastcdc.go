@@ -12,12 +12,11 @@
 //   - rolling our own ~150 LOC inline — viable, but not worth the
 //     correctness risk this early in the project.
 //
-// Caveat to keep in mind: jotfs's NewChunker XORs a package-level
-// gear table by the configured Seed on every construction. We never
-// set Seed, so the table stays at its default and chunkers are
-// deterministic across calls. If a future caller starts using Seed,
-// they need to be aware that two chunkers in the same process will
-// not be independent.
+// The local replace in go.mod carries a small upstream-style patch:
+// each Chunker owns its seeded gear table instead of NewChunker
+// mutating package-level state. That keeps concurrent snapshot
+// workers race-free without serializing every file through a global
+// mutex.
 package chunker
 
 import (
@@ -25,29 +24,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
 	fastcdc "github.com/jotfs/fastcdc-go"
 )
-
-// chunkerMu serializes ChunkAll against itself. The fastcdc-go
-// library writes a package-level "gear" table inside NewChunker
-// (XOR-by-Seed; we never set Seed so the writes are no-ops) and
-// reads the same table during Chunker.Next. Even the no-op writes
-// are flagged by the race detector when they overlap with another
-// goroutine's reads, so we hold this mutex for the entire chunking
-// pipeline rather than just NewChunker. This trades intra-package
-// parallelism for race-detector cleanliness; ChunkAll is already
-// memory-bounded by the file it ingests, so the parallel-snapshot
-// case still gets per-file isolation through the walker's worker
-// pool calling other parts of the snapshot pipeline (encrypt,
-// upload, hash) in parallel.
-//
-// Discovered during Phase 5 integration when Walk's worker pool
-// concurrently invokes ChunkAll. Surface this in any future review
-// of the chunker package; the right long-term fix is upstreaming a
-// patch to fastcdc-go.
-var chunkerMu sync.Mutex
 
 // Chunk size targets follow the design: ~1 MiB average, with a
 // quartered minimum (256 KiB) and a quadrupled maximum (4 MiB). These
@@ -90,9 +69,6 @@ type Chunk struct {
 // before the next is read. The streaming variant can avoid the per-call
 // copy because the callback contract bounds the slice's lifetime.
 func ChunkAll(r io.Reader) ([]Chunk, error) {
-	chunkerMu.Lock()
-	defer chunkerMu.Unlock()
-
 	c, err := fastcdc.NewChunker(r, fastcdc.Options{
 		AverageSize: avgChunkSize,
 		MinSize:     minChunkSize,

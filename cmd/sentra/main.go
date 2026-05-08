@@ -54,6 +54,7 @@ func main() {
 		Passphrase: promptOpenPassphrase(rootFlags),
 		Stdout:     os.Stdout,
 		Stderr:     os.Stderr,
+		Confirm:    cli.HuhBackupApplyConfirm,
 	}
 	root.AddCommand(cli.NewBackup(backupDeps))
 

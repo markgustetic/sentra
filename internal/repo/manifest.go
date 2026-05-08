@@ -57,7 +57,7 @@ type SnapshotStats struct {
 }
 
 // Manifest is the snapshot's file tree and metadata. JSON-encoded then
-// zstd-compressed then AES-GCM-sealed before storage at snapshots/<id>.
+// zstd-compressed then AEAD-sealed before storage at snapshots/<id>.
 //
 // Tag uses omitempty so unset tags are absent in the JSON wire form,
 // not represented as `"tag": ""`.

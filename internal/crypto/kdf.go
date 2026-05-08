@@ -1,11 +1,11 @@
 // Package crypto provides the symmetric primitives used by sentra:
-// Argon2id passphrase-to-KEK derivation and AES-256-GCM blob sealing.
+// Argon2id passphrase-to-KEK derivation and versioned AEAD blob sealing.
 //
-// The plaintext repo key (32 bytes, AES-256) is wrapped on disk with a
-// KEK derived from the user's passphrase. Every blob is sealed with the
-// repo key under AES-256-GCM with a fresh 24-byte random nonce; the
-// first 12 bytes are passed to GCM and the remaining 12 are reserved as
-// extra entropy for a future XChaCha20 swap.
+// The plaintext repo key (32 bytes) is wrapped on disk with a KEK
+// derived from the user's passphrase. New blobs are sealed under
+// XChaCha20-Poly1305 with a fresh 24-byte random nonce. Open also
+// accepts legacy v1 AES-GCM blobs for repositories created before the
+// v2 format switch.
 package crypto
 
 import (

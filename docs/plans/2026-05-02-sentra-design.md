@@ -21,7 +21,7 @@ CLI (`sentra backup ./Documents`) or as a full-screen TUI dashboard
 | 2 | Backup model | Versioned snapshots: encrypted manifests + content-addressed blobs |
 | 3 | UX shape | Hybrid: inline progress for subcommands, full TUI for `sentra ui` |
 | 4 | LLM provider | Pluggable `Provider` interface; Anthropic Claude is the default impl |
-| 5 | Encryption | Client-side AES-256-GCM, key derived from passphrase via Argon2id |
+| 5 | Encryption | Client-side XChaCha20-Poly1305, key derived from passphrase via Argon2id |
 | 6 | v1 scope | Polished v1: init/backup/snapshots/diff/restore/prune/agent/ui + full CI + goreleaser |
 
 ## Architecture
@@ -37,7 +37,7 @@ sentra/
 │   │   ├── restore.go prune.go diff.go agent.go ui.go
 │   ├── repo/                   # snapshot repository (manifests + blob refs)
 │   ├── blobstore/              # interface + S3 + memory (test) impls
-│   ├── crypto/                 # AES-GCM + Argon2id key derivation
+│   ├── crypto/                 # XChaCha20-Poly1305 + Argon2id key derivation
 │   ├── chunker/                # content-defined chunking + zstd
 │   ├── walker/                 # concurrent fs walk + .sentraignore
 │   ├── agent/
@@ -58,7 +58,9 @@ use-case functions in `internal/repo` and `internal/agent`.
 
 ```
 sentra init                     # create sentra.yaml + prompt for passphrase
-sentra backup <path> [--tag t]  # snapshot a directory
+sentra backup <path> [--tag t]  # snapshot a directory immediately
+sentra backup plan <path> --out plan.json [--tag t]
+sentra backup apply plan.json
 sentra snapshots [--json]       # list snapshots
 sentra diff <snap-a> <snap-b>   # show changes between snapshots
 sentra restore <snap> <dest>    # restore to a directory
@@ -105,7 +107,7 @@ s3://<bucket>/<prefix>/
 ### Blob format on disk in S3
 
 ```
-[1 byte version][24 byte nonce][AES-256-GCM(zstd(chunk))][16 byte tag]
+[1 byte version][24 byte nonce][XChaCha20-Poly1305(zstd(chunk))][16 byte tag]
 ```
 
 Plaintext is zstd-compressed *before* encryption (encrypted output is
@@ -180,8 +182,10 @@ gets rewritten, never the data.
 
 ### Per-blob encryption
 
-AES-256-GCM with a fresh 24-byte random nonce per blob. Single-purpose
-key + 192-bit random nonce → collision risk negligible.
+XChaCha20-Poly1305 with a fresh 24-byte random nonce per blob. Open
+keeps legacy AES-GCM v1 read support for repositories written before
+the v2 blob format. Single-purpose key + 192-bit random nonce →
+collision risk negligible.
 
 ### Passphrase resolution order
 

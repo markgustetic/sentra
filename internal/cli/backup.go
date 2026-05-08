@@ -2,11 +2,15 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sync"
 	"time"
 
+	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -24,6 +28,7 @@ type BackupDeps struct {
 	Passphrase func() ([]byte, error)
 	Stdout     io.Writer
 	Stderr     io.Writer
+	Confirm    func(prompt string) (bool, error)
 }
 
 // progressTickInterval is how often the inline progress UI repaints
@@ -65,6 +70,58 @@ func NewBackup(deps BackupDeps) *cobra.Command {
 	cmd.Flags().StringVar(&tag, "tag", "", "optional human-readable tag for the snapshot")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
+	cmd.AddCommand(newBackupPlan(deps))
+	cmd.AddCommand(newBackupApply(deps))
+	return cmd
+}
+
+func newBackupPlan(deps BackupDeps) *cobra.Command {
+	var (
+		tag     string
+		cfgPath string
+		outPath string
+	)
+	cmd := &cobra.Command{
+		Use:   "plan <path>",
+		Short: "Write a reviewable backup plan file",
+		Long: "Walk the given path with the configured backup filters and write " +
+			"a JSON plan containing the exact file set and metadata to review before apply.",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: false,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBackupPlan(cmd, deps, args[0], tag, cfgPath, outPath)
+		},
+	}
+	cmd.Flags().StringVar(&tag, "tag", "", "optional human-readable tag persisted on apply")
+	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
+		"path to sentra.yaml (defaults to ./sentra.yaml)")
+	cmd.Flags().StringVar(&outPath, "out", "sentra-backup-plan.json",
+		"path to write the reviewable JSON plan")
+	return cmd
+}
+
+func newBackupApply(deps BackupDeps) *cobra.Command {
+	var (
+		cfgPath string
+		yes     bool
+	)
+	cmd := &cobra.Command{
+		Use:   "apply <plan-file>",
+		Short: "Create a snapshot from a reviewed backup plan",
+		Long: "Read a JSON plan from `sentra backup plan`, validate the current " +
+			"tree still matches it, then chunk/encrypt/upload the reviewed file set.",
+		Args:          cobra.ExactArgs(1),
+		SilenceUsage:  true,
+		SilenceErrors: false,
+		RunE: func(cmd *cobra.Command, args []string) error {
+			return runBackupApply(cmd, deps, args[0], cfgPath, yes)
+		},
+	}
+	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
+		"path to sentra.yaml (defaults to ./sentra.yaml)")
+	cmd.Flags().BoolVar(&yes, "yes", false,
+		"skip the interactive confirmation prompt")
 	return cmd
 }
 
@@ -122,13 +179,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 		IgnoreFile:    cfg.Backup.IgnoreFile,
 		ExcludeCaches: cfg.Backup.ExcludeCaches,
 	}
-	if walkerOpts.IgnoreFile == "" {
-		// Defensive: a config file with `backup:` and `ignore_file: ""`
-		// would otherwise produce a zero Options that the repo treats
-		// as "use legacy default". Force a non-empty value so the
-		// user's intent (whatever they set ExcludeCaches to) wins.
-		walkerOpts.IgnoreFile = ".sentraignore"
-	}
+	normalizeBackupWalkerOptions(&walkerOpts)
 
 	snap, snapErr := r.CreateSnapshot(cmd.Context(), path, repo.SnapshotOptions{
 		Tag:      tag,
@@ -148,6 +199,153 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 	fmt.Fprintf(stdout, "  bytes:     %s (%d)\n", ui.FormatBytes(snap.Stats.Bytes), snap.Stats.Bytes)
 	fmt.Fprintf(stdout, "  uploaded:  %s (%d new)\n", ui.FormatBytes(snap.Stats.NewBytes), snap.Stats.NewBytes)
 	return nil
+}
+
+func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outPath string) error {
+	cmd.SilenceUsage = true
+	if outPath == "" {
+		return errors.New("backup plan: --out must not be empty")
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	walkerOpts := walker.Options{
+		IgnoreFile:    cfg.Backup.IgnoreFile,
+		ExcludeCaches: cfg.Backup.ExcludeCaches,
+	}
+	normalizeBackupWalkerOptions(&walkerOpts)
+
+	plan, err := repo.PlanSnapshot(cmd.Context(), path, repo.SnapshotOptions{
+		Tag:    tag,
+		Walker: walkerOpts,
+	})
+	if err != nil {
+		return fmt.Errorf("plan backup: %w", err)
+	}
+	raw, err := json.MarshalIndent(plan, "", "  ")
+	if err != nil {
+		return fmt.Errorf("marshal backup plan: %w", err)
+	}
+	raw = append(raw, '\n')
+	if err := os.WriteFile(outPath, raw, 0o600); err != nil {
+		return fmt.Errorf("write backup plan: %w", err)
+	}
+
+	stdout := deps.Stdout
+	if stdout == nil {
+		stdout = cmd.OutOrStdout()
+	}
+	fmt.Fprintln(stdout, ui.Success.Render("Plan written"))
+	fmt.Fprintf(stdout, "  file:   %s\n", outPath)
+	fmt.Fprintf(stdout, "  root:   %s\n", plan.Root)
+	fmt.Fprintf(stdout, "  tag:    %s\n", emptyDash(plan.Tag))
+	fmt.Fprintf(stdout, "  files:  %d\n", plan.Stats.Files)
+	fmt.Fprintf(stdout, "  bytes:  %s (%d)\n", ui.FormatBytes(plan.Stats.Bytes), plan.Stats.Bytes)
+	return nil
+}
+
+func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath string, yes bool) error {
+	cmd.SilenceUsage = true
+
+	raw, err := os.ReadFile(planPath) //nolint:gosec // user-provided plan path is the command argument.
+	if err != nil {
+		return fmt.Errorf("read backup plan: %w", err)
+	}
+	var plan repo.BackupPlan
+	if err := json.Unmarshal(raw, &plan); err != nil {
+		return fmt.Errorf("parse backup plan: %w", err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load config: %w", err)
+	}
+	store, err := deps.NewStore(cmd.Context(), cfg)
+	if err != nil {
+		return fmt.Errorf("open blobstore: %w", err)
+	}
+	pass, err := deps.Passphrase()
+	if err != nil {
+		return fmt.Errorf("resolve passphrase: %w", err)
+	}
+	defer zeroize(pass)
+
+	r, err := repo.Open(cmd.Context(), store, pass)
+	if err != nil {
+		return fmt.Errorf("open repo: %w", err)
+	}
+	defer r.Close()
+
+	stdout := deps.Stdout
+	if stdout == nil {
+		stdout = cmd.OutOrStdout()
+	}
+	stderr := deps.Stderr
+	if stderr == nil {
+		stderr = cmd.ErrOrStderr()
+	}
+
+	if !yes {
+		if deps.Confirm == nil {
+			return errors.New("backup apply: confirmation callback is not configured; pass --yes for non-interactive apply")
+		}
+		ok, err := deps.Confirm(fmt.Sprintf("Create snapshot from plan %q with %d files?", planPath, plan.Stats.Files))
+		if err != nil {
+			return fmt.Errorf("confirm: %w", err)
+		}
+		if !ok {
+			fmt.Fprintln(stdout, ui.Subtle.Render("Aborted by user."))
+			return nil
+		}
+	}
+
+	progress := ui.NewByteProgress(0)
+	stop := startProgressPainter(stderr, progress)
+	snap, snapErr := r.CreateSnapshotFromPlan(cmd.Context(), plan, repo.SnapshotOptions{Progress: progress})
+	stop()
+	if snapErr != nil {
+		return fmt.Errorf("apply backup plan: %w", snapErr)
+	}
+
+	fmt.Fprintln(stdout, ui.Success.Render("Snapshot created from plan"))
+	fmt.Fprintf(stdout, "  id:        %s\n", snap.ID)
+	fmt.Fprintf(stdout, "  plan:      %s\n", planPath)
+	fmt.Fprintf(stdout, "  root:      %s\n", plan.Root)
+	fmt.Fprintf(stdout, "  tag:       %s\n", emptyDash(snap.Tag))
+	fmt.Fprintf(stdout, "  files:     %d\n", snap.Stats.Files)
+	fmt.Fprintf(stdout, "  bytes:     %s (%d)\n", ui.FormatBytes(snap.Stats.Bytes), snap.Stats.Bytes)
+	fmt.Fprintf(stdout, "  uploaded:  %s (%d new)\n", ui.FormatBytes(snap.Stats.NewBytes), snap.Stats.NewBytes)
+	return nil
+}
+
+func normalizeBackupWalkerOptions(opts *walker.Options) {
+	if opts.IgnoreFile == "" {
+		// Defensive: a config file with `backup:` and `ignore_file: ""`
+		// would otherwise produce a zero Options that the repo treats
+		// as "use legacy default". Force a non-empty value so the
+		// user's intent (whatever they set ExcludeCaches to) wins.
+		opts.IgnoreFile = ".sentraignore"
+	}
+}
+
+// HuhBackupApplyConfirm is the production Confirm implementation for
+// `sentra backup apply`.
+func HuhBackupApplyConfirm(prompt string) (bool, error) {
+	var confirmed bool
+	form := huh.NewForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title(prompt).
+				Affirmative("Yes, snapshot").
+				Negative("No, abort").
+				Value(&confirmed),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return confirmed, nil
 }
 
 // emptyDash renders an empty string as "-" for tabular display.

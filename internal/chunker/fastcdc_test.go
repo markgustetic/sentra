@@ -5,7 +5,10 @@ import (
 	"crypto/sha256"
 	"encoding/binary"
 	"errors"
+	"io"
+	"sync"
 	"testing"
+	"time"
 )
 
 // TestChunker_StableBoundaries: chunking the same input twice must
@@ -184,10 +187,99 @@ func TestChunker_ReaderError(t *testing.T) {
 	}
 }
 
+// TestChunker_AllowsConcurrentReaders guards against the old package
+// mutex that serialized the full chunking pipeline. Both readers block
+// on their first Read; if ChunkAll still holds a global lock for the
+// whole call, the second reader never reaches that first Read.
+func TestChunker_AllowsConcurrentReaders(t *testing.T) {
+	release := make(chan struct{})
+	r1 := newGateReader([]byte("alpha"), release)
+	r2 := newGateReader([]byte("bravo"), release)
+
+	errCh := make(chan error, 2)
+	go func() {
+		_, err := ChunkAll(r1)
+		errCh <- err
+	}()
+	go func() {
+		_, err := ChunkAll(r2)
+		errCh <- err
+	}()
+
+	if !waitAllClosed(2*time.Second, r1.started, r2.started) {
+		close(release)
+		t.Fatal("both readers did not start; ChunkAll is serialized by a global lock")
+	}
+	close(release)
+
+	for i := 0; i < 2; i++ {
+		if err := <-errCh; err != nil {
+			t.Fatalf("ChunkAll returned error: %v", err)
+		}
+	}
+}
+
 type errReader struct{ err error }
 
 func (e errReader) Read(_ []byte) (int, error) {
 	return 0, e.err
+}
+
+type gateReader struct {
+	mu      sync.Mutex
+	data    []byte
+	started chan struct{}
+	release <-chan struct{}
+	once    sync.Once
+}
+
+func newGateReader(data []byte, release <-chan struct{}) *gateReader {
+	return &gateReader{
+		data:    append([]byte(nil), data...),
+		started: make(chan struct{}),
+		release: release,
+	}
+}
+
+func (r *gateReader) Read(p []byte) (int, error) {
+	r.once.Do(func() {
+		close(r.started)
+		<-r.release
+	})
+
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if len(r.data) == 0 {
+		return 0, io.EOF
+	}
+	n := copy(p, r.data)
+	r.data = r.data[n:]
+	return n, nil
+}
+
+func waitAllClosed(timeout time.Duration, chans ...<-chan struct{}) bool {
+	timer := time.NewTimer(timeout)
+	defer timer.Stop()
+	ticker := time.NewTicker(5 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		allClosed := true
+		for _, ch := range chans {
+			select {
+			case <-ch:
+			default:
+				allClosed = false
+			}
+		}
+		if allClosed {
+			return true
+		}
+		select {
+		case <-timer.C:
+			return false
+		case <-ticker.C:
+		}
+	}
 }
 
 // randomBytes returns n bytes from a deterministic SHA-256 chain

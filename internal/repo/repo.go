@@ -24,7 +24,7 @@ var ErrAlreadyInitialized = errors.New("repo: already initialized")
 
 // ErrWrongPassphrase is returned by Open when the passphrase fails to
 // unwrap the repo key. We intentionally surface a single sentinel
-// rather than the underlying AES-GCM auth-tag error so callers can't
+// rather than the underlying AEAD auth-tag error so callers can't
 // distinguish "wrong passphrase" from "config tampered with" via
 // timing or message text.
 var ErrWrongPassphrase = errors.New("repo: wrong passphrase")
@@ -113,8 +113,8 @@ func Init(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 
 // Open loads the repository config from s and unwraps the repo key
 // using passphrase. It returns ErrWrongPassphrase if the unwrap fails
-// (intentionally collapsing all crypto auth errors to a single
-// sentinel) and surfaces validation errors from KDFParams.Validate so
+// (intentionally collapsing all AEAD auth errors to a single sentinel)
+// and surfaces validation errors from KDFParams.Validate so
 // a corrupted on-disk config does not trigger an Argon2 OOM.
 func Open(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, error) {
 	rc, err := s.Get(ctx, configKey)

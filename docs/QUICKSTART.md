@@ -99,6 +99,13 @@ mkdir -p ./demo-data && echo "hello sentra" > ./demo-data/readme.txt
 sentra backup ./demo-data --tag first
 ```
 
+Optional reviewed workflow:
+
+```bash
+sentra backup plan ./demo-data --tag first --out first-plan.json
+sentra backup apply first-plan.json
+```
+
 The first snapshot uploads everything; subsequent snapshots only upload
 chunks whose content has actually changed. Try it:
 
