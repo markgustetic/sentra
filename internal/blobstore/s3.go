@@ -99,15 +99,27 @@ func (s *S3) listPrefix(prefix string) string {
 	return full
 }
 
-// Put uploads r under key. SSE-S3 (AES256) is requested as
-// defense-in-depth on top of the client-side encryption sentra
-// already does at the blob layer.
+// Put uploads r under key.
+//
+// Sentra's client-side AEAD is the primary protection — every blob
+// is sealed before it reaches this method. Server-side encryption
+// (SSE-S3 / SSE-KMS) is a belt-and-suspenders layer best applied
+// via bucket-default encryption, which:
+//
+//   - applies uniformly to every Put without per-request flags,
+//   - lets the operator pick AES256 vs KMS independently of code,
+//   - works on every S3-compatible backend (MinIO without KMS,
+//     LocalStack, etc.) instead of requiring per-server feature
+//     parity with AWS S3.
+//
+// The README's "Recommendations for operators" section documents
+// the bucket-default-encryption setting; we don't request SSE
+// here so that contract is the only place SSE policy lives.
 func (s *S3) Put(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:               aws.String(s.cfg.Bucket),
-		Key:                  aws.String(s.fullKey(key)),
-		Body:                 r,
-		ServerSideEncryption: types.ServerSideEncryptionAes256,
+		Bucket: aws.String(s.cfg.Bucket),
+		Key:    aws.String(s.fullKey(key)),
+		Body:   r,
 	})
 	if err != nil {
 		return fmt.Errorf("blobstore/s3: put %q: %w", key, err)
@@ -178,11 +190,11 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 // (s3_integration_test.go).
 func (s *S3) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:               aws.String(s.cfg.Bucket),
-		Key:                  aws.String(s.fullKey(key)),
-		Body:                 r,
-		IfNoneMatch:          aws.String("*"),
-		ServerSideEncryption: types.ServerSideEncryptionAes256,
+		Bucket:      aws.String(s.cfg.Bucket),
+		Key:         aws.String(s.fullKey(key)),
+		Body:        r,
+		IfNoneMatch: aws.String("*"),
+		// SSE policy lives on the bucket (see Put's docstring).
 	})
 	if err != nil {
 		// AWS returns PreconditionFailed (412) for an If-None-Match
