@@ -132,29 +132,6 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// drives ignore_file / exclude_caches from sentra.yaml).
 	walkerOpts := resolveWalkerOptions(opts.Walker)
 
-	// Pre-walk to estimate total bytes for the progress reporter. Stat-
-	// only — no chunking, no I/O on file contents — so it's cheap
-	// relative to the chunk-and-upload pass that follows. The estimate
-	// is the sum of file plaintext sizes; final Add() deltas count
-	// sealed-blob bytes uploaded, so done can run lower than total when
-	// dedup eliminates chunks. That's the right shape: progress reports
-	// "work avoided" via lower-than-total final done counts.
-	//
-	// walker.Walk fires callbacks concurrently across worker goroutines,
-	// so we accumulate the estimate via atomic.AddInt64 to keep the
-	// race detector happy without paying for a mutex.
-	var estimated atomic.Int64
-	preErr := walker.Walk(ctx, absRoot, walkerOpts,
-		func(e walker.Entry) error {
-			estimated.Add(e.Size)
-			return nil
-		},
-	)
-	if preErr != nil {
-		return SnapshotInfo{}, fmt.Errorf("repo: pre-walk: %w", preErr)
-	}
-	reporter.Total(estimated.Load())
-
 	// We collect FileEntry values inside the walker callback and
 	// sort at the end. The walker's worker pool means callbacks fire
 	// concurrently, so a small mutex guards the slices and counters.
@@ -163,8 +140,22 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// second Stat will already see the blob the first one Put.
 	state := &snapState{}
 
+	// Single-walk progress: as each file is discovered, add its
+	// plaintext size to the running total and update reporter.Total.
+	// Add()s for uploaded chunks happen later in captureFile, so
+	// total >= done at every point (each file's size lands in total
+	// before captureFile has a chance to call Add for that file's
+	// chunks). Reporters that only care about the final value see
+	// the same end state as before; reporters that paint live see
+	// the bar's denominator grow organically instead of waiting on
+	// a full pre-walk.
+	var estimated atomic.Int64
+	reporter.Total(0) // signal start so empty trees still trigger one Total call
+
 	walkErr := walker.Walk(ctx, absRoot, walkerOpts,
 		func(e walker.Entry) error {
+			reporter.Total(estimated.Add(e.Size))
+
 			fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, reporter)
 			if err != nil {
 				return err
