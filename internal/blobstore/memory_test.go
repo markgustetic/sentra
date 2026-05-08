@@ -171,22 +171,30 @@ func TestMemory_BatchDelete_HappyPath(t *testing.T) {
 }
 
 // TestMemory_BatchDelete_TolerantOfMissingKeys: BatchDelete is
-// idempotent — passing already-missing keys mixed with existing ones
-// must not return an error. This matches S3's DeleteObjects behavior
-// and is what GC needs (parallel GC runs may race on the same keys).
-// The deleted count reports only keys that actually went away.
+// idempotent — passing already-missing keys mixed with existing
+// ones is not an error. The deleted count is the total of keys
+// the store confirms absent after the call (matching S3's
+// DeleteObjects semantic — missing keys count toward the total
+// because they ARE absent after the call, vacuously).
 func TestMemory_BatchDelete_TolerantOfMissingKeys(t *testing.T) {
 	s := NewMemory()
 	ctx := context.Background()
 	if err := s.Put(ctx, "exists", strings.NewReader("x")); err != nil {
 		t.Fatal(err)
 	}
-	deleted, err := s.BatchDelete(ctx, []string{"exists", "missing-1", "missing-2"})
+	keys := []string{"exists", "missing-1", "missing-2"}
+	deleted, err := s.BatchDelete(ctx, keys)
 	if err != nil {
 		t.Fatalf("BatchDelete: %v", err)
 	}
-	if deleted != 1 {
-		t.Errorf("deleted: got %d, want 1", deleted)
+	if deleted != len(keys) {
+		t.Errorf("deleted: got %d, want %d (idempotent semantic: every input key counts)",
+			deleted, len(keys))
+	}
+	// "exists" must actually be gone (delete actually deleted, not
+	// just counted).
+	if _, err := s.Stat(ctx, "exists"); !errors.Is(err, ErrNotFound) {
+		t.Errorf("\"exists\" key still present after BatchDelete: %v", err)
 	}
 }
 

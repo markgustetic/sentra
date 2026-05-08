@@ -119,9 +119,13 @@ func (m *Memory) PutIfAbsent(ctx context.Context, key string, r io.Reader) error
 	return nil
 }
 
-// BatchDelete removes every key that exists. Missing keys are
-// silently skipped (idempotent contract — see Store.BatchDelete).
-// Returns the count of keys that were actually present and removed.
+// BatchDelete removes every key in keys. Returns the count of
+// keys the store confirms absent after the call. Per the Store
+// contract this matches S3's DeleteObjects semantic: missing keys
+// are no-ops but still counted toward the returned total — both
+// real backends and this in-memory reference impl agree on
+// "deleted = the keys the caller asked to ensure absent, are now
+// absent."
 func (m *Memory) BatchDelete(ctx context.Context, keys []string) (int, error) {
 	if err := ctx.Err(); err != nil {
 		return 0, err
@@ -131,14 +135,12 @@ func (m *Memory) BatchDelete(ctx context.Context, keys []string) (int, error) {
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
-	deleted := 0
 	for _, k := range keys {
-		if _, ok := m.data[k]; ok {
-			delete(m.data, k)
-			deleted++
-		}
+		// builtin delete is a no-op on missing keys, so this is
+		// safe regardless of presence.
+		delete(m.data, k)
 	}
-	return deleted, nil
+	return len(keys), nil
 }
 
 // List returns all keys having the given literal prefix, sorted

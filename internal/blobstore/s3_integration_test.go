@@ -177,9 +177,17 @@ func TestS3Integration(t *testing.T) {
 		if err != nil {
 			t.Fatalf("BatchDelete: %v", err)
 		}
-		if deleted != len(keys) {
-			t.Errorf("deleted: got %d, want %d (missing key shouldn't count)", deleted, len(keys))
+		// S3 DeleteObjects is idempotent: every input key lands in
+		// the response's `Deleted` slice regardless of pre-existence.
+		// Per the Store.BatchDelete docstring this is the canonical
+		// semantic — count = keys the backend confirms absent after
+		// the call, including idempotent no-ops.
+		if deleted != len(toDelete) {
+			t.Errorf("deleted: got %d, want %d (S3's idempotent DeleteObjects counts every input key)",
+				deleted, len(toDelete))
 		}
+		// Real keys must actually be gone (deletion actually
+		// happened, not just counted).
 		for _, k := range keys {
 			if _, err := store.Stat(ctx, k); !errors.Is(err, ErrNotFound) {
 				t.Errorf("%s still present after BatchDelete: %v", k, err)

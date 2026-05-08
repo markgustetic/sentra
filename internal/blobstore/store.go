@@ -43,15 +43,23 @@ type Store interface {
 
 	// BatchDelete removes multiple keys in a single backend round
 	// trip when supported (the S3 implementation uses DeleteObjects,
-	// up to 1000 keys per request). Returns the count of keys that
-	// were actually removed plus any error encountered.
+	// up to 1000 keys per request). Returns the count of keys the
+	// backend confirms absent after the call plus any error
+	// encountered.
 	//
 	// Unlike Delete, BatchDelete is idempotent: passing keys that
-	// don't exist is not an error and they're simply not counted in
-	// the returned deleted count. This matches S3's DeleteObjects
-	// semantics and is what callers like GC want — concurrent GC
-	// runs may race on the same orphan blobs without one of them
-	// failing on a NotFound.
+	// don't exist is not an error. The "deleted" count reports keys
+	// that are now absent — INCLUDING keys that weren't there to
+	// begin with — because that's what S3's DeleteObjects API
+	// reports in its `Deleted` slice (it doesn't distinguish
+	// "removed an existing key" from "no-op on a missing key").
+	// In-memory implementations match the same semantic so callers
+	// can rely on a single contract across backends.
+	//
+	// On a partial backend failure, the returned count is the
+	// number of keys the backend confirmed for the chunks it
+	// processed before failing; the error wraps the backend's
+	// per-key failure summary.
 	//
 	// An empty (or nil) keys slice is a no-op and returns (0, nil).
 	BatchDelete(ctx context.Context, keys []string) (deleted int, err error)
