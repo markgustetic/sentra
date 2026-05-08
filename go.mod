@@ -2,8 +2,6 @@ module github.com/markgustetic/sentra
 
 go 1.25.0
 
-toolchain go1.26.2
-
 replace github.com/jotfs/fastcdc-go => ./third_party/fastcdc-go
 
 require (
