@@ -247,10 +247,10 @@ the agent loop, and Mermaid diagrams of the `backup`, `restore`, and
 ## Development
 
 ```bash
-make build       # builds bin/sentra
-make test        # unit tests with -race
-make integration # spins MinIO via testcontainers; Linux only
-make lint        # golangci-lint run
+just build       # builds bin/sentra
+just test        # unit tests with -race
+just integration # spins MinIO via testcontainers; Linux only
+just lint        # golangci-lint run
 ```
 
 Go 1.25+ is required (the dependency ecosystem moved past 1.24 mid-Phase 13).
