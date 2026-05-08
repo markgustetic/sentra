@@ -43,11 +43,23 @@ import (
 // for a tool to be invoked. Returns a JSON-encoded string so the
 // caller can thread it directly into a ToolResult.Content without
 // further marshalling.
+//
+// Production has exactly one implementation (*RepoRunner). The
+// interface is the orchestrator's actual contract — typed at the
+// call site so future fake runners (for testing tool-error paths,
+// tool-call latency, or specific tool outputs) can drop in without
+// edits to the orchestrator.
 type Runner interface {
 	Schema(name string) (Tool, bool)
 	All() []Tool
 	Run(ctx context.Context, name string, input map[string]any) (string, error)
 }
+
+// Compile-time assertion that *RepoRunner satisfies Runner. A future
+// addition to the Runner interface (or a refactor that drops a method
+// from RepoRunner) will fail the build here rather than at the
+// orchestrator's call site.
+var _ Runner = (*RepoRunner)(nil)
 
 // Tool is the public schema record advertised to the model. The Schema
 // field is a JSON-schema map (matches llm.Tool.Schema verbatim) so the

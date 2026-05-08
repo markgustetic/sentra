@@ -197,7 +197,12 @@ func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]
 		capped = capped[:cfg.MaxFindingsToLLM]
 	}
 
-	runner := &tools.RepoRunner{
+	// Type the local as tools.Runner (interface) rather than the
+	// concrete *tools.RepoRunner so the orchestrator's actual contract
+	// is locked in code: it needs All() + Run() + Schema(). A future
+	// fake runner for testing tool-error paths can drop in here
+	// without changing this call site.
+	var runner tools.Runner = &tools.RepoRunner{
 		Repo:       a.Repo,
 		Heuristics: a.Heuristics,
 		Findings:   findings, // pass the FULL set so inspect_finding can look up tail entries
