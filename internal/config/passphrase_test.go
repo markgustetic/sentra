@@ -4,6 +4,8 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
 
@@ -161,6 +163,69 @@ func TestResolve_KeyringHookCalled(t *testing.T) {
 	}
 	if string(got) != "from-keyring" {
 		t.Errorf("got %q, want from-keyring", got)
+	}
+}
+
+// TestResolve_FileRejectsGroupReadable refuses to read a passphrase
+// file whose mode permits group or world access. The most common cause
+// is a passphrase file accidentally committed into a Docker build
+// context or copied with `cp` (which preserves source permissions, so
+// a 644 source becomes a 644 destination). Failing closed gives the
+// operator a clear signal rather than silently uploading ciphertext
+// encrypted with a passphrase that anyone on the system can read.
+func TestResolve_FileRejectsGroupReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-style permission bits don't map cleanly on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pass")
+	if err := os.WriteFile(path, []byte("from-file"), 0o644); err != nil {
+		t.Fatalf("write passphrase file: %v", err)
+	}
+	_, err := Resolve(ResolveOptions{PassphraseFile: path})
+	if err == nil {
+		t.Fatal("expected error for group-readable passphrase file, got nil")
+	}
+	if !strings.Contains(err.Error(), "permissions") {
+		t.Errorf("error %q should mention permissions", err.Error())
+	}
+}
+
+// TestResolve_FileRejectsWorldReadable is the same check for the
+// world-readable bit. Mode 0604 is unusual but still leaks the
+// passphrase to anyone on the system.
+func TestResolve_FileRejectsWorldReadable(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-style permission bits don't map cleanly on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pass")
+	if err := os.WriteFile(path, []byte("from-file"), 0o604); err != nil {
+		t.Fatalf("write passphrase file: %v", err)
+	}
+	_, err := Resolve(ResolveOptions{PassphraseFile: path})
+	if err == nil {
+		t.Fatal("expected error for world-readable passphrase file, got nil")
+	}
+}
+
+// TestResolve_FileAcceptsOwnerOnly is the happy path. 0600 is the
+// canonical "owner read/write, no one else" mode.
+func TestResolve_FileAcceptsOwnerOnly(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("Unix-style permission bits don't map cleanly on Windows")
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "pass")
+	if err := os.WriteFile(path, []byte("from-file"), 0o600); err != nil {
+		t.Fatalf("write passphrase file: %v", err)
+	}
+	got, err := Resolve(ResolveOptions{PassphraseFile: path})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if string(got) != "from-file" {
+		t.Errorf("got %q, want from-file", got)
 	}
 }
 

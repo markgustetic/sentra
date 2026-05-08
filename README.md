@@ -154,13 +154,23 @@ Download platform-specific archives from the
 release includes `checksums.txt` plus a cosign keyless signature
 (`checksums.txt.sig` and `checksums.txt.pem`) and a syft SBOM per archive.
 
+The certificate identity is the exact release-workflow path bound to a
+tag ref. Substitute the version you downloaded (e.g. `v0.2.0`):
+
 ```bash
 cosign verify-blob \
   --certificate checksums.txt.pem \
   --signature  checksums.txt.sig \
-  --certificate-identity-regexp 'https://github.com/markgustetic/sentra' \
+  --certificate-identity 'https://github.com/markgustetic/sentra/.github/workflows/release.yml@refs/tags/v0.2.0' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
+```
+
+If you need to verify across multiple versions in a script, anchor the
+regexp to the workflow path so it doesn't match arbitrary refs:
+
+```bash
+--certificate-identity-regexp '^https://github\.com/markgustetic/sentra/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
 ```
 
 ## Commands

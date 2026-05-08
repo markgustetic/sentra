@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"runtime"
 
 	"github.com/zalando/go-keyring"
 )
@@ -109,7 +110,26 @@ func Resolve(opts ResolveOptions) ([]byte, error) {
 // single trailing newline (and stripping a leading UTF-8 BOM if
 // present). Editors love to add a trailing \n; users typing the
 // passphrase into an unrelated tool wouldn't include it.
+//
+// On Unix, the file's mode is checked first: any group- or world-
+// readable bits cause Resolve to fail closed with a clear error
+// rather than silently use a passphrase that other accounts on the
+// system can read. Windows permissions don't map onto Unix bits, so
+// the check is skipped there (the threat model already documents
+// that the OS keyring/file trust assumptions are platform-specific).
 func readPassphraseFile(path string) ([]byte, error) {
+	if runtime.GOOS != "windows" {
+		info, err := os.Stat(path)
+		if err != nil {
+			return nil, fmt.Errorf("config: stat passphrase file: %w", err)
+		}
+		if mode := info.Mode().Perm(); mode&0o077 != 0 {
+			return nil, fmt.Errorf(
+				"config: passphrase file %s has insecure permissions %#o (group or world bits set); run `chmod 600 %s`",
+				path, mode, path,
+			)
+		}
+	}
 	raw, err := os.ReadFile(path) //nolint:gosec // path comes from the user via a flag, not from observed content
 	if err != nil {
 		return nil, fmt.Errorf("config: read passphrase file: %w", err)

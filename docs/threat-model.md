@@ -62,8 +62,12 @@ and the dedup story gets harder).
   The same trust assumptions about your OS keyring apply.
 - **Memory.** The plaintext repo key is held in process memory while
   `sentra` is running. A local attacker with code-execution privileges on
-  the running process can extract it. We do not zero the key on exit;
-  the OS reclaims the page when the process exits.
+  the running process can extract it. `Repo.Close` zeroes the in-process
+  copy and every `defer r.Close()` in the CLI flushes that copy on exit,
+  but Go's runtime is free to copy the key onto the heap during
+  goroutine scheduling and garbage collection — so a core dump or live
+  memory acquisition during execution can still recover the key. Zeroing
+  on `Close` collapses the *post-exit* window, not the in-flight one.
 - **Forward secrecy.** There's no per-snapshot key derivation in v1, so
   passphrase compromise means historical snapshot compromise, not just
   future ones. A future `sentra passwd` will rotate the passphrase

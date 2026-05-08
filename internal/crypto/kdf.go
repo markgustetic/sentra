@@ -41,6 +41,15 @@ func DefaultKDFParams() KDFParams {
 	return KDFParams{Time: 3, Memory: 64 * 1024, Threads: 4, KeyLen: 32}
 }
 
+// MinMemoryKiB is the lower bound enforced by Validate on Memory.
+// 4 MiB is well below the 64 MiB design default but still high enough
+// that a corrupted or tampered config cannot trivialize brute-force
+// against the wrapped repo key. OWASP's 2024+ Argon2id recommendations
+// (m >= 19 MiB) sit comfortably above this floor; the floor exists to
+// catch configs whose memory parameter has been zeroed or downgraded
+// to single-digit KiB, not to enforce best practice.
+const MinMemoryKiB uint32 = 4 * 1024
+
 // DeriveKEK runs Argon2id over (passphrase, salt) using p and returns
 // the resulting key. The output length is p.KeyLen.
 func DeriveKEK(passphrase, salt []byte, p KDFParams) []byte {
@@ -60,8 +69,9 @@ func (p KDFParams) Validate() error {
 	if p.KeyLen != 32 {
 		return fmt.Errorf("crypto: KDFParams.KeyLen must be 32, got %d", p.KeyLen)
 	}
-	if p.Memory == 0 || p.Memory > 1<<24 { // ceiling 16 GiB in KiB
-		return fmt.Errorf("crypto: KDFParams.Memory out of range: %d KiB", p.Memory)
+	if p.Memory < MinMemoryKiB || p.Memory > 1<<24 { // floor 4 MiB, ceiling 16 GiB
+		return fmt.Errorf("crypto: KDFParams.Memory out of range: %d KiB (must be %d..%d)",
+			p.Memory, MinMemoryKiB, uint32(1<<24))
 	}
 	return nil
 }

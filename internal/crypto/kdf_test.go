@@ -83,6 +83,16 @@ func TestKDFParams_Validate(t *testing.T) {
 			wantErr: "Memory",
 		},
 		{
+			name:    "Memory below floor rejected",
+			params:  KDFParams{Time: 3, Memory: MinMemoryKiB - 1, Threads: 4, KeyLen: 32},
+			wantErr: "Memory",
+		},
+		{
+			name:    "Memory at floor allowed",
+			params:  KDFParams{Time: 3, Memory: MinMemoryKiB, Threads: 4, KeyLen: 32},
+			wantErr: "",
+		},
+		{
 			name:    "Memory above ceiling rejected",
 			params:  KDFParams{Time: 3, Memory: (1 << 24) + 1, Threads: 4, KeyLen: 32},
 			wantErr: "Memory",
