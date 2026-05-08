@@ -35,6 +35,30 @@ const keyringService = "sentra"
 // names — that's what feeds the per-repo identity.
 const keyringDefaultUser = "default"
 
+// loadConfigBestEffort wraps config.Load with the convention used by
+// startup-time helpers (newAgentProvider, the passphrase prompts):
+// a missing file is fine and proceeds silently; a real parse or
+// stat error is logged to stderr so the operator sees a clear
+// signal rather than mysterious default-fallback behavior. Returns
+// (nil, false) on error so callers can fall through to their own
+// defaults without discriminating between missing-file and broken-
+// file cases.
+//
+// `where` is a short description of the call site — it appears in
+// the warning so an operator running multiple commands can tell which
+// path tripped the warning.
+func loadConfigBestEffort(path, where string) *config.Config {
+	cfg, err := config.Load(path)
+	if err != nil {
+		// Don't fail the whole CLI on a config that's only used for
+		// optional features (model selection, keyring lookup), but DO
+		// surface the error so the operator knows their YAML is broken.
+		fmt.Fprintf(os.Stderr, "sentra: warning: %s: %v (using defaults)\n", where, err)
+		return nil
+	}
+	return cfg
+}
+
 func main() {
 	rootFlags := &cli.RootFlags{}
 	root := cli.NewRootWithFlags(version, commit, date, rootFlags)
@@ -147,7 +171,7 @@ func defaultHeuristics() []heuristics.Heuristic {
 // blank, NewAnthropic surfaces a clear error which `sentra agent
 // scan` prints — better than a deferred 401 on first request.
 func newAgentProvider() llm.Provider {
-	cfg, _ := config.Load("sentra.yaml")
+	cfg := loadConfigBestEffort("sentra.yaml", "agent provider config")
 	model := "claude-sonnet-4-6"
 	if cfg != nil && cfg.Agent.Model != "" {
 		model = cfg.Agent.Model
@@ -200,7 +224,7 @@ func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 		// be coming in via flag), so the keyring user defaults to
 		// "default". A future enhancement could load any partial
 		// sentra.yaml here to pick up the bucket if present.
-		cfg, _ := config.Load("sentra.yaml")
+		cfg := loadConfigBestEffort("sentra.yaml", "init passphrase prompt")
 		opts := config.ResolveOptions{
 			PassphraseFile: rootFlags.PassphraseFile,
 			Prompt: func() ([]byte, error) {
@@ -230,9 +254,12 @@ func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 func promptOpenPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 	return func() ([]byte, error) {
 		// Best-effort load: if sentra.yaml is missing, Resolve still
-		// works (file/env/prompt cover it). Any *real* config error
-		// would surface in the subcommand's own config.Load anyway.
-		cfg, _ := config.Load("sentra.yaml")
+		// works (file/env/prompt cover it). A real parse error is
+		// logged via loadConfigBestEffort so the operator sees a
+		// signal — the subcommand's own config.Load will then surface
+		// the same error as a hard failure when the command actually
+		// needs the config.
+		cfg := loadConfigBestEffort("sentra.yaml", "open passphrase prompt")
 		opts := config.ResolveOptions{
 			PassphraseFile: rootFlags.PassphraseFile,
 			Prompt: func() ([]byte, error) {
