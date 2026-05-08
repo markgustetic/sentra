@@ -3,14 +3,9 @@ package heuristics
 import (
 	"context"
 	"fmt"
-)
 
-// dataPrefix is the blobstore key prefix where chunk blobs live. Kept
-// in sync with the constant of the same name in internal/repo, but
-// duplicated here to avoid forcing the repo package to export it.
-// The value is part of the on-disk format; if it ever changes, this
-// constant must be updated too.
-const dataPrefix = "data/"
+	"github.com/markgustetic/sentra/internal/repo"
+)
 
 // OrphanBlobs flags blobs present in the store under "data/" but
 // absent from the LiveBlobs set. The intent is to surface storage
@@ -47,9 +42,9 @@ func (o *OrphanBlobs) Run(ctx context.Context, in Input) ([]Finding, error) {
 		return nil, nil
 	}
 	store := in.Repo.Store()
-	entries, err := store.List(ctx, dataPrefix)
+	entries, err := store.List(ctx, repo.DataPrefix)
 	if err != nil {
-		return nil, fmt.Errorf("orphan_blobs: list %s: %w", dataPrefix, err)
+		return nil, fmt.Errorf("orphan_blobs: list %s: %w", repo.DataPrefix, err)
 	}
 
 	var out []Finding

@@ -152,7 +152,7 @@ func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe 
 // fetchChunk downloads, decrypts, and decompresses a single chunk by
 // hex hash. Returns the plaintext chunk bytes.
 func (r *Repo) fetchChunk(ctx context.Context, repoKey []byte, hexHash string) ([]byte, error) {
-	rc, err := r.store.Get(ctx, chunkKey(hexHash))
+	rc, err := r.store.Get(ctx, ChunkKey(hexHash))
 	if err != nil {
 		return nil, fmt.Errorf("repo: get chunk: %w", err)
 	}

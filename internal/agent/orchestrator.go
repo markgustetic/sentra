@@ -460,9 +460,9 @@ func truncate(s string, n int) string {
 // shape OrphanBlobs expects so membership tests are direct map
 // lookups (no per-key translation step).
 //
-// Mirrors repo.chunkKey (unexported) so the orchestrator doesn't need
-// to import an internal helper. If repo ever changes the on-disk
-// chunk-key shape, this duplication MUST be updated to match.
+// Uses repo.ChunkKey so the on-disk format has a single source of
+// truth: any future change to chunk sharding propagates here
+// automatically rather than silently desynchronizing.
 func computeLiveBlobs(ctx context.Context, r *repo.Repo, snaps []repo.SnapshotInfo) (map[string]struct{}, error) {
 	out := make(map[string]struct{})
 	for _, s := range snaps {
@@ -475,22 +475,9 @@ func computeLiveBlobs(ctx context.Context, r *repo.Repo, snaps []repo.SnapshotIn
 		}
 		for _, fe := range m.Tree {
 			for _, hexHash := range fe.Chunks {
-				out[chunkKeyFor(hexHash)] = struct{}{}
+				out[repo.ChunkKey(hexHash)] = struct{}{}
 			}
 		}
 	}
 	return out, nil
-}
-
-// chunkKeyFor returns the blobstore key shape used for chunk blobs:
-// "data/<aa>/<hex>". This duplicates repo.chunkKey deliberately — the
-// repo package keeps it unexported because it's an implementation
-// detail of the on-disk format, but the agent needs the same shape to
-// feed OrphanBlobs.LiveBlobs. A 0–1 char input yields a sentinel "00"
-// shard so we never panic; SHA-256 hex is always 64 chars in practice.
-func chunkKeyFor(hexHash string) string {
-	if len(hexHash) < 2 {
-		return "data/00/" + hexHash
-	}
-	return "data/" + hexHash[:2] + "/" + hexHash
 }

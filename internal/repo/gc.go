@@ -144,7 +144,7 @@ func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error)
 		}
 		for _, fe := range m.Tree {
 			for _, h := range fe.Chunks {
-				liveKeys[chunkKey(h)] = struct{}{}
+				liveKeys[ChunkKey(h)] = struct{}{}
 			}
 		}
 	}
@@ -153,7 +153,7 @@ func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error)
 	// live set. We Stat first to capture the sealed-blob size so the
 	// returned DeletedBytes is meaningful even if the store doesn't
 	// expose Size on Delete.
-	dataEntries, err := r.store.List(ctx, dataPrefix)
+	dataEntries, err := r.store.List(ctx, DataPrefix)
 	if err != nil {
 		return GCStats{}, fmt.Errorf("repo: list data: %w", err)
 	}

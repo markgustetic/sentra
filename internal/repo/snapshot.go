@@ -80,10 +80,14 @@ type SnapshotInfo struct {
 // live. Used by both CreateSnapshot (write) and ListSnapshots (read).
 const snapshotPrefix = "snapshots/"
 
-// dataPrefix is the blobstore key prefix for content-addressed
+// DataPrefix is the blobstore key prefix for content-addressed
 // chunks. Each chunk lives at "data/<aa>/<sha256-hex>" where aa is
 // the first two hex chars of the SHA-256 (sharding).
-const dataPrefix = "data/"
+//
+// Exported so the agent (orphan-blob detection) and any future
+// consumers operate on a single source of truth — the on-disk format
+// must change in lockstep across every package that addresses chunks.
+const DataPrefix = "data/"
 
 // CreateSnapshot walks root, chunks every regular file, encrypts +
 // uploads new chunks (skipping ones the store already has), and
@@ -265,7 +269,7 @@ func (r *Repo) captureFile(
 	for _, c := range chunks {
 		hexHash := hex.EncodeToString(c.Hash)
 		hashes = append(hashes, hexHash)
-		key := chunkKey(hexHash)
+		key := ChunkKey(hexHash)
 		// Stat first to skip already-stored chunks. This is the
 		// content-addressed dedup that lets identical chunks across
 		// files / snapshots upload exactly once.
@@ -365,16 +369,22 @@ func (r *Repo) putManifest(ctx context.Context, repoKey []byte, m Manifest) erro
 	return nil
 }
 
-// chunkKey returns the blobstore key for a chunk with the given
+// ChunkKey returns the blobstore key for a chunk with the given
 // hex-encoded SHA-256. The first two hex chars are the shard prefix:
 // "data/<aa>/<sha256-hex>".
-func chunkKey(hexHash string) string {
+//
+// Exported so the agent and heuristics use exactly the same key shape
+// the repo writes — diverging copies were the failure mode this
+// replaces. Callers should always pass the SHA-256 hex (64 chars);
+// shorter inputs land in the "00" sentinel shard rather than panic so
+// upstream bugs surface as misclassification rather than crash.
+func ChunkKey(hexHash string) string {
 	if len(hexHash) < 2 {
 		// Shouldn't happen — SHA-256 hex is always 64 chars — but
 		// guard against panics if a caller passes garbage.
-		return dataPrefix + "00/" + hexHash
+		return DataPrefix + "00/" + hexHash
 	}
-	return dataPrefix + hexHash[:2] + "/" + hexHash
+	return DataPrefix + hexHash[:2] + "/" + hexHash
 }
 
 // newSnapshotID returns a sortable, collision-resistant ID:
