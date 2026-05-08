@@ -198,18 +198,27 @@ func (p *lazyErrProvider) Generate(ctx context.Context, sys string, msgs []llm.M
 }
 
 // newS3Store is the production blobstore factory. Reads the merged
-// config and constructs a real S3 client.
+// config, constructs a real S3 client, and wraps it in a RetryStore
+// so transient S3 errors (5xx, throttling, request-timeout) don't
+// abort a long-running backup or restore. The AWS SDK already retries
+// 3 times internally on transient failures; the RetryStore wraps that
+// in a coarser outer loop that handles sustained throttling and any
+// errors the SDK's per-request retry didn't catch.
 func newS3Store(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {
 	if cfg.Repo.S3.Bucket == "" {
 		return nil, fmt.Errorf("repo.s3.bucket not set in sentra.yaml — edit the file and re-run")
 	}
-	return blobstore.NewS3(ctx, blobstore.S3Config{
+	s3, err := blobstore.NewS3(ctx, blobstore.S3Config{
 		Bucket:      cfg.Repo.S3.Bucket,
 		Prefix:      cfg.Repo.S3.Prefix,
 		Region:      cfg.Repo.S3.Region,
 		Profile:     cfg.Repo.S3.Profile,
 		EndpointURL: cfg.Repo.S3.EndpointURL,
 	})
+	if err != nil {
+		return nil, err
+	}
+	return blobstore.NewRetryStore(s3, blobstore.DefaultRetryPolicy()), nil
 }
 
 // promptInitPassphrase returns the passphrase callback for `sentra init`.
