@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/walker"
@@ -58,9 +58,9 @@ func TestDupPaths_FlagsIdenticalContent(t *testing.T) {
 		t.Errorf("category/severity: got %s/%s", f.Category, f.Severity)
 	}
 	paths, _ := f.Details["paths"].([]string)
-	sort.Strings(paths)
+	slices.Sort(paths)
 	want := []string{a.AbsPath, b.AbsPath}
-	sort.Strings(want)
+	slices.Sort(want)
 	if len(paths) != 2 || paths[0] != want[0] || paths[1] != want[1] {
 		t.Errorf("paths: got %v, want %v", paths, want)
 	}

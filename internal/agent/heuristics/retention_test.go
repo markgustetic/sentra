@@ -3,7 +3,7 @@ package heuristics
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"testing"
 	"time"
 
@@ -60,7 +60,7 @@ func TestRetentionDrift_FindsDrift(t *testing.T) {
 		t.Errorf("drop_ids: got %d entries, want 7 (%v)", len(dropIDs), dropIDs)
 	}
 	// drop_ids should not include any of the kept (newest 3) IDs.
-	sort.Strings(dropIDs)
+	slices.Sort(dropIDs)
 	kept := map[string]struct{}{"snap-00": {}, "snap-01": {}, "snap-02": {}}
 	for _, id := range dropIDs {
 		if _, isKept := kept[id]; isKept {

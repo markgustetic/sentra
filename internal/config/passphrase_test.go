@@ -179,7 +179,7 @@ func TestResolve_FileRejectsGroupReadable(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pass")
-	if err := os.WriteFile(path, []byte("from-file"), 0o644); err != nil {
+	if err := os.WriteFile(path, []byte("from-file"), 0o644); err != nil { //nolint:gosec // intentional: testing rejection of group-readable file
 		t.Fatalf("write passphrase file: %v", err)
 	}
 	_, err := Resolve(ResolveOptions{PassphraseFile: path})
@@ -200,7 +200,7 @@ func TestResolve_FileRejectsWorldReadable(t *testing.T) {
 	}
 	dir := t.TempDir()
 	path := filepath.Join(dir, "pass")
-	if err := os.WriteFile(path, []byte("from-file"), 0o604); err != nil {
+	if err := os.WriteFile(path, []byte("from-file"), 0o604); err != nil { //nolint:gosec // intentional: testing rejection of world-readable file
 		t.Fatalf("write passphrase file: %v", err)
 	}
 	_, err := Resolve(ResolveOptions{PassphraseFile: path})

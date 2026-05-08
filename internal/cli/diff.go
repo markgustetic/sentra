@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 
 	"github.com/spf13/cobra"
 
@@ -90,9 +90,9 @@ func runDiff(cmd *cobra.Command, deps DiffDeps, idA, idB string, asJSON bool, cf
 	// Sort each list so the output is stable regardless of map
 	// iteration order in repo.Diff. Output stability matters for
 	// scripts that pipe `sentra diff --json` into other tools.
-	sort.Strings(res.Added)
-	sort.Strings(res.Removed)
-	sort.Strings(res.Changed)
+	slices.Sort(res.Added)
+	slices.Sort(res.Removed)
+	slices.Sort(res.Changed)
 
 	out := deps.Stdout
 	if out == nil {

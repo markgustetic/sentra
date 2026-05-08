@@ -1,8 +1,9 @@
 package heuristics
 
 import (
+	"cmp"
 	"context"
-	"sort"
+	"slices"
 
 	"golang.org/x/sync/errgroup"
 )
@@ -98,6 +99,6 @@ func (r *Registry) Run(ctx context.Context, in Input) ([]Finding, error) {
 			all = append(all, f)
 		}
 	}
-	sort.Slice(all, func(i, j int) bool { return all[i].ID < all[j].ID })
+	slices.SortFunc(all, func(a, b Finding) int { return cmp.Compare(a.ID, b.ID) })
 	return all, nil
 }

@@ -8,7 +8,7 @@ import (
 	"path/filepath"
 	"reflect"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -64,7 +64,7 @@ func TestWalk_RespectsIgnore(t *testing.T) {
 		t.Fatalf("Walk: %v", err)
 	}
 	got := get()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{".sentraignore", "keep.txt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -117,7 +117,7 @@ func TestWalk_HonorsCachedirTagOnlyWhenSet(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := get()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{"cache/CACHEDIR.TAG", "cache/junk"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -142,7 +142,7 @@ func TestWalk_CachedirTagWrongSignature(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := get()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{"cache/CACHEDIR.TAG", "cache/junk"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -208,7 +208,7 @@ func TestWalk_DoesNotFollowSymlinks(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := get()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{"real.txt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v (symlinks must be skipped)", got, want)
@@ -283,8 +283,8 @@ func TestWalk_NestedDirs(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := get()
-	sort.Strings(got)
-	sort.Strings(files)
+	slices.Sort(got)
+	slices.Sort(files)
 	if !reflect.DeepEqual(got, files) {
 		t.Errorf("got %v, want %v", got, files)
 	}
@@ -304,7 +304,7 @@ func TestWalk_DefaultIgnoreFileName(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := get()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{".sentraignore", "keep.txt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)
@@ -325,7 +325,7 @@ func TestWalk_CustomIgnoreFile(t *testing.T) {
 		t.Fatal(err)
 	}
 	got := get()
-	sort.Strings(got)
+	slices.Sort(got)
 	want := []string{".myignore", "keep.txt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v", got, want)

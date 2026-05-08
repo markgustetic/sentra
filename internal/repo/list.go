@@ -3,7 +3,7 @@ package repo
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 	"strings"
 )
 
@@ -51,11 +51,24 @@ func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	}
 	// Newest first; ties broken by ID (descending) for a stable
 	// order even when timestamps collide on coarse clocks.
-	sort.Slice(out, func(i, j int) bool {
-		if out[i].CreatedAt.Equal(out[j].CreatedAt) {
-			return out[i].ID > out[j].ID
+	slices.SortFunc(out, func(a, b SnapshotInfo) int {
+		// Newest first: reverse-chronological. cmp.Compare on time
+		// gives ascending; we negate to get descending. ID descending
+		// is the tie-break.
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			if a.CreatedAt.After(b.CreatedAt) {
+				return -1
+			}
+			return 1
 		}
-		return out[i].CreatedAt.After(out[j].CreatedAt)
+		// Tie-break: ID descending.
+		if a.ID > b.ID {
+			return -1
+		}
+		if a.ID < b.ID {
+			return 1
+		}
+		return 0
 	})
 	return out, nil
 }

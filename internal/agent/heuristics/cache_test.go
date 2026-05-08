@@ -2,7 +2,7 @@ package heuristics
 
 import (
 	"context"
-	"sort"
+	"slices"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/walker"
@@ -103,7 +103,7 @@ func TestCacheDirs_FlagsMultipleCacheKinds(t *testing.T) {
 		t.Fatalf("got %d findings, want 2: %+v", len(got), got)
 	}
 	targets := []string{got[0].Target, got[1].Target}
-	sort.Strings(targets)
+	slices.Sort(targets)
 	want := []string{"__pycache__", "node_modules"}
 	for i := range targets {
 		if targets[i] != want[i] {

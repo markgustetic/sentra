@@ -1,11 +1,12 @@
 package repo
 
 import (
+	"cmp"
 	"context"
 	"fmt"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"strconv"
 	"strings"
 	"sync"
@@ -177,7 +178,7 @@ func collectPlanEntries(ctx context.Context, absRoot string, opts walker.Options
 	if err != nil {
 		return nil, fmt.Errorf("repo: plan walk: %w", err)
 	}
-	sort.Slice(entries, func(i, j int) bool { return entries[i].RelPath < entries[j].RelPath })
+	slices.SortFunc(entries, func(a, b walker.Entry) int { return cmp.Compare(a.RelPath, b.RelPath) })
 	return entries, nil
 }
 

@@ -2,10 +2,11 @@ package blobstore
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"fmt"
 	"io"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 )
@@ -107,6 +108,6 @@ func (m *Memory) List(ctx context.Context, prefix string) ([]Info, error) {
 			out = append(out, Info{Key: k, Size: int64(len(v))})
 		}
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].Key < out[j].Key })
+	slices.SortFunc(out, func(a, b Info) int { return cmp.Compare(a.Key, b.Key) })
 	return out, nil
 }

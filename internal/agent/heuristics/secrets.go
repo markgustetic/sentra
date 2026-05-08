@@ -9,7 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -252,7 +252,7 @@ func redactPreview(line string, focalLoc []int, allLocs [][]int) string {
 	// substitution is well-defined.
 	locs := make([][]int, len(allLocs))
 	copy(locs, allLocs)
-	sort.Slice(locs, func(i, j int) bool { return locs[i][0] < locs[j][0] })
+	slices.SortFunc(locs, func(a, b []int) int { return a[0] - b[0] })
 
 	// Track focal's start position in the redacted string. Each
 	// earlier match shifts everything after it by len(marker)-(end-start).

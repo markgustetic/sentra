@@ -2,7 +2,7 @@ package repo
 
 import (
 	"fmt"
-	"sort"
+	"slices"
 	"time"
 )
 
@@ -119,11 +119,21 @@ func collectByBucket(
 // ListSnapshots does so the two functions agree on order when the
 // clock has limited resolution.
 func sortNewestFirst(snaps []SnapshotInfo) {
-	sort.Slice(snaps, func(i, j int) bool {
-		if snaps[i].CreatedAt.Equal(snaps[j].CreatedAt) {
-			return snaps[i].ID > snaps[j].ID
+	slices.SortFunc(snaps, func(a, b SnapshotInfo) int {
+		if !a.CreatedAt.Equal(b.CreatedAt) {
+			if a.CreatedAt.After(b.CreatedAt) {
+				return -1
+			}
+			return 1
 		}
-		return snaps[i].CreatedAt.After(snaps[j].CreatedAt)
+		// Tie-break: ID descending so the order matches ListSnapshots.
+		if a.ID > b.ID {
+			return -1
+		}
+		if a.ID < b.ID {
+			return 1
+		}
+		return 0
 	})
 }
 

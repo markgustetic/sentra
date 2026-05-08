@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"encoding/json"
 	"io"
@@ -9,7 +10,7 @@ import (
 	"os"
 	"path/filepath"
 	"runtime"
-	"sort"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -59,7 +60,7 @@ func treeFingerprint(t *testing.T, root string) []fileFingerprint {
 	if err != nil {
 		t.Fatalf("walk %s: %v", root, err)
 	}
-	sort.Slice(out, func(i, j int) bool { return out[i].rel < out[j].rel })
+	slices.SortFunc(out, func(a, b fileFingerprint) int { return cmp.Compare(a.rel, b.rel) })
 	return out
 }
 

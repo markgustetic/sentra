@@ -3,7 +3,7 @@ package repo
 import (
 	"context"
 	"fmt"
-	"sort"
+	"slices"
 )
 
 // DiffResult is the structured output of Repo.Diff. Each slice is a
@@ -86,9 +86,9 @@ func (r *Repo) Diff(ctx context.Context, idA, idB string) (DiffResult, error) {
 	// before printing, but downstream callers (notably the Phase 11
 	// agent) need deterministic order at the API boundary so cache
 	// hashes are stable.
-	sort.Strings(out.Added)
-	sort.Strings(out.Removed)
-	sort.Strings(out.Changed)
+	slices.Sort(out.Added)
+	slices.Sort(out.Removed)
+	slices.Sort(out.Changed)
 	return out, nil
 }
 

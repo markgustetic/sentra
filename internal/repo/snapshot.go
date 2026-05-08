@@ -2,6 +2,7 @@ package repo
 
 import (
 	"bytes"
+	"cmp"
 	"context"
 	"crypto/rand"
 	"encoding/hex"
@@ -12,7 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
-	"sort"
+	"slices"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -468,6 +469,6 @@ func (s *snapState) snapshotTree() []FileEntry {
 	defer s.mu.Unlock()
 	out := make([]FileEntry, len(s.tree))
 	copy(out, s.tree)
-	sort.Slice(out, func(i, j int) bool { return out[i].Path < out[j].Path })
+	slices.SortFunc(out, func(a, b FileEntry) int { return cmp.Compare(a.Path, b.Path) })
 	return out
 }

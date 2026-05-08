@@ -4,7 +4,7 @@ import (
 	"context"
 	"os"
 	"path/filepath"
-	"sort"
+	"slices"
 	"testing"
 )
 
@@ -42,9 +42,9 @@ func TestDiff_AddedRemovedChanged(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Diff: %v", err)
 	}
-	sort.Strings(res.Added)
-	sort.Strings(res.Removed)
-	sort.Strings(res.Changed)
+	slices.Sort(res.Added)
+	slices.Sort(res.Removed)
+	slices.Sort(res.Changed)
 
 	if got, want := res.Added, []string{"added.txt"}; !equalStrings(got, want) {
 		t.Errorf("Added: got %v, want %v", got, want)

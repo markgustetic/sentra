@@ -1,12 +1,13 @@
 package heuristics
 
 import (
+	"cmp"
 	"context"
 	"crypto/sha256"
 	"encoding/hex"
 	"io"
 	"os"
-	"sort"
+	"slices"
 
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -79,7 +80,7 @@ func (d *DupPaths) Run(ctx context.Context, in Input) ([]Finding, error) {
 			if len(paths) < 2 {
 				continue
 			}
-			sort.Strings(paths)
+			slices.Sort(paths)
 			groups = append(groups, group{hash: h, paths: paths})
 		}
 	}
@@ -87,11 +88,11 @@ func (d *DupPaths) Run(ctx context.Context, in Input) ([]Finding, error) {
 	// Sort groups deterministically: smallest representative path
 	// first, then by hash. Stable output makes downstream golden
 	// tests (and the LLM prompt builder) easier to reason about.
-	sort.Slice(groups, func(i, j int) bool {
-		if groups[i].paths[0] != groups[j].paths[0] {
-			return groups[i].paths[0] < groups[j].paths[0]
+	slices.SortFunc(groups, func(a, b group) int {
+		if c := cmp.Compare(a.paths[0], b.paths[0]); c != 0 {
+			return c
 		}
-		return groups[i].hash < groups[j].hash
+		return cmp.Compare(a.hash, b.hash)
 	})
 
 	out := make([]Finding, 0, len(groups))

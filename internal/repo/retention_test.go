@@ -1,7 +1,7 @@
 package repo
 
 import (
-	"sort"
+	"slices"
 	"testing"
 	"time"
 )
@@ -25,8 +25,8 @@ func TestPlanRetention_KeepLastOnly(t *testing.T) {
 		makeSnap("s5", base),
 	}
 	keep, drop := PlanRetention(snaps, RetentionPolicy{KeepLast: 3})
-	sort.Strings(keep)
-	sort.Strings(drop)
+	slices.Sort(keep)
+	slices.Sort(drop)
 	if got, want := keep, []string{"s3", "s4", "s5"}; !equalStrings(got, want) {
 		t.Errorf("keep: got %v, want %v", got, want)
 	}
@@ -53,8 +53,8 @@ func TestPlanRetention_KeepDaily(t *testing.T) {
 		makeSnap("d3-pm", day3.Add(20*time.Hour)),
 	}
 	keep, drop := PlanRetention(snaps, RetentionPolicy{KeepDaily: 2})
-	sort.Strings(keep)
-	sort.Strings(drop)
+	slices.Sort(keep)
+	slices.Sort(drop)
 	if got, want := keep, []string{"d2-pm", "d3-pm"}; !equalStrings(got, want) {
 		t.Errorf("keep: got %v, want %v", got, want)
 	}
@@ -85,8 +85,8 @@ func TestPlanRetention_KeepWeekly(t *testing.T) {
 		makeSnap("w2-wed", wk2Wed),
 	}
 	keep, drop := PlanRetention(snaps, RetentionPolicy{KeepWeekly: 2})
-	sort.Strings(keep)
-	sort.Strings(drop)
+	slices.Sort(keep)
+	slices.Sort(drop)
 	// Newest per ISO week for the latest 2 weeks: w2-wed (W02), w1-sun
 	// (W01). w0-mon, w1-tue, w2-mon are dropped.
 	if got, want := keep, []string{"w1-sun", "w2-wed"}; !equalStrings(got, want) {
@@ -119,8 +119,8 @@ func TestPlanRetention_Combination(t *testing.T) {
 		KeepDaily:  7,
 		KeepWeekly: 4,
 	})
-	sort.Strings(keep)
-	sort.Strings(drop)
+	slices.Sort(keep)
+	slices.Sort(drop)
 	keepSet := map[string]bool{}
 	for _, id := range keep {
 		keepSet[id] = true
