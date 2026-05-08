@@ -6,6 +6,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"math/rand/v2"
 	"time"
 
@@ -183,6 +184,18 @@ func (r *RetryStore) retry(ctx context.Context, op func() error) error {
 		if !IsRetryable(err) {
 			return err
 		}
+		// Surface a structured event on each retry firing so an
+		// operator running with --log-level=info sees throttling /
+		// 5xx storms in their cron logs. info, not warn — retries
+		// are expected behavior on shared infrastructure, not a
+		// failure indicator. The error string carries enough detail
+		// for triage; we don't add the typed code separately because
+		// the smithy.APIError interface already renders it via Error().
+		slog.LogAttrs(ctx, slog.LevelInfo, "blobstore retry",
+			slog.Int("attempt", attempt+1),
+			slog.Int("max_attempts", r.policy.MaxAttempts),
+			slog.String("error", err.Error()),
+		)
 		// Sleep before the next attempt; skip the sleep on the final
 		// failed attempt (we're going to return either way).
 		if attempt+1 < r.policy.MaxAttempts {

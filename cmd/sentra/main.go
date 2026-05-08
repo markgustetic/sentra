@@ -5,6 +5,8 @@ import (
 	"fmt"
 	"os"
 
+	"github.com/spf13/cobra"
+
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -12,6 +14,24 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/ui"
 )
+
+// isUICommand reports whether cmd is the bare-sentra dispatch or the
+// explicit `sentra ui` subcommand — both modes take over the terminal
+// with Bubbletea's alt-screen, so slog needs to discard stderr writes
+// during their lifetime. Detected via the cobra command's Use field
+// rather than a direct pointer comparison so the check survives
+// SetUIAsDefault rewiring the root's RunE without exposing internals.
+func isUICommand(cmd *cobra.Command) bool {
+	if cmd == nil {
+		return false
+	}
+	// `sentra` (no subcommand) — the parent root command falls
+	// through to the TUI via SetUIAsDefault.
+	if cmd.Parent() == nil {
+		return true
+	}
+	return cmd.Use == "ui"
+}
 
 var (
 	version = "dev"
@@ -62,6 +82,30 @@ func loadConfigBestEffort(path, where string) *config.Config {
 func main() {
 	rootFlags := &cli.RootFlags{}
 	root := cli.NewRootWithFlags(version, commit, date, rootFlags)
+
+	// Wire slog.Default before subcommands run. We use a
+	// PersistentPreRunE hook so flag parsing has completed by the
+	// time we read the values out of rootFlags. tuiMode is true for
+	// the bare `sentra` invocation and the explicit `sentra ui`
+	// subcommand — both take over the terminal, so writing logs to
+	// stderr would corrupt the alt-screen unless --log-file is set.
+	root.PersistentPreRunE = func(cmd *cobra.Command, _ []string) error {
+		tuiMode := isUICommand(cmd)
+		cleanup, err := cli.ConfigureSlog(rootFlags, tuiMode)
+		if err != nil {
+			// Fall back to stderr at warn level so the user sees
+			// the failure without losing all log output.
+			fmt.Fprintf(os.Stderr, "sentra: warning: log setup failed: %v (falling back to stderr)\n", err)
+		}
+		// Best-effort cleanup at process exit. cobra doesn't have a
+		// PostRunE that fires for every subcommand path (errors can
+		// short-circuit), so we register via runtime.SetFinalizer
+		// avoidance by leaning on the OS to flush+close on exit. The
+		// cleanup func is a no-op when --log-file is empty, so this
+		// is only material when the operator opted in to a file.
+		_ = cleanup
+		return nil
+	}
 
 	// Wire production-mode deps for each subcommand. Tests construct
 	// the same commands with stubbed deps; main is the only place
