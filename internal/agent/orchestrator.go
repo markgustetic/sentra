@@ -28,6 +28,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/agent/tools"
@@ -107,6 +108,24 @@ type Agent struct {
 	Heuristics *heuristics.Registry
 	Provider   llm.Provider
 	Config     Config
+
+	// Actions is the registered action vocabulary the LLM is told
+	// it can emit. The system prompt's "Action is one of: ..." list
+	// is generated from this registry, so the model's vocabulary
+	// matches the dispatcher's vocabulary by construction. Nil
+	// falls back to action.NewDefaultRegistry() — production wires
+	// the same registry the CLI's dispatcher uses.
+	Actions *action.Registry
+}
+
+// actionsOrDefault returns the registry the orchestrator should use
+// to build the prompt. Nil falls back to the default registry so
+// tests using Agent{} keep working without explicit setup.
+func (a *Agent) actionsOrDefault() *action.Registry {
+	if a.Actions != nil {
+		return a.Actions
+	}
+	return action.NewDefaultRegistry()
 }
 
 // systemPrompt is the agent's role prompt. It describes Sentra, the
@@ -114,9 +133,13 @@ type Agent struct {
 // contents, always emit recommendations as a JSON array.
 //
 // We rebuild this on every Scan rather than storing it on the Agent
-// struct because the available tools depend on the runner, and tests
-// may swap in a smaller toolset. Keeping the assembly co-located with
-// Scan keeps the contract obvious.
+// struct because the available tools depend on the runner, and the
+// action vocabulary depends on the registry — both injectable. The
+// two %s placeholders are filled with: (1) the tool-list fragment
+// produced by formatToolsForPrompt, (2) the action-list fragment
+// produced by action.Registry.PromptFragment. Generating from the
+// live registry guarantees the LLM is told about exactly the verbs
+// the dispatcher knows how to handle.
 const systemPromptTemplate = `You are the Sentra repository auditor. Sentra is an encrypted, ` +
 	`versioned S3 backup tool. Your job is to triage local heuristic findings ` +
 	`(secrets, large files, stale paths, retention drift, ...) and emit a JSON ` +
@@ -130,7 +153,8 @@ Hard rules:
 - Use the tools to investigate findings before recommending action. Be parsimonious — most findings need 0-1 tool calls.
 - Final response MUST be a single JSON array of Recommendation objects:
   [{"id":"...","action":"...","target":"...","severity":"...","rationale":"..."}]
-  Action is one of: "prune_snapshot", "add_to_ignore", "flag_secret", "none".
+  Action must be one of:
+%s
   Severity is one of: "info", "warn", "critical".
 - If there is nothing to do, respond with "[]".
 - Do NOT include prose outside the JSON array. The array IS your response.`
@@ -213,7 +237,10 @@ func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]
 		llmTools = append(llmTools, t.AsLLMTool())
 	}
 
-	sys := fmt.Sprintf(systemPromptTemplate, formatToolsForPrompt(runner.All()))
+	sys := fmt.Sprintf(systemPromptTemplate,
+		formatToolsForPrompt(runner.All()),
+		a.actionsOrDefault().PromptFragment(),
+	)
 
 	initialMsg, err := buildInitialMessage(capped)
 	if err != nil {

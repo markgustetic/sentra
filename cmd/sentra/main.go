@@ -7,6 +7,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -162,6 +163,7 @@ func main() {
 		Stdout:     os.Stdout,
 		Provider:   newAgentProvider(),
 		Heuristics: defaultHeuristics(),
+		Actions:    action.NewDefaultRegistry(),
 		Confirm:    cli.HuhAgentConfirm,
 	}
 	root.AddCommand(cli.NewAgent(agentDeps))

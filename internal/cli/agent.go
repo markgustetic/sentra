@@ -3,7 +3,6 @@ package cli
 import (
 	"context"
 	"encoding/json"
-	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +12,7 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/agent"
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -40,6 +40,14 @@ type AgentDeps struct {
 
 	// Stdout receives the user-facing summary table / JSON.
 	Stdout io.Writer
+
+	// Actions is the registry of action verbs the orchestrator's
+	// system prompt will list and the --apply path will dispatch
+	// through. Production wires action.NewDefaultRegistry; tests
+	// can inject a smaller registry. Nil falls back to
+	// NewDefaultRegistry so a tests using zero-value AgentDeps still
+	// works.
+	Actions *action.Registry
 
 	// Provider is the LLM provider passed through to the agent. Tests
 	// use llm.FakeProvider; main wires the Anthropic client.
@@ -163,11 +171,22 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 		agentCfg.MaxToolCalls = flags.maxToolCalls
 	}
 
+	// Resolve the action registry once and share it between the
+	// orchestrator (system prompt builder) and the --apply
+	// dispatcher. They MUST agree on the vocabulary — the LLM is
+	// told what verbs are valid, the dispatcher executes those
+	// verbs. Sharing the same instance makes drift impossible.
+	actions := deps.Actions
+	if actions == nil {
+		actions = action.NewDefaultRegistry()
+	}
+
 	a := &agent.Agent{
 		Repo:       r,
 		Heuristics: registry,
 		Provider:   deps.Provider,
 		Config:     agentCfg,
+		Actions:    actions,
 	}
 
 	out := deps.Stdout
@@ -344,7 +363,11 @@ func applyRecommendations(
 				rec.Action, rec.Target)
 		}
 
-		if err := dispatchAction(ctx, r, rec, out); err != nil {
+		registry := deps.Actions
+		if registry == nil {
+			registry = action.NewDefaultRegistry()
+		}
+		if err := dispatchAction(ctx, registry, r, rec, out); err != nil {
 			fmt.Fprintf(out, "  - %s: %s\n", rec.ID, ui.Danger.Render("error: "+err.Error()))
 			errs++
 			continue
@@ -365,97 +388,30 @@ func applyRecommendations(
 	return nil
 }
 
-// dispatchAction maps a recommendation's Action to a side-effect.
-// Unknown actions are surfaced as errors so the model's vocabulary
-// can't silently fail to do anything.
+// dispatchAction maps a recommendation's Action to a side-effect via
+// the action.Registry. Unknown actions surface as errors so the
+// model's vocabulary can't silently fail to do anything.
 //
-// The set of actions is deliberately small: prune_snapshot,
-// add_to_ignore, flag_secret, none. flag_secret is notification-only
-// because rotating a leaked credential is a human action, not
-// something Sentra should automate.
-func dispatchAction(ctx context.Context, r *repo.Repo, rec agent.Recommendation, out io.Writer) error {
-	switch rec.Action {
-	case "prune_snapshot":
-		if err := r.DeleteSnapshot(ctx, rec.Target); err != nil {
-			return fmt.Errorf("delete snapshot: %w", err)
-		}
-		// Run GC against the remaining snapshots to reclaim chunks
-		// that the now-deleted manifest exclusively referenced. We
-		// pass nil keepIDs so GC computes the live set from what's
-		// left in the store.
-		stats, err := r.GC(ctx, nil)
-		if err != nil {
-			// repo.ErrEmptyRepo means we just deleted the last
-			// snapshot — that's a successful prune, not a failure.
-			// Anything else is a real GC error worth reporting.
-			if !errors.Is(err, repo.ErrEmptyRepo) {
-				return fmt.Errorf("gc: %w", err)
-			}
-		} else {
-			fmt.Fprintf(out, "  - %s: pruned %s (reclaimed %d blobs, %s)\n",
-				rec.ID, rec.Target, stats.DeletedBlobs, ui.FormatBytes(stats.DeletedBytes))
-			return nil
-		}
-		fmt.Fprintf(out, "  - %s: pruned %s (last snapshot; nothing to GC)\n",
-			rec.ID, rec.Target)
-		return nil
-
-	case "add_to_ignore":
-		// Append the target to .sentraignore (relative to cwd) only
-		// when it isn't already present. Reading existing entries into
-		// a set keeps repeated runs idempotent — without dedupe, the
-		// file would accumulate duplicates each time the model
-		// re-recommends the same pattern.
-		//
-		// Comments and blank lines are ignored when building the set;
-		// trailing whitespace and CRLF endings are trimmed before
-		// comparing so a manually-edited file with `\r\n` or padding
-		// still matches.
-		target := strings.TrimSpace(rec.Target)
-		if target == "" {
-			fmt.Fprintf(out, "  - %s: empty target, skipped\n", rec.ID)
-			return nil
-		}
-		existing, err := readIgnorePatterns(".sentraignore")
-		if err != nil {
-			return fmt.Errorf("read .sentraignore: %w", err)
-		}
-		if _, dup := existing[target]; dup {
-			fmt.Fprintf(out, "  - %s: %q already in .sentraignore, skipped\n", rec.ID, target)
-			return nil
-		}
-		f, err := os.OpenFile(".sentraignore", os.O_APPEND|os.O_CREATE|os.O_WRONLY, 0o600)
-		if err != nil {
-			return fmt.Errorf("open .sentraignore: %w", err)
-		}
-		defer f.Close()
-		// Add a leading newline if the file already exists and is
-		// non-empty without a trailing newline. Cheap check: stat the
-		// file and seek-read the last byte. Worst case we add an
-		// unnecessary blank line; not worth a more complex fix.
-		if info, statErr := f.Stat(); statErr == nil && info.Size() > 0 {
-			if _, err := f.WriteString("\n"); err != nil {
-				return fmt.Errorf("write .sentraignore: %w", err)
-			}
-		}
-		if _, err := f.WriteString(target + "\n"); err != nil {
-			return fmt.Errorf("write .sentraignore: %w", err)
-		}
-		fmt.Fprintf(out, "  - %s: added %q to .sentraignore\n", rec.ID, target)
-		return nil
-
-	case "flag_secret":
-		// Notification-only: print a loud line and let the user act.
-		// Auto-rotation is out of scope for Sentra — it would require
-		// holding the cloud-provider credentials we deliberately don't
-		// want to ship.
-		fmt.Fprintf(out, "  - %s: %s — rotate the credential at %s\n",
-			rec.ID, ui.Danger.Render("FLAGGED"), rec.Target)
-		return nil
-
-	default:
-		return fmt.Errorf("unknown action %q", rec.Action)
+// The handlers themselves live in internal/agent/action — adding a
+// new action verb is a single file there + one line in
+// action.NewDefaultRegistry. The CLI's role is only to construct the
+// Env (formatter for byte counts, working directory) and dispatch.
+func dispatchAction(
+	ctx context.Context,
+	registry *action.Registry,
+	r *repo.Repo,
+	rec agent.Recommendation,
+	out io.Writer,
+) error {
+	cwd, _ := os.Getwd() // failure → handler falls back to "."
+	env := action.Env{
+		Repo:        r,
+		Stdout:      out,
+		Cwd:         cwd,
+		FormatBytes: ui.FormatBytes,
 	}
+	return registry.Dispatch(ctx, env, action.Action(rec.Action),
+		rec.ID, rec.Target, rec.Severity, rec.Rationale)
 }
 
 // truncateRationale shortens long rationale text for table display.
@@ -466,36 +422,6 @@ func truncateRationale(s string, n int) string {
 		return s
 	}
 	return s[:n-3] + "..."
-}
-
-// readIgnorePatterns reads path and returns the set of trimmed
-// non-comment, non-blank lines as map keys. Used by the add_to_ignore
-// dispatch to dedupe against patterns the user (or a previous agent
-// run) already added.
-//
-// Each line is stripped of trailing CR (handles CRLF endings from
-// Windows-edited files) and surrounding whitespace before insertion;
-// '#'-prefixed lines are ignored as comments. Returns an empty map
-// (not nil) when the file does not exist so callers can do a direct
-// membership lookup without a nil check.
-func readIgnorePatterns(path string) (map[string]struct{}, error) {
-	out := make(map[string]struct{})
-	body, err := os.ReadFile(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return out, nil
-		}
-		return nil, err
-	}
-	for _, line := range strings.Split(string(body), "\n") {
-		// Strip CR for CRLF, then trim whitespace.
-		clean := strings.TrimSpace(strings.TrimRight(line, "\r"))
-		if clean == "" || strings.HasPrefix(clean, "#") {
-			continue
-		}
-		out[clean] = struct{}{}
-	}
-	return out, nil
 }
 
 // HuhAgentConfirm is the production Confirm callback for the agent's
