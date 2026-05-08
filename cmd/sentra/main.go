@@ -157,6 +157,22 @@ func main() {
 	}
 	root.AddCommand(cli.NewPrune(pruneDeps))
 
+	// `sentra passwd` rotates the wrapping passphrase. Old passphrase
+	// uses the existing resolution chain (so --passphrase-file etc.
+	// still work for the operator's CURRENT secret); the new
+	// passphrase comes from --new-passphrase-file when set, or an
+	// interactive confirm-on-entry prompt otherwise. SENTRA_PASSPHRASE
+	// is deliberately not a source for the new passphrase per the
+	// design doc — env vars persist in shell history / process
+	// listings, which is the wrong default for a fresh secret.
+	passwdDeps := cli.PasswdDeps{
+		NewStore:      newS3Store,
+		Passphrase:    promptOpenPassphrase(rootFlags),
+		NewPassphrase: promptNewRepoPassphrase(),
+		Stdout:        os.Stdout,
+	}
+	root.AddCommand(cli.NewPasswd(passwdDeps))
+
 	agentDeps := cli.AgentDeps{
 		NewStore:   newS3Store,
 		Passphrase: promptOpenPassphrase(rootFlags),
@@ -265,6 +281,37 @@ func newS3Store(ctx context.Context, cfg *config.Config) (blobstore.Store, error
 		return nil, err
 	}
 	return blobstore.NewRetryStore(s3, blobstore.DefaultRetryPolicy()), nil
+}
+
+// promptNewRepoPassphrase returns the new-passphrase callback for
+// `sentra passwd`. The signature takes a passphraseFile argument so
+// the cobra command can pass the --new-passphrase-file flag value
+// through at run time without sharing state at construction time.
+//
+// Resolution is deliberately narrower than the old-passphrase chain:
+//
+//   - When passphraseFile is non-empty, read from that file.
+//     Honors the same 0600 enforcement as the existing chain on
+//     Unix (see internal/config/passphrase.go).
+//   - Otherwise prompt interactively with confirm-on-entry. Same
+//     UI helper init uses, with the same minPassphraseLen floor.
+//
+// Note: SENTRA_PASSPHRASE is NOT a source for the new passphrase.
+// Env vars persist in shell history and process listings; sourcing
+// the freshly-rotated secret from there by default would be the
+// wrong UX. Operators who want non-interactive rotation use the
+// --new-passphrase-file flag.
+func promptNewRepoPassphrase() func(passphraseFile string) ([]byte, error) {
+	return func(passphraseFile string) ([]byte, error) {
+		if passphraseFile != "" {
+			// Reuse config.Resolve with ONLY the file source set.
+			// Resolve short-circuits to readPassphraseFile when
+			// PassphraseFile is non-empty, so env / keyring / prompt
+			// branches are never consulted.
+			return config.Resolve(config.ResolveOptions{PassphraseFile: passphraseFile})
+		}
+		return ui.PromptPassphraseWithConfirm("Set new repository passphrase", minPassphraseLen)
+	}
 }
 
 // promptInitPassphrase returns the passphrase callback for `sentra init`.
