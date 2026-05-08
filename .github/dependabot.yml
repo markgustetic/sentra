@@ -1,0 +1,49 @@
+# Dependabot configuration for sentra.
+#
+# Keeps SHA-pinned GitHub Actions current. The actions in
+# .github/workflows/{ci,release}.yml are pinned to commit SHAs (not
+# tags) so a tag mutation can't compromise the release pipeline.
+# Dependabot opens PRs that bump the SHA and update the inline
+# `# vX.Y.Z` comment, so we get the security of SHA pinning with the
+# convenience of tag-following.
+#
+# Go modules are also covered weekly so transitive CVE bumps don't
+# rot. Major-version bumps still need manual review (see config below).
+
+version: 2
+updates:
+  - package-ecosystem: "github-actions"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "ci"
+      include: "scope"
+    groups:
+      # Group all action updates into a single PR per week to avoid
+      # noise — actions move in lockstep often enough that batching
+      # is preferable to ten individual PRs.
+      actions:
+        patterns:
+          - "*"
+
+  - package-ecosystem: "gomod"
+    directory: "/"
+    schedule:
+      interval: "weekly"
+      day: "monday"
+    open-pull-requests-limit: 10
+    commit-message:
+      prefix: "deps"
+      include: "scope"
+    groups:
+      # Patch-only group keeps PRs small and easy to merge. Major
+      # bumps surface as their own PRs so they get a proper review.
+      go-deps-patch:
+        update-types:
+          - "patch"
+      go-deps-minor:
+        update-types:
+          - "minor"
