@@ -22,7 +22,18 @@ func TestS3Integration(t *testing.T) {
 	ctx := context.Background()
 
 	container, err := minio.Run(ctx,
-		"minio/minio:RELEASE.2024-01-16T16-07-38Z",
+		// Pinned to a 2025 release rather than the long-stale 2024-01
+		// image because:
+		//   - Newer MinIO accepts the AWS SDK v2's x-amz-checksum-*
+		//     headers on DeleteObjects (the old image required the
+		//     legacy Content-MD5 header which the SDK no longer sends).
+		//   - If-None-Match: * support on PutObject was added in the
+		//     2024-08 release line, so PutIfAbsent's conditional
+		//     write actually fails on the second attempt against this
+		//     version.
+		// Bump strategy: pick a recent specific tag rather than
+		// :latest so the integration suite is reproducible.
+		"minio/minio:RELEASE.2025-09-07T16-13-09Z",
 		minio.WithUsername("sentra-test"),
 		minio.WithPassword("sentra-test-secret"),
 	)
