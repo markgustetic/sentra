@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"sync"
 	"time"
 
@@ -28,6 +29,21 @@ var ErrAlreadyInitialized = errors.New("repo: already initialized")
 // distinguish "wrong passphrase" from "config tampered with" via
 // timing or message text.
 var ErrWrongPassphrase = errors.New("repo: wrong passphrase")
+
+// ErrConfigTampered is returned by Open when the config blob's MAC
+// is present but doesn't match what we'd compute under the
+// passphrase-derived auth key. This is a strong signal that
+// somebody (or something) modified the on-disk config bytes
+// after the original write — typically the on-bucket attacker
+// scenario the MAC was added to defend against.
+//
+// Distinct from ErrWrongPassphrase: the passphrase already unwrapped
+// the repo key successfully, but the surrounding config metadata
+// (KDF params, salt, etc.) doesn't match what was originally signed.
+// The two sentinels are intentionally separate so an operator
+// triaging an Open failure knows which class of attack they're
+// looking at.
+var ErrConfigTampered = errors.New("repo: config MAC verification failed (possible tampering)")
 
 // ErrClosed is returned by methods on a *Repo whose Close has been
 // called. The repo key has been zeroed and is no longer usable; the
@@ -100,6 +116,9 @@ func Init(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 		WrappedRepoKey: wrapped,
 		CreatedAt:      time.Now().UTC(),
 	}
+	if err := signConfig(&cfg, kek); err != nil {
+		return nil, fmt.Errorf("repo: sign config: %w", err)
+	}
 	raw, err := json.Marshal(&cfg)
 	if err != nil {
 		return nil, fmt.Errorf("repo: marshal config: %w", err)
@@ -109,6 +128,37 @@ func Init(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 	}
 
 	return &Repo{store: s, cfg: cfg, repoKey: repoKey}, nil
+}
+
+// signConfig computes the config's MAC under a sub-key derived
+// from kek and writes it back into cfg.MAC. The canonical bytes
+// the MAC covers are the JSON-encoded cfg with MAC explicitly
+// nil, so verification on Open re-marshals into the same bytes.
+func signConfig(cfg *RepoConfig, kek []byte) error {
+	authKey, err := crypto.DeriveSubKey(kek, configMACInfo)
+	if err != nil {
+		return err
+	}
+	canonical, err := canonicalConfigBytes(cfg)
+	if err != nil {
+		return err
+	}
+	cfg.MAC = crypto.HMACSHA256(authKey, canonical)
+	return nil
+}
+
+// canonicalConfigBytes returns the deterministic JSON encoding of
+// cfg with MAC field explicitly nil. The MAC itself MUST not be
+// part of the bytes the MAC covers — otherwise verifying the MAC
+// would require knowing the MAC, which is circular.
+//
+// We marshal a struct copy with MAC zeroed rather than a separate
+// "MACless" type so a future field addition to RepoConfig is
+// automatically covered without forgetting to update this helper.
+func canonicalConfigBytes(cfg *RepoConfig) ([]byte, error) {
+	cp := *cfg
+	cp.MAC = nil
+	return json.Marshal(&cp)
 }
 
 // Open loads the repository config from s and unwraps the repo key
@@ -148,7 +198,50 @@ func Open(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 		return nil, fmt.Errorf("repo: unwrapped key has wrong length %d", len(repoKey))
 	}
 
+	// Verify the config MAC under the sub-key derived from kek.
+	// Mismatch means either:
+	//   - the on-disk config was tampered with (e.g. an operator
+	//     with bucket write access downgraded KDF.Memory), OR
+	//   - the file format / canonicalization changed in this build
+	//     vs the build that wrote the config.
+	// Either case is alarming, so we surface ErrConfigTampered.
+	//
+	// Empty MAC = legacy repo. We log a warning and proceed; an
+	// upcoming `sentra passwd` will rewrite the config with a MAC.
+	if err := verifyConfig(&cfg, kek); err != nil {
+		return nil, err
+	}
+
 	return &Repo{store: s, cfg: cfg, repoKey: repoKey}, nil
+}
+
+// verifyConfig validates the config's MAC. Returns nil on success
+// or a legacy (no-MAC) config; ErrConfigTampered when the MAC is
+// present but wrong; or an error from the sub-key derivation.
+func verifyConfig(cfg *RepoConfig, kek []byte) error {
+	if len(cfg.MAC) == 0 {
+		// Legacy repo: written before the MAC field existed. We
+		// trust the contents because the caller's passphrase just
+		// successfully unwrapped the repo key — that itself is a
+		// strong signal the wrapped key wasn't tampered with. The
+		// KDF params COULD have been weakened, though, so log a
+		// warning so an operator running with --log-level=info
+		// sees the upgrade prompt.
+		slog.Warn("repo config has no MAC (legacy repo); a future sentra passwd will add one")
+		return nil
+	}
+	authKey, err := crypto.DeriveSubKey(kek, configMACInfo)
+	if err != nil {
+		return fmt.Errorf("repo: derive auth key: %w", err)
+	}
+	canonical, err := canonicalConfigBytes(cfg)
+	if err != nil {
+		return fmt.Errorf("repo: canonical config: %w", err)
+	}
+	if !crypto.VerifyHMACSHA256(authKey, canonical, cfg.MAC) {
+		return ErrConfigTampered
+	}
+	return nil
 }
 
 // Close zeroes the in-memory repo key in place and releases it. It is

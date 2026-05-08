@@ -138,48 +138,53 @@ func TestCreateSnapshot_AndGC_Mutex(t *testing.T) {
 	}
 }
 
-// TestGC_ConcurrentRunsExactlyOneSucceeds is the load-test version
-// of the mutex contract: 5 goroutines all call GC concurrently;
-// exactly one succeeds, the rest see ErrRepoLocked. With no
-// inter-goroutine coordination beyond the lock, this is the
-// strongest behavioral guarantee about the single-mutex design.
-func TestGC_ConcurrentRunsExactlyOneSucceeds(t *testing.T) {
+// TestAcquireLock_ConcurrentExactlyOneWins is the strict mutex
+// invariant — N goroutines all try to acquire the same lock from
+// a sync.Barrier-released start; exactly one succeeds, the rest
+// see ErrRepoLocked. No scheduler timing needed: every winning
+// acquirer holds the lock until the test cleanup, so siblings
+// observe the contended state regardless of race-finish order.
+//
+// (The earlier "5-way concurrent GC" version of this test was
+// flaky on fast machines because a no-op GC could finish before
+// the next goroutine even tried to acquire — the lock was already
+// re-released by then. Targeting the lock primitive directly
+// removes that timing dependency.)
+func TestAcquireLock_ConcurrentExactlyOneWins(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 
-	// Make a snapshot so GC has something to do (otherwise
-	// ErrEmptyRepo masks the lock contract on every goroutine but
-	// the first).
-	root := t.TempDir()
-	if err := putFile(root, "x.txt", "hi"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := r.CreateSnapshot(ctx, root, SnapshotOptions{}); err != nil {
-		t.Fatalf("snapshot: %v", err)
-	}
-
-	const workers = 5
+	const workers = 8
+	start := make(chan struct{})
 	var wg sync.WaitGroup
 	wg.Add(workers)
 	successes := atomic.Int32{}
 	conflicts := atomic.Int32{}
-	others := atomic.Int32{}
+	winners := make(chan *LockInfo, workers)
 	for i := 0; i < workers; i++ {
+		i := i
 		go func() {
 			defer wg.Done()
-			_, err := r.GC(ctx, nil)
+			<-start // synchronized release
+			info, err := r.acquireLock(ctx, "stress")
 			switch {
 			case err == nil:
 				successes.Add(1)
+				winners <- info // hold for cleanup
 			case errors.Is(err, ErrRepoLocked):
 				conflicts.Add(1)
 			default:
-				others.Add(1)
-				t.Errorf("unexpected GC error: %v", err)
+				t.Errorf("worker %d: unexpected error %v", i, err)
 			}
 		}()
 	}
+	close(start)
 	wg.Wait()
+	close(winners)
+	// Release any winning lock so other tests don't see a stale one.
+	for info := range winners {
+		r.releaseLock(ctx, info)
+	}
 
 	if got := successes.Load(); got != 1 {
 		t.Errorf("successes: got %d, want exactly 1", got)
