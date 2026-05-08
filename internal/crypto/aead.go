@@ -19,6 +19,16 @@ const (
 
 	legacyAESGCMBlobVersion byte = 0x01
 
+	// legacyAESGCMNonceSize is the AES-GCM nonce length in the legacy
+	// v1 blob format. The on-disk header reserves the full 24-byte
+	// XChaCha20 nonce slot for forward-compatibility, but AES-GCM only
+	// consumes the first 12 bytes of that slot. Bytes 12..24 of the
+	// stored nonce are unused. This constant exists to make the size
+	// difference visible and prevent a future refactor from accidentally
+	// passing the full 24-byte slot to gcm.Open (which would fail) or
+	// from assuming AES-GCM uses XChaCha-sized nonces (it does not).
+	legacyAESGCMNonceSize = 12
+
 	// KeyLen is the required byte length of the symmetric key passed to
 	// Seal and Open. XChaCha20-Poly1305 requires 32 bytes.
 	KeyLen = 32
@@ -106,7 +116,11 @@ func openXChaCha20Poly1305(key, sealed []byte) ([]byte, error) {
 }
 
 func openLegacyAESGCM(key, sealed []byte) ([]byte, error) {
-	nonce := sealed[1:headerSize]
+	// AES-GCM only consumes the first 12 bytes of the 24-byte nonce
+	// slot. The trailing 12 bytes of the slot are an artifact of the
+	// shared on-disk header layout; they are not part of the nonce and
+	// must not be passed to gcm.Open.
+	nonce := sealed[1 : 1+legacyAESGCMNonceSize]
 	ciphertext := sealed[headerSize:]
 
 	block, err := aes.NewCipher(key)
@@ -117,7 +131,14 @@ func openLegacyAESGCM(key, sealed []byte) ([]byte, error) {
 	if err != nil {
 		return nil, fmt.Errorf("crypto: new gcm: %w", err)
 	}
-	plaintext, err := gcm.Open(nil, nonce[:gcm.NonceSize()], ciphertext, nil)
+	if gcm.NonceSize() != legacyAESGCMNonceSize {
+		// Defensive: the stdlib NonceSize for AES-GCM is hard-wired to
+		// 12 bytes, but if a future Go release ever changed this we'd
+		// silently misread legacy blobs. Surface the drift instead.
+		return nil, fmt.Errorf("crypto: legacy AES-GCM nonce size mismatch: stdlib=%d, expected=%d",
+			gcm.NonceSize(), legacyAESGCMNonceSize)
+	}
+	plaintext, err := gcm.Open(nil, nonce, ciphertext, nil)
 	if err != nil {
 		return nil, fmt.Errorf("crypto: open: %w", err)
 	}
