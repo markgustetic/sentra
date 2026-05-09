@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -299,27 +298,6 @@ func buildRetentionPolicy(cfg *config.Config, flags *pruneFlags) repo.RetentionP
 	return policy
 }
 
-// HuhConfirm is the production Confirm implementation: a single-field
-// huh form using NewConfirm. Wired up by main.go; tests inject their
-// own callback to keep the run deterministic.
-//
-// The form's title is the prompt. Affirmative is "Yes, delete" and
-// the negative is "No, abort" — wording designed so the choice reads
-// unambiguously when the cursor lands on the default ("No, abort"
-// is the safer pick).
-func HuhConfirm(prompt string) (bool, error) {
-	var confirmed bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(prompt).
-				Affirmative("Yes, delete").
-				Negative("No, abort").
-				Value(&confirmed),
-		),
-	)
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return confirmed, nil
-}
+// (HuhConfirm now lives in confirm.go alongside the other two
+// production confirm callbacks; their bodies were identical except
+// for the affirmative/negative label pair.)

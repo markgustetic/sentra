@@ -10,7 +10,6 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -330,24 +329,9 @@ func normalizeBackupWalkerOptions(opts *walker.Options) {
 	}
 }
 
-// HuhBackupApplyConfirm is the production Confirm implementation for
-// `sentra backup apply`.
-func HuhBackupApplyConfirm(prompt string) (bool, error) {
-	var confirmed bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(prompt).
-				Affirmative("Yes, snapshot").
-				Negative("No, abort").
-				Value(&confirmed),
-		),
-	)
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return confirmed, nil
-}
+// (HuhBackupApplyConfirm now lives in confirm.go alongside the other
+// two production confirm callbacks; their bodies were identical except
+// for the affirmative/negative label pair.)
 
 // emptyDash renders an empty string as "-" for tabular display.
 func emptyDash(s string) string {

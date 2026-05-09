@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/agent"
@@ -425,25 +424,9 @@ func truncateRationale(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// HuhAgentConfirm is the production Confirm callback for the agent's
-// per-recommendation prompt flow. Wired up by main.go; tests inject a
-// deterministic stub.
-func HuhAgentConfirm(prompt string) (bool, error) {
-	var confirmed bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(prompt).
-				Affirmative("Yes, apply").
-				Negative("No, skip").
-				Value(&confirmed),
-		),
-	)
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return confirmed, nil
-}
+// (HuhAgentConfirm now lives in confirm.go alongside the other two
+// production confirm callbacks; their bodies were identical except
+// for the affirmative/negative label pair.)
 
 // errBudgetExhaustedSentinel returns the agent package's
 // ErrBudgetExhausted sentinel so test code in the cli package can
