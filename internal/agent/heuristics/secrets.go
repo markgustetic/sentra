@@ -191,8 +191,8 @@ func scanForSecrets(e walker.Entry) ([]Finding, error) {
 		// line, then redact ALL of them when constructing each preview.
 		// The naive "redact only the focal match" approach leaked a
 		// second secret on the same line if it wasn't this pattern's
-		// match. Phase 11 routes preview to the LLM (network), so any
-		// leak here is exfiltration.
+		// match. The orchestrator routes preview to the LLM (network),
+		// so any leak here is exfiltration.
 		type match struct {
 			pattern string
 			loc     []int

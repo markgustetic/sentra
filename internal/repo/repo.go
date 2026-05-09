@@ -270,8 +270,8 @@ func (r *Repo) Close() error {
 func (r *Repo) Config() RepoConfig { return r.cfg }
 
 // Store returns the underlying blobstore. Exposed primarily for tests
-// and for the Phase 7 CLI to share the connection with other
-// subsystems (e.g. the agent's orphan-blob check).
+// and for the CLI to share the connection with other subsystems
+// (e.g. the agent's orphan-blob check).
 func (r *Repo) Store() blobstore.Store { return r.store }
 
 // keyOrErr returns a *defensive copy* of the repo key, or ErrClosed

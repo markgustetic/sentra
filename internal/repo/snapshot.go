@@ -442,12 +442,12 @@ func newSnapshotID(t time.Time) (string, error) {
 var snapshotIDPattern = regexp.MustCompile(`^snap-[0-9TZ]+-[0-9a-f]+$`)
 
 // validateSnapshotID rejects any ID that could escape the
-// snapshots/ prefix or otherwise sneak past the blobstore. Phase 5
-// review I2: LoadSnapshot("../config") would otherwise become a Get
-// on "snapshots/../config" which the in-memory store treats as
-// not-found (HasPrefix mismatch) but which the S3 store collapses
-// via path.Join to fetch the config blob, producing an opaque
-// "decompress" error.
+// snapshots/ prefix or otherwise sneak past the blobstore. Without
+// this guard, LoadSnapshot("../config") would become a Get on
+// "snapshots/../config" — the in-memory store treats that as
+// not-found (HasPrefix mismatch) but the S3 store collapses it via
+// path.Join to fetch the config blob, producing an opaque
+// "decompress" error that obscures the real bug.
 func validateSnapshotID(id string) error {
 	if id == "" {
 		return fmt.Errorf("repo: invalid snapshot id: empty")

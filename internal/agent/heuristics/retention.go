@@ -10,7 +10,7 @@ import (
 // the configured retention policy. It's a passive signal — the agent
 // is telling the user "your policy says drop these N snapshots, but
 // they're still here." Acting on the finding is a separate step (the
-// `prune` CLI from Phase 8).
+// `prune` CLI).
 //
 // Severity is "info" because retention drift isn't a problem on its
 // own — it's normal between scheduled prunes. The agent calls it out

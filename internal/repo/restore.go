@@ -30,9 +30,9 @@ type RestoreOptions struct {
 	// the blobstore.
 	//
 	// Zero means use runtime.GOMAXPROCS(0). Set to 1 for sequential
-	// restore (matches the pre-Phase-3 behavior — useful when the
-	// target filesystem is slow, the bandwidth-delay product is
-	// small, or a regression suspect needs to be ruled out).
+	// restore — useful when the target filesystem is slow, the
+	// bandwidth-delay product is small, or a regression suspect needs
+	// to be ruled out.
 	//
 	// Negative values are clamped to 1.
 	Concurrency int

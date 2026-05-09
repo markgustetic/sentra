@@ -220,13 +220,12 @@ func main() {
 }
 
 // defaultHeuristics returns the production set of heuristics the
-// agent runs over the repo. The set mirrors Phase 9's enumeration:
-// secrets, large files, cache dirs, stale paths, dup paths, orphan
-// blobs, retention drift. Heuristics whose Input contracts the
-// orchestrator doesn't currently populate (walker results, snapshot
-// list, etc.) are still included — they're no-ops on missing input
-// rather than errors, and Phase 12's TUI wiring will populate the
-// fuller Input.
+// agent runs over the repo: secrets, large files, cache dirs, stale
+// paths, dup paths, orphan blobs, retention drift. Heuristics whose
+// Input contracts the orchestrator doesn't currently populate
+// (walker results, snapshot list, etc.) are still included — they're
+// no-ops on missing input rather than errors, and a future TUI
+// wiring will populate the fuller Input.
 func defaultHeuristics() []heuristics.Heuristic {
 	return []heuristics.Heuristic{
 		heuristics.NewSecrets(),
