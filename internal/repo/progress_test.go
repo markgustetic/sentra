@@ -9,10 +9,11 @@ import (
 	"github.com/markgustetic/sentra/internal/progress"
 )
 
-// TestCreateSnapshot_ReportsProgress verifies the Phase 6 review carry-over:
-// CreateSnapshot must call SnapshotOptions.Progress with one Total() at the
-// start (best-effort estimate from the walk) and Add() per uploaded chunk.
-// Skipped (deduped) chunks count zero — they didn't move bytes.
+// TestCreateSnapshot_ReportsProgress verifies the progress contract:
+// CreateSnapshot must call SnapshotOptions.Progress with one Total()
+// at the start (best-effort estimate from the walk) and Add() per
+// uploaded chunk. Skipped (deduped) chunks count zero — they didn't
+// move bytes.
 func TestCreateSnapshot_ReportsProgress(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)

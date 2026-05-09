@@ -249,8 +249,12 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	// --apply path: walk recommendations, confirm each (unless --yes),
 	// dispatch through the action handler map. Errors on any single
 	// action are surfaced but do NOT abort the rest of the loop —
-	// users frequently want partial application.
-	return applyRecommendations(cmd.Context(), r, recs, deps, flags, out)
+	// users frequently want partial application. Pass the same
+	// `actions` registry the orchestrator's system prompt was built
+	// from so the dispatch loop and the LLM agree on vocabulary
+	// (instead of having the loop re-derive its own copy on every
+	// iteration with a duplicated nil-fallback).
+	return applyRecommendations(cmd.Context(), r, recs, deps, flags, out, actions)
 }
 
 // writeRecsTable emits a styled lipgloss table of recommendations. An
@@ -309,6 +313,7 @@ func applyRecommendations(
 	deps AgentDeps,
 	flags *agentFlags,
 	out io.Writer,
+	actions *action.Registry,
 ) error {
 	if len(recs) == 0 {
 		fmt.Fprintln(out, ui.Subtle.Render("No recommendations to apply."))
@@ -363,11 +368,7 @@ func applyRecommendations(
 				rec.Action, rec.Target)
 		}
 
-		registry := deps.Actions
-		if registry == nil {
-			registry = action.NewDefaultRegistry()
-		}
-		if err := dispatchAction(ctx, registry, r, rec, out); err != nil {
+		if err := dispatchAction(ctx, actions, r, rec, out); err != nil {
 			fmt.Fprintf(out, "  - %s: %s\n", rec.ID, ui.Danger.Render("error: "+err.Error()))
 			errs++
 			continue
@@ -427,11 +428,3 @@ func truncateRationale(s string, n int) string {
 // (HuhAgentConfirm now lives in confirm.go alongside the other two
 // production confirm callbacks; their bodies were identical except
 // for the affirmative/negative label pair.)
-
-// errBudgetExhaustedSentinel returns the agent package's
-// ErrBudgetExhausted sentinel so test code in the cli package can
-// errors.Is against it without importing the agent package's own
-// errors symbol explicitly. Keeps the test surface narrow.
-func errBudgetExhaustedSentinel() error {
-	return agent.ErrBudgetExhausted
-}

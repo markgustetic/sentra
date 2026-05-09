@@ -67,13 +67,13 @@ func TestDecompress_RejectsBadInput(t *testing.T) {
 	}
 }
 
-// TestDecompressLimit_RejectsOversized covers Phase 5 review I4: the
-// shared 8 MiB cap on Decompress is correct for chunks (max 4 MiB
-// plaintext) but wrong for manifests, which are unbounded by file
-// count. DecompressLimit lets each caller specify its own cap, and
-// must enforce it. We compress 10 MiB of zeros (trivially compressible
-// to a few hundred bytes, would balloon back to 10 MiB) and verify
-// decoding with a 1 MiB cap fails.
+// TestDecompressLimit_RejectsOversized: the shared 8 MiB cap on
+// Decompress is correct for chunks (max 4 MiB plaintext) but wrong
+// for manifests, which are unbounded by file count. DecompressLimit
+// lets each caller specify its own cap, and must enforce it. We
+// compress 10 MiB of zeros (trivially compressible to a few hundred
+// bytes, would balloon back to 10 MiB) and verify decoding with a
+// 1 MiB cap fails.
 func TestDecompressLimit_RejectsOversized(t *testing.T) {
 	in := make([]byte, 10<<20) // 10 MiB of zeros
 	c, err := Compress(in)

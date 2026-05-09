@@ -124,9 +124,9 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	// Phase 5 review C2: keyOrErr returns a defensive copy. Zero it
-	// when the operation completes so the key is not retained past
-	// CreateSnapshot's lifetime (independent of GC timing).
+	// keyOrErr returns a defensive copy. Zero it when the operation
+	// completes so the key is not retained past CreateSnapshot's
+	// lifetime (independent of GC timing).
 	defer crypto.Zeroize(repoKey)
 
 	// Local var name avoids shadowing the imported `progress` package.
@@ -221,10 +221,10 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, fmt.Errorf("repo: decrypt manifest %q: %w", id, err)
 	}
-	// Phase 5 review I4: manifests are unbounded by file count, so we
-	// can't share the chunk decoder's 8 MiB cap. 1 GiB bounds zip-bomb
-	// expansion while comfortably covering manifests for repos of
-	// many millions of files.
+	// Manifests are unbounded by file count, so we can't share the
+	// chunk decoder's 8 MiB cap. 1 GiB bounds zip-bomb expansion while
+	// comfortably covering manifests for repos of many millions of
+	// files.
 	raw, err := chunker.DecompressLimit(compressed, 1<<30)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("repo: decompress manifest %q: %w", id, err)

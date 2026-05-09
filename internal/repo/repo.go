@@ -181,10 +181,9 @@ func Open(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 		return nil, fmt.Errorf("repo: unmarshal config: %w", err)
 	}
 
-	// Phase 1 review carry-over #2: validate KDF params from disk
-	// before feeding them to Argon2id. A corrupted Memory field
-	// would otherwise OOM the process before we ever get to the
-	// passphrase check.
+	// Validate KDF params from disk before feeding them to Argon2id.
+	// A corrupted Memory field would otherwise OOM the process before
+	// we ever get to the passphrase check.
 	if err := cfg.KDF.Validate(); err != nil {
 		return nil, fmt.Errorf("repo: invalid KDF params: %w", err)
 	}
@@ -280,17 +279,17 @@ func (r *Repo) Store() blobstore.Store { return r.store }
 // if Close has been called. Callers must zeroize the returned copy
 // when done — see crypto.Zeroize().
 //
-// Phase 5 review C2: returning the live slice header was unsafe.
-// CreateSnapshot fans out concurrent Seal calls that capture the
-// slice. If Close ran while a goroutine still held the captured
-// slice, the backing array was zeroed in place — but the captured
-// slice still pointed at it, now 32 zero bytes. crypto.Seal happily
-// encrypts under that all-zero key, producing chunks that are
-// silently un-decryptable with the real key (and trivially
-// decryptable for anyone with the all-zero key — i.e. anyone). The
-// fix is to hand each caller its own copy and let them zeroize after
-// the operation completes. The lock is still needed to read the live
-// slice atomically with respect to Close.
+// Returning the live slice header was unsafe: CreateSnapshot fans
+// out concurrent Seal calls that capture the slice. If Close ran
+// while a goroutine still held the captured slice, the backing
+// array was zeroed in place — but the captured slice still pointed
+// at it, now 32 zero bytes. crypto.Seal happily encrypts under that
+// all-zero key, producing chunks that are silently un-decryptable
+// with the real key (and trivially decryptable for anyone with the
+// all-zero key — i.e. anyone). The fix is to hand each caller its
+// own copy and let them zeroize after the operation completes. The
+// lock is still needed to read the live slice atomically with
+// respect to Close.
 func (r *Repo) keyOrErr() ([]byte, error) {
 	r.keyMu.RLock()
 	defer r.keyMu.RUnlock()
