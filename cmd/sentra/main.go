@@ -173,6 +173,18 @@ func main() {
 	}
 	root.AddCommand(cli.NewPasswd(passwdDeps))
 
+	// `sentra sync` replicates this repo to a clone destination.
+	// One passphrase opens both ends (clones share a passphrase by
+	// construction). NewStore is called twice — once with the
+	// source's *config.Config, once with the destination's — so
+	// the same RetryStore-wrapped factory is used for both.
+	syncDeps := cli.SyncDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptOpenPassphrase(rootFlags),
+		Stdout:     os.Stdout,
+	}
+	root.AddCommand(cli.NewSync(syncDeps))
+
 	agentDeps := cli.AgentDeps{
 		NewStore:   newS3Store,
 		Passphrase: promptOpenPassphrase(rootFlags),

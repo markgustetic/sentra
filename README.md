@@ -186,6 +186,7 @@ regexp to the workflow path so it doesn't match arbitrary refs:
 | `sentra restore <snap> <dest>`  | Restore a snapshot byte-identical to a destination directory.              |
 | `sentra prune`                  | Delete snapshots that violate the retention policy and GC orphan blobs.    |
 | `sentra passwd`                 | Rotate the wrapping passphrase. Repo key unchanged; existing snapshots stay readable. |
+| `sentra sync --dst-config`      | Replicate this repo to a clone destination. Additive; share the passphrase. |
 | `sentra agent scan`             | Run heuristics + LLM agent. `--apply` for interactive remediation.         |
 | `sentra ui`                     | Launch the Bubbletea TUI. Bare `sentra` (no args) is equivalent.           |
 
