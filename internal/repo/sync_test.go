@@ -301,11 +301,11 @@ func TestSyncTo_AcquiresDestLock(t *testing.T) {
 		t.Fatalf("open dst: %v", err)
 	}
 	defer dstRepo.Close()
-	held, err := dstRepo.acquireLock(ctx, "test-holding")
+	held, err := acquireLock(ctx, dstRepo.store, "test-holding")
 	if err != nil {
 		t.Fatalf("acquire dst lock: %v", err)
 	}
-	defer dstRepo.releaseLock(ctx, held)
+	defer releaseLock(ctx, dstRepo.store, held)
 
 	// Add a new source snapshot so the second sync has work; then
 	// try to sync — must fail fast with ErrRepoLocked.
@@ -329,11 +329,11 @@ func TestSyncTo_DoesNotLockSource(t *testing.T) {
 	seedSourceWithSnapshot(t, src, "snap")
 
 	// Hold source's lock manually.
-	srcLock, err := src.acquireLock(ctx, "external")
+	srcLock, err := acquireLock(ctx, src.store, "external")
 	if err != nil {
 		t.Fatalf("acquire src lock: %v", err)
 	}
-	defer src.releaseLock(ctx, srcLock)
+	defer releaseLock(ctx, src.store, srcLock)
 
 	// Sync must proceed despite the held source lock.
 	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{InitDest: true}); err != nil {

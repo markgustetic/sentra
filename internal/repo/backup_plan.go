@@ -109,11 +109,14 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 
 	// Same advisory lock as CreateSnapshot — apply paths are
 	// snapshot-creating operations and must serialize against GC.
-	lockInfo, err := r.acquireLock(ctx, "snapshot-apply")
+	// Local var is `heldLock` (not `lockInfo`) because `lockInfo` is
+	// now the unexported type name in this package; reusing it as a
+	// local would shadow the type.
+	heldLock, err := acquireLock(ctx, r.store, "snapshot-apply")
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	defer r.releaseLock(ctx, lockInfo)
+	defer releaseLock(ctx, r.store, heldLock)
 
 	repoKey, err := r.keyOrErr()
 	if err != nil {

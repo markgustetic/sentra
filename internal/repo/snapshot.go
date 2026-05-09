@@ -110,12 +110,15 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// see this snapshot's chunks land while it's deciding what to
 	// delete. The lock is released on every exit path (success and
 	// error) via the deferred releaseLock. ErrRepoLocked surfaces a
-	// diagnostic message naming the holder.
-	lockInfo, err := r.acquireLock(ctx, "snapshot")
+	// diagnostic message naming the holder. Local var is `heldLock`
+	// (not `lockInfo`) because `lockInfo` is now the unexported type
+	// name in this package; reusing it as a local would shadow the
+	// type.
+	heldLock, err := acquireLock(ctx, r.store, "snapshot")
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	defer r.releaseLock(ctx, lockInfo)
+	defer releaseLock(ctx, r.store, heldLock)
 
 	repoKey, err := r.keyOrErr()
 	if err != nil {

@@ -117,11 +117,14 @@ func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 // blob behind; recovery is currently manual (delete the lock key
 // out-of-band).
 func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error) {
-	lockInfo, err := r.acquireLock(ctx, "gc")
+	// Local var is `heldLock` (not `lockInfo`) because `lockInfo` is
+	// now the unexported type name in this package; reusing it as a
+	// local would shadow the type.
+	heldLock, err := acquireLock(ctx, r.store, "gc")
 	if err != nil {
 		return GCStats{}, err
 	}
-	defer r.releaseLock(ctx, lockInfo)
+	defer releaseLock(ctx, r.store, heldLock)
 
 	// Same fail-on-Close contract as DeleteSnapshot. The actual key
 	// access happens inside LoadSnapshot, so the local copy here is
