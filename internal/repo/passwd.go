@@ -69,7 +69,7 @@ func (r *Repo) Passwd(ctx context.Context, newPassphrase []byte) error {
 	if err != nil {
 		return err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Sanity refusal: rotating to the same passphrase is a no-op
 	// the operator almost certainly didn't mean. The check happens
@@ -85,12 +85,15 @@ func (r *Repo) Passwd(ctx context.Context, newPassphrase []byte) error {
 	}
 
 	// Acquire the repo-wide advisory lock so no concurrent backup,
-	// GC, or peer Passwd can race with the rewrite.
-	lockInfo, err := r.acquireLock(ctx, "passwd")
+	// GC, or peer Passwd can race with the rewrite. Local var is
+	// `heldLock` (not `lockInfo`) because `lockInfo` is now the
+	// unexported type name in this package; reusing it as a local
+	// would shadow the type.
+	heldLock, err := acquireLock(ctx, r.store, "passwd")
 	if err != nil {
 		return err
 	}
-	defer r.releaseLock(ctx, lockInfo)
+	defer releaseLock(ctx, r.store, heldLock)
 
 	// Generate a fresh salt and derive a new KEK. Salt rotation
 	// makes any pre-existing precomputation against the old salt
@@ -155,6 +158,6 @@ func currentlySamePassphrase(newPassphrase []byte, cfg *RepoConfig, repoKey []by
 		// New passphrase doesn't unwrap; definitely different.
 		return false
 	}
-	defer zeroize(candidateRepoKey)
+	defer crypto.Zeroize(candidateRepoKey)
 	return bytes.Equal(candidateRepoKey, repoKey)
 }

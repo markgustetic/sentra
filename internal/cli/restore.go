@@ -9,6 +9,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -68,7 +69,7 @@ func runRestore(cmd *cobra.Command, deps RestoreDeps, snapID, destDir, cfgPath s
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {

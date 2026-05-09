@@ -11,6 +11,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/markgustetic/sentra/internal/agent"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -614,7 +615,7 @@ func TestAgentScan_BudgetExhausted_Error(t *testing.T) {
 	}
 	// Sanity: the underlying agent error is preserved (errors.Is
 	// reaches through fmt.Errorf wrapping).
-	if !errors.Is(err, errBudgetExhaustedSentinel()) {
+	if !errors.Is(err, agent.ErrBudgetExhausted) {
 		t.Errorf("expected ErrBudgetExhausted, got %v", err)
 	}
 }

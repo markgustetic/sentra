@@ -189,10 +189,9 @@ func TestOpen_RejectsBadKDFParams(t *testing.T) {
 	}
 }
 
-// TestKeyOrErr_ReturnsDefensiveCopy verifies the Phase 5 review C2
-// fix: keyOrErr must return a copy of the live key (so callers
-// holding the slice don't see the bytes zeroed by Close), not a
-// slice header pointing into r.repoKey.
+// TestKeyOrErr_ReturnsDefensiveCopy: keyOrErr must return a copy of
+// the live key (so callers holding the slice don't see the bytes
+// zeroed by Close), not a slice header pointing into r.repoKey.
 func TestKeyOrErr_ReturnsDefensiveCopy(t *testing.T) {
 	ctx := context.Background()
 	store := blobstore.NewMemory()

@@ -8,7 +8,6 @@ import (
 	"os"
 	"strings"
 
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/agent"
@@ -17,6 +16,7 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -153,7 +153,7 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {
@@ -249,8 +249,12 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	// --apply path: walk recommendations, confirm each (unless --yes),
 	// dispatch through the action handler map. Errors on any single
 	// action are surfaced but do NOT abort the rest of the loop —
-	// users frequently want partial application.
-	return applyRecommendations(cmd.Context(), r, recs, deps, flags, out)
+	// users frequently want partial application. Pass the same
+	// `actions` registry the orchestrator's system prompt was built
+	// from so the dispatch loop and the LLM agree on vocabulary
+	// (instead of having the loop re-derive its own copy on every
+	// iteration with a duplicated nil-fallback).
+	return applyRecommendations(cmd.Context(), r, recs, deps, flags, out, actions)
 }
 
 // writeRecsTable emits a styled lipgloss table of recommendations. An
@@ -309,6 +313,7 @@ func applyRecommendations(
 	deps AgentDeps,
 	flags *agentFlags,
 	out io.Writer,
+	actions *action.Registry,
 ) error {
 	if len(recs) == 0 {
 		fmt.Fprintln(out, ui.Subtle.Render("No recommendations to apply."))
@@ -363,11 +368,7 @@ func applyRecommendations(
 				rec.Action, rec.Target)
 		}
 
-		registry := deps.Actions
-		if registry == nil {
-			registry = action.NewDefaultRegistry()
-		}
-		if err := dispatchAction(ctx, registry, r, rec, out); err != nil {
+		if err := dispatchAction(ctx, actions, r, rec, out); err != nil {
 			fmt.Fprintf(out, "  - %s: %s\n", rec.ID, ui.Danger.Render("error: "+err.Error()))
 			errs++
 			continue
@@ -424,30 +425,6 @@ func truncateRationale(s string, n int) string {
 	return s[:n-3] + "..."
 }
 
-// HuhAgentConfirm is the production Confirm callback for the agent's
-// per-recommendation prompt flow. Wired up by main.go; tests inject a
-// deterministic stub.
-func HuhAgentConfirm(prompt string) (bool, error) {
-	var confirmed bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(prompt).
-				Affirmative("Yes, apply").
-				Negative("No, skip").
-				Value(&confirmed),
-		),
-	)
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return confirmed, nil
-}
-
-// errBudgetExhaustedSentinel returns the agent package's
-// ErrBudgetExhausted sentinel so test code in the cli package can
-// errors.Is against it without importing the agent package's own
-// errors symbol explicitly. Keeps the test surface narrow.
-func errBudgetExhaustedSentinel() error {
-	return agent.ErrBudgetExhausted
-}
+// (HuhAgentConfirm now lives in confirm.go alongside the other two
+// production confirm callbacks; their bodies were identical except
+// for the affirmative/negative label pair.)

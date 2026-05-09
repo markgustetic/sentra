@@ -7,15 +7,14 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"runtime"
-	"strings"
 	"sync/atomic"
 	"time"
 
 	"golang.org/x/sync/errgroup"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/progress"
 )
 
@@ -132,7 +131,7 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	if err != nil {
 		return stats, err
 	}
-	zeroize(k)
+	crypto.Zeroize(k)
 
 	// Refuse self-sync up front. Without this guard, the dest-lock
 	// acquire would succeed (dest store IS the open Repo's source),
@@ -157,11 +156,14 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	// Even DryRun acquires the lock so a concurrent destructive
 	// op (GC, passwd) on dest can't race the listings we're
 	// about to issue; the lock is released on return either way.
-	lockInfo, err := acquireLockOnStore(ctx, dest, "sync")
+	// Local var is `heldLock` (not `lockInfo`) because `lockInfo`
+	// is the unexported type name in this package; reusing it as
+	// a local would shadow the type.
+	heldLock, err := acquireLock(ctx, dest, "sync")
 	if err != nil {
 		return stats, err
 	}
-	defer releaseLockOnStore(ctx, dest, lockInfo)
+	defer releaseLock(ctx, dest, heldLock)
 
 	// On InitDest bootstrap, write source's config to dest first.
 	// This MUST happen before any chunks/manifests so an interrupted
@@ -398,51 +400,8 @@ func copyBlob(ctx context.Context, src, dst blobstore.Store, key string) error {
 	return nil
 }
 
-// acquireLockOnStore is the SyncTo-side analog of Repo.acquireLock,
-// but operating against a store WITHOUT requiring an open *Repo on
-// the destination. Dest may not yet have a config (in InitDest
-// mode), so we can't go through Repo.acquireLock which assumes a
-// fully-Open repo.
-//
-// The lock blob format is identical to the one Repo.acquireLock
-// writes — that way a destination that's been Open'd elsewhere
-// can interoperate (its acquireLock sees the same shape, etc.).
-func acquireLockOnStore(ctx context.Context, store blobstore.Store, op string) (*LockInfo, error) {
-	uuid, err := newLockUUID()
-	if err != nil {
-		return nil, fmt.Errorf("repo: generate sync lock uuid: %w", err)
-	}
-	host, _ := os.Hostname() // best-effort
-	info := &LockInfo{
-		UUID:      uuid,
-		Operation: op,
-		Host:      host,
-		PID:       os.Getpid(),
-		StartedAt: time.Now().UTC(),
-	}
-	body, err := json.Marshal(info)
-	if err != nil {
-		return nil, fmt.Errorf("repo: marshal sync lock info: %w", err)
-	}
-	if err := store.PutIfAbsent(ctx, lockKey, bytes.NewReader(body)); err != nil {
-		if errors.Is(err, blobstore.ErrAlreadyExists) {
-			holder := readLockHolder(ctx, store)
-			return nil, fmt.Errorf("%w%s", ErrRepoLocked, holder)
-		}
-		return nil, fmt.Errorf("repo: acquire sync lock: %w", err)
-	}
-	return info, nil
-}
-
-// releaseLockOnStore mirrors Repo.releaseLock but operates against
-// the bare store. UUID-checked delete; mismatch logs and skips.
-func releaseLockOnStore(ctx context.Context, store blobstore.Store, info *LockInfo) {
-	if info == nil {
-		return
-	}
-	if current := readLockHolder(ctx, store); current != "" && !strings.Contains(current, info.UUID) {
-		// Same warn-and-skip behavior as Repo.releaseLock.
-		return
-	}
-	_ = store.Delete(ctx, lockKey)
-}
+// (sync.go used to define its own acquireLockOnStore / releaseLockOnStore
+// helpers — a near-clone of the methods on *Repo. Both implementations
+// drifted in subtle ways, notably the release path's slog handling.
+// They've now been consolidated into the free functions acquireLock /
+// releaseLock in lock.go; SyncTo just calls those directly.)

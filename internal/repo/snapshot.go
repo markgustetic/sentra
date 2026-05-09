@@ -110,21 +110,24 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// see this snapshot's chunks land while it's deciding what to
 	// delete. The lock is released on every exit path (success and
 	// error) via the deferred releaseLock. ErrRepoLocked surfaces a
-	// diagnostic message naming the holder.
-	lockInfo, err := r.acquireLock(ctx, "snapshot")
+	// diagnostic message naming the holder. Local var is `heldLock`
+	// (not `lockInfo`) because `lockInfo` is now the unexported type
+	// name in this package; reusing it as a local would shadow the
+	// type.
+	heldLock, err := acquireLock(ctx, r.store, "snapshot")
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	defer r.releaseLock(ctx, lockInfo)
+	defer releaseLock(ctx, r.store, heldLock)
 
 	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	// Phase 5 review C2: keyOrErr returns a defensive copy. Zero it
-	// when the operation completes so the key is not retained past
-	// CreateSnapshot's lifetime (independent of GC timing).
-	defer zeroize(repoKey)
+	// keyOrErr returns a defensive copy. Zero it when the operation
+	// completes so the key is not retained past CreateSnapshot's
+	// lifetime (independent of GC timing).
+	defer crypto.Zeroize(repoKey)
 
 	// Local var name avoids shadowing the imported `progress` package.
 	reporter := opts.Progress
@@ -200,7 +203,7 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 	rc, err := r.store.Get(ctx, snapshotPrefix+id)
 	if err != nil {
 		// Preserve the sentinel for errors.Is callers.
@@ -218,10 +221,10 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, fmt.Errorf("repo: decrypt manifest %q: %w", id, err)
 	}
-	// Phase 5 review I4: manifests are unbounded by file count, so we
-	// can't share the chunk decoder's 8 MiB cap. 1 GiB bounds zip-bomb
-	// expansion while comfortably covering manifests for repos of
-	// many millions of files.
+	// Manifests are unbounded by file count, so we can't share the
+	// chunk decoder's 8 MiB cap. 1 GiB bounds zip-bomb expansion while
+	// comfortably covering manifests for repos of many millions of
+	// files.
 	raw, err := chunker.DecompressLimit(compressed, 1<<30)
 	if err != nil {
 		return Manifest{}, fmt.Errorf("repo: decompress manifest %q: %w", id, err)

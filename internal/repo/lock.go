@@ -36,7 +36,7 @@ const lockKey = "meta/lock"
 // can debug who's holding it.
 var ErrRepoLocked = errors.New("repo: another sentra operation is in progress")
 
-// LockInfo is the JSON payload stored inside the lock blob. It's
+// lockInfo is the JSON payload stored inside the lock blob. It's
 // purely diagnostic — the dispatcher only cares whether the blob
 // exists, not what it contains. Stored as plaintext JSON (not
 // AEAD-sealed) because:
@@ -46,7 +46,7 @@ var ErrRepoLocked = errors.New("repo: another sentra operation is in progress")
 //   - The acquire/release path runs on every snapshot — sealing
 //     would add an Argon2 derivation per acquire, which we don't
 //     pay for the manifests either.
-type LockInfo struct {
+type lockInfo struct {
 	UUID      string    `json:"uuid"`
 	Operation string    `json:"operation"`
 	Host      string    `json:"host"`
@@ -54,27 +54,29 @@ type LockInfo struct {
 	StartedAt time.Time `json:"started_at"`
 }
 
-// acquireLock attempts to claim the repo-wide advisory lock. The
-// op string is recorded in the lock blob so an operator inspecting
-// a stale lock can tell which subsystem held it ("snapshot", "gc",
-// etc.).
+// acquireLock attempts to claim the repo-wide advisory lock against
+// the supplied store. The op string is recorded in the lock blob so
+// an operator inspecting a stale lock can tell which subsystem held
+// it ("snapshot", "gc", "passwd", "sync", etc.).
 //
-// Returns the LockInfo it wrote on success, ErrRepoLocked when the
+// Returns the lockInfo it wrote on success, ErrRepoLocked when the
 // lock is already taken, or the underlying transport error for
 // anything else.
 //
-// The lock is released by calling releaseLock with the returned
-// LockInfo.UUID; the UUID lets the caller refuse to release a lock
-// it didn't acquire (e.g., if a re-acquire after a crash sees the
-// "old" lock blob and we want to keep the user's manual recovery
-// authoritative).
-func (r *Repo) acquireLock(ctx context.Context, op string) (*LockInfo, error) {
+// Free function (not a method on *Repo) so callers like SyncTo can
+// lock a destination store that does not yet have an open *Repo.
+// The previous code carried two near-identical implementations —
+// one method on *Repo, one free function in sync.go — that drifted
+// in subtle ways (notably the release path's slog handling).
+// Consolidating here keeps the lock-blob format and slog behavior
+// in one place.
+func acquireLock(ctx context.Context, store blobstore.Store, op string) (*lockInfo, error) {
 	uuid, err := newLockUUID()
 	if err != nil {
 		return nil, fmt.Errorf("repo: generate lock uuid: %w", err)
 	}
 	host, _ := os.Hostname() // best-effort
-	info := &LockInfo{
+	info := &lockInfo{
 		UUID:      uuid,
 		Operation: op,
 		Host:      host,
@@ -85,13 +87,13 @@ func (r *Repo) acquireLock(ctx context.Context, op string) (*LockInfo, error) {
 	if err != nil {
 		return nil, fmt.Errorf("repo: marshal lock info: %w", err)
 	}
-	err = r.store.PutIfAbsent(ctx, lockKey, bytes.NewReader(body))
+	err = store.PutIfAbsent(ctx, lockKey, bytes.NewReader(body))
 	if err != nil {
 		if errors.Is(err, blobstore.ErrAlreadyExists) {
 			// Best-effort: read the existing lock so the operator
 			// sees who's holding it. A read failure here is non-
 			// fatal — we still surface ErrRepoLocked to the caller.
-			holder := readLockHolder(ctx, r.store)
+			holder := readLockHolder(ctx, store)
 			return nil, fmt.Errorf("%w%s", ErrRepoLocked, holder)
 		}
 		return nil, fmt.Errorf("repo: acquire lock: %w", err)
@@ -99,19 +101,23 @@ func (r *Repo) acquireLock(ctx context.Context, op string) (*LockInfo, error) {
 	return info, nil
 }
 
-// releaseLock removes the lock blob if it matches the UUID that
-// acquireLock wrote. A mismatch (someone else holds the lock) is
-// logged but not surfaced as an error — the caller already
-// finished its protected work and forcing a noisy error here would
-// just obscure whatever the next operator sees.
+// releaseLock removes the lock blob from store if the blob's UUID
+// still matches the one acquireLock wrote. A mismatch (someone
+// else holds the lock) is logged at warn level but not surfaced as
+// an error — the caller already finished its protected work and
+// forcing a noisy error here would just obscure whatever the next
+// operator sees.
 //
 // A NotFound on delete (the lock was already gone) is treated as
-// success — same idempotency contract as DeleteSnapshot.
-func (r *Repo) releaseLock(ctx context.Context, info *LockInfo) {
+// success — same idempotency contract as DeleteSnapshot. Other
+// transport errors are logged at warn level so an operator running
+// with --log-level=info can spot a stuck lock that needs manual
+// recovery.
+func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 	if info == nil {
 		return
 	}
-	if current := readLockHolder(ctx, r.store); current != "" {
+	if current := readLockHolder(ctx, store); current != "" {
 		// readLockHolder returns " (held by ...)" — extract the
 		// UUID inside if present and compare. We don't fail on
 		// mismatch; we log so an operator running with --log-level
@@ -125,7 +131,7 @@ func (r *Repo) releaseLock(ctx context.Context, info *LockInfo) {
 			return
 		}
 	}
-	if err := r.store.Delete(ctx, lockKey); err != nil {
+	if err := store.Delete(ctx, lockKey); err != nil {
 		if errors.Is(err, blobstore.ErrNotFound) {
 			return
 		}
@@ -148,7 +154,7 @@ func readLockHolder(ctx context.Context, s blobstore.Store) string {
 		return ""
 	}
 	defer rc.Close()
-	var info LockInfo
+	var info lockInfo
 	dec := json.NewDecoder(rc)
 	if err := dec.Decode(&info); err != nil {
 		return ""

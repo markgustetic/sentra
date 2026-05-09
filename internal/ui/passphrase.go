@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/huh"
 	"github.com/charmbracelet/x/term"
+	"github.com/markgustetic/sentra/internal/crypto"
 )
 
 // ErrNotATTY is returned by the passphrase prompts when stdin is not
@@ -40,7 +41,7 @@ func PromptPassphrase(prompt string, minLen int) ([]byte, error) {
 		return nil, err
 	}
 	if minLen > 0 && len(pw) < minLen {
-		zeroize(pw)
+		crypto.Zeroize(pw)
 		return nil, fmt.Errorf("%w: minimum %d bytes", ErrPassphraseTooShort, minLen)
 	}
 	return pw, nil
@@ -57,12 +58,12 @@ func PromptPassphraseWithConfirm(prompt string, minLen int) ([]byte, error) {
 	}
 	second, err := PromptPassphrase("Confirm: ", 0)
 	if err != nil {
-		zeroize(first)
+		crypto.Zeroize(first)
 		return nil, err
 	}
-	defer zeroize(second)
+	defer crypto.Zeroize(second)
 	if subtle.ConstantTimeCompare(first, second) != 1 {
-		zeroize(first)
+		crypto.Zeroize(first)
 		return nil, ErrPassphraseMismatch
 	}
 	return first, nil
@@ -94,13 +95,4 @@ var runPasswordPromptFn = func(prompt string) ([]byte, error) {
 // out so tests can override via testIsTTY.
 var stdinIsTTY = func() bool {
 	return term.IsTerminal(os.Stdin.Fd())
-}
-
-// zeroize overwrites b with zeros. Best-effort; the Go runtime is
-// allowed to copy slices around, so this is defense in depth, not
-// a guarantee.
-func zeroize(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
 }

@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"bytes"
 	"context"
 	"fmt"
 	"io"
@@ -9,6 +10,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
@@ -119,7 +121,7 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	if err != nil {
 		return fmt.Errorf("resolve old passphrase: %w", err)
 	}
-	defer zeroize(oldPass)
+	defer crypto.Zeroize(oldPass)
 
 	// 2. Open the repo with the old passphrase. Failure here MUST
 	// short-circuit before any new-passphrase prompt — operators
@@ -138,13 +140,17 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	if err != nil {
 		return fmt.Errorf("resolve new passphrase: %w", err)
 	}
-	defer zeroize(newPass)
+	defer crypto.Zeroize(newPass)
 
 	// 4. Validate the new passphrase before touching the repo.
 	if len(newPass) < minPasswdNewPassphraseLen {
 		return fmt.Errorf("new passphrase must be at least %d bytes long", minPasswdNewPassphraseLen)
 	}
-	if bytesEqual(oldPass, newPass) {
+	// bytes.Equal is non-constant-time, which is fine here: the
+	// comparison is between two secrets the operator just typed;
+	// timing leakage discriminates "you typed the same thing
+	// twice" from "you didn't," which the operator already knows.
+	if bytes.Equal(oldPass, newPass) {
 		return fmt.Errorf("new passphrase matches old; nothing to rotate")
 	}
 
@@ -157,22 +163,4 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	fmt.Fprintln(out, "Passphrase rotated.")
 	fmt.Fprintln(out, "Old passphrase is no longer accepted; the new passphrase is in effect for subsequent sentra commands.")
 	return nil
-}
-
-// bytesEqual is a thin local wrapper over the standard library so
-// the imports on this file stay tight. We don't need
-// constant-time comparison here — the comparison is between two
-// secrets the operator already typed; timing leakage is between
-// "you typed the same thing twice" and "you didn't", which the
-// operator already knows.
-func bytesEqual(a, b []byte) bool {
-	if len(a) != len(b) {
-		return false
-	}
-	for i := range a {
-		if a[i] != b[i] {
-			return false
-		}
-	}
-	return true
 }

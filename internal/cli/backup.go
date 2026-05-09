@@ -10,11 +10,11 @@ import (
 	"sync"
 	"time"
 
-	"github.com/charmbracelet/huh"
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 	"github.com/markgustetic/sentra/internal/walker"
@@ -144,7 +144,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {
@@ -269,7 +269,7 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {
@@ -329,24 +329,9 @@ func normalizeBackupWalkerOptions(opts *walker.Options) {
 	}
 }
 
-// HuhBackupApplyConfirm is the production Confirm implementation for
-// `sentra backup apply`.
-func HuhBackupApplyConfirm(prompt string) (bool, error) {
-	var confirmed bool
-	form := huh.NewForm(
-		huh.NewGroup(
-			huh.NewConfirm().
-				Title(prompt).
-				Affirmative("Yes, snapshot").
-				Negative("No, abort").
-				Value(&confirmed),
-		),
-	)
-	if err := form.Run(); err != nil {
-		return false, err
-	}
-	return confirmed, nil
-}
+// (HuhBackupApplyConfirm now lives in confirm.go alongside the other
+// two production confirm callbacks; their bodies were identical except
+// for the affirmative/negative label pair.)
 
 // emptyDash renders an empty string as "-" for tabular display.
 func emptyDash(s string) string {

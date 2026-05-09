@@ -59,9 +59,9 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	if err != nil {
 		return err
 	}
-	// Phase 5 review C2: keyOrErr returns a defensive copy; zero it
-	// at function exit so the key is not retained past Restore.
-	defer zeroize(repoKey)
+	// keyOrErr returns a defensive copy; zero it at function exit so
+	// the key is not retained past Restore.
+	defer crypto.Zeroize(repoKey)
 
 	// Local var name avoids shadowing the imported `progress` package.
 	reporter := opts.Progress
@@ -133,11 +133,11 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 // restoreFile writes a single FileEntry into dest, creating parent
 // directories as needed and applying mode + mtime from the manifest.
 func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe FileEntry) error {
-	// Phase 5 review C1: every FileEntry.Path comes from a manifest
-	// the caller controls (or that an attacker has tampered with).
-	// safeRestorePath rejects anything that would escape dest. The
-	// returned dst is absolute and lexically inside dest, so its
-	// parent directory is also inside dest by construction.
+	// Every FileEntry.Path comes from a manifest the caller controls
+	// (or that an attacker has tampered with). safeRestorePath rejects
+	// anything that would escape dest. The returned dst is absolute
+	// and lexically inside dest, so its parent directory is also
+	// inside dest by construction.
 	dst, err := safeRestorePath(dest, fe.Path)
 	if err != nil {
 		return err
@@ -148,10 +148,10 @@ func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe 
 		return fmt.Errorf("repo: mkdir %s: %w", parent, err)
 	}
 
-	// Phase 4 review I2: only permission bits from the manifest
-	// mode get applied to the on-disk file. Type bits (regular,
-	// directory) are determined by the open call, and setuid /
-	// setgid / sticky are intentionally dropped.
+	// Only permission bits from the manifest mode get applied to the
+	// on-disk file. Type bits (regular, directory) are determined by
+	// the open call, and setuid / setgid / sticky are intentionally
+	// dropped.
 	perm := fe.Mode.Perm()
 	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
 	if err != nil {
@@ -227,7 +227,7 @@ func (r *Repo) fetchChunk(ctx context.Context, repoKey []byte, hexHash string) (
 // We compare on lexical paths only and do NOT call EvalSymlinks: the
 // destination tree is freshly created (or empty) before restore, so
 // a symlink-based escape would require us to follow our own writes.
-// Phase 6 review can revisit if directory restore is added.
+// Revisit if directory restore is added.
 func safeRestorePath(dest, relPath string) (string, error) {
 	if relPath == "" {
 		return "", fmt.Errorf("repo: empty path in manifest")

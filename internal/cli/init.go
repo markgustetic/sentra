@@ -11,6 +11,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -204,7 +205,7 @@ func runInit(cmd *cobra.Command, deps InitDeps, force bool, flags *initFlags) er
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Init(cmd.Context(), store, pass)
 	if err != nil {
@@ -251,14 +252,5 @@ func applyInitFlags(cfg *config.Config, flags *initFlags) {
 	}
 	if flags.endpointURL != "" {
 		cfg.Repo.S3.EndpointURL = flags.endpointURL
-	}
-}
-
-// zeroize overwrites b with zeros. Best-effort: the runtime is free to
-// move slices around. We still wipe so a heap dump between zeroize and
-// GC has at most an all-zero byte slice instead of the live key.
-func zeroize(b []byte) {
-	for i := range b {
-		b[i] = 0
 	}
 }

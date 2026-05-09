@@ -11,23 +11,23 @@ import (
 )
 
 // TestAcquireLock_FreshSucceeds covers the simple case: no lock
-// blob exists, acquireLock writes one and returns LockInfo.
+// blob exists, acquireLock writes one and returns lockInfo.
 func TestAcquireLock_FreshSucceeds(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 
-	info, err := r.acquireLock(ctx, "test")
+	info, err := acquireLock(ctx, r.store, "test")
 	if err != nil {
 		t.Fatalf("acquireLock: %v", err)
 	}
 	if info.UUID == "" {
-		t.Error("LockInfo.UUID must be populated")
+		t.Error("lockInfo.UUID must be populated")
 	}
 	if info.Operation != "test" {
-		t.Errorf("LockInfo.Operation: got %q, want %q", info.Operation, "test")
+		t.Errorf("lockInfo.Operation: got %q, want %q", info.Operation, "test")
 	}
 	// Clean up so other tests in this file don't see a stale lock.
-	r.releaseLock(ctx, info)
+	releaseLock(ctx, r.store, info)
 }
 
 // TestAcquireLock_TakenReturnsErrRepoLocked is the central
@@ -39,13 +39,13 @@ func TestAcquireLock_TakenReturnsErrRepoLocked(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 
-	info1, err := r.acquireLock(ctx, "first")
+	info1, err := acquireLock(ctx, r.store, "first")
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
-	defer r.releaseLock(ctx, info1)
+	defer releaseLock(ctx, r.store, info1)
 
-	_, err = r.acquireLock(ctx, "second")
+	_, err = acquireLock(ctx, r.store, "second")
 	if !errors.Is(err, ErrRepoLocked) {
 		t.Fatalf("second acquire: got %v, want ErrRepoLocked", err)
 	}
@@ -68,7 +68,7 @@ func TestReleaseLock_MismatchDoesNotDelete(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 
-	original, err := r.acquireLock(ctx, "first")
+	original, err := acquireLock(ctx, r.store, "first")
 	if err != nil {
 		t.Fatalf("first acquire: %v", err)
 	}
@@ -77,14 +77,14 @@ func TestReleaseLock_MismatchDoesNotDelete(t *testing.T) {
 	if err := r.store.Delete(ctx, lockKey); err != nil {
 		t.Fatalf("manual delete: %v", err)
 	}
-	current, err := r.acquireLock(ctx, "second")
+	current, err := acquireLock(ctx, r.store, "second")
 	if err != nil {
 		t.Fatalf("second acquire after manual cleanup: %v", err)
 	}
-	defer r.releaseLock(ctx, current)
+	defer releaseLock(ctx, r.store, current)
 
 	// The original caller's release must NOT delete the new lock.
-	r.releaseLock(ctx, original)
+	releaseLock(ctx, r.store, original)
 
 	// Verify the current lock blob is still there with the second
 	// holder's UUID.
@@ -120,7 +120,7 @@ func TestCreateSnapshot_AndGC_Mutex(t *testing.T) {
 	}
 
 	// Hold the lock manually to simulate a GC in progress.
-	lock, err := r.acquireLock(ctx, "gc")
+	lock, err := acquireLock(ctx, r.store, "gc")
 	if err != nil {
 		t.Fatalf("manual acquire: %v", err)
 	}
@@ -132,7 +132,7 @@ func TestCreateSnapshot_AndGC_Mutex(t *testing.T) {
 	}
 
 	// Release and re-try; this time CreateSnapshot should succeed.
-	r.releaseLock(ctx, lock)
+	releaseLock(ctx, r.store, lock)
 	if _, err := r.CreateSnapshot(ctx, root, SnapshotOptions{}); err != nil {
 		t.Fatalf("CreateSnapshot after release: %v", err)
 	}
@@ -160,13 +160,13 @@ func TestAcquireLock_ConcurrentExactlyOneWins(t *testing.T) {
 	wg.Add(workers)
 	successes := atomic.Int32{}
 	conflicts := atomic.Int32{}
-	winners := make(chan *LockInfo, workers)
+	winners := make(chan *lockInfo, workers)
 	for i := 0; i < workers; i++ {
 		i := i
 		go func() {
 			defer wg.Done()
 			<-start // synchronized release
-			info, err := r.acquireLock(ctx, "stress")
+			info, err := acquireLock(ctx, r.store, "stress")
 			switch {
 			case err == nil:
 				successes.Add(1)
@@ -183,7 +183,7 @@ func TestAcquireLock_ConcurrentExactlyOneWins(t *testing.T) {
 	close(winners)
 	// Release any winning lock so other tests don't see a stale one.
 	for info := range winners {
-		r.releaseLock(ctx, info)
+		releaseLock(ctx, r.store, info)
 	}
 
 	if got := successes.Load(); got != 1 {

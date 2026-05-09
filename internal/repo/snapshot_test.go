@@ -314,8 +314,8 @@ func TestLoadSnapshot_Missing(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 
-	// Well-formed-but-nonexistent ID: must pass shape validation
-	// (Phase 5 review I2) and then surface ErrNotFound from the store.
+	// Well-formed-but-nonexistent ID: must pass shape validation and
+	// then surface ErrNotFound from the store.
 	_, err := r.LoadSnapshot(ctx, "snap-19700101T000000Z-deadbeef")
 	if err == nil {
 		t.Fatal("expected error, got nil")
@@ -325,12 +325,12 @@ func TestLoadSnapshot_Missing(t *testing.T) {
 	}
 }
 
-// TestLoadSnapshot_RejectsInvalidID covers Phase 5 review I2: an
-// attacker / careless caller passing "../config" must not become a
-// blobstore Get on "snapshots/../config" (which path.Join collapses
-// in the S3 store, fetching the config blob and producing an opaque
-// "decompress" error). LoadSnapshot must reject the ID up-front
-// with a validation error, NOT with an ErrNotFound from the store.
+// TestLoadSnapshot_RejectsInvalidID: an attacker / careless caller
+// passing "../config" must not become a blobstore Get on
+// "snapshots/../config" (which path.Join collapses in the S3 store,
+// fetching the config blob and producing an opaque "decompress"
+// error). LoadSnapshot must reject the ID up-front with a validation
+// error, NOT with an ErrNotFound from the store.
 func TestLoadSnapshot_RejectsInvalidID(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
@@ -382,13 +382,13 @@ func TestCreateSnapshot_AfterCloseFails(t *testing.T) {
 	}
 }
 
-// TestRepo_CloseDuringSnapshot_DoesNotCorruptChunks verifies the
-// Phase 5 review C2 fix: if Close() races with an in-flight
-// CreateSnapshot, chunks must NEVER be encrypted under the all-zero
-// key. Either the snapshot completes correctly (chunks decryptable
-// with the original key) or it fails with a clear error — but it must
-// not silently produce zero-key ciphertext that the original key
-// can't decrypt and a future attacker with the all-zero key could.
+// TestRepo_CloseDuringSnapshot_DoesNotCorruptChunks: if Close()
+// races with an in-flight CreateSnapshot, chunks must NEVER be
+// encrypted under the all-zero key. Either the snapshot completes
+// correctly (chunks decryptable with the original key) or it fails
+// with a clear error — but it must not silently produce zero-key
+// ciphertext that the original key can't decrypt and a future
+// attacker with the all-zero key could.
 func TestRepo_CloseDuringSnapshot_DoesNotCorruptChunks(t *testing.T) {
 	ctx := context.Background()
 	store := blobstore.NewMemory()

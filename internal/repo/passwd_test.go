@@ -287,11 +287,11 @@ func TestPasswd_HoldsLock(t *testing.T) {
 	defer r.Close()
 
 	// Hold the lock manually (simulates an in-progress GC).
-	held, err := r.acquireLock(ctx, "test-holding")
+	held, err := acquireLock(ctx, r.store, "test-holding")
 	if err != nil {
 		t.Fatalf("acquire: %v", err)
 	}
-	defer r.releaseLock(ctx, held)
+	defer releaseLock(ctx, r.store, held)
 
 	err = r.Passwd(ctx, []byte("blocked-rotation"))
 	if !errors.Is(err, ErrRepoLocked) {

@@ -5,6 +5,8 @@ import (
 	"errors"
 	"strings"
 	"testing"
+
+	"github.com/markgustetic/sentra/internal/crypto"
 )
 
 // stubTTY swaps the package-level stdinIsTTY for the duration of t.
@@ -110,7 +112,7 @@ func TestPromptPassphraseWithConfirm_Mismatch(t *testing.T) {
 
 func TestZeroize(t *testing.T) {
 	b := []byte{1, 2, 3, 4, 5}
-	zeroize(b)
+	crypto.Zeroize(b)
 	for i, v := range b {
 		if v != 0 {
 			t.Errorf("byte %d: got %d, want 0", i, v)
