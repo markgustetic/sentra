@@ -7,7 +7,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"runtime"
 	"sync/atomic"
 	"time"
 
@@ -181,13 +180,7 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 		// chunk-byte totals operators actually care about.
 	}
 
-	concurrency := opts.Concurrency
-	switch {
-	case concurrency == 0:
-		concurrency = runtime.GOMAXPROCS(0)
-	case concurrency < 1:
-		concurrency = 1
-	}
+	concurrency := resolveConcurrency(opts.Concurrency)
 
 	reporter := opts.Progress
 	if reporter == nil {

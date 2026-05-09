@@ -7,7 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
 	"strings"
 
 	"golang.org/x/sync/errgroup"
@@ -99,16 +98,8 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	// parallel. Per-file is the natural batching unit because chunks
 	// within a file are appended in order, so within-file concurrency
 	// would need a write coordinator without paying for itself.
-	concurrency := opts.Concurrency
-	switch {
-	case concurrency == 0:
-		concurrency = runtime.GOMAXPROCS(0)
-	case concurrency < 1:
-		concurrency = 1
-	}
-
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(concurrency)
+	g.SetLimit(resolveConcurrency(opts.Concurrency))
 
 	for _, fe := range m.Tree {
 		fe := fe // capture by value for the goroutine closure
