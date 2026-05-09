@@ -221,8 +221,7 @@ func (p *anthropicProvider) buildRequest(sys string, msgs []Message, tools []Too
 // validateMessages screens the inbound Messages for shapes Generate
 // can't translate. Returning an error here is friendlier than letting
 // the SDK 400 with an opaque "invalid_request_error" — the orchestrator
-// (Phase 11) needs clear feedback when its prompt-construction logic
-// is wrong.
+// needs clear feedback when its prompt-construction logic is wrong.
 func validateMessages(msgs []Message) error {
 	for i, m := range msgs {
 		switch m.Role {

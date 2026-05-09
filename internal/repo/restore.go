@@ -7,8 +7,6 @@ import (
 	"io"
 	"os"
 	"path/filepath"
-	"runtime"
-	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -32,9 +30,9 @@ type RestoreOptions struct {
 	// the blobstore.
 	//
 	// Zero means use runtime.GOMAXPROCS(0). Set to 1 for sequential
-	// restore (matches the pre-Phase-3 behavior — useful when the
-	// target filesystem is slow, the bandwidth-delay product is
-	// small, or a regression suspect needs to be ruled out).
+	// restore — useful when the target filesystem is slow, the
+	// bandwidth-delay product is small, or a regression suspect needs
+	// to be ruled out.
 	//
 	// Negative values are clamped to 1.
 	Concurrency int
@@ -81,7 +79,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	}
 
 	// Resolve destDir to its absolute, symlink-cleaned form so that
-	// safeRestorePath comparisons are stable regardless of how the
+	// safeJoinPath comparisons are stable regardless of how the
 	// caller spells the path.
 	absDest, err := filepath.Abs(destDir)
 	if err != nil {
@@ -99,16 +97,8 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	// parallel. Per-file is the natural batching unit because chunks
 	// within a file are appended in order, so within-file concurrency
 	// would need a write coordinator without paying for itself.
-	concurrency := opts.Concurrency
-	switch {
-	case concurrency == 0:
-		concurrency = runtime.GOMAXPROCS(0)
-	case concurrency < 1:
-		concurrency = 1
-	}
-
 	g, gctx := errgroup.WithContext(ctx)
-	g.SetLimit(concurrency)
+	g.SetLimit(resolveConcurrency(opts.Concurrency))
 
 	for _, fe := range m.Tree {
 		fe := fe // capture by value for the goroutine closure
@@ -134,11 +124,11 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 // directories as needed and applying mode + mtime from the manifest.
 func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe FileEntry) error {
 	// Every FileEntry.Path comes from a manifest the caller controls
-	// (or that an attacker has tampered with). safeRestorePath rejects
+	// (or that an attacker has tampered with). safeJoinPath rejects
 	// anything that would escape dest. The returned dst is absolute
 	// and lexically inside dest, so its parent directory is also
 	// inside dest by construction.
-	dst, err := safeRestorePath(dest, fe.Path)
+	dst, err := safeJoinPath(dest, fe.Path, "restore destination")
 	if err != nil {
 		return err
 	}
@@ -213,44 +203,9 @@ func (r *Repo) fetchChunk(ctx context.Context, repoKey []byte, hexHash string) (
 	return raw, nil
 }
 
-// safeRestorePath joins relPath under dest and verifies that the result
-// is lexically contained inside dest. It rejects:
-//
-//   - empty relPath
-//   - absolute relPath (a manifest must always store relative paths)
-//   - any joined path whose dest-relative form starts with ".." or
-//     equals ".." (which would walk above dest)
-//
-// dest must already be absolute and clean (the caller is responsible
-// for that — Restore Abs+Cleans destDir once at the top).
-//
-// We compare on lexical paths only and do NOT call EvalSymlinks: the
-// destination tree is freshly created (or empty) before restore, so
-// a symlink-based escape would require us to follow our own writes.
-// Revisit if directory restore is added.
-func safeRestorePath(dest, relPath string) (string, error) {
-	if relPath == "" {
-		return "", fmt.Errorf("repo: empty path in manifest")
-	}
-	// Manifest paths are stored slash-separated and relative.
-	if filepath.IsAbs(relPath) || strings.HasPrefix(relPath, "/") {
-		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
-	}
-	joined := filepath.Join(dest, filepath.FromSlash(relPath))
-	rel, err := filepath.Rel(dest, joined)
-	if err != nil {
-		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
-	}
-	// rel may be "." for relPath == "." (which we don't want as a
-	// file target either), or start with ".." for any escape attempt.
-	if rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
-	}
-	if rel == "." {
-		return "", fmt.Errorf("repo: path %q escapes restore destination", relPath)
-	}
-	return joined, nil
-}
+// (safeRestorePath was the predecessor of safeJoinPath in path.go.
+// See path.go for the consolidated implementation shared between
+// restore and backup-plan validation.)
 
 // ensureDestDir refuses to write into an already-populated dest
 // directory. If dest does not exist it is created. If dest exists

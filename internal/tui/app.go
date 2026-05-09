@@ -66,8 +66,8 @@ type Deps struct {
 	// derives a cancellable child from this and threads the child
 	// back into every sub-view's Deps via DepsForChildren — so when
 	// the user presses 'q' the App's cleanup cancels every in-flight
-	// blobstore call. Nil falls back to context.Background() (the
-	// pre-Phase-2 behavior) so tests using `Deps{}` keep working.
+	// blobstore call. Nil falls back to context.Background() so tests
+	// using `Deps{}` keep working.
 	Ctx context.Context
 }
 

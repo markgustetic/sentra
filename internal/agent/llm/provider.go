@@ -9,7 +9,7 @@
 //   - anthropic.go  — Claude-backed impl used in production
 //
 // The interface is intentionally narrower than any single SDK so the
-// orchestrator (Phase 11) doesn't leak vendor types into its core.
+// orchestrator doesn't leak vendor types into its core.
 package llm
 
 import "context"
@@ -37,8 +37,8 @@ const (
 //
 // We don't enforce the exclusivity at the type level because Go's
 // struct ergonomics for "one of" payloads are awkward; the Anthropic
-// translator (anthropic.go) and the orchestrator (Phase 11) treat
-// ToolUse as taking precedence when both are non-nil.
+// translator (anthropic.go) and the orchestrator treat ToolUse as
+// taking precedence when both are non-nil.
 type Message struct {
 	Role       Role
 	Content    string

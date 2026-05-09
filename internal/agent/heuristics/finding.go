@@ -5,8 +5,8 @@
 // Heuristics are intentionally narrow and side-effect free: each one
 // reads from Input, returns []Finding (and possibly an error), never
 // mutates the repo. Findings carry paths/sizes/types/mtimes and small
-// structured Details, but never file *contents* — keeping Phase 11's
-// LLM provider on a strict no-content diet.
+// structured Details, but never file *contents* — keeping the LLM
+// provider on a strict no-content diet.
 package heuristics
 
 import (
@@ -19,8 +19,8 @@ import (
 )
 
 // Severity values used across all heuristics. Stringly-typed because
-// the LLM tool contract in Phase 11 surfaces them as plain strings
-// anyway; using a typed constant here adds friction without help.
+// the LLM tool contract surfaces them as plain strings anyway; using
+// a typed constant here adds friction without help.
 const (
 	SeverityInfo     = "info"
 	SeverityWarn     = "warn"
@@ -38,7 +38,7 @@ const (
 // Details is intentionally typed as map[string]any so each heuristic
 // can attach whatever structured context makes sense (size, mtime,
 // pattern name, line number, ...) without forcing a sum type. The
-// LLM tools in Phase 11 marshal it to JSON.
+// LLM tools marshal it to JSON.
 type Finding struct {
 	ID        string         `json:"id"`
 	Category  string         `json:"category"`
@@ -79,9 +79,9 @@ type Input struct {
 
 // InputConfig carries thresholds and policy that individual heuristics
 // consult. Zero values are NOT valid defaults for every field — the
-// registry caller is expected to populate them (Phase 11 will source
-// them from the loaded sentra.yaml). Each heuristic that needs a
-// default falls back to a documented constant when the field is zero.
+// registry caller is expected to populate them (the CLI sources them
+// from the loaded sentra.yaml). Each heuristic that needs a default
+// falls back to a documented constant when the field is zero.
 type InputConfig struct {
 	// LargeFileBytes is the byte threshold above which the large_files
 	// heuristic flags a file. Zero falls back to DefaultLargeFileBytes.
@@ -104,9 +104,9 @@ type InputConfig struct {
 }
 
 // makeFindingID returns a stable 16-hex-char ID derived from
-// category+target. Stability matters because Phase 11's LLM tools
-// keep findings keyed by ID across runs (so a user can refer to
-// "finding abc123" in conversation and the agent can look it up).
+// category+target. Stability matters because the LLM tools keep
+// findings keyed by ID across runs (so a user can refer to "finding
+// abc123" in conversation and the agent can look it up).
 //
 // SHA-1 is fine here — this is a stable hash, not a security
 // primitive. Truncating to 16 hex chars (64 bits) keeps IDs short for

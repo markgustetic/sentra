@@ -12,7 +12,7 @@ import (
 // that GC would reclaim — usually a sign of an interrupted backup or
 // a crash mid-way through CreateSnapshot.
 //
-// LiveBlobs is computed by the caller (Phase 11 orchestrator) by
+// LiveBlobs is computed by the caller (the agent orchestrator) by
 // loading every current manifest's chunk references. The caller
 // passes the chunk-key form ("data/<aa>/<hex>"), matching what
 // blobstore.List returns — so the membership test is a direct map

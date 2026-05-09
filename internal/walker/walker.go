@@ -25,8 +25,8 @@ type Entry struct {
 	Size    int64
 	// Mode is the lstat mode of the file. In v1 the walker only emits
 	// regular files, so this is always a regular-file mode. The bits
-	// to care about for Phase 5's manifest are the permission bits
-	// (Mode.Perm()); type bits are constant.
+	// the manifest cares about are the permission bits (Mode.Perm());
+	// type bits are constant.
 	Mode  os.FileMode
 	MTime time.Time
 }

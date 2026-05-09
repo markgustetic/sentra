@@ -51,8 +51,8 @@ var ErrBudgetExhausted = errors.New("agent: tool-call budget exhausted")
 var ErrInvalidResponse = errors.New("agent: model emitted invalid response")
 
 // Recommendation is the structured advice the LLM returns for a finding-
-// like situation. Phase 11.3's CLI renders these as a styled table;
-// Phase 12's TUI streams them in as the loop progresses.
+// like situation. The CLI renders these as a styled table; the TUI
+// streams them in as the loop progresses.
 //
 // Action is one of: "prune_snapshot", "add_to_ignore", "flag_secret",
 // "none". The CLI's --apply path dispatches each action through a
@@ -186,7 +186,7 @@ func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]
 	// orchestrator doesn't yet have a working-directory context, and
 	// the heuristics that need a Walked tree (cache_dirs, secrets,
 	// large_files, stale_paths, dup_paths) gracefully no-op on empty
-	// input. Wiring in a walk is a Phase 12 concern.
+	// input. Wiring in a walk is a future concern.
 	snaps, err := a.Repo.ListSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent: list snapshots: %w", err)

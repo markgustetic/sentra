@@ -215,7 +215,7 @@ func validateBackupPlanShape(plan BackupPlan) error {
 		if f.Path == "" || filepath.IsAbs(f.Path) || strings.HasPrefix(f.Path, "/") {
 			return fmt.Errorf("repo: invalid backup plan path %q", f.Path)
 		}
-		if _, err := safePlanPath(plan.Root, f.Path); err != nil {
+		if _, err := safeJoinPath(plan.Root, f.Path, "backup root"); err != nil {
 			return err
 		}
 		if seen[f.Path] {
@@ -283,20 +283,9 @@ func comparePlannedFile(planned BackupPlanFile, current walker.Entry) error {
 	return nil
 }
 
-func safePlanPath(root, relPath string) (string, error) {
-	if relPath == "" || filepath.IsAbs(relPath) || strings.HasPrefix(relPath, "/") {
-		return "", fmt.Errorf("repo: path %q escapes backup root", relPath)
-	}
-	joined := filepath.Join(root, filepath.FromSlash(relPath))
-	rel, err := filepath.Rel(root, joined)
-	if err != nil {
-		return "", fmt.Errorf("repo: path %q escapes backup root", relPath)
-	}
-	if rel == "." || rel == ".." || strings.HasPrefix(rel, ".."+string(filepath.Separator)) {
-		return "", fmt.Errorf("repo: path %q escapes backup root", relPath)
-	}
-	return joined, nil
-}
+// (safePlanPath was the predecessor of safeJoinPath in path.go.
+// See path.go for the consolidated implementation shared between
+// backup-plan validation and restore.)
 
 func parsePlanMode(mode string) (os.FileMode, error) {
 	n, err := strconv.ParseUint(mode, 8, 32)

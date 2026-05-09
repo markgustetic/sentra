@@ -10,6 +10,7 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"runtime"
 	"sync"
 	"time"
 
@@ -256,9 +257,7 @@ func (r *Repo) Close() error {
 		r.keyMu.Lock()
 		defer r.keyMu.Unlock()
 		if r.repoKey != nil {
-			for i := range r.repoKey {
-				r.repoKey[i] = 0
-			}
+			crypto.Zeroize(r.repoKey)
 			r.repoKey = nil
 		}
 	})
@@ -271,8 +270,8 @@ func (r *Repo) Close() error {
 func (r *Repo) Config() RepoConfig { return r.cfg }
 
 // Store returns the underlying blobstore. Exposed primarily for tests
-// and for the Phase 7 CLI to share the connection with other
-// subsystems (e.g. the agent's orphan-blob check).
+// and for the CLI to share the connection with other subsystems
+// (e.g. the agent's orphan-blob check).
 func (r *Repo) Store() blobstore.Store { return r.store }
 
 // keyOrErr returns a *defensive copy* of the repo key, or ErrClosed
@@ -310,4 +309,26 @@ func newRepoID() (string, error) {
 		return "", err
 	}
 	return "repo-" + hex.EncodeToString(b[:]), nil
+}
+
+// resolveConcurrency normalizes a user-supplied concurrency cap to a
+// usable goroutine limit. Zero means "use GOMAXPROCS" (the default
+// for Restore, SyncTo, and any future fan-out path). Negative values
+// are clamped to 1 because errgroup.SetLimit(0) would block forever
+// and SetLimit with a negative value is documented as "no limit",
+// which is almost certainly NOT what the caller intended when they
+// asked for negative concurrency.
+//
+// Centralized here so every fan-out caller agrees on the semantics —
+// when the policy changes (e.g. a future "auto-throttle when the
+// store reports rate-limit headers" knob), there's a single place
+// to thread it through.
+func resolveConcurrency(n int) int {
+	switch {
+	case n == 0:
+		return runtime.GOMAXPROCS(0)
+	case n < 1:
+		return 1
+	}
+	return n
 }
