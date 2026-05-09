@@ -325,34 +325,57 @@ func promptNewRepoPassphrase() func(passphraseFile string) ([]byte, error) {
 	}
 }
 
+// buildResolveOpts assembles the ResolveOptions shared by every
+// passphrase callback. logLabel is the short tag loadConfigBestEffort
+// uses when surfacing a parse error ("init passphrase prompt" /
+// "open passphrase prompt"); prompt is the interactive fallback
+// (confirm-on-entry for init, single-prompt for open).
+//
+// Centralized so the priority chain (--passphrase-file →
+// SENTRA_PASSPHRASE → keyring → prompt) and the "missing config →
+// keyringDefaultUser" fallback live in exactly one place. Adding a
+// new ResolveOptions field — e.g. a per-command timeout, a namespace
+// for multi-repo keyring support — would otherwise need to be
+// threaded into both call sites independently and is the kind of
+// near-clone that drifts in subtle ways.
+//
+// Best-effort config load: if sentra.yaml is missing, Resolve still
+// works (file/env/prompt cover it). A real parse error is logged via
+// loadConfigBestEffort so the operator sees a signal — the
+// subcommand's own config.Load will then surface the same error as
+// a hard failure when the command actually needs the config.
+func buildResolveOpts(rootFlags *cli.RootFlags, logLabel string, prompt func() ([]byte, error)) config.ResolveOptions {
+	cfg := loadConfigBestEffort("sentra.yaml", logLabel)
+	opts := config.ResolveOptions{
+		PassphraseFile: rootFlags.PassphraseFile,
+		Prompt:         prompt,
+	}
+	if cfg != nil {
+		opts.UseKeyring = cfg.Passphrase.UseKeyring
+		opts.KeyringService = keyringService
+		opts.KeyringUser = cfg.Repo.S3.Bucket
+	}
+	if opts.KeyringUser == "" {
+		opts.KeyringUser = keyringDefaultUser
+	}
+	return opts
+}
+
 // promptInitPassphrase returns the passphrase callback for `sentra init`.
 // Routes through config.Resolve so --passphrase-file and SENTRA_PASSPHRASE
 // short-circuit the interactive prompt; falls through to the
 // confirm-on-entry huh flow when nothing else is configured. Init
 // runs once per repo, so the small extra friction of a confirm prompt
 // when interactive is the right call.
+//
+// On `init` we don't yet have a loaded config (the bucket may be
+// coming in via flag), so the keyring user defaults to "default" via
+// buildResolveOpts's fallback path.
 func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 	return func() ([]byte, error) {
-		// On `init` we don't yet have a loaded config (the bucket may
-		// be coming in via flag), so the keyring user defaults to
-		// "default". A future enhancement could load any partial
-		// sentra.yaml here to pick up the bucket if present.
-		cfg := loadConfigBestEffort("sentra.yaml", "init passphrase prompt")
-		opts := config.ResolveOptions{
-			PassphraseFile: rootFlags.PassphraseFile,
-			Prompt: func() ([]byte, error) {
-				return ui.PromptPassphraseWithConfirm("Set repository passphrase", minPassphraseLen)
-			},
-		}
-		if cfg != nil {
-			opts.UseKeyring = cfg.Passphrase.UseKeyring
-			opts.KeyringService = keyringService
-			opts.KeyringUser = cfg.Repo.S3.Bucket
-		}
-		if opts.KeyringUser == "" {
-			opts.KeyringUser = keyringDefaultUser
-		}
-		return config.Resolve(opts)
+		return config.Resolve(buildResolveOpts(rootFlags, "init passphrase prompt", func() ([]byte, error) {
+			return ui.PromptPassphraseWithConfirm("Set repository passphrase", minPassphraseLen)
+		}))
 	}
 }
 
@@ -366,27 +389,8 @@ func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 // honored uniformly across commands.
 func promptOpenPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 	return func() ([]byte, error) {
-		// Best-effort load: if sentra.yaml is missing, Resolve still
-		// works (file/env/prompt cover it). A real parse error is
-		// logged via loadConfigBestEffort so the operator sees a
-		// signal — the subcommand's own config.Load will then surface
-		// the same error as a hard failure when the command actually
-		// needs the config.
-		cfg := loadConfigBestEffort("sentra.yaml", "open passphrase prompt")
-		opts := config.ResolveOptions{
-			PassphraseFile: rootFlags.PassphraseFile,
-			Prompt: func() ([]byte, error) {
-				return ui.PromptPassphrase("Repository passphrase", 0)
-			},
-		}
-		if cfg != nil {
-			opts.UseKeyring = cfg.Passphrase.UseKeyring
-			opts.KeyringService = keyringService
-			opts.KeyringUser = cfg.Repo.S3.Bucket
-		}
-		if opts.KeyringUser == "" {
-			opts.KeyringUser = keyringDefaultUser
-		}
-		return config.Resolve(opts)
+		return config.Resolve(buildResolveOpts(rootFlags, "open passphrase prompt", func() ([]byte, error) {
+			return ui.PromptPassphrase("Repository passphrase", 0)
+		}))
 	}
 }
