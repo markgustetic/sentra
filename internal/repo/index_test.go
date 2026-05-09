@@ -41,7 +41,7 @@ func TestSnapshotIndex_RoundTrip(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	in := &snapshotIndex{
 		Entries: []SnapshotInfo{
@@ -82,7 +82,7 @@ func TestSnapshotIndex_LoadMissingReturnsNilNil(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	got, err := r.loadSnapshotIndex(ctx, repoKey)
 	if err != nil {
@@ -101,7 +101,7 @@ func TestSnapshotIndex_LoadCorruptReturnsError(t *testing.T) {
 	ctx := context.Background()
 	r, store := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Write garbage at the index key.
 	if err := store.Put(ctx, snapshotIndexKey, bytes.NewReader([]byte("not encrypted"))); err != nil {
@@ -128,7 +128,7 @@ func TestSnapshotIndex_LoadVersionMismatch(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Construct a v999 index by hand and write it.
 	in := &snapshotIndex{Entries: []SnapshotInfo{{ID: "snap-x"}}}
@@ -185,7 +185,7 @@ func TestUpdateSnapshotIndex_AppendsAndPersists(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// First update on an empty repo: index doesn't exist yet, but
 	// updateSnapshotIndex creates it and adds the entry.
@@ -224,7 +224,7 @@ func TestCreateSnapshot_PopulatesIndex(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	root := t.TempDir()
 	if err := putFile(root, "x.txt", "hi"); err != nil {
@@ -260,7 +260,7 @@ func TestDeleteSnapshot_RemovesFromIndex(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	root := t.TempDir()
 	if err := putFile(root, "x.txt", "hi"); err != nil {
@@ -386,7 +386,7 @@ func TestUpdateSnapshotIndex_RebuildsOnCorrupt(t *testing.T) {
 	ctx := context.Background()
 	r, store := newTestRepo(t)
 	repoKey := indexTestKey(t, r)
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Plant a corrupt index.
 	if err := store.Put(ctx, snapshotIndexKey, bytes.NewReader([]byte("garbage"))); err != nil {

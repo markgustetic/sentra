@@ -9,6 +9,7 @@ import (
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/crypto"
 )
 
 // ErrEmptyRepo is returned by GC when the repository has zero
@@ -66,7 +67,7 @@ func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 	if err != nil {
 		return err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	if err := r.store.Delete(ctx, snapshotPrefix+id); err != nil {
 		if errors.Is(err, blobstore.ErrNotFound) {
@@ -129,7 +130,7 @@ func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error)
 	if err != nil {
 		return GCStats{}, err
 	}
-	zeroize(k)
+	crypto.Zeroize(k)
 
 	// Resolve the live ID set. Two paths: explicit keepIDs (passed in
 	// by prune after deleting drop manifests but before they have any

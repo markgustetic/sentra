@@ -278,7 +278,7 @@ func (r *Repo) Store() blobstore.Store { return r.store }
 
 // keyOrErr returns a *defensive copy* of the repo key, or ErrClosed
 // if Close has been called. Callers must zeroize the returned copy
-// when done — see zeroize().
+// when done — see crypto.Zeroize().
 //
 // Phase 5 review C2: returning the live slice header was unsafe.
 // CreateSnapshot fans out concurrent Seal calls that capture the
@@ -300,18 +300,6 @@ func (r *Repo) keyOrErr() ([]byte, error) {
 	cp := make([]byte, len(r.repoKey))
 	copy(cp, r.repoKey)
 	return cp, nil
-}
-
-// zeroize overwrites b with zero bytes. Used by snapshot/restore
-// callers to clear a defensive copy of the repo key once done.
-//
-// Best-effort: the Go runtime / GC may have already moved the buffer.
-// We still zero the live slice to collapse the leak window from
-// "until GC" to "until next allocation".
-func zeroize(b []byte) {
-	for i := range b {
-		b[i] = 0
-	}
 }
 
 // newRepoID returns a random hex string used as the repo's stable

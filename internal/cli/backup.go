@@ -15,6 +15,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 	"github.com/markgustetic/sentra/internal/walker"
@@ -144,7 +145,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {
@@ -269,7 +270,7 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {

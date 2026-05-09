@@ -69,7 +69,7 @@ func (r *Repo) Passwd(ctx context.Context, newPassphrase []byte) error {
 	if err != nil {
 		return err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Sanity refusal: rotating to the same passphrase is a no-op
 	// the operator almost certainly didn't mean. The check happens
@@ -155,6 +155,6 @@ func currentlySamePassphrase(newPassphrase []byte, cfg *RepoConfig, repoKey []by
 		// New passphrase doesn't unwrap; definitely different.
 		return false
 	}
-	defer zeroize(candidateRepoKey)
+	defer crypto.Zeroize(candidateRepoKey)
 	return bytes.Equal(candidateRepoKey, repoKey)
 }

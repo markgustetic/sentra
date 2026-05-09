@@ -11,6 +11,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -148,7 +149,7 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(pass)
+	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {

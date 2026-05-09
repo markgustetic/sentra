@@ -9,6 +9,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
@@ -131,7 +132,7 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
-	defer zeroize(passphrase)
+	defer crypto.Zeroize(passphrase)
 
 	// 6. Open the source repo. Failure here MUST short-circuit
 	// before we touch the destination — operators with a wrong

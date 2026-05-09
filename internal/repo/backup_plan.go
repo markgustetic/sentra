@@ -12,6 +12,7 @@ import (
 	"sync"
 	"time"
 
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/progress"
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -118,7 +119,7 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Local var name avoids shadowing the imported `progress` package.
 	reporter := opts.Progress

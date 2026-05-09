@@ -16,6 +16,7 @@ import (
 	"golang.org/x/sync/errgroup"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/progress"
 )
 
@@ -132,7 +133,7 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	if err != nil {
 		return stats, err
 	}
-	zeroize(k)
+	crypto.Zeroize(k)
 
 	// Refuse self-sync up front. Without this guard, the dest-lock
 	// acquire would succeed (dest store IS the open Repo's source),

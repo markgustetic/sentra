@@ -61,7 +61,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	}
 	// Phase 5 review C2: keyOrErr returns a defensive copy; zero it
 	// at function exit so the key is not retained past Restore.
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Local var name avoids shadowing the imported `progress` package.
 	reporter := opts.Progress

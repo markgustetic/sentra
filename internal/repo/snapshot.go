@@ -124,7 +124,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// Phase 5 review C2: keyOrErr returns a defensive copy. Zero it
 	// when the operation completes so the key is not retained past
 	// CreateSnapshot's lifetime (independent of GC timing).
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Local var name avoids shadowing the imported `progress` package.
 	reporter := opts.Progress
@@ -200,7 +200,7 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if err != nil {
 		return Manifest{}, err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 	rc, err := r.store.Get(ctx, snapshotPrefix+id)
 	if err != nil {
 		// Preserve the sentinel for errors.Is callers.

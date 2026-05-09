@@ -6,6 +6,8 @@ import (
 	"log/slog"
 	"slices"
 	"strings"
+
+	"github.com/markgustetic/sentra/internal/crypto"
 )
 
 // ListSnapshots returns the repository's snapshots, ordered newest-
@@ -27,7 +29,7 @@ func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	if err != nil {
 		return nil, err
 	}
-	defer zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	// Fast path: read the index blob.
 	idx, idxErr := r.loadSnapshotIndex(ctx, repoKey)
