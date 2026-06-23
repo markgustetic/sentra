@@ -296,11 +296,14 @@ func (r *Repo) captureFile(
 		if err != nil {
 			return fmt.Errorf("repo: seal chunk: %w", err)
 		}
-		// Put consumes the reader synchronously: the in-memory store
-		// drains it on the calling goroutine, the S3 store's PutObject
-		// returns once the SDK has its own buffered copy. Either way,
-		// `sealed` is no longer in flight when Put returns.
-		if err := r.store.Put(ctx, key, bytes.NewReader(sealed)); err != nil {
+		// PutIfAbsent consumes the reader synchronously and closes the
+		// Stat-then-write race for concurrent identical chunks. If a
+		// peer won the same content-addressed key after our Stat, this
+		// chunk is deduplicated and should not count toward NewBytes.
+		if err := r.store.PutIfAbsent(ctx, key, bytes.NewReader(sealed)); err != nil {
+			if errors.Is(err, blobstore.ErrAlreadyExists) {
+				return nil
+			}
 			return fmt.Errorf("repo: put chunk %s: %w", key, err)
 		}
 		sealedSize := int64(len(sealed))

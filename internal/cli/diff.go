@@ -18,9 +18,10 @@ import (
 
 // DiffDeps wires the side-effecting pieces of `sentra diff`.
 type DiffDeps struct {
-	NewStore   func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase func() ([]byte, error)
-	Stdout     io.Writer
+	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	Passphrase           func() ([]byte, error)
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+	Stdout               io.Writer
 }
 
 // NewDiff returns the cobra command for `sentra diff <snap-a> <snap-b>`.
@@ -71,7 +72,7 @@ func runDiff(cmd *cobra.Command, deps DiffDeps, idA, idB string, asJSON bool, cf
 	if err != nil {
 		return fmt.Errorf("open blobstore: %w", err)
 	}
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}

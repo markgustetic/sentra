@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -45,6 +46,51 @@ func newTestRepo(t *testing.T) (*Repo, blobstore.Store) {
 	}
 	t.Cleanup(func() { r.Close() })
 	return r, store
+}
+
+type concurrentChunkStore struct {
+	blobstore.Store
+
+	releaseStats         chan struct{}
+	notFoundDataStats    atomic.Int32
+	successfulDataWrites atomic.Int32
+}
+
+func newConcurrentChunkStore() *concurrentChunkStore {
+	return &concurrentChunkStore{
+		Store:        blobstore.NewMemory(),
+		releaseStats: make(chan struct{}),
+	}
+}
+
+func (s *concurrentChunkStore) Stat(ctx context.Context, key string) (blobstore.Info, error) {
+	info, err := s.Store.Stat(ctx, key)
+	if strings.HasPrefix(key, DataPrefix) && errors.Is(err, blobstore.ErrNotFound) {
+		if s.notFoundDataStats.Add(1) == 2 {
+			close(s.releaseStats)
+		}
+		select {
+		case <-s.releaseStats:
+		case <-time.After(2 * time.Second):
+		}
+	}
+	return info, err
+}
+
+func (s *concurrentChunkStore) Put(ctx context.Context, key string, r io.Reader) error {
+	err := s.Store.Put(ctx, key, r)
+	if err == nil && strings.HasPrefix(key, DataPrefix) {
+		s.successfulDataWrites.Add(1)
+	}
+	return err
+}
+
+func (s *concurrentChunkStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	err := s.Store.PutIfAbsent(ctx, key, r)
+	if err == nil && strings.HasPrefix(key, DataPrefix) {
+		s.successfulDataWrites.Add(1)
+	}
+	return err
 }
 
 func TestCreateSnapshot_RoundTrip(t *testing.T) {
@@ -251,6 +297,44 @@ func TestCreateSnapshot_DedupsWithinSnapshot(t *testing.T) {
 	if len(infos) != len(singleInfos) {
 		t.Fatalf("intra-snapshot dedup failed: 2x file = %d blobs, 1x file = %d blobs",
 			len(infos), len(singleInfos))
+	}
+}
+
+func TestCreateSnapshot_DedupsConcurrentIdenticalChunksAtomically(t *testing.T) {
+	ctx := context.Background()
+	store := newConcurrentChunkStore()
+	r, err := Init(ctx, store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	root := t.TempDir()
+	body := strings.Repeat("same small file body\n", 100)
+	writeFile(t, filepath.Join(root, "one.txt"), body)
+	writeFile(t, filepath.Join(root, "two.txt"), body)
+
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{
+		Walker: walker.Options{IgnoreFile: ".sentraignore", Concurrency: 2},
+	})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+	if snap.Stats.Files != 2 {
+		t.Fatalf("files: got %d, want 2", snap.Stats.Files)
+	}
+	if got := store.successfulDataWrites.Load(); got != 1 {
+		t.Fatalf("successful data writes: got %d, want 1", got)
+	}
+	infos, err := store.List(ctx, DataPrefix)
+	if err != nil {
+		t.Fatalf("list data: %v", err)
+	}
+	if len(infos) != 1 {
+		t.Fatalf("data blobs: got %d, want 1", len(infos))
+	}
+	if snap.Stats.NewBytes != infos[0].Size {
+		t.Fatalf("new bytes: got %d, want single stored blob size %d", snap.Stats.NewBytes, infos[0].Size)
 	}
 }
 

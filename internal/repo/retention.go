@@ -35,6 +35,15 @@ type RetentionPolicy struct {
 	KeepMonthly int
 }
 
+// RetentionDecision is one snapshot's retention outcome plus the
+// human-readable rules that led to it. A dropped snapshot carries the
+// default reason "not selected by retention policy".
+type RetentionDecision struct {
+	Snapshot SnapshotInfo
+	Keep     bool
+	Reasons  []string
+}
+
 // PlanRetention returns two slices: the IDs to keep and the IDs to
 // drop. The input is assumed to be in any order; the function sorts a
 // copy internally so the caller's slice is not mutated.
@@ -52,36 +61,57 @@ type RetentionPolicy struct {
 // sorted the same way over the rest. This matches what the prune CLI
 // wants to print: newest first, scripts can rely on stable order.
 func PlanRetention(snaps []SnapshotInfo, policy RetentionPolicy) (keep, drop []string) {
+	decisions := PlanRetentionExplain(snaps, policy)
+	for _, decision := range decisions {
+		if decision.Keep {
+			keep = append(keep, decision.Snapshot.ID)
+		} else {
+			drop = append(drop, decision.Snapshot.ID)
+		}
+	}
+	return keep, drop
+}
+
+// PlanRetentionExplain returns a newest-first decision for every
+// snapshot. It applies the same borg-style union policy as
+// PlanRetention, but preserves the rule names and buckets that explain
+// why a snapshot was kept.
+func PlanRetentionExplain(snaps []SnapshotInfo, policy RetentionPolicy) []RetentionDecision {
 	// Defensive copy so callers don't see their slice reordered. Cheap
 	// — SnapshotInfo is a small struct.
 	sorted := make([]SnapshotInfo, len(snaps))
 	copy(sorted, snaps)
 	sortNewestFirst(sorted)
 
-	// keepSet collects IDs from all rules' picks. The walking helpers
+	// reasons collects IDs from all rules' picks. The walking helpers
 	// below treat zero limits as no-ops, so we don't need to gate on
 	// policy.KeepLast > 0 here — the helper just returns nothing.
-	keepSet := make(map[string]struct{}, len(sorted))
+	reasons := make(map[string][]string, len(sorted))
 
 	if policy.KeepLast > 0 {
 		for i := 0; i < len(sorted) && i < policy.KeepLast; i++ {
-			keepSet[sorted[i].ID] = struct{}{}
+			addRetentionReason(reasons, sorted[i].ID,
+				fmt.Sprintf("keep-last #%d of %d", i+1, policy.KeepLast))
 		}
 	}
-	collectByBucket(sorted, policy.KeepDaily, dayBucket, keepSet)
-	collectByBucket(sorted, policy.KeepWeekly, isoWeekBucket, keepSet)
-	collectByBucket(sorted, policy.KeepMonthly, monthBucket, keepSet)
+	collectByBucketReason(sorted, policy.KeepDaily, dayBucket, "keep-daily", reasons)
+	collectByBucketReason(sorted, policy.KeepWeekly, isoWeekBucket, "keep-weekly", reasons)
+	collectByBucketReason(sorted, policy.KeepMonthly, monthBucket, "keep-monthly", reasons)
 
-	keep = make([]string, 0, len(keepSet))
-	drop = make([]string, 0, len(sorted)-len(keepSet))
+	out := make([]RetentionDecision, 0, len(sorted))
 	for _, s := range sorted {
-		if _, ok := keepSet[s.ID]; ok {
-			keep = append(keep, s.ID)
-		} else {
-			drop = append(drop, s.ID)
+		rs := slices.Clone(reasons[s.ID])
+		keep := len(rs) > 0
+		if !keep {
+			rs = []string{"not selected by retention policy"}
 		}
+		out = append(out, RetentionDecision{
+			Snapshot: s,
+			Keep:     keep,
+			Reasons:  rs,
+		})
 	}
-	return keep, drop
+	return out
 }
 
 // collectByBucket walks sorted (newest-first) and adds the newest
@@ -112,6 +142,35 @@ func collectByBucket(
 			return
 		}
 	}
+}
+
+func collectByBucketReason(
+	sorted []SnapshotInfo,
+	limit int,
+	bucket func(time.Time) string,
+	rule string,
+	reasons map[string][]string,
+) {
+	if limit <= 0 {
+		return
+	}
+	seen := make(map[string]struct{}, limit)
+	for _, s := range sorted {
+		b := bucket(s.CreatedAt)
+		if _, ok := seen[b]; ok {
+			continue
+		}
+		seen[b] = struct{}{}
+		addRetentionReason(reasons, s.ID,
+			fmt.Sprintf("%s %s (%d of %d)", rule, b, len(seen), limit))
+		if len(seen) >= limit {
+			return
+		}
+	}
+}
+
+func addRetentionReason(reasons map[string][]string, id, reason string) {
+	reasons[id] = append(reasons[id], reason)
 }
 
 // sortNewestFirst sorts in place by CreatedAt descending, with ID

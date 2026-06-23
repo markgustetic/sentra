@@ -39,10 +39,11 @@ const minPasswdNewPassphraseLen = 8
 // parameter so production wiring doesn't need to share state with
 // the cobra command.
 type PasswdDeps struct {
-	NewStore      func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase    func() ([]byte, error)
-	NewPassphrase func(passphraseFile string) ([]byte, error)
-	Stdout        io.Writer
+	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	Passphrase           func() ([]byte, error)
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+	NewPassphrase        func(passphraseFile string) ([]byte, error)
+	Stdout               io.Writer
 }
 
 // passwdFlags holds the values of `sentra passwd`'s flags. Bundled
@@ -117,7 +118,7 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	// bytes around briefly to compare against the new one (so we
 	// catch matching-passphrase before paying the cost of opening
 	// the repo); zeroize on every exit.
-	oldPass, err := deps.Passphrase()
+	oldPass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve old passphrase: %w", err)
 	}

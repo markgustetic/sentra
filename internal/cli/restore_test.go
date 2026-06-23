@@ -93,6 +93,46 @@ func TestRestore_RoundTrip(t *testing.T) {
 	}
 }
 
+func TestRestore_DryRunDoesNotCreateDestination(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	deps, snapID, _, out := restoreFixture(t, "hunter2")
+
+	dst := filepath.Join(t.TempDir(), "dry-run-dest")
+	cmd := NewRestore(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{snapID, dst, "--dry-run"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("dry-run created destination or got unexpected stat error: %v", err)
+	}
+	if !strings.Contains(strings.ToLower(out.String()), "dry-run") {
+		t.Fatalf("output missing dry-run summary: %q", out.String())
+	}
+}
+
+func TestRestore_VerifyAfterRestore(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	deps, snapID, _, out := restoreFixture(t, "hunter2")
+
+	dst := filepath.Join(t.TempDir(), "restored")
+	cmd := NewRestore(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{snapID, dst, "--verify"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	got := strings.ToLower(out.String())
+	if !strings.Contains(got, "verify") || !strings.Contains(got, "passed") {
+		t.Fatalf("output missing verification success: %q", out.String())
+	}
+}
+
 // TestRestore_RequiresArgs enforces the two positional arguments.
 func TestRestore_RequiresArgs(t *testing.T) {
 	chDir(t, t.TempDir())

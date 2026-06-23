@@ -93,6 +93,58 @@ func TestScan_NoFindings_ShortCircuits(t *testing.T) {
 	}
 }
 
+func TestScan_LocalOnlySkipsProvider(t *testing.T) {
+	provider := &llm.FakeProvider{} // no Steps; calling Generate would error
+	finding := heuristics.Finding{
+		ID:       "f1",
+		Category: "secrets",
+		Severity: "critical",
+		Target:   ".env",
+	}
+	agent := newAgentForTest(t, []heuristics.Heuristic{
+		&stubHeuristic{name: "secrets", findings: []heuristics.Finding{finding}},
+	}, provider)
+	agent.Config.LocalOnly = true
+
+	recs, err := agent.Scan(context.Background(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(provider.Calls) != 0 {
+		t.Fatalf("Provider should not be called in local-only mode, got %d calls", len(provider.Calls))
+	}
+	if len(recs) != 1 {
+		t.Fatalf("recommendations = %+v, want one", recs)
+	}
+	if recs[0].Action != "flag_secret" || recs[0].Target != ".env" {
+		t.Fatalf("unexpected local recommendation: %+v", recs[0])
+	}
+}
+
+func TestScan_CategoryFilterRunsBeforeLocalRecommendations(t *testing.T) {
+	provider := &llm.FakeProvider{}
+	findings := []heuristics.Finding{
+		{ID: "f1", Category: "secrets", Severity: "critical", Target: ".env"},
+		{ID: "f2", Category: "large_files", Severity: "warn", Target: "movie.mov"},
+	}
+	agent := newAgentForTest(t, []heuristics.Heuristic{
+		&stubHeuristic{name: "mixed", findings: findings},
+	}, provider)
+	agent.Config.LocalOnly = true
+	agent.Config.Categories = []string{"secrets"}
+
+	recs, err := agent.Scan(context.Background(), t.TempDir(), nil)
+	if err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(recs) != 1 {
+		t.Fatalf("recommendations = %+v, want one filtered recommendation", recs)
+	}
+	if recs[0].Target != ".env" {
+		t.Fatalf("filtered target = %q, want .env", recs[0].Target)
+	}
+}
+
 // TestScan_HappyPath_LoopWithToolCall: heuristics produce 1 finding,
 // the fake provider responds in two rounds — round 1 calls the tool,
 // round 2 emits the JSON recommendations array. The orchestrator
@@ -287,6 +339,42 @@ func TestScan_NilStream_OK(t *testing.T) {
 	}, provider)
 	if _, err := agent.Scan(context.Background(), t.TempDir(), nil); err != nil {
 		t.Fatalf("Scan with nil stream: %v", err)
+	}
+}
+
+// TestScan_PopulatesWalkedEnablesFilesystemHeuristics proves the
+// orchestrator supplies walked filesystem entries to heuristics that
+// need them. Without the walk, secrets/large/cache/stale/dup heuristics
+// all silently no-op in real `agent scan` runs.
+func TestScan_PopulatesWalkedEnablesFilesystemHeuristics(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, ".env"), []byte("AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF\n"), 0o600); err != nil {
+		t.Fatalf("write secret fixture: %v", err)
+	}
+
+	provider := &llm.FakeProvider{Steps: []llm.FakeStep{{Text: "[]"}}}
+	agent := newAgentForTest(t, []heuristics.Heuristic{
+		heuristics.NewSecrets(),
+	}, provider)
+
+	if _, err := agent.Scan(context.Background(), root, nil); err != nil {
+		t.Fatalf("Scan: %v", err)
+	}
+	if len(provider.Calls) != 1 {
+		t.Fatalf("Provider calls: got %d, want 1 (secrets finding should reach the LLM)", len(provider.Calls))
+	}
+	initialUser := ""
+	for _, m := range provider.Calls[0].Msgs {
+		if m.Role == llm.RoleUser {
+			initialUser = m.Content
+			break
+		}
+	}
+	if !strings.Contains(initialUser, `"category": "secrets"`) {
+		t.Fatalf("initial LLM message should include a secrets finding, got:\n%s", initialUser)
+	}
+	if strings.Contains(initialUser, "AKIA1234567890ABCDEF") {
+		t.Fatalf("initial LLM message leaked raw secret:\n%s", initialUser)
 	}
 }
 

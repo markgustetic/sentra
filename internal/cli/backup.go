@@ -24,11 +24,12 @@ import (
 // Production fills these with real implementations from main.go;
 // tests inject a memory store and static passphrase.
 type BackupDeps struct {
-	NewStore   func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase func() ([]byte, error)
-	Stdout     io.Writer
-	Stderr     io.Writer
-	Confirm    func(prompt string) (bool, error)
+	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	Passphrase           func() ([]byte, error)
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+	Stdout               io.Writer
+	Stderr               io.Writer
+	Confirm              func(prompt string) (bool, error)
 }
 
 // progressTickInterval is how often the inline progress UI repaints
@@ -140,7 +141,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 		return fmt.Errorf("open blobstore: %w", err)
 	}
 
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
@@ -265,7 +266,7 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	if err != nil {
 		return fmt.Errorf("open blobstore: %w", err)
 	}
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}

@@ -33,10 +33,18 @@ type UIDeps struct {
 	// the hood that's all hidden by the existing resolver chain.
 	Passphrase func() ([]byte, error)
 
+	// PassphraseWithConfig is the config-aware production resolver.
+	// When set, it takes precedence over Passphrase.
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+
 	// Provider is the LLM provider for the agent view. May be nil
 	// when no API key is configured — the agent view shows a
 	// placeholder pointing at ANTHROPIC_API_KEY in that case.
 	Provider llm.Provider
+
+	// ProviderForConfig builds the LLM provider from the loaded
+	// command config. When set, it takes precedence over Provider.
+	ProviderForConfig func(cfg *config.Config) llm.Provider
 
 	// Stdout receives any pre-launch messages (e.g. "press q to
 	// quit"). The TUI itself writes directly to the terminal via
@@ -90,7 +98,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 	if err != nil {
 		return fmt.Errorf("open blobstore: %w", err)
 	}
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
@@ -111,9 +119,14 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		repoName = r.Config().ID
 	}
 
+	provider := deps.Provider
+	if deps.ProviderForConfig != nil {
+		provider = deps.ProviderForConfig(cfg)
+	}
+
 	app := tui.NewApp(tui.Deps{
 		Repo:     r,
-		Provider: deps.Provider,
+		Provider: provider,
 		RepoName: repoName,
 		// Pass the cobra command's context so:
 		//   1. Signals (Ctrl+C wired by cobra) cancel TUI work.

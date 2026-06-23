@@ -119,41 +119,55 @@ func main() {
 	root.AddCommand(cli.NewInit(initDeps))
 
 	backupDeps := cli.BackupDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
-		Confirm:    cli.HuhBackupApplyConfirm,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+		Stderr:               os.Stderr,
+		Confirm:              cli.HuhBackupApplyConfirm,
 	}
 	root.AddCommand(cli.NewBackup(backupDeps))
 
 	snapshotsDeps := cli.SnapshotsDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
 	}
 	root.AddCommand(cli.NewSnapshots(snapshotsDeps))
 
+	checkDeps := cli.CheckDeps{
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+	}
+	root.AddCommand(cli.NewCheck(checkDeps))
+
+	recoveryKitDeps := cli.RecoveryKitDeps{
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+	}
+	root.AddCommand(cli.NewRecoveryKit(recoveryKitDeps))
+
 	restoreDeps := cli.RestoreDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
-		Stderr:     os.Stderr,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+		Stderr:               os.Stderr,
 	}
 	root.AddCommand(cli.NewRestore(restoreDeps))
 
 	diffDeps := cli.DiffDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
 	}
 	root.AddCommand(cli.NewDiff(diffDeps))
 
 	pruneDeps := cli.PruneDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
-		Confirm:    cli.HuhConfirm,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+		Confirm:              cli.HuhConfirm,
 	}
 	root.AddCommand(cli.NewPrune(pruneDeps))
 
@@ -166,10 +180,10 @@ func main() {
 	// design doc — env vars persist in shell history / process
 	// listings, which is the wrong default for a fresh secret.
 	passwdDeps := cli.PasswdDeps{
-		NewStore:      newS3Store,
-		Passphrase:    promptOpenPassphrase(rootFlags),
-		NewPassphrase: promptNewRepoPassphrase(),
-		Stdout:        os.Stdout,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		NewPassphrase:        promptNewRepoPassphrase(),
+		Stdout:               os.Stdout,
 	}
 	root.AddCommand(cli.NewPasswd(passwdDeps))
 
@@ -179,20 +193,20 @@ func main() {
 	// source's *config.Config, once with the destination's — so
 	// the same RetryStore-wrapped factory is used for both.
 	syncDeps := cli.SyncDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
 	}
 	root.AddCommand(cli.NewSync(syncDeps))
 
 	agentDeps := cli.AgentDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
-		Provider:   newAgentProvider(),
-		Heuristics: defaultHeuristics(),
-		Actions:    action.NewDefaultRegistry(),
-		Confirm:    cli.HuhAgentConfirm,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+		ProviderForConfig:    newAgentProvider,
+		Heuristics:           defaultHeuristics(),
+		Actions:              action.NewDefaultRegistry(),
+		Confirm:              cli.HuhAgentConfirm,
 	}
 	root.AddCommand(cli.NewAgent(agentDeps))
 
@@ -202,11 +216,11 @@ func main() {
 	// the Bubbletea program. Wiring SetUIAsDefault makes bare
 	// `sentra` fall through to the TUI per the design doc.
 	uiDeps := cli.UIDeps{
-		NewStore:   newS3Store,
-		Passphrase: promptOpenPassphrase(rootFlags),
-		Stdout:     os.Stdout,
-		Provider:   newAgentProvider(),
-		Run:        cli.DefaultUIRunner,
+		NewStore:             newS3Store,
+		PassphraseWithConfig: promptOpenPassphraseWithConfig(rootFlags),
+		Stdout:               os.Stdout,
+		ProviderForConfig:    newAgentProvider,
+		Run:                  cli.DefaultUIRunner,
 	}
 	root.AddCommand(cli.NewUI(uiDeps))
 	cli.SetUIAsDefault(root, uiDeps)
@@ -238,13 +252,12 @@ func defaultHeuristics() []heuristics.Heuristic {
 	}
 }
 
-// newAgentProvider returns the production LLM provider. Reads the
-// config's agent.model field at call-time (each invocation gets the
-// current sentra.yaml). If ANTHROPIC_API_KEY is missing or model is
-// blank, NewAnthropic surfaces a clear error which `sentra agent
-// scan` prints — better than a deferred 401 on first request.
-func newAgentProvider() llm.Provider {
-	cfg := loadConfigBestEffort("sentra.yaml", "agent provider config")
+// newAgentProvider returns the production LLM provider. It reads the
+// model from the command's already-loaded config so `--config` controls
+// agent.model. If ANTHROPIC_API_KEY is missing or model is blank,
+// NewAnthropic surfaces a clear error which `sentra agent scan` prints
+// — better than a deferred 401 on first request.
+func newAgentProvider(cfg *config.Config) llm.Provider {
 	model := "claude-sonnet-4-6"
 	if cfg != nil && cfg.Agent.Model != "" {
 		model = cfg.Agent.Model
@@ -346,6 +359,13 @@ func promptNewRepoPassphrase() func(passphraseFile string) ([]byte, error) {
 // a hard failure when the command actually needs the config.
 func buildResolveOpts(rootFlags *cli.RootFlags, logLabel string, prompt func() ([]byte, error)) config.ResolveOptions {
 	cfg := loadConfigBestEffort("sentra.yaml", logLabel)
+	return buildResolveOptsFromConfig(rootFlags, cfg, prompt)
+}
+
+// buildResolveOptsFromConfig is the config-aware variant for commands
+// that already loaded their --config path. It avoids re-reading
+// hardcoded sentra.yaml during keyring setup.
+func buildResolveOptsFromConfig(rootFlags *cli.RootFlags, cfg *config.Config, prompt func() ([]byte, error)) config.ResolveOptions {
 	opts := config.ResolveOptions{
 		PassphraseFile: rootFlags.PassphraseFile,
 		Prompt:         prompt,
@@ -379,17 +399,13 @@ func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 	}
 }
 
-// promptOpenPassphrase returns the passphrase callback used by every
-// post-init command (backup, snapshots, restore, diff). It does NOT
-// re-prompt for confirmation — that's only useful when *setting* a
-// passphrase. A typo just means the repo won't open.
-//
-// Routes through config.Resolve so the documented priority chain
-// (--passphrase-file → SENTRA_PASSPHRASE → keyring → prompt) is
-// honored uniformly across commands.
-func promptOpenPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
-	return func() ([]byte, error) {
-		return config.Resolve(buildResolveOpts(rootFlags, "open passphrase prompt", func() ([]byte, error) {
+// promptOpenPassphraseWithConfig is the config-aware form used by
+// commands that already loaded their --config path before resolving the
+// passphrase. This keeps keyring user selection aligned with the repo
+// the command is actually opening.
+func promptOpenPassphraseWithConfig(rootFlags *cli.RootFlags) func(*config.Config) ([]byte, error) {
+	return func(cfg *config.Config) ([]byte, error) {
+		return config.Resolve(buildResolveOptsFromConfig(rootFlags, cfg, func() ([]byte, error) {
 			return ui.PromptPassphrase("Repository passphrase", 0)
 		}))
 	}

@@ -28,9 +28,10 @@ import (
 // The deps shape mirrors PasswdDeps + a single store factory used
 // for both ends.
 type SyncDeps struct {
-	NewStore   func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase func() ([]byte, error)
-	Stdout     io.Writer
+	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	Passphrase           func() ([]byte, error)
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+	Stdout               io.Writer
 }
 
 // syncFlags holds the values of `sentra sync`'s flags. Bundled
@@ -128,7 +129,7 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 	}
 
 	// 5. Resolve passphrase via the existing chain. ONE call total.
-	passphrase, err := deps.Passphrase()
+	passphrase, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, srcCfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}

@@ -118,6 +118,28 @@ func TestPrune_DryRun(t *testing.T) {
 	}
 }
 
+func TestPrune_ExplainShowsKeepAndDropReasons(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, _, ids, out := pruneFixture(t, "hunter2", 3)
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "1", "--explain"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	got := out.String()
+	if !strings.Contains(got, ids[2]) || !strings.Contains(got, "keep-last #1 of 1") {
+		t.Fatalf("expected newest snapshot keep reason in output, got %q", got)
+	}
+	if !strings.Contains(got, ids[0]) || !strings.Contains(got, "not selected by retention policy") {
+		t.Fatalf("expected dropped snapshot reason in output, got %q", got)
+	}
+}
+
 // TestPrune_Apply: --apply --yes actually deletes the dropped
 // snapshots and runs GC. After, only the kept snapshot remains and
 // the data/ blob count went down.
