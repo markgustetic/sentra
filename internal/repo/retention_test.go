@@ -205,6 +205,46 @@ func TestPlanRetention_DeterministicOrder(t *testing.T) {
 	}
 }
 
+func TestPlanRetentionExplain_ReasonsMatchPolicy(t *testing.T) {
+	base := time.Date(2026, 1, 10, 12, 0, 0, 0, time.UTC)
+	snaps := []SnapshotInfo{
+		makeSnap("old", base.Add(-48*time.Hour)),
+		makeSnap("newer-same-day", base.Add(-2*time.Hour)),
+		makeSnap("newest", base),
+	}
+
+	decisions := PlanRetentionExplain(snaps, RetentionPolicy{
+		KeepLast:  1,
+		KeepDaily: 2,
+	})
+	if len(decisions) != 3 {
+		t.Fatalf("decisions = %d, want 3", len(decisions))
+	}
+	byID := map[string]RetentionDecision{}
+	for _, d := range decisions {
+		byID[d.Snapshot.ID] = d
+	}
+
+	if !byID["newest"].Keep {
+		t.Fatalf("newest should be kept")
+	}
+	if !containsReason(byID["newest"].Reasons, "keep-last") {
+		t.Errorf("newest reasons missing keep-last: %v", byID["newest"].Reasons)
+	}
+	if !containsReason(byID["newest"].Reasons, "keep-daily 2026-01-10") {
+		t.Errorf("newest reasons missing daily bucket: %v", byID["newest"].Reasons)
+	}
+	if byID["newer-same-day"].Keep {
+		t.Errorf("newer-same-day should drop because newest already represents its day")
+	}
+	if got := byID["newer-same-day"].Reasons; len(got) == 0 || got[0] != "not selected by retention policy" {
+		t.Errorf("drop reason = %v, want default drop reason", got)
+	}
+	if !byID["old"].Keep {
+		t.Errorf("old should be kept as the second daily bucket")
+	}
+}
+
 // pad2 returns prefix + a zero-padded 2-digit suffix. Used to build
 // snapshot IDs that sort lexicographically the way tests assume.
 func pad2(prefix string, n int) string {
@@ -227,4 +267,13 @@ func itoa(n int) string {
 		n /= 10
 	}
 	return string(digits)
+}
+
+func containsReason(reasons []string, needle string) bool {
+	for _, reason := range reasons {
+		if len(reason) >= len(needle) && reason[:len(needle)] == needle {
+			return true
+		}
+	}
+	return false
 }

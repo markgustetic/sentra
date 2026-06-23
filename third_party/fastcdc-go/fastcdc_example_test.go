@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"log"
-	"math/rand"
 
 	"github.com/jotfs/fastcdc-go"
 )
@@ -14,8 +13,9 @@ import (
 func Example_basic() {
 
 	data := make([]byte, 10*1024*1024)
-	rand.Seed(4542)
-	rand.Read(data)
+	for i := range data {
+		data[i] = byte((i*31 + i/251) % 256)
+	}
 	rd := bytes.NewReader(data)
 
 	chunker, err := fastcdc.NewChunker(rd, fastcdc.Options{
@@ -41,13 +41,7 @@ func Example_basic() {
 
 	// Output:
 	// CHECKSUM                          CHUNK SIZE
-	// d5bb40f862d68f4c3a2682e6d433f0d7  1788060
-	// 113a0aa2023d7dce6a2aac1f807b5bd2  1117240
-	// 5b9147b10d4fe6f96282da481ce848ca  1180487
-	// dcc4644befb599fa644635b0c5a1ea2c  1655501
-	// 224db3de422ad0dd2c840e3e24e0cb03  363172
-	// e071658eccda587789f1dabb6f773851  1227750
-	// 215868103f0b4ea7f715e179e5b9a6c7  1451026
-	// 21e65e40970ec22f5b13ddf60493b746  1150129
-	// b8209a1dbef955ef64636af796450252  552395
+	// 12034d718be6991f461e4b6949885434  4194304
+	// e1574ccf547cceb2836095f19a1a375d  4194304
+	// 8e8c270dac0ced3b98d7b7d60ae05064  2097152
 }

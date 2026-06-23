@@ -19,6 +19,7 @@ import (
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // AgentDeps wires the side-effecting pieces of `sentra agent scan` so
@@ -38,6 +39,11 @@ type AgentDeps struct {
 	// Passphrase returns the bytes used to unwrap the repo key.
 	Passphrase func() ([]byte, error)
 
+	// PassphraseWithConfig is the config-aware production resolver.
+	// When set, it takes precedence over Passphrase so --config paths
+	// feed keyring/user selection instead of hardcoded sentra.yaml.
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+
 	// Stdout receives the user-facing summary table / JSON.
 	Stdout io.Writer
 
@@ -52,6 +58,11 @@ type AgentDeps struct {
 	// Provider is the LLM provider passed through to the agent. Tests
 	// use llm.FakeProvider; main wires the Anthropic client.
 	Provider llm.Provider
+
+	// ProviderForConfig builds the provider from the loaded command
+	// config. When set, it takes precedence over Provider so --config
+	// controls agent.model in production.
+	ProviderForConfig func(cfg *config.Config) llm.Provider
 
 	// Heuristics is the slice of heuristics the agent will run. Tests
 	// pass deterministic stubs; main wires the production secrets /
@@ -72,6 +83,10 @@ type agentFlags struct {
 	asJSON       bool
 	yes          bool
 	cfgPath      string
+	root         string
+	localOnly    bool
+	noLLM        bool
+	categories   []string
 	maxToolCalls int
 	// allowWipe is the safety rail equivalent to `prune --all`: when an
 	// LLM recommends pruning every remaining snapshot, we refuse to
@@ -92,6 +107,7 @@ func NewAgent(deps AgentDeps) *cobra.Command {
 		SilenceErrors: false,
 	}
 	cmd.AddCommand(NewAgentScan(deps))
+	cmd.AddCommand(NewAgentAdviseIgnore(deps))
 	return cmd
 }
 
@@ -105,6 +121,10 @@ func NewAgent(deps AgentDeps) *cobra.Command {
 //   - --apply              actually execute approved recommendations
 //   - --json               emit recommendations as JSON instead of a table
 //   - --yes                skip the confirm prompt under --apply
+//   - --root <path>        filesystem root to scan (default ".")
+//   - --local-only         convert heuristic findings without calling the LLM
+//   - --no-llm             alias for --local-only
+//   - --categories a,b     only triage matching finding categories/heuristics
 //   - --config <path>      sentra.yaml path (default ./sentra.yaml)
 //   - --max-tool-calls N   override the orchestrator's tool-call budget
 func NewAgentScan(deps AgentDeps) *cobra.Command {
@@ -126,6 +146,14 @@ func NewAgentScan(deps AgentDeps) *cobra.Command {
 		"emit recommendations as a JSON array instead of a styled table")
 	cmd.Flags().BoolVar(&flags.yes, "yes", false,
 		"skip the per-recommendation confirm prompt (use with --apply for scripts)")
+	cmd.Flags().StringVar(&flags.root, "root", ".",
+		"filesystem root to scan for local heuristics")
+	cmd.Flags().BoolVar(&flags.localOnly, "local-only", false,
+		"skip the LLM and convert local heuristic findings directly")
+	cmd.Flags().BoolVar(&flags.noLLM, "no-llm", false,
+		"alias for --local-only")
+	cmd.Flags().StringSliceVar(&flags.categories, "categories", nil,
+		"only triage matching categories or heuristic names (comma-separated)")
 	cmd.Flags().StringVar(&flags.cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	cmd.Flags().IntVar(&flags.maxToolCalls, "max-tool-calls", 0,
@@ -149,7 +177,7 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	if err != nil {
 		return fmt.Errorf("open blobstore: %w", err)
 	}
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
@@ -166,7 +194,23 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	agentCfg := agent.Config{
 		MaxFindingsToLLM: cfg.Agent.MaxFindingsToLLM,
 		Model:            cfg.Agent.Model,
+		InputConfig: heuristics.InputConfig{
+			Retention: repo.RetentionPolicy{
+				KeepLast:    cfg.Retention.KeepLast,
+				KeepDaily:   cfg.Retention.KeepDaily,
+				KeepWeekly:  cfg.Retention.KeepWeekly,
+				KeepMonthly: cfg.Retention.KeepMonthly,
+			},
+		},
+		LocalOnly:  flags.localOnly || flags.noLLM,
+		Categories: flags.categories,
 	}
+	walkerOpts := walker.Options{
+		IgnoreFile:    cfg.Backup.IgnoreFile,
+		ExcludeCaches: cfg.Backup.ExcludeCaches,
+	}
+	normalizeBackupWalkerOptions(&walkerOpts)
+	agentCfg.Walker = walkerOpts
 	if flags.maxToolCalls > 0 {
 		agentCfg.MaxToolCalls = flags.maxToolCalls
 	}
@@ -181,10 +225,15 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 		actions = action.NewDefaultRegistry()
 	}
 
+	provider := deps.Provider
+	if deps.ProviderForConfig != nil {
+		provider = deps.ProviderForConfig(cfg)
+	}
+
 	a := &agent.Agent{
 		Repo:       r,
 		Heuristics: registry,
-		Provider:   deps.Provider,
+		Provider:   provider,
 		Config:     agentCfg,
 		Actions:    actions,
 	}
@@ -211,7 +260,7 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 		}
 	}()
 
-	recs, scanErr := a.Scan(cmd.Context(), ".", stream)
+	recs, scanErr := a.Scan(cmd.Context(), flags.root, stream)
 	close(stream)
 	<-streamDone
 

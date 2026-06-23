@@ -36,6 +36,9 @@ const (
 	// ViewAgent is the streaming agent reasoning + recommendations
 	// split. Pressing `s` inside it kicks off a scan.
 	ViewAgent
+	// ViewOperations shows repository health, integrity, and cleanup
+	// signals from repo.Check.
+	ViewOperations
 )
 
 // Deps is the wiring App needs to construct the sub-views. Every
@@ -79,10 +82,11 @@ type App struct {
 	height int
 	help   bool
 
-	dashboard tea.Model
-	snapshots tea.Model
-	diff      tea.Model
-	agent     tea.Model
+	dashboard  tea.Model
+	snapshots  tea.Model
+	diff       tea.Model
+	agent      tea.Model
+	operations tea.Model
 
 	// cancel cancels the App-scoped context that was derived from
 	// deps.Ctx in NewApp. Sub-views derive per-call timeouts from
@@ -111,12 +115,13 @@ func NewApp(deps Deps) App {
 	deps.Ctx = ctx
 
 	return App{
-		active:    ViewDashboard,
-		dashboard: NewDashboard(deps),
-		snapshots: NewSnapshots(deps),
-		diff:      NewDiff(deps),
-		agent:     NewAgentView(deps),
-		cancel:    cancel,
+		active:     ViewDashboard,
+		dashboard:  NewDashboard(deps),
+		snapshots:  NewSnapshots(deps),
+		diff:       NewDiff(deps),
+		agent:      NewAgentView(deps),
+		operations: NewOperations(deps),
+		cancel:     cancel,
 	}
 }
 
@@ -133,6 +138,7 @@ func (m App) Init() tea.Cmd {
 		m.snapshots.Init(),
 		m.diff.Init(),
 		m.agent.Init(),
+		m.operations.Init(),
 	)
 }
 
@@ -156,6 +162,8 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff, c = m.diff.Update(msg)
 		cmds = append(cmds, c)
 		m.agent, c = m.agent.Update(msg)
+		cmds = append(cmds, c)
+		m.operations, c = m.operations.Update(msg)
 		cmds = append(cmds, c)
 		return m, tea.Batch(cmds...)
 
@@ -189,6 +197,9 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			case 'a':
 				m.active = ViewAgent
 				return m, nil
+			case 'o':
+				m.active = ViewOperations
+				return m, nil
 			}
 		}
 	}
@@ -213,6 +224,8 @@ func (m App) delegate(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.diff, cmd = m.diff.Update(msg)
 	case ViewAgent:
 		m.agent, cmd = m.agent.Update(msg)
+	case ViewOperations:
+		m.operations, cmd = m.operations.Update(msg)
 	}
 	return m, cmd
 }
@@ -254,6 +267,7 @@ func (m App) renderTabs() string {
 		{"s", "snapshots", ViewSnapshots},
 		{"D", "diff", ViewDiff},
 		{"a", "agent", ViewAgent},
+		{"o", "operations", ViewOperations},
 	}
 	parts := make([]string, 0, len(tabSpec))
 	for _, t := range tabSpec {
@@ -281,6 +295,8 @@ func (m App) activeView() string {
 		return m.diff.View()
 	case ViewAgent:
 		return m.agent.View()
+	case ViewOperations:
+		return m.operations.View()
 	}
 	return ""
 }
@@ -293,7 +309,7 @@ func (m App) activeView() string {
 func (m App) renderBottomBar() string {
 	if m.help {
 		return ui.Subtle.Render(
-			"d:dashboard  s:snapshots  D:diff  a:agent  ?:help  q/^C:quit  ↑/↓:navigate  ⏎:select  esc:back",
+			"d:dashboard  s:snapshots  D:diff  a:agent  o:operations  ?:help  q/^C:quit  ↑/↓:navigate  ⏎:select  esc:back",
 		)
 	}
 	return ui.Subtle.Render("?:help  q:quit")

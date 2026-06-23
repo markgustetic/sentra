@@ -188,6 +188,66 @@ func TestRestore_AllowsEmptyExistingDest(t *testing.T) {
 	}
 }
 
+func TestRestorePlan_DoesNotCreateDestination(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	writeFile(t, filepath.Join(src, "sub", "b.txt"), "bravo")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "planned-restore")
+	plan, err := r.PlanRestore(ctx, snap.ID, dst)
+	if err != nil {
+		t.Fatalf("plan restore: %v", err)
+	}
+	if plan.Files != 2 {
+		t.Errorf("Files = %d, want 2", plan.Files)
+	}
+	if len(plan.Paths) != 2 {
+		t.Errorf("Paths = %v, want 2 entries", plan.Paths)
+	}
+	if _, err := os.Stat(dst); !os.IsNotExist(err) {
+		t.Fatalf("dry-run plan created destination or got unexpected stat error: %v", err)
+	}
+}
+
+func TestVerifyRestore_DetectsTamperedFile(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	writeFile(t, filepath.Join(dst, "a.txt"), "tampered")
+
+	report, err := r.VerifyRestore(ctx, snap.ID, dst)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if report.OK() {
+		t.Fatalf("expected verification failure after tamper, got %+v", report)
+	}
+	if len(report.Mismatches) != 1 {
+		t.Fatalf("Mismatches = %+v, want one", report.Mismatches)
+	}
+	if report.Mismatches[0].Path != "a.txt" {
+		t.Errorf("mismatch path = %q, want a.txt", report.Mismatches[0].Path)
+	}
+}
+
 // TestRestore_ConcurrentMatchesSequential confirms that restoring a
 // non-trivial tree with Concurrency=1 and Concurrency=8 produces
 // byte-identical output. The fan-out path must preserve the exact

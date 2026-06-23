@@ -22,17 +22,22 @@
 package agent
 
 import (
+	"cmp"
 	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
+	"path/filepath"
+	"slices"
 	"strings"
+	"sync"
 
 	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/agent/tools"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // ErrBudgetExhausted is returned by Scan when the model exceeded
@@ -85,6 +90,23 @@ type Config struct {
 	// Model is the LLM model identifier passed through to the provider.
 	// The provider is free to ignore this if the value is empty.
 	Model string
+
+	// Walker controls the filesystem walk used to populate
+	// heuristics.Input.Walked. The zero value uses walker defaults.
+	Walker walker.Options
+
+	// InputConfig carries heuristic thresholds and policies sourced
+	// from the CLI config. Zero values preserve each heuristic's
+	// documented defaults.
+	InputConfig heuristics.InputConfig
+
+	// LocalOnly skips the LLM loop and converts heuristic findings
+	// directly into conservative recommendations.
+	LocalOnly bool
+
+	// Categories limits findings to matching Finding.Category or
+	// Finding.Heuristic values before local or LLM triage.
+	Categories []string
 }
 
 // Defaults fills in sensible default values for any zero-valued Config
@@ -182,11 +204,14 @@ func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]
 	// Computing it once here keeps the orchestrator the single source
 	// of truth for that side of the input contract.
 	//
-	// Walked entries are intentionally left empty for v1: the
-	// orchestrator doesn't yet have a working-directory context, and
-	// the heuristics that need a Walked tree (cache_dirs, secrets,
-	// large_files, stale_paths, dup_paths) gracefully no-op on empty
-	// input. Wiring in a walk is a future concern.
+	// Walked entries are populated from root so filesystem heuristics
+	// (cache_dirs, secrets, large_files, stale_paths, dup_paths) audit
+	// the same tree the user asked `agent scan` to inspect.
+	walked, err := collectWalked(ctx, root, cfg.Walker)
+	if err != nil {
+		return nil, fmt.Errorf("agent: walk: %w", err)
+	}
+
 	snaps, err := a.Repo.ListSnapshots(ctx)
 	if err != nil {
 		return nil, fmt.Errorf("agent: list snapshots: %w", err)
@@ -197,18 +222,25 @@ func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]
 	}
 
 	in := heuristics.Input{
+		Walked:    walked,
 		Repo:      a.Repo,
 		Snapshots: snaps,
 		LiveBlobs: liveBlobs,
+		Config:    cfg.InputConfig,
 	}
 	findings, err := a.Heuristics.Run(ctx, in)
 	if err != nil {
 		return nil, fmt.Errorf("agent: heuristics: %w", err)
 	}
+	findings = filterFindingsByCategory(findings, cfg.Categories)
 
 	if len(findings) == 0 {
 		writeStream(stream, "no findings — all clear\n")
 		return []Recommendation{}, nil
+	}
+	if cfg.LocalOnly {
+		writeStream(stream, "local-only scan: converted heuristic findings to recommendations\n")
+		return localRecommendations(findings), nil
 	}
 
 	// Cap the findings going to the LLM so prompts don't balloon.
@@ -319,6 +351,69 @@ func buildInitialMessage(findings []heuristics.Finding) (string, error) {
 	}
 	return fmt.Sprintf("Heuristic findings (%d total):\n\n%s\n\nReview these and emit recommendations as a JSON array.",
 		len(findings), string(out)), nil
+}
+
+func filterFindingsByCategory(findings []heuristics.Finding, categories []string) []heuristics.Finding {
+	allowed := make(map[string]struct{}, len(categories))
+	for _, category := range categories {
+		category = strings.TrimSpace(strings.ToLower(category))
+		if category == "" {
+			continue
+		}
+		allowed[category] = struct{}{}
+	}
+	if len(allowed) == 0 {
+		return findings
+	}
+	out := make([]heuristics.Finding, 0, len(findings))
+	for _, finding := range findings {
+		category := strings.ToLower(finding.Category)
+		heuristic := strings.ToLower(finding.Heuristic)
+		if _, ok := allowed[category]; ok {
+			out = append(out, finding)
+			continue
+		}
+		if _, ok := allowed[heuristic]; ok {
+			out = append(out, finding)
+		}
+	}
+	return out
+}
+
+func localRecommendations(findings []heuristics.Finding) []Recommendation {
+	recs := make([]Recommendation, 0, len(findings))
+	for _, finding := range findings {
+		action := localActionForFinding(finding)
+		severity := finding.Severity
+		if severity == "" {
+			severity = heuristics.SeverityInfo
+		}
+		category := finding.Category
+		if category == "" {
+			category = finding.Heuristic
+		}
+		recs = append(recs, Recommendation{
+			ID:        "local-" + finding.ID,
+			Action:    action,
+			Target:    finding.Target,
+			Severity:  severity,
+			Rationale: fmt.Sprintf("Local heuristic %q reported this target.", category),
+		})
+	}
+	return recs
+}
+
+func localActionForFinding(finding heuristics.Finding) string {
+	switch finding.Category {
+	case "secrets":
+		return "flag_secret"
+	case "cache_dirs", "large_files":
+		return "add_to_ignore"
+	case "retention_drift":
+		return "prune_snapshot"
+	default:
+		return "none"
+	}
 }
 
 // formatToolsForPrompt renders the toolset into a human-readable list
@@ -484,6 +579,38 @@ func truncate(s string, n int) string {
 		return s
 	}
 	return s[:n] + "..."
+}
+
+// collectWalked runs the shared walker over root and returns a
+// deterministic entry list for heuristics. The walker invokes callbacks
+// concurrently, so a mutex guards the append; sorting restores stable
+// prompt/test output.
+func collectWalked(ctx context.Context, root string, opts walker.Options) ([]walker.Entry, error) {
+	if root == "" {
+		root = "."
+	}
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return nil, fmt.Errorf("abs root: %w", err)
+	}
+	absRoot = filepath.Clean(absRoot)
+
+	var (
+		mu      sync.Mutex
+		entries []walker.Entry
+	)
+	if err := walker.Walk(ctx, absRoot, opts, func(e walker.Entry) error {
+		mu.Lock()
+		entries = append(entries, e)
+		mu.Unlock()
+		return nil
+	}); err != nil {
+		return nil, err
+	}
+	slices.SortFunc(entries, func(a, b walker.Entry) int {
+		return cmp.Compare(a.RelPath, b.RelPath)
+	})
+	return entries, nil
 }
 
 // computeLiveBlobs loads each snapshot's manifest and unions every

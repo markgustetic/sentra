@@ -50,6 +50,7 @@ func TestApp_SwitchesViewWithKey(t *testing.T) {
 		{"s", ViewSnapshots},
 		{"D", ViewDiff},
 		{"a", ViewAgent},
+		{"o", ViewOperations},
 		{"d", ViewDashboard},
 	}
 	for _, tc := range cases {

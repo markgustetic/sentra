@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -26,6 +27,10 @@ type PruneDeps struct {
 
 	// Passphrase returns the bytes used to unwrap the repo key.
 	Passphrase func() ([]byte, error)
+
+	// PassphraseWithConfig is the config-aware production resolver.
+	// When set, it takes precedence over Passphrase.
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
 
 	// Stdout receives the user-facing summary. cobra.SetOut also goes
 	// here when the caller wants stderr-style routing.
@@ -64,6 +69,7 @@ type pruneFlags struct {
 	apply   bool
 	yes     bool
 	all     bool
+	explain bool
 	cfgPath string
 }
 
@@ -84,6 +90,7 @@ type pruneFlags struct {
 //   - --keep-monthly N   override retention.keep_monthly
 //   - --apply            actually delete (default: dry-run)
 //   - --yes              skip the confirm prompt (apply-mode only)
+//   - --explain          print why each snapshot is kept or dropped
 //   - --config <path>    sentra.yaml path (defaults to ./sentra.yaml)
 func NewPrune(deps PruneDeps) *cobra.Command {
 	flags := &pruneFlags{}
@@ -123,6 +130,8 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 		"skip the interactive confirm prompt (use with --apply for scripts)")
 	cmd.Flags().BoolVar(&flags.all, "all", false,
 		"required when the policy would drop every snapshot (safety rail)")
+	cmd.Flags().BoolVar(&flags.explain, "explain", false,
+		"print the retention decision and reason for every snapshot")
 	cmd.Flags().StringVar(&flags.cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	return cmd
@@ -144,7 +153,7 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	if err != nil {
 		return fmt.Errorf("open blobstore: %w", err)
 	}
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}
@@ -161,7 +170,8 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 		return fmt.Errorf("list snapshots: %w", err)
 	}
 
-	keep, drop := repo.PlanRetention(snaps, policy)
+	decisions := repo.PlanRetentionExplain(snaps, policy)
+	keep, drop := splitRetentionDecisions(decisions)
 
 	out := deps.Stdout
 	if out == nil {
@@ -194,6 +204,9 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	if len(drop) == 0 {
 		fmt.Fprintln(out, ui.Subtle.Render("Nothing to delete; current snapshots match retention policy."))
 		fmt.Fprintf(out, "  keep: %d\n", len(keep))
+		if flags.explain {
+			writeRetentionExplanation(out, decisions)
+		}
 		return nil
 	}
 
@@ -212,6 +225,9 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 			info.CreatedAt.UTC().Format("2006-01-02 15:04"),
 			emptyDash(info.Tag),
 		)
+	}
+	if flags.explain {
+		writeRetentionExplanation(out, decisions)
 	}
 
 	if !flags.apply {
@@ -270,6 +286,33 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 		ui.FormatBytes(stats.DeletedBytes), stats.DeletedBytes)
 	fmt.Fprintf(out, "  live blobs:        %d\n", stats.LiveBlobs)
 	return nil
+}
+
+func splitRetentionDecisions(decisions []repo.RetentionDecision) (keep, drop []string) {
+	for _, decision := range decisions {
+		if decision.Keep {
+			keep = append(keep, decision.Snapshot.ID)
+		} else {
+			drop = append(drop, decision.Snapshot.ID)
+		}
+	}
+	return keep, drop
+}
+
+func writeRetentionExplanation(w io.Writer, decisions []repo.RetentionDecision) {
+	fmt.Fprintln(w, ui.Subtle.Render("Retention decision details"))
+	for _, decision := range decisions {
+		action := "drop"
+		if decision.Keep {
+			action = "keep"
+		}
+		fmt.Fprintf(w, "    - %-4s %s  %s  %s\n",
+			action,
+			decision.Snapshot.ID,
+			decision.Snapshot.CreatedAt.UTC().Format("2006-01-02 15:04"),
+			strings.Join(decision.Reasons, "; "),
+		)
+	}
 }
 
 // buildRetentionPolicy starts from the config's retention block and

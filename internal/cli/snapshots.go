@@ -20,9 +20,10 @@ import (
 // Production fills these from main.go; tests inject a memory store
 // and static passphrase.
 type SnapshotsDeps struct {
-	NewStore   func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase func() ([]byte, error)
-	Stdout     io.Writer
+	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	Passphrase           func() ([]byte, error)
+	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+	Stdout               io.Writer
 }
 
 // NewSnapshots returns the cobra command for `sentra snapshots`.
@@ -82,7 +83,7 @@ func runSnapshots(cmd *cobra.Command, deps SnapshotsDeps, asJSON bool, cfgPath s
 	if err != nil {
 		return fmt.Errorf("open blobstore: %w", err)
 	}
-	pass, err := deps.Passphrase()
+	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
 		return fmt.Errorf("resolve passphrase: %w", err)
 	}

@@ -34,6 +34,29 @@ func (s *agentTestStubHeuristic) Run(ctx context.Context, in heuristics.Input) (
 	return out, nil
 }
 
+// agentTestRetentionHeuristic emits a finding only when the
+// orchestrator receives the retention policy loaded by the CLI.
+type agentTestRetentionHeuristic struct {
+	got heuristics.InputConfig
+}
+
+func (h *agentTestRetentionHeuristic) Name() string { return "retention_capture" }
+func (h *agentTestRetentionHeuristic) Run(ctx context.Context, in heuristics.Input) ([]heuristics.Finding, error) {
+	h.got = in.Config
+	if in.Config.Retention.KeepLast != 1 ||
+		in.Config.Retention.KeepDaily != 2 ||
+		in.Config.Retention.KeepWeekly != 3 ||
+		in.Config.Retention.KeepMonthly != 4 {
+		return nil, nil
+	}
+	return []heuristics.Finding{{
+		ID:       "retention-policy-seen",
+		Category: "retention_drift",
+		Severity: "info",
+		Target:   "policy",
+	}}, nil
+}
+
 // agentFixture builds an AgentDeps wired to a memory-backed repo with
 // one snapshot, a fake LLM Provider, and one stub heuristic that emits
 // the supplied findings.
@@ -161,6 +184,87 @@ func TestAgentScan_JSON(t *testing.T) {
 		if _, ok := got[k]; !ok {
 			t.Errorf("rec missing %q: %v", k, got)
 		}
+	}
+}
+
+func TestAgentScan_LocalOnlySkipsProvider(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "secrets", Severity: "critical", Target: "/x/.env",
+	}
+	deps, _, _, out := agentFixture(t, nil, []heuristics.Finding{finding})
+	provider := &llm.FakeProvider{} // no Steps; would error if called
+	deps.Provider = provider
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--local-only", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(provider.Calls) != 0 {
+		t.Fatalf("provider calls = %d, want 0", len(provider.Calls))
+	}
+	var recs []agent.Recommendation
+	if err := json.Unmarshal(out.Bytes(), &recs); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if len(recs) != 1 || recs[0].Action != "flag_secret" {
+		t.Fatalf("local-only recs = %+v, want flag_secret", recs)
+	}
+}
+
+func TestAgentScan_CategoriesFilterLocalFindings(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	findings := []heuristics.Finding{
+		{ID: "f1", Category: "secrets", Severity: "critical", Target: "/secret"},
+		{ID: "f2", Category: "large_files", Severity: "warn", Target: "/large"},
+	}
+	deps, _, _, out := agentFixture(t, nil, findings)
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--no-llm", "--categories", "secrets", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var recs []agent.Recommendation
+	if err := json.Unmarshal(out.Bytes(), &recs); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if len(recs) != 1 || recs[0].Target != "/secret" {
+		t.Fatalf("filtered recs = %+v, want only /secret", recs)
+	}
+}
+
+func TestAgentScan_RootFlagFeedsFilesystemHeuristics(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	scanRoot := t.TempDir()
+	secretPath := filepath.Join(scanRoot, ".env")
+	if err := os.WriteFile(secretPath, []byte("AWS_ACCESS_KEY_ID=AKIA1234567890ABCDEF\n"), 0o600); err != nil {
+		t.Fatalf("write secret: %v", err)
+	}
+
+	deps, _, _, out := agentFixture(t, nil, nil)
+	deps.Heuristics = []heuristics.Heuristic{heuristics.NewSecrets()}
+	deps.Provider = &llm.FakeProvider{}
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--local-only", "--root", scanRoot, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !strings.Contains(out.String(), secretPath) {
+		t.Fatalf("expected local recommendation for %s, got %s", secretPath, out.String())
 	}
 }
 
@@ -368,6 +472,37 @@ func TestAgent_RegisteredOnRoot(t *testing.T) {
 	}
 	if agentCmd == nil {
 		t.Fatal("agent command not registered on root")
+	}
+}
+
+func TestAgentAdviseIgnore_SuggestsCacheAndLargeFiles(t *testing.T) {
+	chDir(t, t.TempDir())
+
+	root := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(root, "node_modules", "pkg"), 0o755); err != nil {
+		t.Fatalf("mkdir cache: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "node_modules", "pkg", "index.js"), []byte("module"), 0o600); err != nil {
+		t.Fatalf("write cache file: %v", err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "big.bin"), bytes.Repeat([]byte("x"), 64), 0o600); err != nil {
+		t.Fatalf("write large file: %v", err)
+	}
+
+	out := &bytes.Buffer{}
+	cmd := NewAgent(AgentDeps{Stdout: out})
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"advise-ignore", root, "--large-file-bytes", "10"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	got := out.String()
+	for _, want := range []string{"node_modules/", "big.bin"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("expected %q in ignore advice output, got %q", want, got)
+		}
 	}
 }
 
@@ -617,5 +752,104 @@ func TestAgentScan_BudgetExhausted_Error(t *testing.T) {
 	// reaches through fmt.Errorf wrapping).
 	if !errors.Is(err, agent.ErrBudgetExhausted) {
 		t.Errorf("expected ErrBudgetExhausted, got %v", err)
+	}
+}
+
+// TestAgentScan_PassesRetentionConfigToHeuristics verifies the CLI
+// threads sentra.yaml's retention policy into the agent orchestrator.
+// Without that wiring, the retention_drift heuristic silently no-ops
+// regardless of the user's configured policy.
+func TestAgentScan_PassesRetentionConfigToHeuristics(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	body := `repo:
+  s3:
+    bucket: ignored
+retention:
+  keep_last: 1
+  keep_daily: 2
+  keep_weekly: 3
+  keep_monthly: 4
+`
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(body), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+
+	provider := &llm.FakeProvider{Steps: []llm.FakeStep{{Text: "[]"}}}
+	deps, _, _, out := agentFixture(t, nil, nil)
+	capture := &agentTestRetentionHeuristic{}
+	deps.Heuristics = []heuristics.Heuristic{capture}
+	deps.Provider = provider
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if len(provider.Calls) != 1 {
+		t.Fatalf("Provider calls: got %d, want 1 (retention finding should reach the LLM)", len(provider.Calls))
+	}
+	if capture.got.Retention.KeepLast != 1 ||
+		capture.got.Retention.KeepDaily != 2 ||
+		capture.got.Retention.KeepWeekly != 3 ||
+		capture.got.Retention.KeepMonthly != 4 {
+		t.Fatalf("heuristic config retention = %+v, want 1/2/3/4", capture.got.Retention)
+	}
+}
+
+// TestAgentScan_UsesConfigPathForPassphraseAndProvider guards the
+// production wiring bug where passphrase resolution and provider
+// construction read hardcoded sentra.yaml instead of the --config file
+// already loaded by the command.
+func TestAgentScan_UsesConfigPathForPassphraseAndProvider(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte("repo:\n  s3:\n    bucket: wrong\nagent:\n  model: wrong-model\n"), 0o600); err != nil {
+		t.Fatalf("write default config: %v", err)
+	}
+	alt := filepath.Join(dir, "alt.yaml")
+	if err := os.WriteFile(alt, []byte("repo:\n  s3:\n    bucket: alt-bucket\nagent:\n  model: alt-model\n"), 0o600); err != nil {
+		t.Fatalf("write alt config: %v", err)
+	}
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "secrets", Severity: "critical", Target: "/x",
+	}
+	deps, _, _, out := agentFixture(t, nil, []heuristics.Finding{finding})
+	deps.Passphrase = func() ([]byte, error) {
+		return nil, errors.New("legacy passphrase callback should not be used")
+	}
+
+	var passphraseBucket string
+	deps.PassphraseWithConfig = func(cfg *config.Config) ([]byte, error) {
+		passphraseBucket = cfg.Repo.S3.Bucket
+		return []byte("hunter2"), nil
+	}
+
+	provider := &llm.FakeProvider{Steps: []llm.FakeStep{{Text: "[]"}}}
+	var providerModel string
+	deps.Provider = &llm.FakeProvider{}
+	deps.ProviderForConfig = func(cfg *config.Config) llm.Provider {
+		providerModel = cfg.Agent.Model
+		return provider
+	}
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--config", alt})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if passphraseBucket != "alt-bucket" {
+		t.Fatalf("passphrase resolver saw bucket %q, want alt-bucket", passphraseBucket)
+	}
+	if providerModel != "alt-model" {
+		t.Fatalf("provider factory saw model %q, want alt-model", providerModel)
+	}
+	if len(provider.Calls) != 1 {
+		t.Fatalf("provider calls: got %d, want 1", len(provider.Calls))
 	}
 }
