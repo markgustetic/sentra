@@ -24,8 +24,9 @@ reviewed runs) or a full-screen TUI (`sentra ui`).
   pointing at chunk hashes. `restore` is exact-byte by construction.
 - **Agent.** Heuristics run locally; the LLM is invoked on summaries only,
   never on file contents. Recommendations are read-only by default.
-- **TUI dashboard.** `sentra ui` is a Bubbletea app with snapshots, diff,
-  and agent views. The bare `sentra` command launches it.
+- **TUI dashboard.** `sentra ui` is a Bubbletea app with dashboard,
+  snapshots, diff, agent, and operations views. The bare `sentra`
+  command launches it.
 
 ## Quickstart
 
@@ -112,13 +113,22 @@ sentra snapshots --json | jq .
 ### 5. Restore
 
 ```bash
-sentra restore <snapshot-id> /tmp/restored
+sentra restore <snapshot-id> /tmp/restored --dry-run
+sentra restore <snapshot-id> /tmp/restored --verify
 ```
 
-### 6. Run the agent
+### 6. Check health and export recovery notes
 
 ```bash
-sentra agent scan
+sentra check
+sentra recovery-kit --out sentra-recovery-kit.md
+```
+
+### 7. Run the agent
+
+```bash
+sentra agent advise-ignore ./Documents
+sentra agent scan --local-only --root ./Documents
 # Apply recommendations interactively:
 sentra agent scan --apply
 ```
@@ -182,12 +192,15 @@ regexp to the workflow path so it doesn't match arbitrary refs:
 | `sentra backup plan <path>`     | Write a reviewable JSON plan file for the exact file set.                  |
 | `sentra backup apply <plan>`    | Validate and snapshot from a reviewed plan file. `--yes` skips confirm.    |
 | `sentra snapshots`              | List snapshots, newest first. `--json` for scripting.                      |
+| `sentra check`                  | Audit manifests, chunk references, orphan blobs, and stale locks.          |
 | `sentra diff <a> <b>`           | Show added / removed / changed paths between two snapshots.                |
-| `sentra restore <snap> <dest>`  | Restore a snapshot byte-identical to a destination directory.              |
-| `sentra prune`                  | Delete snapshots that violate the retention policy and GC orphan blobs.    |
+| `sentra restore <snap> <dest>`  | Restore a snapshot. `--dry-run` previews; `--verify` validates output.     |
+| `sentra prune`                  | Dry-run retention by default; `--explain` shows keep/drop reasons.         |
 | `sentra passwd`                 | Rotate the wrapping passphrase. Repo key unchanged; existing snapshots stay readable. |
 | `sentra sync --dst-config`      | Replicate this repo to a clone destination. Additive; share the passphrase. |
-| `sentra agent scan`             | Run heuristics + LLM agent. `--apply` for interactive remediation.         |
+| `sentra recovery-kit`           | Export non-secret recovery notes and restore commands.                     |
+| `sentra agent advise-ignore`    | Suggest first-run `.sentraignore` patterns without editing files.          |
+| `sentra agent scan`             | Run heuristics + optional LLM. Supports `--local-only`, `--root`, `--categories`, and `--apply`. |
 | `sentra ui`                     | Launch the Bubbletea TUI. Bare `sentra` (no args) is equivalent.           |
 
 Every subcommand respects:
@@ -262,11 +275,15 @@ the agent loop, and Mermaid diagrams of the `backup`, `restore`, and
 just build       # builds bin/sentra
 just test        # unit tests with -race
 just integration # spins MinIO via testcontainers; Linux only
-just lint        # golangci-lint run
+just vet         # go vet ./...
+just tidy        # go mod tidy
+just lint        # golangci-lint run; prints install help if missing
 ```
 
 Go 1.25+ is required (the dependency ecosystem moved past 1.24 mid-Phase 13).
 The codebase is `internal/`-only — no public Go API shipped in v1.
+CI also enforces `go mod tidy -diff`, gofmt over `cmd/` and `internal/`,
+and `go test ./...` inside `third_party/fastcdc-go`.
 
 ## Releasing
 

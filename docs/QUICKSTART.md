@@ -1,7 +1,8 @@
 # Quickstart
 
-A copy-paste walk through `init` → `backup` → `snapshots` → `restore` →
-`agent scan`, end to end, against a local MinIO. No AWS account needed.
+A copy-paste walk through `init` -> `backup` -> `snapshots` -> `check`
+-> `restore` -> `agent scan`, end to end, against a local MinIO. No AWS
+account needed.
 
 ## Prerequisites
 
@@ -142,10 +143,34 @@ sentra diff <snap-id-first> <snap-id-second>
 
 You'll see `notes.md` listed under "added".
 
-## 7. Restore
+## 7. Check repository health
 
 ```bash
-sentra restore <snap-id-second> /tmp/sentra-restored
+sentra check
+```
+
+For disaster-recovery notes you can store outside the repo:
+
+```bash
+sentra recovery-kit --out sentra-recovery-kit.md
+```
+
+The kit contains repository identity, storage location, latest snapshot,
+and copyable recovery commands. It intentionally excludes passphrases and
+key material.
+
+## 8. Restore
+
+Preview first:
+
+```bash
+sentra restore <snap-id-second> /tmp/sentra-restored --dry-run
+```
+
+Then restore and verify the destination against the snapshot manifest:
+
+```bash
+sentra restore <snap-id-second> /tmp/sentra-restored --verify
 ```
 
 Verify byte-for-byte:
@@ -156,18 +181,29 @@ diff -r ./demo-data /tmp/sentra-restored
 
 Should produce no output.
 
-## 8. Run the agent
+## 9. Run the agent
 
-Heuristics-only (no LLM call needed):
+First-run ignore suggestions:
 
 ```bash
-sentra agent scan
+sentra agent advise-ignore ./demo-data
+```
+
+Local-only scan, with no LLM call:
+
+```bash
+sentra agent scan --local-only --root ./demo-data
 ```
 
 You'll see a table of recommendations: large files, cache directories,
-secret patterns, retention drift, etc. With `ANTHROPIC_API_KEY` set,
-the LLM will refine those recommendations and may suggest combining or
-deduplicating them.
+secret patterns, retention drift, etc. You can limit the scan:
+
+```bash
+sentra agent scan --local-only --categories secrets,large_files --root ./demo-data
+```
+
+With `ANTHROPIC_API_KEY` set, omit `--local-only` and the LLM will refine
+those recommendations and may suggest combining or deduplicating them.
 
 To act on recommendations interactively:
 
@@ -178,31 +214,31 @@ sentra agent scan --apply
 `sentra` walks each recommendation through a `huh` confirm prompt before
 dispatching the action.
 
-## 9. Launch the TUI
+## 10. Launch the TUI
 
 ```bash
 sentra ui   # or just `sentra` with no args
 ```
 
-Tabs across the top: `[d]ashboard`, `[s]napshots`, `[a]gent`, `[c]onfig`,
-`[?]help`, `[q]uit`. The agent view streams LLM tokens live to the top
-pane and fills in the recommendations table at the bottom as tool calls
-return.
+Tabs across the top: `[d]ashboard`, `[s]napshots`, `[D]iff`, `[a]gent`,
+`[o]perations`, `[?]help`, `[q]uit`. The operations view shows repository
+health from the same checks used by `sentra check`.
 
-## 10. Prune
+## 11. Prune
 
 When you're tired of the demo:
 
 ```bash
-sentra prune                  # honors retention from sentra.yaml
-sentra prune --dry-run        # preview without deleting
+sentra prune                  # dry-run by default, honors sentra.yaml
+sentra prune --explain        # show why snapshots are kept or dropped
+sentra prune --apply          # delete after confirmation
 ```
 
 ## Cleanup
 
 ```bash
 docker compose down -v
-rm -rf ./demo-data /tmp/sentra-restored sentra.yaml
+rm -rf ./demo-data /tmp/sentra-restored sentra.yaml sentra-recovery-kit.md
 ```
 
 ## What's next?
