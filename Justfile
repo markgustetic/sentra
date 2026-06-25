@@ -68,7 +68,13 @@ local-reset:
 
 # Initialize Sentra against local MinIO.
 local-init: _require-local-passphrase build local-up
-	AWS_ACCESS_KEY_ID="{{MINIO_ACCESS_KEY}}" AWS_SECRET_ACCESS_KEY="{{MINIO_SECRET_KEY}}" {{SENTRA}} init
+	@out=$(AWS_ACCESS_KEY_ID="{{MINIO_ACCESS_KEY}}" AWS_SECRET_ACCESS_KEY="{{MINIO_SECRET_KEY}}" {{SENTRA}} init --force 2>&1); \
+	status=$?; \
+	printf "%s\n" "$out"; \
+	if [ $status -ne 0 ]; then \
+		printf "%s\n" "$out" | grep -q "already initialized" && exit 0; \
+		exit $status; \
+	fi
 
 # Create demo data and take a snapshot. Override tag with: just local-backup second
 local-backup tag="first": local-init
