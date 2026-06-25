@@ -12,11 +12,11 @@
 //   - rolling our own ~150 LOC inline — viable, but not worth the
 //     correctness risk this early in the project.
 //
-// The local replace in go.mod carries a small upstream-style patch:
-// each Chunker owns its seeded gear table instead of NewChunker
-// mutating package-level state. That keeps concurrent snapshot
-// workers race-free without serializing every file through a global
-// mutex.
+// The upstream v0.2.0 constructor mutates a package-level gear table
+// while applying Options.Seed. Sentra currently uses the default seed,
+// but the writes still race under concurrent construction. We
+// serialize construction only; once NewChunker returns, each chunker
+// streams independently and concurrent snapshot workers can proceed.
 package chunker
 
 import (
@@ -24,6 +24,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"sync"
 
 	fastcdc "github.com/jotfs/fastcdc-go"
 )
@@ -38,6 +39,8 @@ const (
 	minChunkSize = 1 << 18 // 256 KiB
 	maxChunkSize = 1 << 22 // 4 MiB
 )
+
+var fastCDCNewMu sync.Mutex
 
 // Chunk is a single content-defined chunk produced by ChunkAll.
 //
@@ -62,13 +65,9 @@ type Chunk struct {
 // ChunkStream instead — it processes chunks one at a time so memory
 // stays bounded at O(1 chunk).
 func ChunkAll(r io.Reader) ([]Chunk, error) {
-	c, err := fastcdc.NewChunker(r, fastcdc.Options{
-		AverageSize: avgChunkSize,
-		MinSize:     minChunkSize,
-		MaxSize:     maxChunkSize,
-	})
+	c, err := newFastCDCChunker(r)
 	if err != nil {
-		return nil, fmt.Errorf("chunker: new fastcdc: %w", err)
+		return nil, err
 	}
 
 	var out []Chunk
@@ -97,6 +96,20 @@ func ChunkAll(r io.Reader) ([]Chunk, error) {
 		})
 	}
 	return out, nil
+}
+
+func newFastCDCChunker(r io.Reader) (*fastcdc.Chunker, error) {
+	fastCDCNewMu.Lock()
+	defer fastCDCNewMu.Unlock()
+	c, err := fastcdc.NewChunker(r, fastcdc.Options{
+		AverageSize: avgChunkSize,
+		MinSize:     minChunkSize,
+		MaxSize:     maxChunkSize,
+	})
+	if err != nil {
+		return nil, fmt.Errorf("chunker: new fastcdc: %w", err)
+	}
+	return c, nil
 }
 
 // ChunkStream reads r, calls fn for each FastCDC chunk in order, and
@@ -128,13 +141,9 @@ func ChunkAll(r io.Reader) ([]Chunk, error) {
 //
 // An empty reader returns nil with fn never being called.
 func ChunkStream(r io.Reader, fn func(Chunk) error) error {
-	c, err := fastcdc.NewChunker(r, fastcdc.Options{
-		AverageSize: avgChunkSize,
-		MinSize:     minChunkSize,
-		MaxSize:     maxChunkSize,
-	})
+	c, err := newFastCDCChunker(r)
 	if err != nil {
-		return fmt.Errorf("chunker: new fastcdc: %w", err)
+		return err
 	}
 	for {
 		chunk, err := c.Next()
