@@ -2,7 +2,7 @@
 //
 // Rationale: jotfs/fastcdc-go is the library the design names. It's
 // small (single file, ~400 LOC), licensed Apache 2.0, declares
-// `go 1.14` in its module so it never bumps our go directive, and it
+// `go 1.14` upstream so it never bumps our go directive, and it
 // implements FastCDC as published in the original paper. The two
 // alternatives we considered:
 //
@@ -12,11 +12,10 @@
 //   - rolling our own ~150 LOC inline — viable, but not worth the
 //     correctness risk this early in the project.
 //
-// The upstream v0.2.0 constructor mutates a package-level gear table
-// while applying Options.Seed. Sentra currently uses the default seed,
-// but the writes still race under concurrent construction. We
-// serialize construction only; once NewChunker returns, each chunker
-// streams independently and concurrent snapshot workers can proceed.
+// Sentra imports the patched vendored source directly instead of using
+// a go.mod replace. That keeps `go install ...@latest` working while
+// preserving the upstream-style fix where each Chunker owns its seeded
+// gear table instead of mutating package-level state.
 package chunker
 
 import (
@@ -24,9 +23,8 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"sync"
 
-	fastcdc "github.com/jotfs/fastcdc-go"
+	fastcdc "github.com/markgustetic/sentra/third_party/fastcdc-go"
 )
 
 // Chunk size targets follow the design: ~1 MiB average, with a
@@ -39,8 +37,6 @@ const (
 	minChunkSize = 1 << 18 // 256 KiB
 	maxChunkSize = 1 << 22 // 4 MiB
 )
-
-var fastCDCNewMu sync.Mutex
 
 // Chunk is a single content-defined chunk produced by ChunkAll.
 //
@@ -65,9 +61,13 @@ type Chunk struct {
 // ChunkStream instead — it processes chunks one at a time so memory
 // stays bounded at O(1 chunk).
 func ChunkAll(r io.Reader) ([]Chunk, error) {
-	c, err := newFastCDCChunker(r)
+	c, err := fastcdc.NewChunker(r, fastcdc.Options{
+		AverageSize: avgChunkSize,
+		MinSize:     minChunkSize,
+		MaxSize:     maxChunkSize,
+	})
 	if err != nil {
-		return nil, err
+		return nil, fmt.Errorf("chunker: new fastcdc: %w", err)
 	}
 
 	var out []Chunk
@@ -96,20 +96,6 @@ func ChunkAll(r io.Reader) ([]Chunk, error) {
 		})
 	}
 	return out, nil
-}
-
-func newFastCDCChunker(r io.Reader) (*fastcdc.Chunker, error) {
-	fastCDCNewMu.Lock()
-	defer fastCDCNewMu.Unlock()
-	c, err := fastcdc.NewChunker(r, fastcdc.Options{
-		AverageSize: avgChunkSize,
-		MinSize:     minChunkSize,
-		MaxSize:     maxChunkSize,
-	})
-	if err != nil {
-		return nil, fmt.Errorf("chunker: new fastcdc: %w", err)
-	}
-	return c, nil
 }
 
 // ChunkStream reads r, calls fn for each FastCDC chunk in order, and
@@ -141,9 +127,13 @@ func newFastCDCChunker(r io.Reader) (*fastcdc.Chunker, error) {
 //
 // An empty reader returns nil with fn never being called.
 func ChunkStream(r io.Reader, fn func(Chunk) error) error {
-	c, err := newFastCDCChunker(r)
+	c, err := fastcdc.NewChunker(r, fastcdc.Options{
+		AverageSize: avgChunkSize,
+		MinSize:     minChunkSize,
+		MaxSize:     maxChunkSize,
+	})
 	if err != nil {
-		return err
+		return fmt.Errorf("chunker: new fastcdc: %w", err)
 	}
 	for {
 		chunk, err := c.Next()

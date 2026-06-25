@@ -7,7 +7,7 @@ import (
 	"io"
 	"log"
 
-	"github.com/jotfs/fastcdc-go"
+	fastcdc "github.com/markgustetic/sentra/third_party/fastcdc-go"
 )
 
 func Example_basic() {

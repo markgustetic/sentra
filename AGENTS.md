@@ -13,7 +13,7 @@ Sentra code, docs, CI, or release workflow changes.
 - CLI command implementations live in `internal/cli`.
 - Agent heuristics/orchestration live in `internal/agent`.
 - Bubbletea views live in `internal/tui`.
-- The vendored FastCDC module has its own `go.mod` under `third_party/fastcdc-go`.
+- Vendored FastCDC source lives under `third_party/fastcdc-go`.
 
 ## Working Rules
 
@@ -41,7 +41,7 @@ Also run the vendored module tests when changes touch chunking, module setup,
 or CI:
 
 ```bash
-cd third_party/fastcdc-go && go test ./...
+go test ./third_party/fastcdc-go/...
 ```
 
 `just lint` requires `golangci-lint`. If it is missing, install it with:
@@ -76,5 +76,5 @@ CI is defined in `.github/workflows/ci.yml`. It should cover:
 - gofmt drift over `cmd/` and `internal/`
 - `go vet ./...`
 - `go test -race -coverprofile=coverage.out ./...`
-- `go test ./...` inside `third_party/fastcdc-go`
+- `go test ./third_party/fastcdc-go/...`
 - `golangci-lint` via the pinned GitHub Action
