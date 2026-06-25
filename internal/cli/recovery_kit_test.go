@@ -3,11 +3,13 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -84,5 +86,45 @@ func TestRecoveryKit_WritesNonSecretMarkdown(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), kitPath) {
 		t.Fatalf("stdout should mention written kit path, got %q", out.String())
+	}
+}
+
+func TestMarshalRecoveryKitJSON(t *testing.T) {
+	kit := recoveryKit{
+		GeneratedAt:       time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC),
+		ConfigPath:        "sentra.yaml",
+		RepoID:            "repo-123",
+		RepoCreatedAt:     time.Date(2026, 6, 1, 8, 30, 0, 0, time.UTC),
+		Bucket:            "sentra-prod",
+		Prefix:            "backups/home",
+		Region:            "us-east-1",
+		SnapshotCount:     1,
+		LatestSnapshotID:  "20260624T120000Z-abcdef",
+		LatestSnapshotTag: "latest",
+		Commands: []string{
+			"sentra check --config sentra.yaml",
+			"sentra restore 20260624T120000Z-abcdef <dest-dir> --config sentra.yaml --verify",
+		},
+	}
+
+	body, err := marshalRecoveryKitJSON(kit)
+	if err != nil {
+		t.Fatalf("marshalRecoveryKitJSON: %v", err)
+	}
+	if !bytes.HasSuffix(body, []byte("\n")) {
+		t.Fatalf("JSON should end with newline, got %q", body)
+	}
+	var decoded recoveryKit
+	if err := json.Unmarshal(body, &decoded); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, body)
+	}
+	if decoded.RepoID != kit.RepoID {
+		t.Fatalf("RepoID = %q, want %q", decoded.RepoID, kit.RepoID)
+	}
+	if len(decoded.Commands) != len(kit.Commands) || decoded.Commands[1] != kit.Commands[1] {
+		t.Fatalf("Commands = %+v, want %+v", decoded.Commands, kit.Commands)
+	}
+	if strings.Contains(string(body), "hunter2") || strings.Contains(string(body), "wrapped_repo_key") {
+		t.Fatalf("recovery kit JSON leaked secret-like material:\n%s", body)
 	}
 }

@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -101,6 +102,30 @@ func TestRunner_SchemaLookup(t *testing.T) {
 	}
 }
 
+func TestTool_AsLLMTool(t *testing.T) {
+	schema := map[string]any{
+		"type": "object",
+		"properties": map[string]any{
+			"id": map[string]any{"type": "string"},
+		},
+	}
+	tool := Tool{
+		Name:        "inspect_finding",
+		Description: "Inspect a finding",
+		Schema:      schema,
+	}
+	got := tool.AsLLMTool()
+	if got.Name != tool.Name {
+		t.Fatalf("Name = %q, want %q", got.Name, tool.Name)
+	}
+	if got.Description != tool.Description {
+		t.Fatalf("Description = %q, want %q", got.Description, tool.Description)
+	}
+	if got.Schema["type"] != "object" {
+		t.Fatalf("Schema = %+v, want original JSON schema", got.Schema)
+	}
+}
+
 // TestRunner_RunUnknownToolFails ensures the dispatcher rejects names
 // that aren't in the registered set rather than silently no-op'ing.
 func TestRunner_RunUnknownToolFails(t *testing.T) {
@@ -163,6 +188,72 @@ func TestRunner_ListSnapshots_LimitClips(t *testing.T) {
 	}
 	if len(rows) != 2 {
 		t.Errorf("limit=2 should clip to 2 rows, got %d", len(rows))
+	}
+}
+
+func TestRunner_ListSnapshots_AcceptsIntegerLimit(t *testing.T) {
+	r, _ := newTestRunner(t, 3, nil)
+	got, err := r.Run(context.Background(), "list_snapshots", map[string]any{"limit": int64(1)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var rows []any
+	if err := json.Unmarshal([]byte(got), &rows); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(rows) != 1 {
+		t.Errorf("limit=1 should clip to 1 row, got %d", len(rows))
+	}
+}
+
+func TestRunner_ListSnapshots_SinceFiltersRows(t *testing.T) {
+	r, _ := newTestRunner(t, 2, nil)
+	future := time.Now().UTC().Add(time.Hour).Format(time.RFC3339)
+	got, err := r.Run(context.Background(), "list_snapshots", map[string]any{"since": future})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var rows []any
+	if err := json.Unmarshal([]byte(got), &rows); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Fatalf("future since should filter all rows, got %d: %s", len(rows), got)
+	}
+}
+
+func TestRunner_ListSnapshots_RejectsBadInputs(t *testing.T) {
+	r, _ := newTestRunner(t, 1, nil)
+	cases := []struct {
+		name  string
+		input map[string]any
+		want  string
+	}{
+		{"negative limit", map[string]any{"limit": -1}, "non-negative"},
+		{"bad since type", map[string]any{"since": 42}, "since"},
+		{"bad since value", map[string]any{"since": "yesterday"}, "parse since"},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := r.Run(context.Background(), "list_snapshots", tc.input)
+			if err == nil {
+				t.Fatal("expected error")
+			}
+			if !strings.Contains(err.Error(), tc.want) {
+				t.Fatalf("error = %v, want to contain %q", err, tc.want)
+			}
+		})
+	}
+}
+
+func TestRunner_ListSnapshots_RequiresRepo(t *testing.T) {
+	r := &RepoRunner{}
+	_, err := r.Run(context.Background(), "list_snapshots", map[string]any{})
+	if err == nil {
+		t.Fatal("expected error for nil repo")
+	}
+	if !strings.Contains(err.Error(), "repo not configured") {
+		t.Fatalf("error = %v, want repo not configured", err)
 	}
 }
 
@@ -250,6 +341,29 @@ func TestRunner_DiffSnapshots_HappyPath(t *testing.T) {
 	}
 }
 
+func TestRunner_DiffSnapshots_EmptyDiffUsesArrays(t *testing.T) {
+	r, ids := newTestRunner(t, 1, nil)
+	got, err := r.Run(context.Background(), "diff_snapshots", map[string]any{
+		"a": ids[0],
+		"b": ids[0],
+	})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var diff map[string][]string
+	if err := json.Unmarshal([]byte(got), &diff); err != nil {
+		t.Fatalf("unmarshal: %v\noutput: %s", err, got)
+	}
+	for _, key := range []string{"added", "removed", "changed"} {
+		if diff[key] == nil {
+			t.Fatalf("%s decoded as nil from %s", key, got)
+		}
+		if len(diff[key]) != 0 {
+			t.Fatalf("%s = %v, want empty", key, diff[key])
+		}
+	}
+}
+
 func TestRunner_DiffSnapshots_MissingArgs(t *testing.T) {
 	r, ids := newTestRunner(t, 2, nil)
 	_, err := r.Run(context.Background(), "diff_snapshots", map[string]any{"a": ids[0]})
@@ -258,6 +372,28 @@ func TestRunner_DiffSnapshots_MissingArgs(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "b") {
 		t.Errorf("error should mention 'b', got %v", err)
+	}
+}
+
+func TestRunner_DiffSnapshots_RejectsBadArgAndNilRepo(t *testing.T) {
+	r, ids := newTestRunner(t, 2, nil)
+	_, err := r.Run(context.Background(), "diff_snapshots", map[string]any{"a": 42, "b": ids[1]})
+	if err == nil {
+		t.Fatal("expected bad arg error")
+	}
+	if !strings.Contains(err.Error(), `"a"`) {
+		t.Fatalf("error = %v, want to mention a", err)
+	}
+
+	_, err = (&RepoRunner{}).Run(context.Background(), "diff_snapshots", map[string]any{
+		"a": ids[0],
+		"b": ids[1],
+	})
+	if err == nil {
+		t.Fatal("expected nil repo error")
+	}
+	if !strings.Contains(err.Error(), "repo not configured") {
+		t.Fatalf("error = %v, want repo not configured", err)
 	}
 }
 

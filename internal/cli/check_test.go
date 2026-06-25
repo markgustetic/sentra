@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -129,5 +130,56 @@ func TestCheck_ReturnsErrorWhenMissingChunk(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), `"status": "failed"`) {
 		t.Fatalf("expected failed JSON report, got %s", out.String())
+	}
+}
+
+func TestWriteCheckText_FailedReportIncludesIssueSections(t *testing.T) {
+	report := repo.CheckReport{
+		Snapshots:       1,
+		Files:           2,
+		Bytes:           1536,
+		ReferencedBlobs: 2,
+		DataBlobs:       3,
+		DataBytes:       2048,
+		OrphanBytes:     512,
+		OrphanBlobs: []repo.BlobIssue{
+			{Key: repo.DataPrefix + "orphan", Size: 512},
+		},
+		MissingBlobs: []repo.MissingBlob{
+			{Key: repo.DataPrefix + "missing", SnapshotID: "snap-1", Path: "a.txt"},
+		},
+		ManifestIssues: []repo.ManifestIssue{
+			{Key: "snapshots/bad", SnapshotID: "bad", Error: "decrypt failed"},
+		},
+		Lock: &repo.LockReport{
+			Present:   true,
+			Stale:     true,
+			Operation: "backup",
+			Host:      "host-a",
+			PID:       1234,
+			Age:       25 * time.Hour,
+		},
+	}
+
+	var out bytes.Buffer
+	if err := writeCheckText(&out, report); err != nil {
+		t.Fatalf("writeCheckText: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"failed",
+		"orphan blobs",
+		repo.DataPrefix + "orphan",
+		"manifest issues",
+		"decrypt failed",
+		"missing blobs",
+		"snapshot=snap-1 path=a.txt",
+		"lock:",
+		"stale",
+		"op=backup",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q:\n%s", want, got)
+		}
 	}
 }

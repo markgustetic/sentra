@@ -8,5 +8,8 @@ dist/
 .DS_Store
 
 # Local config / secrets
+.env
+.env.*
+!.env.example
 sentra.yaml
 .sentraignore

@@ -1,0 +1,32 @@
+services:
+  minio:
+    image: minio/minio:latest
+    command: server /data --console-address ":9001"
+    ports:
+      - "9000:9000"
+      - "9001:9001"
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+    volumes:
+      - minio-data:/data
+
+  createbuckets:
+    image: minio/mc:latest
+    depends_on:
+      - minio
+    environment:
+      MINIO_ROOT_USER: ${MINIO_ROOT_USER:-minioadmin}
+      MINIO_ROOT_PASSWORD: ${MINIO_ROOT_PASSWORD:-minioadmin}
+      SENTRA_MINIO_BUCKET: ${SENTRA_MINIO_BUCKET:-sentra-test}
+    entrypoint: >
+      /bin/sh -c "
+      until /usr/bin/mc alias set local http://minio:9000 "${MINIO_ROOT_USER:-minioadmin}" "${MINIO_ROOT_PASSWORD:-minioadmin}"; do
+        sleep 1;
+      done;
+      /usr/bin/mc mb --ignore-existing "local/${SENTRA_MINIO_BUCKET:-sentra-test}";
+      /usr/bin/mc anonymous set none "local/${SENTRA_MINIO_BUCKET:-sentra-test}";
+      "
+
+volumes:
+  minio-data:

@@ -9,6 +9,9 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/repo"
 )
 
 // TestRegistry_Lookup covers the core registry contract: registered
@@ -133,6 +136,82 @@ func TestFlagSecretHandler_NotificationOnly(t *testing.T) {
 	}
 }
 
+func TestPruneSnapshotHandler_RequiresRepo(t *testing.T) {
+	err := (PruneSnapshotHandler{}).Apply(context.Background(), Env{Stdout: &bytes.Buffer{}},
+		"r1", "snapshot-id", "warn", "")
+	if err == nil {
+		t.Fatal("expected error for missing repo")
+	}
+	if !strings.Contains(err.Error(), "no repo") {
+		t.Fatalf("error = %v, want no repo context", err)
+	}
+}
+
+func TestPruneSnapshotHandler_PrunesSnapshotAndRunsGC(t *testing.T) {
+	ctx := context.Background()
+	r, ids := newActionTestRepo(t, []string{"first", "second"})
+
+	buf := &bytes.Buffer{}
+	env := Env{
+		Repo:        r,
+		Stdout:      buf,
+		FormatBytes: func(n int64) string { return fmt.Sprintf("%dB", n) },
+	}
+	if err := (PruneSnapshotHandler{}).Apply(ctx, env, "rec-1", ids[0], "warn", "old"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+
+	snaps, err := r.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snaps) != 1 || snaps[0].ID != ids[1] {
+		t.Fatalf("snapshots after prune = %+v, want only %s", snaps, ids[1])
+	}
+	out := buf.String()
+	for _, want := range []string{"rec-1", ids[0], "pruned", "reclaimed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("output missing %q: %q", want, out)
+		}
+	}
+}
+
+func TestPruneSnapshotHandler_AllowsLastSnapshotDelete(t *testing.T) {
+	ctx := context.Background()
+	r, ids := newActionTestRepo(t, []string{"only"})
+
+	buf := &bytes.Buffer{}
+	env := Env{Repo: r, Stdout: buf}
+	if err := (PruneSnapshotHandler{}).Apply(ctx, env, "rec-last", ids[0], "warn", "old"); err != nil {
+		t.Fatalf("Apply: %v", err)
+	}
+	snaps, err := r.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatalf("list snapshots: %v", err)
+	}
+	if len(snaps) != 0 {
+		t.Fatalf("snapshots after last prune = %+v, want none", snaps)
+	}
+	out := buf.String()
+	if !strings.Contains(out, "last snapshot") {
+		t.Fatalf("output should explain last-snapshot GC skip: %q", out)
+	}
+}
+
+func TestPruneSnapshotHandler_WrapsDeleteError(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newActionTestRepo(t, []string{"only"})
+
+	err := (PruneSnapshotHandler{}).Apply(ctx, Env{Repo: r, Stdout: &bytes.Buffer{}},
+		"rec-missing", "20000102T030405Z-missing", "warn", "")
+	if err == nil {
+		t.Fatal("expected delete error for missing snapshot")
+	}
+	if !strings.Contains(err.Error(), "delete snapshot") {
+		t.Fatalf("error = %v, want delete snapshot wrapper", err)
+	}
+}
+
 // TestAddToIgnoreHandler_AppendsAndDedupes covers the idempotent
 // write contract: a fresh target lands on disk, a repeat target
 // is skipped without writing, and the file uses LF line endings
@@ -229,4 +308,29 @@ func TestRegistry_DispatchPropagatesError(t *testing.T) {
 	if !errors.Is(err, sentinel) {
 		t.Errorf("Dispatch did not propagate handler error: got %v", err)
 	}
+}
+
+func newActionTestRepo(t *testing.T, contents []string) (*repo.Repo, []string) {
+	t.Helper()
+	ctx := context.Background()
+	r, err := repo.Init(ctx, blobstore.NewMemory(), []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("repo init: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	ids := make([]string, 0, len(contents))
+	for i, body := range contents {
+		root := t.TempDir()
+		path := filepath.Join(root, fmt.Sprintf("file-%d.txt", i))
+		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+			t.Fatalf("write fixture: %v", err)
+		}
+		snap, err := r.CreateSnapshot(ctx, root, repo.SnapshotOptions{Tag: fmt.Sprintf("snap-%d", i)})
+		if err != nil {
+			t.Fatalf("create snapshot: %v", err)
+		}
+		ids = append(ids, snap.ID)
+	}
+	return r, ids
 }

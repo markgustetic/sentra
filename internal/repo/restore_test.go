@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"cmp"
 	"context"
+	"encoding/hex"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -245,6 +246,188 @@ func TestVerifyRestore_DetectsTamperedFile(t *testing.T) {
 	}
 	if report.Mismatches[0].Path != "a.txt" {
 		t.Errorf("mismatch path = %q, want a.txt", report.Mismatches[0].Path)
+	}
+}
+
+func TestVerifyRestore_DetectsEqualSizeContentMismatch(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	writeFile(t, filepath.Join(dst, "a.txt"), "bravo") // same size as alpha
+
+	report, err := r.VerifyRestore(ctx, snap.ID, dst)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if report.OK() {
+		t.Fatalf("expected verification failure after equal-size tamper, got %+v", report)
+	}
+	if len(report.Mismatches) != 1 {
+		t.Fatalf("Mismatches = %+v, want one", report.Mismatches)
+	}
+	got := report.Mismatches[0]
+	if got.Path != "a.txt" || got.Reason != "content hash mismatch" {
+		t.Fatalf("mismatch = %+v, want content hash mismatch for a.txt", got)
+	}
+	if got.WantSize != 5 || got.GotSize != 5 {
+		t.Fatalf("sizes = want %d got %d, want both 5", got.WantSize, got.GotSize)
+	}
+}
+
+func TestVerifyRestore_DetectsMissingAndExtraFiles(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	writeFile(t, filepath.Join(src, "b.txt"), "bravo")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	if err := os.Remove(filepath.Join(dst, "b.txt")); err != nil {
+		t.Fatalf("remove restored file: %v", err)
+	}
+	writeFile(t, filepath.Join(dst, "extra.txt"), "not in manifest")
+
+	report, err := r.VerifyRestore(ctx, snap.ID, dst)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if report.OK() {
+		t.Fatalf("expected verification failure, got %+v", report)
+	}
+	if report.VerifiedFiles != 1 {
+		t.Fatalf("VerifiedFiles = %d, want 1", report.VerifiedFiles)
+	}
+	if report.ExtraFileCount != 1 {
+		t.Fatalf("ExtraFileCount = %d, want 1", report.ExtraFileCount)
+	}
+	reasons := map[string]string{}
+	for _, mismatch := range report.Mismatches {
+		reasons[mismatch.Path] = mismatch.Reason
+	}
+	if reasons["b.txt"] != "missing file" {
+		t.Fatalf("missing file reason = %q, mismatches=%+v", reasons["b.txt"], report.Mismatches)
+	}
+	if reasons["extra.txt"] != "extra file not present in snapshot" {
+		t.Fatalf("extra file reason = %q, mismatches=%+v", reasons["extra.txt"], report.Mismatches)
+	}
+}
+
+func TestVerifyRestore_DetectsNonRegularFile(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dst := filepath.Join(t.TempDir(), "restored")
+	if err := r.Restore(ctx, snap.ID, dst, RestoreOptions{}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	restoredPath := filepath.Join(dst, "a.txt")
+	if err := os.Remove(restoredPath); err != nil {
+		t.Fatalf("remove restored file: %v", err)
+	}
+	if err := os.Mkdir(restoredPath, 0o755); err != nil {
+		t.Fatalf("mkdir at file path: %v", err)
+	}
+
+	report, err := r.VerifyRestore(ctx, snap.ID, dst)
+	if err != nil {
+		t.Fatalf("verify: %v", err)
+	}
+	if len(report.Mismatches) != 1 {
+		t.Fatalf("Mismatches = %+v, want one", report.Mismatches)
+	}
+	if got := report.Mismatches[0]; got.Path != "a.txt" || got.Reason != "not a regular file" {
+		t.Fatalf("mismatch = %+v, want not a regular file for a.txt", got)
+	}
+}
+
+func TestInspectDestDir(t *testing.T) {
+	parent := t.TempDir()
+
+	exists, empty, err := inspectDestDir(filepath.Join(parent, "missing"))
+	if err != nil {
+		t.Fatalf("missing dest: %v", err)
+	}
+	if exists || !empty {
+		t.Fatalf("missing dest: exists=%t empty=%t, want false true", exists, empty)
+	}
+
+	emptyDir := filepath.Join(parent, "empty")
+	if err := os.Mkdir(emptyDir, 0o755); err != nil {
+		t.Fatalf("mkdir empty: %v", err)
+	}
+	exists, empty, err = inspectDestDir(emptyDir)
+	if err != nil {
+		t.Fatalf("empty dir: %v", err)
+	}
+	if !exists || !empty {
+		t.Fatalf("empty dir: exists=%t empty=%t, want true true", exists, empty)
+	}
+
+	nonEmptyDir := filepath.Join(parent, "non-empty")
+	writeFile(t, filepath.Join(nonEmptyDir, "leftover.txt"), "leftover")
+	exists, empty, err = inspectDestDir(nonEmptyDir)
+	if err == nil {
+		t.Fatalf("non-empty dir: expected error")
+	}
+	if !exists || empty {
+		t.Fatalf("non-empty dir: exists=%t empty=%t, want true false", exists, empty)
+	}
+
+	fileDest := filepath.Join(parent, "file")
+	writeFile(t, fileDest, "not a dir")
+	exists, empty, err = inspectDestDir(fileDest)
+	if err == nil {
+		t.Fatalf("file dest: expected error")
+	}
+	if !exists || empty {
+		t.Fatalf("file dest: exists=%t empty=%t, want true false", exists, empty)
+	}
+}
+
+func TestHashFileChunks(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "data.bin")
+	body := strings.Repeat("hash-me-", 2048)
+	writeFile(t, path, body)
+
+	got, err := hashFileChunks(path)
+	if err != nil {
+		t.Fatalf("hashFileChunks: %v", err)
+	}
+	var want []string
+	if err := chunker.ChunkStream(strings.NewReader(body), func(c chunker.Chunk) error {
+		want = append(want, hex.EncodeToString(c.Hash))
+		return nil
+	}); err != nil {
+		t.Fatalf("chunk expected body: %v", err)
+	}
+	if !slices.Equal(got, want) {
+		t.Fatalf("hashes = %v, want %v", got, want)
 	}
 }
 
