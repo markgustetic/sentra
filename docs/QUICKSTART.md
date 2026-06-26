@@ -69,7 +69,8 @@ sentra setup
 ```
 
 For real AWS S3, choose `AWS S3`. The wizard can check the selected AWS
-CLI profile, run `aws sso login --profile <profile>` when needed, then
+CLI profile, run `aws configure sso --profile <profile>` when the profile
+is missing, run `aws sso login --profile <profile>` when needed, then
 create or verify the bucket before initializing Sentra.
 
 Enter these values when prompted:

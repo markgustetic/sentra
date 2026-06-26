@@ -313,6 +313,7 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 	chDir(t, t.TempDir())
 	var checks int
 	var loginCalled bool
+	var configureCalled bool
 	var prepareCalled bool
 	deps := SetupDeps{
 		Prompt: func(current config.Config) (SetupPlan, error) {
@@ -334,6 +335,14 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 			if profile != "sentra" {
 				t.Errorf("profile: got %q", profile)
 			}
+			return nil
+		},
+		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
+			t.Fatal("SSO profile check should not run when identity check succeeds")
+			return false, nil
+		},
+		AWSConfigureSSO: func(context.Context, string) error {
+			configureCalled = true
 			return nil
 		},
 		AWSSSOLogin: func(context.Context, string) error {
@@ -360,6 +369,9 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 	if loginCalled {
 		t.Fatal("SSO login should not run when identity check succeeds")
 	}
+	if configureCalled {
+		t.Fatal("SSO configure should not run when identity check succeeds")
+	}
 	if !prepareCalled {
 		t.Fatal("PrepareAWS not called")
 	}
@@ -368,6 +380,7 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
 	chDir(t, t.TempDir())
 	var checks int
+	var configureCalled bool
 	var loginProfile string
 	out := &bytes.Buffer{}
 	deps := SetupDeps{
@@ -390,6 +403,13 @@ func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
 			if checks == 1 {
 				return errors.New("expired sso token")
 			}
+			return nil
+		},
+		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
+			return true, nil
+		},
+		AWSConfigureSSO: func(context.Context, string) error {
+			configureCalled = true
 			return nil
 		},
 		AWSSSOLogin: func(_ context.Context, profile string) error {
@@ -415,8 +435,134 @@ func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
 	if loginProfile != "sentra" {
 		t.Fatalf("login profile: got %q, want sentra", loginProfile)
 	}
+	if configureCalled {
+		t.Fatal("SSO configure should not run when profile is already configured")
+	}
 	if !strings.Contains(out.String(), "sso login completed") {
 		t.Errorf("expected sso login summary, got %q", out.String())
+	}
+}
+
+func TestSetup_AWSCLIAuthConfiguresSSOWhenProfileMissing(t *testing.T) {
+	chDir(t, t.TempDir())
+	var checks int
+	var configuredChecks int
+	var configureProfile string
+	var loginProfile string
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:            current,
+				Backend:           SetupBackendAWS,
+				PrepareAWS:        true,
+				UseAWSCLIAuth:     true,
+				CreateBucket:      true,
+				BlockPublicAccess: true,
+				DefaultEncryption: true,
+			}, nil
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			checks++
+			if checks == 1 {
+				return errors.New("profile not ready")
+			}
+			return nil
+		},
+		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
+			configuredChecks++
+			return false, nil
+		},
+		AWSConfigureSSO: func(_ context.Context, profile string) error {
+			configureProfile = profile
+			return nil
+		},
+		AWSSSOLogin: func(_ context.Context, profile string) error {
+			loginProfile = profile
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if checks != 2 {
+		t.Fatalf("identity checks: got %d, want 2", checks)
+	}
+	if configuredChecks != 1 {
+		t.Fatalf("configured checks: got %d, want 1", configuredChecks)
+	}
+	if configureProfile != "sentra" {
+		t.Fatalf("configure profile: got %q, want sentra", configureProfile)
+	}
+	if loginProfile != "sentra" {
+		t.Fatalf("login profile: got %q, want sentra", loginProfile)
+	}
+	got := out.String()
+	if !strings.Contains(got, "sso profile configured") {
+		t.Errorf("expected configure summary, got %q", got)
+	}
+	if !strings.Contains(got, "sso login completed") {
+		t.Errorf("expected login summary, got %q", got)
+	}
+}
+
+func TestSetup_AWSCLIAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
+	chDir(t, t.TempDir())
+	wantErr := errors.New("configure failed")
+	prepareCalled := false
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				UseAWSCLIAuth: true,
+			}, nil
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			return errors.New("identity missing")
+		},
+		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
+			return false, nil
+		},
+		AWSConfigureSSO: func(context.Context, string) error {
+			return wantErr
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{}, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected configure error, got %v", err)
+	}
+	if prepareCalled {
+		t.Fatal("PrepareAWS should not run after configure failure")
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written on configure failure, stat err=%v", statErr)
 	}
 }
 
@@ -438,6 +584,9 @@ func TestSetup_AWSCLIAuthLoginFailureStopsBeforeWrite(t *testing.T) {
 		},
 		CheckAWSIdentity: func(context.Context, string) error {
 			return errors.New("identity missing")
+		},
+		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
+			return true, nil
 		},
 		AWSSSOLogin: func(context.Context, string) error {
 			return wantErr
