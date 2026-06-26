@@ -309,6 +309,162 @@ func TestSetup_PreparesAWSAndInitializesRepo(t *testing.T) {
 	}
 }
 
+func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
+	chDir(t, t.TempDir())
+	var checks int
+	var loginCalled bool
+	var prepareCalled bool
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:            current,
+				Backend:           SetupBackendAWS,
+				PrepareAWS:        true,
+				UseAWSCLIAuth:     true,
+				CreateBucket:      true,
+				BlockPublicAccess: true,
+				DefaultEncryption: true,
+			}, nil
+		},
+		CheckAWSIdentity: func(_ context.Context, profile string) error {
+			checks++
+			if profile != "sentra" {
+				t.Errorf("profile: got %q", profile)
+			}
+			return nil
+		},
+		AWSSSOLogin: func(context.Context, string) error {
+			loginCalled = true
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if checks != 1 {
+		t.Fatalf("identity checks: got %d, want 1", checks)
+	}
+	if loginCalled {
+		t.Fatal("SSO login should not run when identity check succeeds")
+	}
+	if !prepareCalled {
+		t.Fatal("PrepareAWS not called")
+	}
+}
+
+func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
+	chDir(t, t.TempDir())
+	var checks int
+	var loginProfile string
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:            current,
+				Backend:           SetupBackendAWS,
+				PrepareAWS:        true,
+				UseAWSCLIAuth:     true,
+				CreateBucket:      true,
+				BlockPublicAccess: true,
+				DefaultEncryption: true,
+			}, nil
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			checks++
+			if checks == 1 {
+				return errors.New("expired sso token")
+			}
+			return nil
+		},
+		AWSSSOLogin: func(_ context.Context, profile string) error {
+			loginProfile = profile
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if checks != 2 {
+		t.Fatalf("identity checks: got %d, want 2", checks)
+	}
+	if loginProfile != "sentra" {
+		t.Fatalf("login profile: got %q, want sentra", loginProfile)
+	}
+	if !strings.Contains(out.String(), "sso login completed") {
+		t.Errorf("expected sso login summary, got %q", out.String())
+	}
+}
+
+func TestSetup_AWSCLIAuthLoginFailureStopsBeforeWrite(t *testing.T) {
+	chDir(t, t.TempDir())
+	wantErr := errors.New("login failed")
+	prepareCalled := false
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				UseAWSCLIAuth: true,
+			}, nil
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			return errors.New("identity missing")
+		},
+		AWSSSOLogin: func(context.Context, string) error {
+			return wantErr
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{}, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected login error, got %v", err)
+	}
+	if prepareCalled {
+		t.Fatal("PrepareAWS should not run after login failure")
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written on login failure, stat err=%v", statErr)
+	}
+}
+
 func TestSetup_AWSPrepareRejectsEndpointURL(t *testing.T) {
 	chDir(t, t.TempDir())
 	deps := SetupDeps{

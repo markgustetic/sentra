@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
@@ -36,6 +37,7 @@ type SetupPlan struct {
 	Config            config.Config
 	Backend           SetupBackend
 	PrepareAWS        bool
+	UseAWSCLIAuth     bool
 	CreateBucket      bool
 	BlockPublicAccess bool
 	DefaultEncryption bool
@@ -64,13 +66,21 @@ type AWSPrepareReport struct {
 	DefaultEncryptionEnabled bool
 }
 
+// AWSAuthReport summarizes the optional AWS CLI auth preflight.
+type AWSAuthReport struct {
+	IdentityVerified bool
+	SSOLoginRan      bool
+}
+
 // SetupDeps wires the side-effecting pieces of `sentra setup`.
 type SetupDeps struct {
-	Prompt     SetupPrompt
-	PrepareAWS func(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error)
-	NewStore   func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase func() ([]byte, error)
-	Stdout     io.Writer
+	Prompt           SetupPrompt
+	CheckAWSIdentity func(ctx context.Context, profile string) error
+	AWSSSOLogin      func(ctx context.Context, profile string) error
+	PrepareAWS       func(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error)
+	NewStore         func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	Passphrase       func() ([]byte, error)
+	Stdout           io.Writer
 }
 
 type setupInitResult struct {
@@ -90,8 +100,9 @@ func NewSetup(deps SetupDeps) *cobra.Command {
 		Use:   "setup",
 		Short: "Run the guided Sentra setup wizard",
 		Long: "Open an interactive terminal wizard for configuring Sentra. " +
-			"The wizard can prepare an AWS S3 bucket, write sentra.yaml, " +
-			"and initialize the encrypted repository in one flow.",
+			"The wizard can check AWS CLI identity, run AWS SSO login if needed, " +
+			"prepare an AWS S3 bucket, write sentra.yaml, and initialize the " +
+			"encrypted repository in one flow.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -143,8 +154,19 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		return fmt.Errorf("AWS setup does not support endpoint_url - choose S3-compatible/manual setup for MinIO or LocalStack")
 	}
 
-	var awsReport *AWSPrepareReport
+	var (
+		awsAuthReport *AWSAuthReport
+		awsReport     *AWSPrepareReport
+	)
 	if plan.PrepareAWS {
+		if plan.UseAWSCLIAuth {
+			report, err := runSetupAWSCLIAuth(cmd.Context(), deps, plan.Config.Repo.S3.Profile)
+			if err != nil {
+				return err
+			}
+			awsAuthReport = &report
+		}
+
 		prepareAWS := deps.PrepareAWS
 		if prepareAWS == nil {
 			prepareAWS = DefaultAWSPrepare
@@ -177,8 +199,31 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	if out == nil {
 		out = cmd.OutOrStdout()
 	}
-	printSetupSummary(out, cfgPath, &plan, awsReport, initResult)
+	printSetupSummary(out, cfgPath, &plan, awsAuthReport, awsReport, initResult)
 	return nil
+}
+
+func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AWSAuthReport, error) {
+	check := deps.CheckAWSIdentity
+	if check == nil {
+		check = DefaultAWSCheckIdentity
+	}
+	login := deps.AWSSSOLogin
+	if login == nil {
+		login = DefaultAWSSSOLogin
+	}
+
+	if err := check(ctx, profile); err == nil {
+		return AWSAuthReport{IdentityVerified: true}, nil
+	}
+
+	if err := login(ctx, profile); err != nil {
+		return AWSAuthReport{}, fmt.Errorf("aws sso login: %w", err)
+	}
+	if err := check(ctx, profile); err != nil {
+		return AWSAuthReport{}, fmt.Errorf("aws identity check after sso login: %w", err)
+	}
+	return AWSAuthReport{IdentityVerified: true, SSOLoginRan: true}, nil
 }
 
 func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config) (setupInitResult, error) {
@@ -216,6 +261,7 @@ func printSetupSummary(
 	out io.Writer,
 	cfgPath string,
 	plan *SetupPlan,
+	awsAuthReport *AWSAuthReport,
 	awsReport *AWSPrepareReport,
 	initResult *setupInitResult,
 ) {
@@ -233,6 +279,13 @@ func printSetupSummary(
 	}
 	if plan.Config.Repo.S3.EndpointURL != "" {
 		fmt.Fprintf(out, "  endpoint: %s\n", plan.Config.Repo.S3.EndpointURL)
+	}
+	if awsAuthReport != nil {
+		if awsAuthReport.SSOLoginRan {
+			fmt.Fprintln(out, "  aws auth: sso login completed")
+		} else if awsAuthReport.IdentityVerified {
+			fmt.Fprintln(out, "  aws auth: identity verified")
+		}
 	}
 	if awsReport != nil {
 		switch {
@@ -267,6 +320,7 @@ func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 		Config:            current,
 		Backend:           SetupBackendAWS,
 		PrepareAWS:        true,
+		UseAWSCLIAuth:     true,
 		CreateBucket:      true,
 		BlockPublicAccess: true,
 		DefaultEncryption: true,
@@ -349,6 +403,12 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 				Value(&profile),
 		),
 		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Check AWS identity and run SSO login if needed?").
+				Description("Uses the AWS CLI. Skip this for env credentials or IAM role credentials.").
+				Affirmative("Check/login").
+				Negative("Skip").
+				Value(&plan.UseAWSCLIAuth),
 			huh.NewConfirm().
 				Title("Create the bucket if it does not exist?").
 				Affirmative("Create/verify").
@@ -446,11 +506,58 @@ func runHuhCompatibleSetup(current config.Config, plan SetupPlan) (SetupPlan, er
 	cfg.Repo.S3.EndpointURL = endpointURL
 	plan.Config = cfg
 	plan.PrepareAWS = false
+	plan.UseAWSCLIAuth = false
 	plan.CreateBucket = false
 	plan.BlockPublicAccess = false
 	plan.DefaultEncryption = false
 	normalizeSetupConfig(&plan.Config)
 	return plan, nil
+}
+
+// DefaultAWSCheckIdentity verifies that the selected AWS profile can
+// resolve a caller identity through the AWS CLI. It captures output so
+// a failed preflight can be retried through SSO login without printing
+// scary intermediate errors.
+func DefaultAWSCheckIdentity(ctx context.Context, profile string) error {
+	return runAWSCLI(ctx, []string{"sts", "get-caller-identity"}, profile, false)
+}
+
+// DefaultAWSSSOLogin delegates browser-based SSO authentication to the
+// AWS CLI. Sentra never receives or stores the resulting credentials.
+func DefaultAWSSSOLogin(ctx context.Context, profile string) error {
+	return runAWSCLI(ctx, []string{"sso", "login"}, profile, true)
+}
+
+func runAWSCLI(ctx context.Context, args []string, profile string, interactive bool) error {
+	args = appendAWSProfile(args, profile)
+	cmd := exec.CommandContext(ctx, "aws", args...) //nolint:gosec // fixed binary + fixed args; profile is a user-selected AWS profile.
+	if interactive {
+		cmd.Stdin = os.Stdin
+		cmd.Stdout = os.Stdout
+		cmd.Stderr = os.Stderr
+		if err := cmd.Run(); err != nil {
+			return fmt.Errorf("aws %s: %w", strings.Join(args, " "), err)
+		}
+		return nil
+	}
+
+	out, err := cmd.CombinedOutput()
+	if err != nil {
+		msg := strings.TrimSpace(string(out))
+		if msg == "" {
+			return fmt.Errorf("aws %s: %w", strings.Join(args, " "), err)
+		}
+		return fmt.Errorf("aws %s: %w: %s", strings.Join(args, " "), err, msg)
+	}
+	return nil
+}
+
+func appendAWSProfile(args []string, profile string) []string {
+	profile = strings.TrimSpace(profile)
+	if profile == "" {
+		return args
+	}
+	return append(args, "--profile", profile)
 }
 
 // DefaultAWSPrepare performs the deterministic AWS S3 setup work chosen

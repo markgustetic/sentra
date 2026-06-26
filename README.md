@@ -100,9 +100,11 @@ retention:
   keep_monthly: 6
 ```
 
-For real AWS S3, choose `AWS S3` in the same wizard. Sentra can verify
-or create the bucket, block public access, enable default bucket
-encryption, write `sentra.yaml`, and initialize the repo in one flow.
+For real AWS S3, choose `AWS S3` in the same wizard. Sentra can check
+the selected AWS CLI profile, run `aws sso login --profile <profile>`
+when needed, verify or create the bucket, block public access, enable
+default bucket encryption, write `sentra.yaml`, and initialize the repo
+in one flow.
 
 ### 3. Take a snapshot
 
@@ -229,8 +231,9 @@ Every subcommand respects:
 
 ## Configuration
 
-`sentra setup` opens a guided terminal wizard. For AWS S3 it can verify
-or create the bucket, block public access, enable bucket default
+`sentra setup` opens a guided terminal wizard. For AWS S3 it can check
+AWS CLI identity, run `aws sso login --profile <profile>` when needed,
+verify or create the bucket, block public access, enable bucket default
 encryption, write `sentra.yaml`, and optionally initialize the encrypted
 repo. For MinIO, LocalStack, or an existing bucket, choose the
 S3-compatible/manual path. **No secrets in this file, ever.**

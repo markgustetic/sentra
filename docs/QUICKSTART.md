@@ -68,6 +68,10 @@ Run the guided setup wizard:
 sentra setup
 ```
 
+For real AWS S3, choose `AWS S3`. The wizard can check the selected AWS
+CLI profile, run `aws sso login --profile <profile>` when needed, then
+create or verify the bucket before initializing Sentra.
+
 Enter these values when prompted:
 
 - Storage target: `S3-compatible or existing bucket`
