@@ -114,36 +114,6 @@ func PlanRetentionExplain(snaps []SnapshotInfo, policy RetentionPolicy) []Retent
 	return out
 }
 
-// collectByBucket walks sorted (newest-first) and adds the newest
-// snapshot per bucket to keepSet, stopping after limit distinct
-// buckets. A zero limit is a no-op so callers can pass policy fields
-// directly without gating.
-func collectByBucket(
-	sorted []SnapshotInfo,
-	limit int,
-	bucket func(time.Time) string,
-	keepSet map[string]struct{},
-) {
-	if limit <= 0 {
-		return
-	}
-	seen := make(map[string]struct{}, limit)
-	for _, s := range sorted {
-		b := bucket(s.CreatedAt)
-		if _, ok := seen[b]; ok {
-			// We've already taken the newest snapshot for this bucket
-			// — anything older with the same bucket key is skipped by
-			// the rule (other rules may still pick it up via the union).
-			continue
-		}
-		seen[b] = struct{}{}
-		keepSet[s.ID] = struct{}{}
-		if len(seen) >= limit {
-			return
-		}
-	}
-}
-
 func collectByBucketReason(
 	sorted []SnapshotInfo,
 	limit int,

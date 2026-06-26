@@ -117,6 +117,11 @@ func main() {
 		Stdout:     os.Stdout,
 	}
 	root.AddCommand(cli.NewInit(initDeps))
+	root.AddCommand(cli.NewSetup(cli.SetupDeps{
+		NewStore:   newS3Store,
+		Passphrase: promptInitPassphrase(rootFlags),
+		Stdout:     os.Stdout,
+	}))
 
 	backupDeps := cli.BackupDeps{
 		NewStore:             newS3Store,

@@ -27,7 +27,7 @@ linters:
     paths:
       - bin
       - dist
-      - third_party$
+      - third_party/
       - builtin$
       - examples$
 formatters:
@@ -41,6 +41,6 @@ formatters:
     paths:
       - bin
       - dist
-      - third_party$
+      - third_party/
       - builtin$
       - examples$

@@ -50,7 +50,35 @@ AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 
 ## 2. Configure sentra
 
-Create `sentra.yaml` in your working directory:
+Export the credentials MinIO is expecting and a local test passphrase:
+
+```bash
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+export SENTRA_PASSPHRASE='change-me-to-something-good'
+```
+
+`SENTRA_PASSPHRASE` short-circuits the interactive prompt; in real use,
+either let `sentra` prompt you or store the passphrase in your OS
+keyring with `passphrase.use_keyring: true`.
+
+Run the guided setup wizard:
+
+```bash
+sentra setup
+```
+
+Enter these values when prompted:
+
+- Storage target: `S3-compatible or existing bucket`
+- S3 bucket: `sentra-test`
+- S3 key prefix: leave blank
+- AWS region: `us-east-1`
+- AWS profile: leave blank
+- S3 endpoint URL: `http://localhost:9000`
+- Initialize repo: `Initialize`
+
+The generated file will include these settings:
 
 ```yaml
 repo:
@@ -68,29 +96,11 @@ retention:
   keep_monthly: 6
 ```
 
-Export the AWS credentials MinIO is expecting and a passphrase:
-
-```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-export SENTRA_PASSPHRASE='change-me-to-something-good'
-```
-
-`SENTRA_PASSPHRASE` short-circuits the interactive prompt; in real use,
-either let `sentra` prompt you or store the passphrase in your OS
-keyring with `passphrase.use_keyring: true`.
-
-## 3. Initialize the repo
-
-```bash
-sentra init
-```
-
-This generates the random repo key, derives the passphrase-wrapped KEK
+The wizard writes `sentra.yaml`, derives a passphrase-wrapped repo key
 via Argon2id, encrypts and uploads the `config` object to S3, and
-returns. Re-running `sentra init` against an existing repo is a no-op.
+returns. If you choose `Config only`, run `sentra init` later.
 
-## 4. Take a snapshot
+## 3. Take a snapshot
 
 Pick a small directory to back up — your home folder is too aggressive
 for a first run.
@@ -118,7 +128,7 @@ sentra backup ./demo-data --tag second
 The second `backup` reports a new snapshot but uploads only the new
 chunk(s).
 
-## 5. List snapshots
+## 4. List snapshots
 
 Pretty output:
 
@@ -135,7 +145,7 @@ sentra snapshots --json | jq '.[].id'
 Note the snapshot IDs look like `snap-20260502T150405Z-a1b2` — sortable
 by creation time.
 
-## 6. Diff two snapshots
+## 5. Diff two snapshots
 
 ```bash
 sentra diff <snap-id-first> <snap-id-second>
@@ -143,7 +153,7 @@ sentra diff <snap-id-first> <snap-id-second>
 
 You'll see `notes.md` listed under "added".
 
-## 7. Check repository health
+## 6. Check repository health
 
 ```bash
 sentra check
@@ -159,7 +169,7 @@ The kit contains repository identity, storage location, latest snapshot,
 and copyable recovery commands. It intentionally excludes passphrases and
 key material.
 
-## 8. Restore
+## 7. Restore
 
 Preview first:
 
@@ -181,7 +191,7 @@ diff -r ./demo-data /tmp/sentra-restored
 
 Should produce no output.
 
-## 9. Run the agent
+## 8. Run the agent
 
 First-run ignore suggestions:
 
@@ -214,7 +224,7 @@ sentra agent scan --apply
 `sentra` walks each recommendation through a `huh` confirm prompt before
 dispatching the action.
 
-## 10. Launch the TUI
+## 9. Launch the TUI
 
 ```bash
 sentra ui   # or just `sentra` with no args
@@ -224,7 +234,7 @@ Tabs across the top: `[d]ashboard`, `[s]napshots`, `[D]iff`, `[a]gent`,
 `[o]perations`, `[?]help`, `[q]uit`. The operations view shows repository
 health from the same checks used by `sentra check`.
 
-## 11. Prune
+## 10. Prune
 
 When you're tired of the demo:
 

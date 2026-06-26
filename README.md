@@ -63,7 +63,26 @@ AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 
 ### 2. Initialize a repo
 
-Point `sentra` at MinIO via `sentra.yaml`:
+Export the credentials MinIO is expecting and a local test passphrase:
+
+```bash
+export AWS_ACCESS_KEY_ID=minioadmin
+export AWS_SECRET_ACCESS_KEY=minioadmin
+export SENTRA_PASSPHRASE='change-me-to-something-good'
+```
+
+Then run the guided setup wizard:
+
+```bash
+sentra setup
+```
+
+Choose `S3-compatible or existing bucket`, enter `sentra-test` for the
+bucket, `us-east-1` for the region, and `http://localhost:9000` for the
+endpoint URL. Leave profile and prefix blank unless you want them. When
+asked whether to initialize, choose `Initialize`.
+
+That writes a local `sentra.yaml` with these important settings:
 
 ```yaml
 repo:
@@ -81,13 +100,9 @@ retention:
   keep_monthly: 6
 ```
 
-```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-export SENTRA_PASSPHRASE='change-me-to-something-good'
-
-sentra init
-```
+For real AWS S3, choose `AWS S3` in the same wizard. Sentra can verify
+or create the bucket, block public access, enable default bucket
+encryption, write `sentra.yaml`, and initialize the repo in one flow.
 
 ### 3. Take a snapshot
 
@@ -187,6 +202,7 @@ regexp to the workflow path so it doesn't match arbitrary refs:
 
 | Command                         | Description                                                                |
 | ------------------------------- | -------------------------------------------------------------------------- |
+| `sentra setup`                  | Guided setup wizard for AWS/S3 config, optional bucket prep, and repo init. |
 | `sentra init`                   | Create `sentra.yaml`, derive a repo key, write the encrypted config blob. |
 | `sentra backup <path>`          | Snapshot a directory immediately. `--tag` to label the snapshot.           |
 | `sentra backup plan <path>`     | Write a reviewable JSON plan file for the exact file set.                  |
@@ -213,7 +229,11 @@ Every subcommand respects:
 
 ## Configuration
 
-`sentra.yaml` lives at the repo root. **No secrets in this file, ever.**
+`sentra setup` opens a guided terminal wizard. For AWS S3 it can verify
+or create the bucket, block public access, enable bucket default
+encryption, write `sentra.yaml`, and optionally initialize the encrypted
+repo. For MinIO, LocalStack, or an existing bucket, choose the
+S3-compatible/manual path. **No secrets in this file, ever.**
 
 ```yaml
 repo:
