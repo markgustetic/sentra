@@ -12,6 +12,26 @@ import (
 
 const setupIntroText = "Configure storage, optional AWS automation, and repository initialization in one flow.\n\nSentra only writes non-secret settings to sentra.yaml."
 
+// HuhSetupOverwriteConfirm asks whether an existing setup config may be
+// overwritten after the wizard completes.
+func HuhSetupOverwriteConfirm(path string) (bool, error) {
+	overwrite := false
+	form := newSetupForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Config file already exists").
+				Description(fmt.Sprintf("%s will be loaded as defaults and overwritten after setup finishes.", path)).
+				Affirmative("Review/overwrite").
+				Negative("Cancel").
+				Value(&overwrite),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return overwrite, nil
+}
+
 // HuhSetupPrompt is the production interactive wizard for `sentra setup`.
 func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 	plan := SetupPlan{

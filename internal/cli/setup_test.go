@@ -73,7 +73,7 @@ func TestSetup_WritesConfigFromWizard(t *testing.T) {
 	}
 }
 
-func TestSetup_RefusesExistingConfigWithoutForce(t *testing.T) {
+func TestSetup_ExistingConfigCancelLeavesFileUntouched(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
 	original := []byte("repo:\n  s3:\n    bucket: existing\n")
@@ -81,7 +81,15 @@ func TestSetup_RefusesExistingConfigWithoutForce(t *testing.T) {
 		t.Fatalf("write existing: %v", err)
 	}
 	called := false
+	confirmCalled := false
 	deps := SetupDeps{
+		ConfirmOverwrite: func(path string) (bool, error) {
+			confirmCalled = true
+			if path != "sentra.yaml" {
+				t.Errorf("confirm path: got %q, want sentra.yaml", path)
+			}
+			return false, nil
+		},
 		Prompt: func(current config.Config) (SetupPlan, error) {
 			called = true
 			return SetupPlan{Config: current}, nil
@@ -97,8 +105,14 @@ func TestSetup_RefusesExistingConfigWithoutForce(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected error on existing sentra.yaml, got nil")
 	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("expected canceled error, got %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("overwrite confirm should run when sentra.yaml exists")
+	}
 	if called {
-		t.Fatal("wizard should not run when refusing an existing config")
+		t.Fatal("wizard should not run when overwrite is canceled")
 	}
 	body, readErr := os.ReadFile(filepath.Join(dir, "sentra.yaml"))
 	if readErr != nil {
@@ -106,6 +120,65 @@ func TestSetup_RefusesExistingConfigWithoutForce(t *testing.T) {
 	}
 	if string(body) != string(original) {
 		t.Errorf("existing config was modified:\n%s", body)
+	}
+}
+
+func TestSetup_ExistingConfigConfirmLoadsAndOverwrites(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	body := []byte(`repo:
+  s3:
+    bucket: old-bucket
+    region: us-west-2
+passphrase:
+  use_keyring: true
+`)
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), body, 0o600); err != nil {
+		t.Fatalf("write existing: %v", err)
+	}
+	var seen config.Config
+	var confirmCalled bool
+	deps := SetupDeps{
+		ConfirmOverwrite: func(path string) (bool, error) {
+			confirmCalled = true
+			if path != "sentra.yaml" {
+				t.Errorf("confirm path: got %q, want sentra.yaml", path)
+			}
+			return true, nil
+		},
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			seen = current
+			current.Repo.S3.Bucket = "new-bucket"
+			return SetupPlan{Config: current, Backend: SetupBackendS3Compatible}, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !confirmCalled {
+		t.Fatal("overwrite confirm should run when sentra.yaml exists")
+	}
+	if seen.Repo.S3.Bucket != "old-bucket" {
+		t.Errorf("wizard current bucket: got %q", seen.Repo.S3.Bucket)
+	}
+	if seen.Repo.S3.Region != "us-west-2" {
+		t.Errorf("wizard current region: got %q", seen.Repo.S3.Region)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("Load(sentra.yaml): %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "new-bucket" {
+		t.Errorf("bucket: got %q", cfg.Repo.S3.Bucket)
+	}
+	if !cfg.Passphrase.UseKeyring {
+		t.Error("expected passphrase.use_keyring to be preserved")
 	}
 }
 
@@ -124,6 +197,10 @@ passphrase:
 	}
 	var seen config.Config
 	deps := SetupDeps{
+		ConfirmOverwrite: func(string) (bool, error) {
+			t.Fatal("--force should skip overwrite confirmation")
+			return false, nil
+		},
 		Prompt: func(current config.Config) (SetupPlan, error) {
 			seen = current
 			current.Repo.S3.Bucket = "new-bucket"

@@ -42,6 +42,11 @@ type SetupPlan struct {
 // callback.
 type SetupPrompt func(current config.Config) (SetupPlan, error)
 
+// SetupOverwriteConfirm asks whether an existing config file may be
+// overwritten. Production wires this to HuhSetupOverwriteConfirm; tests
+// inject a deterministic callback.
+type SetupOverwriteConfirm func(path string) (bool, error)
+
 // AWSPrepareOptions controls the AWS-side setup work. Bucket existence
 // is always checked; CreateBucket decides whether a missing bucket is
 // created or reported as an error.
@@ -70,6 +75,7 @@ type AWSAuthReport struct {
 // SetupDeps wires the side-effecting pieces of `sentra setup`.
 type SetupDeps struct {
 	Prompt                SetupPrompt
+	ConfirmOverwrite      SetupOverwriteConfirm
 	CheckAWSIdentity      func(ctx context.Context, profile string) error
 	CheckAWSSSOConfigured func(ctx context.Context, profile string) (bool, error)
 	AWSConfigureSSO       func(ctx context.Context, profile string) error
@@ -127,7 +133,17 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		return fmt.Errorf("stat %s: %w", cfgPath, err)
 	}
 	if yamlExists && !force {
-		return fmt.Errorf("%s exists - refusing to overwrite (use --force)", cfgPath)
+		confirmOverwrite := deps.ConfirmOverwrite
+		if confirmOverwrite == nil {
+			confirmOverwrite = HuhSetupOverwriteConfirm
+		}
+		overwrite, err := confirmOverwrite(cfgPath)
+		if err != nil {
+			return fmt.Errorf("confirm overwrite %s: %w", cfgPath, err)
+		}
+		if !overwrite {
+			return fmt.Errorf("%s exists - setup canceled", cfgPath)
+		}
 	}
 
 	cfg, err := config.Load(cfgPath)
