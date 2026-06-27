@@ -61,6 +61,16 @@ func TestSetup_WritesConfigFromWizard(t *testing.T) {
 	if !strings.Contains(out.String(), "Sentra setup complete") {
 		t.Errorf("expected setup summary, got %q", out.String())
 	}
+	for _, want := range []string{
+		"Applying Sentra setup",
+		"Writing sentra.yaml",
+		"Config written",
+		"Configuration",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("setup output missing %q:\n%s", want, out.String())
+		}
+	}
 }
 
 func TestSetup_RefusesExistingConfigWithoutForce(t *testing.T) {
@@ -306,6 +316,17 @@ func TestSetup_PreparesAWSAndInitializesRepo(t *testing.T) {
 	r.Close()
 	if !strings.Contains(out.String(), "repo id:") {
 		t.Errorf("expected repo id in output, got %q", out.String())
+	}
+	for _, want := range []string{
+		"Preparing AWS S3 bucket",
+		"AWS S3 bucket created",
+		"Initializing encrypted repository",
+		"Repository initialized",
+		"AWS bucket",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("setup output missing %q:\n%s", want, out.String())
+		}
 	}
 }
 

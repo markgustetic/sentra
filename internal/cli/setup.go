@@ -151,23 +151,32 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		return fmt.Errorf("AWS setup does not support endpoint_url - choose S3-compatible/manual setup for MinIO or LocalStack")
 	}
 
+	out := deps.Stdout
+	if out == nil {
+		out = cmd.OutOrStdout()
+	}
+	printSetupApplyHeader(out, cfgPath, &plan)
+
 	var (
 		awsAuthReport *AWSAuthReport
 		awsReport     *AWSPrepareReport
 	)
 	if plan.PrepareAWS {
 		if plan.UseAWSCLIAuth {
+			printSetupStep(out, "Checking AWS identity and SSO session")
 			report, err := runSetupAWSCLIAuth(cmd.Context(), deps, plan.Config.Repo.S3.Profile)
 			if err != nil {
 				return err
 			}
 			awsAuthReport = &report
+			printSetupOK(out, "AWS identity ready")
 		}
 
 		prepareAWS := deps.PrepareAWS
 		if prepareAWS == nil {
 			prepareAWS = DefaultAWSPrepare
 		}
+		printSetupStep(out, "Preparing AWS S3 bucket")
 		report, err := prepareAWS(cmd.Context(), &plan.Config, AWSPrepareOptions{
 			CreateBucket:      plan.CreateBucket,
 			BlockPublicAccess: plan.BlockPublicAccess,
@@ -177,25 +186,30 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 			return fmt.Errorf("prepare AWS S3: %w", err)
 		}
 		awsReport = &report
+		printSetupOK(out, setupAWSPreparedLabel(&report))
 	}
 
+	printSetupStep(out, "Writing "+cfgPath)
 	if err := os.WriteFile(cfgPath, []byte(renderConfigYAML(&plan.Config)), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", cfgPath, err)
 	}
+	printSetupOK(out, "Config written")
 
 	var initResult *setupInitResult
 	if plan.InitRepo {
+		printSetupStep(out, "Initializing encrypted repository")
 		result, err := runSetupInit(cmd.Context(), deps, &plan.Config)
 		if err != nil {
 			return err
 		}
 		initResult = &result
+		if result.AlreadyInitialized {
+			printSetupOK(out, "Repository already initialized")
+		} else {
+			printSetupOK(out, "Repository initialized")
+		}
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
 	printSetupSummary(out, cfgPath, &plan, awsAuthReport, awsReport, initResult)
 	return nil
 }
@@ -286,8 +300,11 @@ func printSetupSummary(
 	awsReport *AWSPrepareReport,
 	initResult *setupInitResult,
 ) {
-	fmt.Fprintln(out, ui.Primary.Render("Sentra setup complete"))
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Success.Bold(true).Render("Sentra setup complete"))
+	fmt.Fprintln(out, ui.Subtle.Render("Configuration"))
 	fmt.Fprintf(out, "  config:   %s\n", cfgPath)
+	fmt.Fprintf(out, "  storage:  %s\n", setupBackendLabel(plan.Backend))
 	fmt.Fprintf(out, "  bucket:   %s\n", plan.Config.Repo.S3.Bucket)
 	if plan.Config.Repo.S3.Prefix != "" {
 		fmt.Fprintf(out, "  prefix:   %s\n", plan.Config.Repo.S3.Prefix)
@@ -302,6 +319,7 @@ func printSetupSummary(
 		fmt.Fprintf(out, "  endpoint: %s\n", plan.Config.Repo.S3.EndpointURL)
 	}
 	if awsAuthReport != nil {
+		fmt.Fprintln(out, ui.Subtle.Render("AWS authentication"))
 		if awsAuthReport.SSOConfigureRan {
 			fmt.Fprintln(out, "  aws auth: sso profile configured")
 		}
@@ -312,6 +330,7 @@ func printSetupSummary(
 		}
 	}
 	if awsReport != nil {
+		fmt.Fprintln(out, ui.Subtle.Render("AWS bucket"))
 		switch {
 		case awsReport.BucketCreated:
 			fmt.Fprintln(out, "  aws:      bucket created")
@@ -328,12 +347,59 @@ func printSetupSummary(
 		}
 	}
 	if initResult != nil {
+		fmt.Fprintln(out, ui.Subtle.Render("Repository"))
 		if initResult.AlreadyInitialized {
 			fmt.Fprintln(out, "  repo:     already initialized")
 		} else {
 			fmt.Fprintf(out, "  repo id:  %s\n", initResult.RepoID)
 		}
 	} else {
-		fmt.Fprintln(out, ui.Subtle.Render("Run `sentra init` when you are ready to initialize the encrypted repository."))
+		fmt.Fprintln(out, ui.Subtle.Render("Next"))
+		fmt.Fprintln(out, "  Run `sentra init` when you are ready to initialize the encrypted repository.")
+	}
+}
+
+func printSetupApplyHeader(out io.Writer, cfgPath string, plan *SetupPlan) {
+	fmt.Fprintln(out)
+	fmt.Fprintln(out, ui.Primary.Render("Applying Sentra setup"))
+	fmt.Fprintf(out, "  config:  %s\n", cfgPath)
+	fmt.Fprintf(out, "  storage: %s\n", setupBackendLabel(plan.Backend))
+	if plan.InitRepo {
+		fmt.Fprintln(out, "  repo:    initialize after config")
+	} else {
+		fmt.Fprintln(out, "  repo:    config only")
+	}
+	fmt.Fprintln(out)
+}
+
+func printSetupStep(out io.Writer, label string) {
+	fmt.Fprintf(out, "%s %s\n", ui.Subtle.Render("..."), label)
+}
+
+func printSetupOK(out io.Writer, label string) {
+	fmt.Fprintf(out, "%s %s\n", ui.Success.Render("ok"), label)
+}
+
+func setupBackendLabel(backend SetupBackend) string {
+	switch backend {
+	case SetupBackendAWS:
+		return "AWS S3"
+	case SetupBackendS3Compatible:
+		return "S3-compatible or existing bucket"
+	default:
+		return string(backend)
+	}
+}
+
+func setupAWSPreparedLabel(report *AWSPrepareReport) string {
+	switch {
+	case report == nil:
+		return "AWS S3 checked"
+	case report.BucketCreated:
+		return "AWS S3 bucket created"
+	case report.BucketExisted:
+		return "AWS S3 bucket verified"
+	default:
+		return "AWS S3 bucket checked"
 	}
 }

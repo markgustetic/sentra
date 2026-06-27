@@ -5,9 +5,12 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/huh"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/config"
 )
+
+const setupIntroText = "Configure storage, optional AWS automation, and repository initialization in one flow.\n\nSentra only writes non-secret settings to sentra.yaml."
 
 // HuhSetupPrompt is the production interactive wizard for `sentra setup`.
 func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
@@ -29,10 +32,18 @@ func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 		plan.DefaultEncryption = false
 	}
 
-	backendForm := huh.NewForm(
+	backendForm := newSetupForm(
+		huh.NewGroup(
+			huh.NewNote().
+				Title("Sentra setup").
+				Description(setupIntroText).
+				Next(true).
+				NextLabel("Start"),
+		),
 		huh.NewGroup(
 			huh.NewSelect[SetupBackend]().
-				Title("Where should Sentra store backups?").
+				Title("Storage backend").
+				Description("Choose the storage target Sentra should configure.").
 				Options(
 					huh.NewOption("AWS S3", SetupBackendAWS).
 						Selected(plan.Backend == SetupBackendAWS),
@@ -65,7 +76,14 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 		prefix = "sentra/"
 	}
 
-	form := huh.NewForm(
+	form := newSetupForm(
+		huh.NewGroup(
+			huh.NewNote().
+				Title("AWS S3").
+				Description("Use a globally unique bucket name. Sentra stores encrypted, deduplicated blobs under the prefix you choose.").
+				Next(true).
+				NextLabel("Continue"),
+		),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("S3 bucket").
@@ -98,8 +116,15 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 				Value(&profile),
 		),
 		huh.NewGroup(
+			huh.NewNote().
+				Title("Setup actions").
+				Description("Sentra can use the AWS CLI for SSO auth, prepare safe bucket defaults, then initialize the encrypted repository.").
+				Next(true).
+				NextLabel("Review actions"),
+		),
+		huh.NewGroup(
 			huh.NewConfirm().
-				Title("Configure/check AWS SSO with the AWS CLI if needed?").
+				Title("Use AWS CLI SSO auth if needed?").
 				Description("Runs AWS CLI SSO configure/login only if identity is not already available. Skip for env or role credentials.").
 				Affirmative("Configure/check").
 				Negative("Skip").
@@ -116,7 +141,7 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 				Value(&plan.BlockPublicAccess),
 			huh.NewConfirm().
 				Title("Enable S3 default encryption?").
-				Affirmative("Enable AES256").
+				Affirmative("Enable AES-256").
 				Negative("Skip").
 				Value(&plan.DefaultEncryption),
 			huh.NewConfirm().
@@ -149,7 +174,14 @@ func runHuhCompatibleSetup(current config.Config, plan SetupPlan) (SetupPlan, er
 	profile := cfg.Repo.S3.Profile
 	endpointURL := cfg.Repo.S3.EndpointURL
 
-	form := huh.NewForm(
+	form := newSetupForm(
+		huh.NewGroup(
+			huh.NewNote().
+				Title("S3-compatible storage").
+				Description("Use this path for MinIO, LocalStack, or an existing AWS bucket you want to manage yourself.").
+				Next(true).
+				NextLabel("Continue"),
+		),
 		huh.NewGroup(
 			huh.NewInput().
 				Title("S3 bucket").
@@ -215,4 +247,30 @@ func normalizeSetupConfig(cfg *config.Config) {
 	cfg.Repo.S3.Region = strings.TrimSpace(cfg.Repo.S3.Region)
 	cfg.Repo.S3.Profile = strings.TrimSpace(cfg.Repo.S3.Profile)
 	cfg.Repo.S3.EndpointURL = strings.TrimSpace(cfg.Repo.S3.EndpointURL)
+}
+
+func newSetupForm(groups ...*huh.Group) *huh.Form {
+	return huh.NewForm(groups...).WithTheme(setupHuhTheme())
+}
+
+func setupHuhTheme() *huh.Theme {
+	theme := huh.ThemeCharm()
+	primary := lipgloss.Color("#7C3AED")
+	success := lipgloss.Color("#10B981")
+	muted := lipgloss.Color("#6B7280")
+
+	theme.Focused.Title = theme.Focused.Title.Foreground(primary).Bold(true)
+	theme.Focused.NoteTitle = theme.Focused.NoteTitle.Foreground(primary).Bold(true)
+	theme.Focused.SelectSelector = theme.Focused.SelectSelector.Foreground(primary)
+	theme.Focused.TextInput.Prompt = theme.Focused.TextInput.Prompt.Foreground(primary)
+	theme.Focused.TextInput.Cursor = theme.Focused.TextInput.Cursor.Foreground(success)
+	theme.Focused.Description = theme.Focused.Description.Foreground(muted)
+	theme.Focused.FocusedButton = theme.Focused.FocusedButton.Background(primary)
+	theme.Focused.Next = theme.Focused.Next.Background(primary)
+
+	theme.Blurred = theme.Focused
+	theme.Blurred.Base = theme.Focused.Base.BorderStyle(lipgloss.HiddenBorder())
+	theme.Blurred.NextIndicator = lipgloss.NewStyle()
+	theme.Blurred.PrevIndicator = lipgloss.NewStyle()
+	return theme
 }
