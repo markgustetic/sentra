@@ -203,33 +203,29 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	)
 	if plan.PrepareAWS {
 		if plan.UseAWSCLIAuth {
-			printSetupStep(out, "Checking AWS identity and SSO session")
-			report, err := runSetupAWSCLIAuth(cmd.Context(), deps, plan.Config.Repo.S3.Profile)
+			report, err := runSetupAWSCLIAuth(cmd.Context(), deps, plan.Config.Repo.S3.Profile, out)
 			if err != nil {
 				return err
 			}
 			awsAuthReport = &report
-			if report.AWSCLIInstalled {
-				printSetupOK(out, "AWS CLI installed")
-			}
-			printSetupOK(out, "AWS identity ready")
 		}
 
 		prepareAWS := deps.PrepareAWS
 		if prepareAWS == nil {
 			prepareAWS = DefaultAWSPrepare
 		}
-		printSetupStep(out, "Preparing AWS S3 bucket")
+		awsStep := startSetupProgress(out, "Preparing AWS S3 bucket")
 		report, err := prepareAWS(cmd.Context(), &plan.Config, AWSPrepareOptions{
 			CreateBucket:      plan.CreateBucket,
 			BlockPublicAccess: plan.BlockPublicAccess,
 			DefaultEncryption: plan.DefaultEncryption,
 		})
 		if err != nil {
+			awsStep.Fail()
 			return fmt.Errorf("prepare AWS S3: %w", err)
 		}
 		awsReport = &report
-		printSetupOK(out, setupAWSPreparedLabel(&report))
+		awsStep.Success(setupAWSPreparedLabel(&report))
 	}
 
 	printSetupStep(out, "Writing "+cfgPath)
@@ -257,7 +253,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	return nil
 }
 
-func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AWSAuthReport, error) {
+func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string, out io.Writer) (AWSAuthReport, error) {
 	report := AWSAuthReport{}
 	ensureAWSCLI := deps.EnsureAWSCLI
 	if ensureAWSCLI == nil && deps.CheckAWSIdentity == nil {
@@ -274,6 +270,9 @@ func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AW
 		}
 		report.AWSCLIInstalled = installReport.Installed
 		report.AWSCLIManager = installReport.Manager
+		if report.AWSCLIInstalled {
+			printSetupOK(out, "AWS CLI installed")
+		}
 	}
 
 	check := deps.CheckAWSIdentity
@@ -293,9 +292,13 @@ func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AW
 		login = DefaultAWSSSOLogin
 	}
 
+	identityStep := startSetupProgress(out, "Checking AWS identity")
 	if err := check(ctx, profile); err == nil {
+		identityStep.Success("AWS identity ready")
 		report.IdentityVerified = true
 		return report, nil
+	} else {
+		identityStep.Clear()
 	}
 
 	configured, err := checkConfigured(ctx, profile)
@@ -304,21 +307,28 @@ func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AW
 	}
 	report.SSOConfigured = configured
 	if !configured {
+		printSetupStep(out, "Configuring AWS SSO profile")
 		if err := configure(ctx, profile); err != nil {
 			return AWSAuthReport{}, wrapAWSSSOFlowError("aws configure sso", profile, err)
 		}
 		report.SSOConfigured = true
 		report.SSOConfigureRan = true
+		printSetupOK(out, "AWS SSO profile configured")
 	}
 
+	printSetupStep(out, "Running AWS SSO login")
 	if err := login(ctx, profile); err != nil {
 		return AWSAuthReport{}, wrapAWSSSOFlowError("aws sso login", profile, err)
 	}
-	if err := check(ctx, profile); err != nil {
+	report.SSOLoginRan = true
+	printSetupOK(out, "AWS SSO login complete")
+
+	if err := runSetupProgress(out, "Verifying AWS identity", "AWS identity ready", func() error {
+		return check(ctx, profile)
+	}); err != nil {
 		return AWSAuthReport{}, fmt.Errorf("AWS identity is still unavailable after SSO login. SSO is optional; rerun `sentra setup` and choose Skip SSO to use access keys, environment credentials, a normal AWS profile, or role credentials instead: %w", err)
 	}
 	report.IdentityVerified = true
-	report.SSOLoginRan = true
 	return report, nil
 }
 

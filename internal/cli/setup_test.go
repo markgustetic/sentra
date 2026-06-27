@@ -44,6 +44,28 @@ func TestDefaultSetupPlanUsesCompatibleBackendForEndpoint(t *testing.T) {
 	}
 }
 
+func TestSetupProgressFallsBackToPlainOutput(t *testing.T) {
+	var out bytes.Buffer
+	err := runSetupProgress(&out, "Preparing AWS S3 bucket", "AWS S3 bucket verified", func() error {
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("progress: %v", err)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"... Preparing AWS S3 bucket",
+		"ok AWS S3 bucket verified",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("output missing %q:\n%s", want, got)
+		}
+	}
+	if strings.Contains(got, "\r") {
+		t.Fatalf("non-terminal progress should not animate, got %q", got)
+	}
+}
+
 func TestSetup_WritesConfigFromWizard(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
