@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -304,21 +305,32 @@ func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AW
 	report.SSOConfigured = configured
 	if !configured {
 		if err := configure(ctx, profile); err != nil {
-			return AWSAuthReport{}, fmt.Errorf("aws configure sso: %w", err)
+			return AWSAuthReport{}, wrapAWSSSOFlowError("aws configure sso", profile, err)
 		}
 		report.SSOConfigured = true
 		report.SSOConfigureRan = true
 	}
 
 	if err := login(ctx, profile); err != nil {
-		return AWSAuthReport{}, fmt.Errorf("aws sso login: %w", err)
+		return AWSAuthReport{}, wrapAWSSSOFlowError("aws sso login", profile, err)
 	}
 	if err := check(ctx, profile); err != nil {
-		return AWSAuthReport{}, fmt.Errorf("aws identity check after sso login: %w", err)
+		return AWSAuthReport{}, fmt.Errorf("AWS identity is still unavailable after SSO login. SSO is optional; rerun `sentra setup` and choose Skip SSO to use access keys, environment credentials, a normal AWS profile, or role credentials instead: %w", err)
 	}
 	report.IdentityVerified = true
 	report.SSOLoginRan = true
 	return report, nil
+}
+
+func wrapAWSSSOFlowError(command string, profile string, err error) error {
+	profile = strings.TrimSpace(profile)
+	profileLabel := "the default profile"
+	configureCommand := "aws configure"
+	if profile != "" && profile != "default" {
+		profileLabel = "profile " + profile
+		configureCommand = "aws configure --profile " + profile
+	}
+	return fmt.Errorf("%s did not complete for %s. SSO is optional; rerun `sentra setup` and choose Skip SSO to use access keys, environment credentials, a normal AWS profile, or role credentials instead. To use a non-SSO AWS CLI profile, run `%s` first: %w", command, profileLabel, configureCommand, err)
 }
 
 func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config) (setupInitResult, error) {

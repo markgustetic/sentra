@@ -15,6 +15,35 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
+func TestDefaultSetupPlanSkipsAWSSSOByDefault(t *testing.T) {
+	plan := defaultSetupPlan(config.Config{})
+	if plan.Backend != SetupBackendAWS {
+		t.Fatalf("backend: got %q, want AWS", plan.Backend)
+	}
+	if !plan.PrepareAWS {
+		t.Fatal("expected AWS setup to prepare AWS by default")
+	}
+	if plan.UseAWSCLIAuth {
+		t.Fatal("AWS CLI SSO auth should be opt-in by default")
+	}
+	if !plan.CreateBucket || !plan.BlockPublicAccess || !plan.DefaultEncryption || !plan.InitRepo {
+		t.Fatalf("setup actions = %+v, want safe AWS defaults enabled", plan)
+	}
+}
+
+func TestDefaultSetupPlanUsesCompatibleBackendForEndpoint(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+
+	plan := defaultSetupPlan(cfg)
+	if plan.Backend != SetupBackendS3Compatible {
+		t.Fatalf("backend: got %q, want S3-compatible", plan.Backend)
+	}
+	if plan.PrepareAWS || plan.UseAWSCLIAuth || plan.CreateBucket || plan.BlockPublicAccess || plan.DefaultEncryption {
+		t.Fatalf("AWS automation should be disabled for endpoint_url plans: %+v", plan)
+	}
+}
+
 func TestSetup_WritesConfigFromWizard(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
@@ -769,6 +798,9 @@ func TestSetup_AWSCLIAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected configure error, got %v", err)
 	}
+	if !strings.Contains(err.Error(), "SSO is optional") || !strings.Contains(err.Error(), "choose Skip SSO") {
+		t.Fatalf("configure error missing SSO guidance: %v", err)
+	}
 	if prepareCalled {
 		t.Fatal("PrepareAWS should not run after configure failure")
 	}
@@ -816,6 +848,9 @@ func TestSetup_AWSCLIAuthLoginFailureStopsBeforeWrite(t *testing.T) {
 	err := cmd.Execute()
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected login error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "SSO is optional") || !strings.Contains(err.Error(), "choose Skip SSO") {
+		t.Fatalf("login error missing SSO guidance: %v", err)
 	}
 	if prepareCalled {
 		t.Fatal("PrepareAWS should not run after login failure")

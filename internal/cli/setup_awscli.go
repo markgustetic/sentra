@@ -20,7 +20,7 @@ func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWS
 
 	plan, ok := defaultAWSCLIInstallPlan()
 	if !ok {
-		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for AWS SSO setup but was not found in PATH. Install it, or rerun setup and skip AWS CLI SSO auth")
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is only required for AWS SSO setup and was not found in PATH. Install it, or rerun setup and choose Skip SSO")
 	}
 	if confirm == nil {
 		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for AWS SSO setup but no install confirmation was configured")
@@ -30,7 +30,7 @@ func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWS
 		return AWSCLIInstallReport{}, err
 	}
 	if !ok {
-		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI install canceled; install it manually or rerun setup and skip AWS CLI SSO auth")
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI install canceled; install it manually or rerun setup and choose Skip SSO")
 	}
 
 	cmd := exec.CommandContext(ctx, plan.Command[0], plan.Command[1:]...) //nolint:gosec // fixed package-manager command selected by Sentra, confirmed by the operator.

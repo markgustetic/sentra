@@ -40,7 +40,7 @@ func HuhAWSCLIInstallConfirm(plan AWSCLIInstallPlan) (bool, error) {
 		huh.NewGroup(
 			huh.NewConfirm().
 				Title("AWS CLI is not installed").
-				Description(fmt.Sprintf("Sentra needs the AWS CLI for SSO setup. Install with %s?\n\n%s", plan.Manager, strings.Join(plan.Command, " "))).
+				Description(fmt.Sprintf("Sentra only needs the AWS CLI when you choose AWS CLI SSO auth. Install with %s?\n\n%s", plan.Manager, strings.Join(plan.Command, " "))).
 				Affirmative("Install").
 				Negative("Skip").
 				Value(&install),
@@ -54,24 +54,7 @@ func HuhAWSCLIInstallConfirm(plan AWSCLIInstallPlan) (bool, error) {
 
 // HuhSetupPrompt is the production interactive wizard for `sentra setup`.
 func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
-	plan := SetupPlan{
-		Config:            current,
-		Backend:           SetupBackendAWS,
-		PrepareAWS:        true,
-		UseAWSCLIAuth:     true,
-		CreateBucket:      true,
-		BlockPublicAccess: true,
-		DefaultEncryption: true,
-		InitRepo:          true,
-	}
-	if current.Repo.S3.EndpointURL != "" {
-		plan.Backend = SetupBackendS3Compatible
-		plan.PrepareAWS = false
-		plan.CreateBucket = false
-		plan.BlockPublicAccess = false
-		plan.DefaultEncryption = false
-	}
-
+	plan := defaultSetupPlan(current)
 	backendForm := newSetupForm(
 		huh.NewGroup(
 			huh.NewNote().
@@ -101,6 +84,27 @@ func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 		return runHuhAWSSetup(current, plan)
 	}
 	return runHuhCompatibleSetup(current, plan)
+}
+
+func defaultSetupPlan(current config.Config) SetupPlan {
+	plan := SetupPlan{
+		Config:            current,
+		Backend:           SetupBackendAWS,
+		PrepareAWS:        true,
+		UseAWSCLIAuth:     false,
+		CreateBucket:      true,
+		BlockPublicAccess: true,
+		DefaultEncryption: true,
+		InitRepo:          true,
+	}
+	if current.Repo.S3.EndpointURL != "" {
+		plan.Backend = SetupBackendS3Compatible
+		plan.PrepareAWS = false
+		plan.CreateBucket = false
+		plan.BlockPublicAccess = false
+		plan.DefaultEncryption = false
+	}
+	return plan
 }
 
 func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
@@ -158,16 +162,16 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 		huh.NewGroup(
 			huh.NewNote().
 				Title("Setup actions").
-				Description("Sentra can use the AWS CLI for SSO auth, prepare safe bucket defaults, then initialize the encrypted repository.").
+				Description("Sentra can prepare safe bucket defaults and initialize the encrypted repository. AWS CLI SSO is optional and only needed for IAM Identity Center/SSO access.").
 				Next(true).
 				NextLabel("Review actions"),
 		),
 		huh.NewGroup(
 			huh.NewConfirm().
-				Title("Use AWS CLI SSO auth if needed?").
-				Description("Runs AWS CLI SSO configure/login only if identity is not already available. Skip for env or role credentials.").
-				Affirmative("Configure/check").
-				Negative("Skip").
+				Title("Use AWS CLI SSO login?").
+				Description("Choose Skip SSO for access keys, environment credentials, normal AWS profiles, or role credentials. If enabled, Sentra may run aws configure sso/login after an identity check fails.").
+				Affirmative("Use SSO").
+				Negative("Skip SSO").
 				Value(&plan.UseAWSCLIAuth),
 			huh.NewConfirm().
 				Title("Create the bucket if it does not exist?").
