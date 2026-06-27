@@ -376,6 +376,93 @@ func TestSetup_PreparesAWSBeforeWritingConfig(t *testing.T) {
 	}
 }
 
+func TestSetup_AWSPrepareMissingCredentialsAddsGuidance(t *testing.T) {
+	chDir(t, t.TempDir())
+	wantErr := errors.New(`head bucket "sentra-test": operation error S3: HeadBucket, get identity: get credentials: failed to refresh cached credentials, no EC2 IMDS role found, operation error ec2imds`)
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "sentra-test"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				UseAWSCLIAuth: false,
+			}, nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{}, wantErr
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected wrapped credential error, got %v", err)
+	}
+	for _, want := range []string{
+		"AWS credentials were not found",
+		"AWS profile sentra",
+		"aws configure --profile sentra",
+		"choose Use SSO",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q:\n%v", want, err)
+		}
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written when AWS credentials fail, stat err=%v", statErr)
+	}
+}
+
+func TestSetup_AWSPrepareMissingCredentialsAfterSSOAddsGuidance(t *testing.T) {
+	chDir(t, t.TempDir())
+	wantErr := errors.New("failed to refresh cached credentials")
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "sentra-test"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				UseAWSCLIAuth: true,
+			}, nil
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{}, wantErr
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected wrapped credential error, got %v", err)
+	}
+	for _, want := range []string{
+		"AWS credentials were not available",
+		"after the SSO flow",
+		"aws configure --profile sentra",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error missing %q:\n%v", want, err)
+		}
+	}
+}
+
 func TestSetup_PreparesAWSAndInitializesRepo(t *testing.T) {
 	chDir(t, t.TempDir())
 	store := blobstore.NewMemory()

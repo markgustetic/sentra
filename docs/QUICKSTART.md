@@ -72,7 +72,12 @@ For real AWS S3, choose `AWS S3`. The wizard can create or verify the
 bucket before initializing Sentra. AWS CLI SSO auth is optional and meant
 for IAM Identity Center/SSO users; leave it skipped if you use access
 keys, environment credentials, a normal AWS CLI profile, or role
-credentials.
+credentials. For a normal AWS CLI profile, configure it first, for
+example:
+
+```bash
+aws configure --profile sentra
+```
 
 Enter these values when prompted:
 

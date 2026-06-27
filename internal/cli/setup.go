@@ -222,7 +222,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		})
 		if err != nil {
 			awsStep.Fail()
-			return fmt.Errorf("prepare AWS S3: %w", err)
+			return wrapAWSPrepareError(&plan.Config, plan.UseAWSCLIAuth, err)
 		}
 		awsReport = &report
 		awsStep.Success(setupAWSPreparedLabel(&report))
@@ -341,6 +341,44 @@ func wrapAWSSSOFlowError(command string, profile string, err error) error {
 		configureCommand = "aws configure --profile " + profile
 	}
 	return fmt.Errorf("%s did not complete for %s. SSO is optional; rerun `sentra setup` and choose Skip SSO to use access keys, environment credentials, a normal AWS profile, or role credentials instead. To use a non-SSO AWS CLI profile, run `%s` first: %w", command, profileLabel, configureCommand, err)
+}
+
+func wrapAWSPrepareError(cfg *config.Config, usedSSO bool, err error) error {
+	if !isAWSMissingCredentialsError(err) {
+		return fmt.Errorf("prepare AWS S3: %w", err)
+	}
+
+	profile := ""
+	if cfg != nil {
+		profile = strings.TrimSpace(cfg.Repo.S3.Profile)
+	}
+	profileLabel := "the default AWS credential chain"
+	configureCommand := "aws configure"
+	if profile != "" && profile != "default" {
+		profileLabel = "AWS profile " + profile
+		configureCommand = "aws configure --profile " + profile
+	}
+	if usedSSO {
+		return fmt.Errorf("prepare AWS S3: AWS credentials were not available for %s after the SSO flow. Rerun `sentra setup` and choose Use SSO again, or configure non-SSO credentials with `%s`: %w", profileLabel, configureCommand, err)
+	}
+	return fmt.Errorf("prepare AWS S3: AWS credentials were not found for %s. Configure them with `%s`, export AWS_ACCESS_KEY_ID and AWS_SECRET_ACCESS_KEY, use role credentials, or rerun `sentra setup` and choose Use SSO if your AWS account uses IAM Identity Center: %w", profileLabel, configureCommand, err)
+}
+
+func isAWSMissingCredentialsError(err error) bool {
+	msg := strings.ToLower(err.Error())
+	for _, needle := range []string{
+		"failed to refresh cached credentials",
+		"no ec2 imds role found",
+		"no valid credential",
+		"no credential provider",
+		"credential providers",
+		"ec2imds",
+	} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config) (setupInitResult, error) {

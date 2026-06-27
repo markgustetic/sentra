@@ -105,7 +105,12 @@ or create the bucket, block public access, enable default bucket
 encryption, write `sentra.yaml`, and initialize the repo in one flow.
 AWS CLI SSO auth is optional and meant for IAM Identity Center/SSO
 users; leave it skipped if you use access keys, environment credentials,
-a normal AWS CLI profile, or role credentials.
+a normal AWS CLI profile, or role credentials. For a normal AWS CLI
+profile, configure it first, for example:
+
+```bash
+aws configure --profile sentra
+```
 
 ### 3. Take a snapshot
 
