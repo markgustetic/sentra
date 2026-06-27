@@ -10,6 +10,52 @@ import (
 	"strings"
 )
 
+// DefaultEnsureAWSCLI verifies that the AWS CLI is available. When it is
+// missing and Homebrew is available, it asks for permission to run
+// `brew install awscli` and verifies the install before continuing.
+func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
+	if _, err := exec.LookPath("aws"); err == nil {
+		return AWSCLIInstallReport{AlreadyInstalled: true}, nil
+	}
+
+	plan, ok := defaultAWSCLIInstallPlan()
+	if !ok {
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for AWS SSO setup but was not found in PATH. Install it, or rerun setup and skip AWS CLI SSO auth")
+	}
+	if confirm == nil {
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for AWS SSO setup but no install confirmation was configured")
+	}
+	ok, err := confirm(plan)
+	if err != nil {
+		return AWSCLIInstallReport{}, err
+	}
+	if !ok {
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI install canceled; install it manually or rerun setup and skip AWS CLI SSO auth")
+	}
+
+	cmd := exec.CommandContext(ctx, plan.Command[0], plan.Command[1:]...) //nolint:gosec // fixed package-manager command selected by Sentra, confirmed by the operator.
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return AWSCLIInstallReport{}, fmt.Errorf("install AWS CLI with %s: %w", plan.Manager, err)
+	}
+	if _, err := exec.LookPath("aws"); err != nil {
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI install completed with %s, but aws is still not on PATH", plan.Manager)
+	}
+	return AWSCLIInstallReport{Installed: true, Manager: plan.Manager}, nil
+}
+
+func defaultAWSCLIInstallPlan() (AWSCLIInstallPlan, bool) {
+	if _, err := exec.LookPath("brew"); err == nil {
+		return AWSCLIInstallPlan{
+			Manager: "Homebrew",
+			Command: []string{"brew", "install", "awscli"},
+		}, true
+	}
+	return AWSCLIInstallPlan{}, false
+}
+
 // DefaultAWSCheckIdentity verifies that the selected AWS profile can
 // resolve a caller identity through the AWS CLI. It captures output so
 // a failed preflight can be retried through SSO login without printing

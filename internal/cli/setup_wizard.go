@@ -32,6 +32,26 @@ func HuhSetupOverwriteConfirm(path string) (bool, error) {
 	return overwrite, nil
 }
 
+// HuhAWSCLIInstallConfirm asks whether setup may run the detected AWS CLI
+// package-manager install command.
+func HuhAWSCLIInstallConfirm(plan AWSCLIInstallPlan) (bool, error) {
+	install := false
+	form := newSetupForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("AWS CLI is not installed").
+				Description(fmt.Sprintf("Sentra needs the AWS CLI for SSO setup. Install with %s?\n\n%s", plan.Manager, strings.Join(plan.Command, " "))).
+				Affirmative("Install").
+				Negative("Skip").
+				Value(&install),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return false, err
+	}
+	return install, nil
+}
+
 // HuhSetupPrompt is the production interactive wizard for `sentra setup`.
 func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 	plan := SetupPlan{

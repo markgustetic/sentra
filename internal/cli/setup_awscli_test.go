@@ -2,10 +2,115 @@ package cli
 
 import (
 	"context"
+	"errors"
+	"fmt"
 	"os"
+	"os/exec"
 	"path/filepath"
+	"runtime"
+	"strings"
 	"testing"
 )
+
+func TestDefaultEnsureAWSCLI_AlreadyInstalled(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "aws"), "#!/bin/sh\nexit 0\n")
+	t.Setenv("PATH", dir)
+
+	report, err := DefaultEnsureAWSCLI(context.Background(), func(AWSCLIInstallPlan) (bool, error) {
+		t.Fatal("confirm should not run when aws is already installed")
+		return false, nil
+	})
+	if err != nil {
+		t.Fatalf("ensure aws cli: %v", err)
+	}
+	if !report.AlreadyInstalled || report.Installed {
+		t.Fatalf("report = %+v, want already installed only", report)
+	}
+}
+
+func TestDefaultEnsureAWSCLI_InstallsWithHomebrew(t *testing.T) {
+	if runtime.GOOS == "windows" {
+		t.Skip("shell-script fake package manager is unix-only")
+	}
+	dir := t.TempDir()
+	chmodPath, err := exec.LookPath("chmod")
+	if err != nil {
+		t.Fatalf("locate chmod: %v", err)
+	}
+	awsPath := filepath.Join(dir, "aws")
+	writeExecutable(t, filepath.Join(dir, "brew"), fmt.Sprintf(`#!/bin/sh
+if [ "$1" != "install" ] || [ "$2" != "awscli" ]; then
+  exit 2
+fi
+{
+  printf '%%s\n' '#!/bin/sh'
+  printf '%%s\n' 'exit 0'
+} > %q
+%q +x %q
+`, awsPath, chmodPath, awsPath))
+	t.Setenv("PATH", dir)
+
+	var seen AWSCLIInstallPlan
+	report, err := DefaultEnsureAWSCLI(context.Background(), func(plan AWSCLIInstallPlan) (bool, error) {
+		seen = plan
+		return true, nil
+	})
+	if err != nil {
+		t.Fatalf("ensure aws cli: %v", err)
+	}
+	if seen.Manager != "Homebrew" || strings.Join(seen.Command, " ") != "brew install awscli" {
+		t.Fatalf("install plan = %+v", seen)
+	}
+	if !report.Installed || report.Manager != "Homebrew" {
+		t.Fatalf("report = %+v, want installed with Homebrew", report)
+	}
+}
+
+func TestDefaultEnsureAWSCLI_InstallDeclined(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "brew"), "#!/bin/sh\nexit 99\n")
+	t.Setenv("PATH", dir)
+
+	_, err := DefaultEnsureAWSCLI(context.Background(), func(AWSCLIInstallPlan) (bool, error) {
+		return false, nil
+	})
+	if err == nil {
+		t.Fatal("expected declined install error, got nil")
+	}
+	if !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("error = %v, want canceled", err)
+	}
+}
+
+func TestDefaultEnsureAWSCLI_ConfirmError(t *testing.T) {
+	dir := t.TempDir()
+	writeExecutable(t, filepath.Join(dir, "brew"), "#!/bin/sh\nexit 99\n")
+	t.Setenv("PATH", dir)
+	wantErr := errors.New("no thanks")
+
+	_, err := DefaultEnsureAWSCLI(context.Background(), func(AWSCLIInstallPlan) (bool, error) {
+		return false, wantErr
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("error = %v, want %v", err, wantErr)
+	}
+}
+
+func TestDefaultEnsureAWSCLI_NoSupportedInstaller(t *testing.T) {
+	t.Setenv("PATH", t.TempDir())
+
+	_, err := DefaultEnsureAWSCLI(context.Background(), func(AWSCLIInstallPlan) (bool, error) {
+		t.Fatal("confirm should not run without a supported installer")
+		return false, nil
+	})
+	if err == nil {
+		t.Fatal("expected missing installer error, got nil")
+	}
+	if !strings.Contains(err.Error(), "AWS CLI is required") {
+		t.Fatalf("error = %v, want AWS CLI requirement", err)
+	}
+}
 
 func TestDefaultAWSSSOConfigured_ModernSessionProfile(t *testing.T) {
 	cfgPath := writeAWSConfig(t, `
@@ -123,4 +228,14 @@ func writeAWSConfig(t *testing.T, body string) string {
 		t.Fatalf("write aws config: %v", err)
 	}
 	return path
+}
+
+func writeExecutable(t *testing.T, path, body string) {
+	t.Helper()
+	if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
+		t.Fatalf("write executable %s: %v", path, err)
+	}
+	if err := os.Chmod(path, 0o700); err != nil { //nolint:gosec // test helper creates fake executables in t.TempDir.
+		t.Fatalf("chmod executable %s: %v", path, err)
+	}
 }

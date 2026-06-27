@@ -475,6 +475,119 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 	}
 }
 
+func TestSetup_AWSCLIAuthInstallsMissingAWSCLI(t *testing.T) {
+	chDir(t, t.TempDir())
+	var ensureCalled bool
+	var confirmCalled bool
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				UseAWSCLIAuth: true,
+			}, nil
+		},
+		EnsureAWSCLI: func(_ context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
+			ensureCalled = true
+			ok, err := confirm(AWSCLIInstallPlan{
+				Manager: "Homebrew",
+				Command: []string{"brew", "install", "awscli"},
+			})
+			if err != nil {
+				return AWSCLIInstallReport{}, err
+			}
+			if !ok {
+				return AWSCLIInstallReport{}, errors.New("install declined")
+			}
+			return AWSCLIInstallReport{Installed: true, Manager: "Homebrew"}, nil
+		},
+		ConfirmAWSCLIInstall: func(plan AWSCLIInstallPlan) (bool, error) {
+			confirmCalled = true
+			if plan.Manager != "Homebrew" {
+				t.Errorf("install manager: got %q, want Homebrew", plan.Manager)
+			}
+			return true, nil
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !ensureCalled {
+		t.Fatal("AWS CLI preflight should run")
+	}
+	if !confirmCalled {
+		t.Fatal("AWS CLI install confirm should run")
+	}
+	for _, want := range []string{"AWS CLI installed", "aws cli installed with Homebrew"} {
+		if !strings.Contains(out.String(), want) {
+			t.Errorf("setup output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestSetup_AWSCLIAuthInstallFailureStopsBeforeWrite(t *testing.T) {
+	chDir(t, t.TempDir())
+	wantErr := errors.New("install failed")
+	prepareCalled := false
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				UseAWSCLIAuth: true,
+			}, nil
+		},
+		EnsureAWSCLI: func(context.Context, AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
+			return AWSCLIInstallReport{}, wantErr
+		},
+		CheckAWSIdentity: func(context.Context, string) error {
+			t.Fatal("identity check should not run after AWS CLI install failure")
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{}, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected install error, got %v", err)
+	}
+	if prepareCalled {
+		t.Fatal("PrepareAWS should not run after AWS CLI install failure")
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written on install failure, stat err=%v", statErr)
+	}
+}
+
 func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
 	chDir(t, t.TempDir())
 	var checks int

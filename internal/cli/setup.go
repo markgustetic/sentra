@@ -47,6 +47,25 @@ type SetupPrompt func(current config.Config) (SetupPlan, error)
 // inject a deterministic callback.
 type SetupOverwriteConfirm func(path string) (bool, error)
 
+// AWSCLIInstallPlan is the package-manager command Sentra can run to install
+// the AWS CLI for setup's SSO flow.
+type AWSCLIInstallPlan struct {
+	Manager string
+	Command []string
+}
+
+// AWSCLIInstallConfirm asks whether Sentra may run the detected package
+// manager command. Production wires this to HuhAWSCLIInstallConfirm; tests
+// inject a deterministic callback.
+type AWSCLIInstallConfirm func(plan AWSCLIInstallPlan) (bool, error)
+
+// AWSCLIInstallReport summarizes the AWS CLI preflight.
+type AWSCLIInstallReport struct {
+	AlreadyInstalled bool
+	Installed        bool
+	Manager          string
+}
+
 // AWSPrepareOptions controls the AWS-side setup work. Bucket existence
 // is always checked; CreateBucket decides whether a missing bucket is
 // created or reported as an error.
@@ -67,6 +86,8 @@ type AWSPrepareReport struct {
 // AWSAuthReport summarizes the optional AWS CLI auth preflight.
 type AWSAuthReport struct {
 	IdentityVerified bool
+	AWSCLIInstalled  bool
+	AWSCLIManager    string
 	SSOConfigured    bool
 	SSOConfigureRan  bool
 	SSOLoginRan      bool
@@ -76,6 +97,8 @@ type AWSAuthReport struct {
 type SetupDeps struct {
 	Prompt                SetupPrompt
 	ConfirmOverwrite      SetupOverwriteConfirm
+	EnsureAWSCLI          func(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error)
+	ConfirmAWSCLIInstall  AWSCLIInstallConfirm
 	CheckAWSIdentity      func(ctx context.Context, profile string) error
 	CheckAWSSSOConfigured func(ctx context.Context, profile string) (bool, error)
 	AWSConfigureSSO       func(ctx context.Context, profile string) error
@@ -185,6 +208,9 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 				return err
 			}
 			awsAuthReport = &report
+			if report.AWSCLIInstalled {
+				printSetupOK(out, "AWS CLI installed")
+			}
 			printSetupOK(out, "AWS identity ready")
 		}
 
@@ -231,6 +257,24 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 }
 
 func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AWSAuthReport, error) {
+	report := AWSAuthReport{}
+	ensureAWSCLI := deps.EnsureAWSCLI
+	if ensureAWSCLI == nil && deps.CheckAWSIdentity == nil {
+		ensureAWSCLI = DefaultEnsureAWSCLI
+	}
+	if ensureAWSCLI != nil {
+		confirm := deps.ConfirmAWSCLIInstall
+		if confirm == nil {
+			confirm = HuhAWSCLIInstallConfirm
+		}
+		installReport, err := ensureAWSCLI(ctx, confirm)
+		if err != nil {
+			return AWSAuthReport{}, err
+		}
+		report.AWSCLIInstalled = installReport.Installed
+		report.AWSCLIManager = installReport.Manager
+	}
+
 	check := deps.CheckAWSIdentity
 	if check == nil {
 		check = DefaultAWSCheckIdentity
@@ -249,10 +293,10 @@ func runSetupAWSCLIAuth(ctx context.Context, deps SetupDeps, profile string) (AW
 	}
 
 	if err := check(ctx, profile); err == nil {
-		return AWSAuthReport{IdentityVerified: true}, nil
+		report.IdentityVerified = true
+		return report, nil
 	}
 
-	report := AWSAuthReport{}
 	configured, err := checkConfigured(ctx, profile)
 	if err != nil {
 		return AWSAuthReport{}, fmt.Errorf("check aws sso profile: %w", err)
@@ -336,6 +380,9 @@ func printSetupSummary(
 	}
 	if awsAuthReport != nil {
 		fmt.Fprintln(out, ui.Subtle.Render("AWS authentication"))
+		if awsAuthReport.AWSCLIInstalled {
+			fmt.Fprintf(out, "  aws auth: aws cli installed with %s\n", awsAuthReport.AWSCLIManager)
+		}
 		if awsAuthReport.SSOConfigureRan {
 			fmt.Fprintln(out, "  aws auth: sso profile configured")
 		}
