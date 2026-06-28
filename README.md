@@ -323,6 +323,11 @@ just integration # spins MinIO via testcontainers; Linux only
 just vet         # go vet ./...
 just tidy        # go mod tidy
 just lint        # golangci-lint run; prints install help if missing
+just vuln        # govulncheck ./...
+just tools       # verify optional security/release tools are installed
+just release-check    # validate .goreleaser.yaml
+just release-snapshot # build local release artifacts under dist/
+just sbom             # generate a local source SBOM under dist/
 ```
 
 Go 1.25+ is required (the dependency ecosystem moved past 1.24 mid-Phase 13).

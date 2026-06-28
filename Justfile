@@ -27,6 +27,15 @@ lint:
 	fi
 	golangci-lint run
 
+vuln:
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "govulncheck is required for 'just vuln'."; \
+		echo "Install it with: brew install govulncheck"; \
+		echo "Or: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+		exit 127; \
+	fi
+	govulncheck {{PKG}}
+
 fmt:
 	{{GO}} fmt {{PKG}}
 
@@ -38,6 +47,44 @@ tidy:
 
 clean:
 	rm -rf bin coverage.out
+
+# Verify optional security/release tooling is installed.
+tools:
+	@for tool in govulncheck goreleaser cosign syft; do \
+		if ! command -v "$tool" >/dev/null 2>&1; then \
+			echo "$tool is missing"; \
+			exit 127; \
+		fi; \
+		printf "%-12s %s\n" "$tool" "$(command -v "$tool")"; \
+	done
+
+# Validate the goreleaser config without producing artifacts.
+release-check:
+	@if ! command -v goreleaser >/dev/null 2>&1; then \
+		echo "goreleaser is required for 'just release-check'."; \
+		echo "Install it with: brew install goreleaser"; \
+		exit 127; \
+	fi
+	goreleaser check
+
+# Build a local snapshot release. Publishes nothing and skips CI-only signing/SBOM/Docker steps.
+release-snapshot:
+	@if ! command -v goreleaser >/dev/null 2>&1; then \
+		echo "goreleaser is required for 'just release-snapshot'."; \
+		echo "Install it with: brew install goreleaser"; \
+		exit 127; \
+	fi
+	goreleaser release --snapshot --clean --skip=publish,sign,sbom,docker
+
+# Generate a local source-tree SBOM for inspection.
+sbom:
+	@if ! command -v syft >/dev/null 2>&1; then \
+		echo "syft is required for 'just sbom'."; \
+		echo "Install it with: brew install syft"; \
+		exit 127; \
+	fi
+	mkdir -p dist
+	syft dir:. -o spdx-json=dist/sentra-source-sbom.spdx.json
 
 # Print the environment exports used by local MinIO recipes.
 local-env:
