@@ -5,7 +5,9 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/spf13/cobra"
@@ -59,6 +61,15 @@ type SetupPrompt func(current config.Config) (SetupPlan, error)
 // inject a deterministic callback.
 type SetupOverwriteConfirm func(path string) (bool, error)
 
+// SetupReviewConfirm asks whether the final non-secret setup plan should be
+// applied.
+type SetupReviewConfirm func(cfgPath string, plan SetupPlan) (bool, error)
+
+// SetupAWSAuthRepairPrompt asks what to do after AWS authentication or bucket
+// preparation fails. It returns an updated plan and whether setup should
+// continue with that plan.
+type SetupAWSAuthRepairPrompt func(plan SetupPlan, cause error) (SetupPlan, bool, error)
+
 // AWSCLIInstallPlan is the package-manager command Sentra can run to install
 // the AWS CLI for setup's SSO flow.
 type AWSCLIInstallPlan struct {
@@ -111,6 +122,8 @@ type AWSAuthReport struct {
 type SetupDeps struct {
 	Prompt                SetupPrompt
 	ConfirmOverwrite      SetupOverwriteConfirm
+	ConfirmReview         SetupReviewConfirm
+	PromptAWSAuthRepair   SetupAWSAuthRepairPrompt
 	EnsureAWSCLI          func(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error)
 	ConfirmAWSCLIInstall  AWSCLIInstallConfirm
 	CheckAWSSDKIdentity   func(ctx context.Context, cfg *config.Config) error
@@ -156,6 +169,7 @@ func NewSetup(deps SetupDeps) *cobra.Command {
 		"path to write sentra.yaml (defaults to ./sentra.yaml)")
 	cmd.Flags().BoolVar(&force, "force", false,
 		"overwrite an existing sentra.yaml")
+	cmd.AddCommand(newSetupIAMPolicy(deps.Stdout))
 	return cmd
 }
 
@@ -163,6 +177,10 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	cmd.SilenceUsage = true
 	if cfgPath == "" {
 		cfgPath = configFileName
+	}
+	out := deps.Stdout
+	if out == nil {
+		out = cmd.OutOrStdout()
 	}
 
 	yamlExists := false
@@ -185,7 +203,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		}
 	}
 
-	cfg, err := config.Load(cfgPath)
+	cfg, err := loadSetupConfigForWizard(cfgPath, yamlExists, out)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
@@ -202,32 +220,48 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	if plan.Config.Repo.S3.Bucket == "" {
 		return fmt.Errorf("repo.s3.bucket not set - enter a bucket name")
 	}
+	if err := validateSetupBucketName(plan.Config.Repo.S3.Bucket); err != nil {
+		return err
+	}
 	authMethod := resolveSetupAWSAuthMethod(&plan)
 	if plan.Backend == SetupBackendAWS && authMethod == SetupAWSAuthSkip {
-		plan.PrepareAWS = false
-		plan.InitRepo = false
-		plan.CreateBucket = false
-		plan.BlockPublicAccess = false
-		plan.DefaultEncryption = false
+		applySetupAWSConfigOnly(&plan)
 	}
 	if plan.PrepareAWS && plan.Config.Repo.S3.EndpointURL != "" {
 		return fmt.Errorf("AWS setup does not support endpoint_url - choose S3-compatible/manual setup for MinIO or LocalStack")
 	}
-
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
+	if err := confirmSetupReviewIfNeeded(deps, cfgPath, &plan); err != nil {
+		return err
 	}
+
+	if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
+		return err
+	}
+
 	printSetupApplyHeader(out, cfgPath, &plan)
 
 	var (
 		awsAuthReport *AWSAuthReport
 		awsReport     *AWSPrepareReport
 	)
-	if plan.PrepareAWS {
+	for plan.PrepareAWS {
+		authMethod = resolveSetupAWSAuthMethod(&plan)
 		report, err := runSetupAWSAuth(cmd.Context(), deps, authMethod, &plan.Config, out)
 		if err != nil {
-			return err
+			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, err)
+			if repairErr != nil {
+				return repairErr
+			}
+			if !retry {
+				return err
+			}
+			plan = updated
+			normalizeSetupConfig(&plan.Config)
+			if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
+				return err
+			}
+			printSetupRepairContinue(out, &plan)
+			continue
 		}
 		awsAuthReport = &report
 
@@ -243,10 +277,25 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		})
 		if err != nil {
 			awsStep.Fail()
-			return wrapAWSPrepareError(&plan.Config, authMethod, err)
+			wrappedErr := wrapAWSPrepareError(&plan.Config, authMethod, err)
+			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, wrappedErr)
+			if repairErr != nil {
+				return repairErr
+			}
+			if !retry {
+				return wrappedErr
+			}
+			plan = updated
+			normalizeSetupConfig(&plan.Config)
+			if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
+				return err
+			}
+			printSetupRepairContinue(out, &plan)
+			continue
 		}
 		awsReport = &prepareReport
 		awsStep.Success(setupAWSPreparedLabel(&prepareReport))
+		break
 	}
 
 	printSetupStep(out, "Writing "+cfgPath)
@@ -271,7 +320,110 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	}
 
 	printSetupSummary(out, cfgPath, &plan, awsAuthReport, awsReport, initResult)
+	removeSetupDraft(cfgPath)
 	return nil
+}
+
+func loadSetupConfigForWizard(cfgPath string, yamlExists bool, out io.Writer) (*config.Config, error) {
+	if !yamlExists {
+		draftPath := setupDraftPath(cfgPath)
+		if _, err := os.Stat(draftPath); err == nil {
+			cfg, loadErr := config.Load(draftPath)
+			if loadErr != nil {
+				return nil, fmt.Errorf("load setup draft %s: %w", draftPath, loadErr)
+			}
+			printSetupOK(out, "Loaded previous setup draft")
+			return cfg, nil
+		} else if !errors.Is(err, os.ErrNotExist) {
+			return nil, fmt.Errorf("stat setup draft %s: %w", draftPath, err)
+		}
+	}
+	return config.Load(cfgPath)
+}
+
+func confirmSetupReviewIfNeeded(deps SetupDeps, cfgPath string, plan *SetupPlan) error {
+	confirm := deps.ConfirmReview
+	if confirm == nil && deps.Prompt == nil {
+		confirm = HuhSetupReviewConfirm
+	}
+	if confirm == nil {
+		return nil
+	}
+	ok, err := confirm(cfgPath, *plan)
+	if err != nil {
+		return fmt.Errorf("confirm setup plan: %w", err)
+	}
+	if !ok {
+		return fmt.Errorf("setup canceled")
+	}
+	return nil
+}
+
+func promptSetupAWSRepairIfNeeded(deps SetupDeps, plan SetupPlan, cause error) (SetupPlan, bool, error) {
+	prompt := deps.PromptAWSAuthRepair
+	if prompt == nil && deps.Prompt == nil {
+		prompt = HuhSetupAWSAuthRepairPrompt
+	}
+	if prompt == nil {
+		return plan, false, nil
+	}
+	updated, retry, err := prompt(plan, cause)
+	if err != nil {
+		return plan, false, fmt.Errorf("repair AWS setup: %w", err)
+	}
+	if !retry {
+		return plan, false, nil
+	}
+	normalizeSetupConfig(&updated.Config)
+	if updated.Backend == SetupBackendAWS && resolveSetupAWSAuthMethod(&updated) == SetupAWSAuthSkip {
+		applySetupAWSConfigOnly(&updated)
+	}
+	if updated.Config.Repo.S3.Bucket == "" {
+		return updated, false, fmt.Errorf("repo.s3.bucket not set - enter a bucket name")
+	}
+	if err := validateSetupBucketName(updated.Config.Repo.S3.Bucket); err != nil {
+		return updated, false, err
+	}
+	return updated, true, nil
+}
+
+func writeSetupDraft(cfgPath string, cfg *config.Config) error {
+	draftPath := setupDraftPath(cfgPath)
+	if err := os.WriteFile(draftPath, []byte(renderConfigYAML(cfg)), 0o600); err != nil {
+		return fmt.Errorf("write setup draft %s: %w", draftPath, err)
+	}
+	return nil
+}
+
+func removeSetupDraft(cfgPath string) {
+	if err := os.Remove(setupDraftPath(cfgPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
+		// Best effort cleanup; leaving a non-secret draft is less harmful than
+		// turning a successful setup into a failure.
+		return
+	}
+}
+
+func setupDraftPath(cfgPath string) string {
+	dir := filepath.Dir(cfgPath)
+	base := filepath.Base(cfgPath)
+	return filepath.Join(dir, "."+base+".setup-draft")
+}
+
+func applySetupAWSConfigOnly(plan *SetupPlan) {
+	plan.PrepareAWS = false
+	plan.InitRepo = false
+	plan.CreateBucket = false
+	plan.BlockPublicAccess = false
+	plan.DefaultEncryption = false
+	plan.AWSAuthMethod = SetupAWSAuthSkip
+}
+
+func printSetupRepairContinue(out io.Writer, plan *SetupPlan) {
+	if !plan.PrepareAWS {
+		printSetupOK(out, "Continuing with config-only setup")
+		return
+	}
+	fmt.Fprintf(out, "%s Retrying AWS setup with %s\n", ui.Subtle.Render("..."), setupAWSAuthMethodLabel(plan.AWSAuthMethod))
 }
 
 func resolveSetupAWSAuthMethod(plan *SetupPlan) SetupAWSAuthMethod {
@@ -677,6 +829,21 @@ func setupBackendLabel(backend SetupBackend) string {
 	}
 }
 
+func setupAWSAuthMethodLabel(method SetupAWSAuthMethod) string {
+	switch method {
+	case SetupAWSAuthLogin:
+		return "browser login"
+	case SetupAWSAuthSSO:
+		return "IAM Identity Center / SSO"
+	case SetupAWSAuthExisting:
+		return "existing credentials"
+	case SetupAWSAuthSkip:
+		return "config only"
+	default:
+		return string(method)
+	}
+}
+
 func setupAWSPreparedLabel(report *AWSPrepareReport) string {
 	switch {
 	case report == nil:
@@ -688,4 +855,39 @@ func setupAWSPreparedLabel(report *AWSPrepareReport) string {
 	default:
 		return "AWS S3 bucket checked"
 	}
+}
+
+func validateSetupBucketName(bucket string) error {
+	bucket = strings.TrimSpace(bucket)
+	if len(bucket) < 3 || len(bucket) > 63 {
+		return fmt.Errorf("repo.s3.bucket %q is invalid: S3 bucket names must be 3-63 characters", bucket)
+	}
+	if net.ParseIP(bucket) != nil {
+		return fmt.Errorf("repo.s3.bucket %q is invalid: S3 bucket names cannot be formatted as IP addresses", bucket)
+	}
+	if bucket[0] == '-' || bucket[0] == '.' || bucket[len(bucket)-1] == '-' || bucket[len(bucket)-1] == '.' {
+		return fmt.Errorf("repo.s3.bucket %q is invalid: bucket names must start and end with a lowercase letter or number", bucket)
+	}
+	prevDot := false
+	for _, r := range bucket {
+		ok := (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') || r == '-' || r == '.'
+		if !ok {
+			return fmt.Errorf("repo.s3.bucket %q is invalid: use lowercase letters, numbers, dots, and hyphens only", bucket)
+		}
+		if r == '.' {
+			if prevDot {
+				return fmt.Errorf("repo.s3.bucket %q is invalid: bucket names cannot contain adjacent dots", bucket)
+			}
+			prevDot = true
+			continue
+		}
+		if prevDot && r == '-' {
+			return fmt.Errorf("repo.s3.bucket %q is invalid: dots cannot sit next to hyphens", bucket)
+		}
+		prevDot = false
+	}
+	if strings.Contains(bucket, "-.") {
+		return fmt.Errorf("repo.s3.bucket %q is invalid: dots cannot sit next to hyphens", bucket)
+	}
+	return nil
 }

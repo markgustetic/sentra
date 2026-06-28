@@ -12,4 +12,5 @@ dist/
 .env.*
 !.env.example
 sentra.yaml
+*.setup-draft
 .sentraignore

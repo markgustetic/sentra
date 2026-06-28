@@ -106,10 +106,19 @@ encryption, write `sentra.yaml`, and initialize the repo in one flow.
 The default AWS sign-in method is browser login with the AWS CLI, which
 stores temporary local credentials. You can also choose IAM Identity
 Center / SSO, use an existing profile/environment/role, or write config
-only. For a normal AWS CLI profile, configure it first, for example:
+only. Setup reviews the non-secret plan before applying it; if AWS auth
+or bucket prep fails, it lets you retry, switch sign-in methods, edit the
+profile/region, or write config only. For a normal AWS CLI profile,
+configure it first, for example:
 
 ```bash
 aws configure --profile sentra
+```
+
+To create an AWS policy before setup, print a least-privilege template:
+
+```bash
+sentra setup iam-policy --bucket my-backups --prefix sentra/
 ```
 
 ### 3. Take a snapshot
@@ -211,6 +220,8 @@ regexp to the workflow path so it doesn't match arbitrary refs:
 | Command                         | Description                                                                |
 | ------------------------------- | -------------------------------------------------------------------------- |
 | `sentra setup`                  | Guided setup wizard for AWS/S3 config, optional bucket prep, and repo init. |
+| `sentra setup iam-policy`       | Print non-secret AWS IAM JSON for a bucket/prefix.                         |
+| `sentra doctor`                 | Check config, AWS access, bucket settings, and repo health read-only.       |
 | `sentra init`                   | Create `sentra.yaml`, derive a repo key, write the encrypted config blob. |
 | `sentra backup <path>`          | Snapshot a directory immediately. `--tag` to label the snapshot.           |
 | `sentra backup plan <path>`     | Write a reviewable JSON plan file for the exact file set.                  |
@@ -241,8 +252,12 @@ Every subcommand respects:
 with `aws login --profile <profile>`, run IAM Identity Center / SSO
 setup when selected, verify existing AWS credentials, create or verify
 the bucket, block public access, enable bucket default encryption, write
-`sentra.yaml`, and optionally initialize the encrypted repo. For MinIO,
-LocalStack, or an existing bucket, choose the S3-compatible/manual path.
+`sentra.yaml`, and optionally initialize the encrypted repo. It detects
+`AWS_PROFILE`, `AWS_REGION`, and environment/role credentials for better
+defaults, validates bucket names up front, writes a non-secret
+`.sentra.yaml.setup-draft` while setup is in progress, and removes the
+draft after success. For MinIO, LocalStack, or an existing bucket, choose
+the S3-compatible/manual path.
 **No secrets in this file, ever.**
 
 ```yaml

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -16,6 +17,7 @@ import (
 )
 
 func TestDefaultSetupPlanUsesBrowserLoginByDefault(t *testing.T) {
+	clearAWSSetupEnv(t)
 	plan := defaultSetupPlan(config.Config{})
 	if plan.Backend != SetupBackendAWS {
 		t.Fatalf("backend: got %q, want AWS", plan.Backend)
@@ -32,6 +34,7 @@ func TestDefaultSetupPlanUsesBrowserLoginByDefault(t *testing.T) {
 }
 
 func TestDefaultSetupPlanUsesCompatibleBackendForEndpoint(t *testing.T) {
+	clearAWSSetupEnv(t)
 	cfg := config.Config{}
 	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
 
@@ -41,6 +44,72 @@ func TestDefaultSetupPlanUsesCompatibleBackendForEndpoint(t *testing.T) {
 	}
 	if plan.PrepareAWS || plan.AWSAuthMethod != SetupAWSAuthSkip || plan.CreateBucket || plan.BlockPublicAccess || plan.DefaultEncryption {
 		t.Fatalf("AWS automation should be disabled for endpoint_url plans: %+v", plan)
+	}
+}
+
+func clearAWSSetupEnv(t *testing.T) {
+	t.Helper()
+	for _, key := range []string{
+		"AWS_PROFILE",
+		"AWS_DEFAULT_PROFILE",
+		"AWS_REGION",
+		"AWS_DEFAULT_REGION",
+		"AWS_ACCESS_KEY_ID",
+		"AWS_SECRET_ACCESS_KEY",
+		"AWS_SESSION_TOKEN",
+		"AWS_ROLE_ARN",
+		"AWS_WEB_IDENTITY_TOKEN_FILE",
+	} {
+		t.Setenv(key, "")
+	}
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "missing-aws-config"))
+}
+
+func TestDefaultSetupPlanUsesAWSProfileAndRegionEnv(t *testing.T) {
+	clearAWSSetupEnv(t)
+	t.Setenv("AWS_PROFILE", "work")
+	t.Setenv("AWS_REGION", "us-west-2")
+
+	plan := defaultSetupPlan(config.Config{})
+	if plan.Config.Repo.S3.Profile != "work" {
+		t.Fatalf("profile: got %q, want work", plan.Config.Repo.S3.Profile)
+	}
+	if plan.Config.Repo.S3.Region != "us-west-2" {
+		t.Fatalf("region: got %q, want us-west-2", plan.Config.Repo.S3.Region)
+	}
+	if plan.AWSAuthMethod != SetupAWSAuthExisting {
+		t.Fatalf("auth method: got %q, want existing credentials", plan.AWSAuthMethod)
+	}
+}
+
+func TestDefaultSetupPlanUsesExistingForEnvironmentCredentials(t *testing.T) {
+	clearAWSSetupEnv(t)
+	t.Setenv("AWS_ACCESS_KEY_ID", "test-key")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "test-secret")
+
+	plan := defaultSetupPlan(config.Config{})
+	if plan.Config.Repo.S3.Profile != "" {
+		t.Fatalf("profile: got %q, want blank for env credentials", plan.Config.Repo.S3.Profile)
+	}
+	if plan.AWSAuthMethod != SetupAWSAuthExisting {
+		t.Fatalf("auth method: got %q, want existing credentials", plan.AWSAuthMethod)
+	}
+}
+
+func TestDefaultSetupPlanUsesConfiguredAWSProfile(t *testing.T) {
+	clearAWSSetupEnv(t)
+	cfgPath := writeAWSConfig(t, `
+[profile sentra]
+region = us-east-1
+`)
+	t.Setenv("AWS_CONFIG_FILE", cfgPath)
+
+	plan := defaultSetupPlan(config.Config{})
+	if plan.Config.Repo.S3.Profile != "sentra" {
+		t.Fatalf("profile: got %q, want sentra", plan.Config.Repo.S3.Profile)
+	}
+	if plan.AWSAuthMethod != SetupAWSAuthExisting {
+		t.Fatalf("auth method: got %q, want existing credentials", plan.AWSAuthMethod)
 	}
 }
 
@@ -63,6 +132,47 @@ func TestSetupProgressFallsBackToPlainOutput(t *testing.T) {
 	}
 	if strings.Contains(got, "\r") {
 		t.Fatalf("non-terminal progress should not animate, got %q", got)
+	}
+}
+
+func TestSetup_ReviewCancelStopsBeforeWrite(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	reviewCalled := false
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "review-bucket"
+			return SetupPlan{Config: current, Backend: SetupBackendS3Compatible}, nil
+		},
+		ConfirmReview: func(path string, plan SetupPlan) (bool, error) {
+			reviewCalled = true
+			if path != "sentra.yaml" {
+				t.Errorf("review path: got %q, want sentra.yaml", path)
+			}
+			if plan.Config.Repo.S3.Bucket != "review-bucket" {
+				t.Errorf("review bucket: got %q", plan.Config.Repo.S3.Bucket)
+			}
+			return false, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "canceled") {
+		t.Fatalf("expected canceled error, got %v", err)
+	}
+	if !reviewCalled {
+		t.Fatal("review confirm should run")
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(setupDraftPath("sentra.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("setup draft should not be written, stat err=%v", statErr)
 	}
 }
 
@@ -121,6 +231,32 @@ func TestSetup_WritesConfigFromWizard(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("setup output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestSetup_RejectsInvalidBucketName(t *testing.T) {
+	chDir(t, t.TempDir())
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "Bad_Bucket"
+			return SetupPlan{Config: current, Backend: SetupBackendS3Compatible}, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected invalid bucket error, got nil")
+	}
+	if !strings.Contains(err.Error(), "lowercase") {
+		t.Fatalf("error should explain bucket naming, got %v", err)
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written on invalid bucket, stat err=%v", statErr)
 	}
 }
 
@@ -460,6 +596,210 @@ func TestSetup_AWSPrepareMissingCredentialsAfterSSOAddsGuidance(t *testing.T) {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error missing %q:\n%v", want, err)
 		}
+	}
+}
+
+func TestWrapAWSPrepareErrorPreservesPermissionGuidance(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Repo.S3.Bucket = "sentra-test"
+	err := errors.New(`block public access for bucket "sentra-test" (requires s3:PutBucketPublicAccessBlock on arn:aws:s3:::sentra-test): AccessDenied`)
+
+	got := wrapAWSPrepareError(&cfg, SetupAWSAuthExisting, err)
+	for _, want := range []string{
+		"prepare AWS S3",
+		"s3:PutBucketPublicAccessBlock",
+		"arn:aws:s3:::sentra-test",
+		"AccessDenied",
+	} {
+		if !strings.Contains(got.Error(), want) {
+			t.Fatalf("wrapped error missing %q:\n%v", want, got)
+		}
+	}
+}
+
+func TestSetup_AWSAuthRepairCanSwitchToBrowserLogin(t *testing.T) {
+	chDir(t, t.TempDir())
+	var checks int
+	var repairCalled bool
+	var loginCalled bool
+	var prepareCalled bool
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				AWSAuthMethod: SetupAWSAuthExisting,
+				CreateBucket:  true,
+			}, nil
+		},
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
+			checks++
+			if checks < 3 {
+				return errors.New("credentials missing")
+			}
+			return nil
+		},
+		PromptAWSAuthRepair: func(plan SetupPlan, cause error) (SetupPlan, bool, error) {
+			repairCalled = true
+			if !strings.Contains(cause.Error(), "credentials") {
+				t.Fatalf("repair cause: got %v, want credential failure", cause)
+			}
+			plan.AWSAuthMethod = SetupAWSAuthLogin
+			return plan, true, nil
+		},
+		AWSLogin: func(context.Context, string, string) error {
+			loginCalled = true
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !repairCalled {
+		t.Fatal("repair prompt should run")
+	}
+	if !loginCalled {
+		t.Fatal("browser login should run after repair")
+	}
+	if !prepareCalled {
+		t.Fatal("PrepareAWS should run after repaired auth")
+	}
+	if checks != 3 {
+		t.Fatalf("identity checks: got %d, want 3", checks)
+	}
+	if !strings.Contains(out.String(), "Retrying AWS setup with browser login") {
+		t.Fatalf("expected retry output, got %q", out.String())
+	}
+}
+
+func TestSetup_AWSAuthRepairCanWriteConfigOnly(t *testing.T) {
+	chDir(t, t.TempDir())
+	var prepareCalled bool
+	var initCalled bool
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				AWSAuthMethod: SetupAWSAuthExisting,
+				InitRepo:      true,
+			}, nil
+		},
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
+			return errors.New("credentials missing")
+		},
+		PromptAWSAuthRepair: func(plan SetupPlan, cause error) (SetupPlan, bool, error) {
+			applySetupAWSConfigOnly(&plan)
+			return plan, true, nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{}, nil
+		},
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			initCalled = true
+			return blobstore.NewMemory(), nil
+		},
+		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+		Stdout:     out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if prepareCalled {
+		t.Fatal("PrepareAWS should not run after config-only repair")
+	}
+	if initCalled {
+		t.Fatal("repo init should not run after config-only repair")
+	}
+	if _, err := os.Stat("sentra.yaml"); err != nil {
+		t.Fatalf("sentra.yaml should be written: %v", err)
+	}
+	if _, statErr := os.Stat(setupDraftPath("sentra.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("setup draft should be removed after success, stat err=%v", statErr)
+	}
+	if !strings.Contains(out.String(), "Continuing with config-only setup") {
+		t.Fatalf("expected config-only continuation, got %q", out.String())
+	}
+}
+
+func TestSetup_WritesDraftOnFailureAndResumes(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	wantErr := errors.New("prepare failed")
+	firstDeps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "resume-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				AWSAuthMethod: SetupAWSAuthExisting,
+			}, nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{}, wantErr
+		},
+		Stdout: io.Discard,
+	}
+	first := NewSetup(firstDeps)
+	first.SetOut(io.Discard)
+	first.SetErr(io.Discard)
+	first.SetArgs([]string{})
+	err := first.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected prepare error, got %v", err)
+	}
+	if _, statErr := os.Stat(setupDraftPath("sentra.yaml")); statErr != nil {
+		t.Fatalf("setup draft should remain after failure: %v", statErr)
+	}
+
+	var seen config.Config
+	secondDeps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			seen = current
+			return SetupPlan{Config: current, Backend: SetupBackendS3Compatible}, nil
+		},
+		Stdout: io.Discard,
+	}
+	second := NewSetup(secondDeps)
+	second.SetOut(io.Discard)
+	second.SetErr(io.Discard)
+	second.SetArgs([]string{})
+	if err := second.Execute(); err != nil {
+		t.Fatalf("resume execute: %v", err)
+	}
+	if seen.Repo.S3.Bucket != "resume-bucket" {
+		t.Fatalf("resumed bucket: got %q, want resume-bucket", seen.Repo.S3.Bucket)
+	}
+	if _, statErr := os.Stat(setupDraftPath("sentra.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("setup draft should be removed after resume success, stat err=%v", statErr)
 	}
 }
 
@@ -1088,6 +1428,37 @@ func TestSetup_InitAlreadyInitializedIsSummaryNotError(t *testing.T) {
 	}
 	if !strings.Contains(out.String(), "already initialized") {
 		t.Errorf("expected already initialized summary, got %q", out.String())
+	}
+}
+
+func TestSetupIAMPolicy_PrintsLeastPrivilegePolicy(t *testing.T) {
+	out := &bytes.Buffer{}
+	cmd := NewSetup(SetupDeps{Stdout: out})
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"iam-policy", "--bucket", "sentra-prod", "--prefix", "backups/"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var policy setupIAMPolicyDocument
+	if err := json.Unmarshal(out.Bytes(), &policy); err != nil {
+		t.Fatalf("decode policy: %v\n%s", err, out.String())
+	}
+	if policy.Version != "2012-10-17" {
+		t.Fatalf("policy version: got %q", policy.Version)
+	}
+	got := out.String()
+	for _, want := range []string{
+		"arn:aws:s3:::sentra-prod",
+		"arn:aws:s3:::sentra-prod/backups/*",
+		"s3:PutBucketEncryption",
+		"s3:GetObject",
+		`"backups/*"`,
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("policy missing %q:\n%s", want, got)
+		}
 	}
 }
 

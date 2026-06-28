@@ -72,11 +72,21 @@ For real AWS S3, choose `AWS S3`. The wizard can create or verify the
 bucket before initializing Sentra. The default AWS sign-in method is
 browser login with the AWS CLI, which stores temporary local credentials.
 You can also choose IAM Identity Center / SSO, use an existing
-profile/environment/role, or write config only. For a normal AWS CLI
-profile, configure it first, for example:
+profile/environment/role, or write config only. Setup shows a final
+review screen before applying changes and, if AWS auth fails, lets you
+retry, switch sign-in methods, edit profile/region, or continue with
+config only. For a normal AWS CLI profile, configure it first, for
+example:
 
 ```bash
 aws configure --profile sentra
+```
+
+For AWS, you can generate a non-secret least-privilege policy template
+first:
+
+```bash
+sentra setup iam-policy --bucket sentra-test --prefix sentra/
 ```
 
 Enter these values when prompted:
@@ -109,7 +119,15 @@ retention:
 
 The wizard writes `sentra.yaml`, derives a passphrase-wrapped repo key
 via Argon2id, encrypts and uploads the `config` object to S3, and
-returns. If you choose `Config only`, run `sentra init` later.
+returns. If a run fails, setup saves a non-secret `.sentra.yaml.setup-draft`
+and loads it the next time you run the wizard. If you choose `Config only`,
+run `sentra init` later.
+
+To verify setup without changing anything:
+
+```bash
+sentra doctor
+```
 
 ## 3. Take a snapshot
 
@@ -165,6 +183,14 @@ sentra diff <snap-id-first> <snap-id-second>
 You'll see `notes.md` listed under "added".
 
 ## 6. Check repository health
+
+For config, AWS, bucket, and repository diagnostics:
+
+```bash
+sentra doctor
+```
+
+For the deeper encrypted repository integrity scan:
 
 ```bash
 sentra check

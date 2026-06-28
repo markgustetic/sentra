@@ -43,6 +43,11 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		PassphraseWithConfig: openPassphrase,
 		Stdout:               os.Stdout,
 	}))
+	root.AddCommand(cli.NewDoctor(cli.DoctorDeps{
+		NewStore:             newS3Store,
+		PassphraseWithConfig: openPassphrase,
+		Stdout:               os.Stdout,
+	}))
 	root.AddCommand(cli.NewRecoveryKit(cli.RecoveryKitDeps{
 		NewStore:             newS3Store,
 		PassphraseWithConfig: openPassphrase,
