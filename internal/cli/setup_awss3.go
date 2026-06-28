@@ -7,8 +7,10 @@ import (
 	"time"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
+	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
+	"github.com/aws/aws-sdk-go-v2/service/sts"
 	"github.com/aws/smithy-go"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -16,6 +18,20 @@ import (
 )
 
 const bucketExistsWaitTimeout = 2 * time.Minute
+
+// DefaultAWSCheckSDKIdentity verifies credentials through the AWS SDK
+// credential chain Sentra will use for S3.
+func DefaultAWSCheckSDKIdentity(ctx context.Context, cfg *config.Config) error {
+	awsCfg, err := loadSetupAWSConfig(ctx, cfg)
+	if err != nil {
+		return err
+	}
+	client := sts.NewFromConfig(awsCfg)
+	if _, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}); err != nil {
+		return fmt.Errorf("verify AWS identity: %w", err)
+	}
+	return nil
+}
 
 // DefaultAWSPrepare performs the deterministic AWS S3 setup work chosen
 // in the wizard. It intentionally does not create or manage IAM users.
@@ -72,6 +88,23 @@ func DefaultAWSPrepare(ctx context.Context, cfg *config.Config, opts AWSPrepareO
 		report.DefaultEncryptionEnabled = true
 	}
 	return report, nil
+}
+
+func loadSetupAWSConfig(ctx context.Context, cfg *config.Config) (aws.Config, error) {
+	loadOpts := []func(*awsconfig.LoadOptions) error{}
+	if cfg != nil {
+		if cfg.Repo.S3.Region != "" {
+			loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Repo.S3.Region))
+		}
+		if cfg.Repo.S3.Profile != "" {
+			loadOpts = append(loadOpts, awsconfig.WithSharedConfigProfile(cfg.Repo.S3.Profile))
+		}
+	}
+	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
+	if err != nil {
+		return aws.Config{}, fmt.Errorf("load AWS config: %w", err)
+	}
+	return awsCfg, nil
 }
 
 func headBucket(ctx context.Context, client *s3.Client, bucket string) error {

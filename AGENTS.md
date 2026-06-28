@@ -58,10 +58,10 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 ## Feature Notes
 
-- `sentra setup` is the guided first-run surface. It may invoke AWS CLI SSO
-  configure/login flows, write config, prepare AWS S3 bucket settings, and
-  initialize the repo, but must never write secret material to `sentra.yaml`
-  or logs.
+- `sentra setup` is the guided first-run surface. It may invoke AWS CLI
+  browser login, AWS CLI SSO configure/login flows, write config, prepare AWS
+  S3 bucket settings, and initialize the repo, but must never write secret
+  material to `sentra.yaml` or logs.
 - `sentra check` is the shared integrity surface for CLI and TUI operations.
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest

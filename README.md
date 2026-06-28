@@ -103,10 +103,10 @@ retention:
 For real AWS S3, choose `AWS S3` in the same wizard. Sentra can verify
 or create the bucket, block public access, enable default bucket
 encryption, write `sentra.yaml`, and initialize the repo in one flow.
-AWS CLI SSO auth is optional and meant for IAM Identity Center/SSO
-users; leave it skipped if you use access keys, environment credentials,
-a normal AWS CLI profile, or role credentials. For a normal AWS CLI
-profile, configure it first, for example:
+The default AWS sign-in method is browser login with the AWS CLI, which
+stores temporary local credentials. You can also choose IAM Identity
+Center / SSO, use an existing profile/environment/role, or write config
+only. For a normal AWS CLI profile, configure it first, for example:
 
 ```bash
 aws configure --profile sentra
@@ -237,13 +237,13 @@ Every subcommand respects:
 
 ## Configuration
 
-`sentra setup` opens a guided terminal wizard. For AWS S3 it can check
-AWS CLI identity, run `aws configure sso --profile <profile>` when the
-profile is missing, run `aws sso login --profile <profile>` when needed,
-verify or create the bucket, block public access, enable bucket default
-encryption, write `sentra.yaml`, and optionally initialize the encrypted
-repo. For MinIO, LocalStack, or an existing bucket, choose the
-S3-compatible/manual path. **No secrets in this file, ever.**
+`sentra setup` opens a guided terminal wizard. For AWS S3 it can sign in
+with `aws login --profile <profile>`, run IAM Identity Center / SSO
+setup when selected, verify existing AWS credentials, create or verify
+the bucket, block public access, enable bucket default encryption, write
+`sentra.yaml`, and optionally initialize the encrypted repo. For MinIO,
+LocalStack, or an existing bucket, choose the S3-compatible/manual path.
+**No secrets in this file, ever.**
 
 ```yaml
 repo:

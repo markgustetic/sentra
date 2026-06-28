@@ -15,7 +15,7 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
-func TestDefaultSetupPlanSkipsAWSSSOByDefault(t *testing.T) {
+func TestDefaultSetupPlanUsesBrowserLoginByDefault(t *testing.T) {
 	plan := defaultSetupPlan(config.Config{})
 	if plan.Backend != SetupBackendAWS {
 		t.Fatalf("backend: got %q, want AWS", plan.Backend)
@@ -23,8 +23,8 @@ func TestDefaultSetupPlanSkipsAWSSSOByDefault(t *testing.T) {
 	if !plan.PrepareAWS {
 		t.Fatal("expected AWS setup to prepare AWS by default")
 	}
-	if plan.UseAWSCLIAuth {
-		t.Fatal("AWS CLI SSO auth should be opt-in by default")
+	if plan.AWSAuthMethod != SetupAWSAuthLogin {
+		t.Fatalf("auth method: got %q, want browser login", plan.AWSAuthMethod)
 	}
 	if !plan.CreateBucket || !plan.BlockPublicAccess || !plan.DefaultEncryption || !plan.InitRepo {
 		t.Fatalf("setup actions = %+v, want safe AWS defaults enabled", plan)
@@ -39,7 +39,7 @@ func TestDefaultSetupPlanUsesCompatibleBackendForEndpoint(t *testing.T) {
 	if plan.Backend != SetupBackendS3Compatible {
 		t.Fatalf("backend: got %q, want S3-compatible", plan.Backend)
 	}
-	if plan.PrepareAWS || plan.UseAWSCLIAuth || plan.CreateBucket || plan.BlockPublicAccess || plan.DefaultEncryption {
+	if plan.PrepareAWS || plan.AWSAuthMethod != SetupAWSAuthSkip || plan.CreateBucket || plan.BlockPublicAccess || plan.DefaultEncryption {
 		t.Fatalf("AWS automation should be disabled for endpoint_url plans: %+v", plan)
 	}
 }
@@ -388,7 +388,7 @@ func TestSetup_AWSPrepareMissingCredentialsAddsGuidance(t *testing.T) {
 				Config:        current,
 				Backend:       SetupBackendAWS,
 				PrepareAWS:    true,
-				UseAWSCLIAuth: false,
+				AWSAuthMethod: SetupAWSAuthExisting,
 			}, nil
 		},
 		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
@@ -409,7 +409,7 @@ func TestSetup_AWSPrepareMissingCredentialsAddsGuidance(t *testing.T) {
 		"AWS credentials were not found",
 		"AWS profile sentra",
 		"aws configure --profile sentra",
-		"choose Use SSO",
+		"choose Browser login",
 	} {
 		if !strings.Contains(err.Error(), want) {
 			t.Fatalf("error missing %q:\n%v", want, err)
@@ -432,10 +432,10 @@ func TestSetup_AWSPrepareMissingCredentialsAfterSSOAddsGuidance(t *testing.T) {
 				Config:        current,
 				Backend:       SetupBackendAWS,
 				PrepareAWS:    true,
-				UseAWSCLIAuth: true,
+				AWSAuthMethod: SetupAWSAuthSSO,
 			}, nil
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			return nil
 		},
 		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
@@ -545,7 +545,7 @@ func TestSetup_PreparesAWSAndInitializesRepo(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
+func TestSetup_AWSSSOAuthSkipsLoginWhenCredentialsWork(t *testing.T) {
 	chDir(t, t.TempDir())
 	var checks int
 	var loginCalled bool
@@ -560,16 +560,16 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 				Config:            current,
 				Backend:           SetupBackendAWS,
 				PrepareAWS:        true,
-				UseAWSCLIAuth:     true,
+				AWSAuthMethod:     SetupAWSAuthSSO,
 				CreateBucket:      true,
 				BlockPublicAccess: true,
 				DefaultEncryption: true,
 			}, nil
 		},
-		CheckAWSIdentity: func(_ context.Context, profile string) error {
+		CheckAWSSDKIdentity: func(_ context.Context, cfg *config.Config) error {
 			checks++
-			if profile != "sentra" {
-				t.Errorf("profile: got %q", profile)
+			if cfg.Repo.S3.Profile != "sentra" {
+				t.Errorf("profile: got %q", cfg.Repo.S3.Profile)
 			}
 			return nil
 		},
@@ -613,7 +613,7 @@ func TestSetup_AWSCLIAuthSkipsLoginWhenIdentityWorks(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthInstallsMissingAWSCLI(t *testing.T) {
+func TestSetup_AWSSSOAuthInstallsMissingAWSCLI(t *testing.T) {
 	chDir(t, t.TempDir())
 	var ensureCalled bool
 	var confirmCalled bool
@@ -627,7 +627,7 @@ func TestSetup_AWSCLIAuthInstallsMissingAWSCLI(t *testing.T) {
 				Config:        current,
 				Backend:       SetupBackendAWS,
 				PrepareAWS:    true,
-				UseAWSCLIAuth: true,
+				AWSAuthMethod: SetupAWSAuthSSO,
 			}, nil
 		},
 		EnsureAWSCLI: func(_ context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
@@ -651,7 +651,7 @@ func TestSetup_AWSCLIAuthInstallsMissingAWSCLI(t *testing.T) {
 			}
 			return true, nil
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			return nil
 		},
 		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
@@ -680,7 +680,7 @@ func TestSetup_AWSCLIAuthInstallsMissingAWSCLI(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthInstallFailureStopsBeforeWrite(t *testing.T) {
+func TestSetup_AWSSSOAuthInstallFailureStopsBeforeWrite(t *testing.T) {
 	chDir(t, t.TempDir())
 	wantErr := errors.New("install failed")
 	prepareCalled := false
@@ -693,13 +693,13 @@ func TestSetup_AWSCLIAuthInstallFailureStopsBeforeWrite(t *testing.T) {
 				Config:        current,
 				Backend:       SetupBackendAWS,
 				PrepareAWS:    true,
-				UseAWSCLIAuth: true,
+				AWSAuthMethod: SetupAWSAuthSSO,
 			}, nil
 		},
 		EnsureAWSCLI: func(context.Context, AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
 			return AWSCLIInstallReport{}, wantErr
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			t.Fatal("identity check should not run after AWS CLI install failure")
 			return nil
 		},
@@ -726,7 +726,69 @@ func TestSetup_AWSCLIAuthInstallFailureStopsBeforeWrite(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
+func TestSetup_AWSBrowserLoginRunsWhenIdentityMissing(t *testing.T) {
+	chDir(t, t.TempDir())
+	var checks int
+	var loginProfile string
+	var loginRegion string
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "aws-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:            current,
+				Backend:           SetupBackendAWS,
+				PrepareAWS:        true,
+				AWSAuthMethod:     SetupAWSAuthLogin,
+				CreateBucket:      true,
+				BlockPublicAccess: true,
+				DefaultEncryption: true,
+			}, nil
+		},
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
+			checks++
+			if checks == 1 {
+				return errors.New("credentials missing")
+			}
+			return nil
+		},
+		AWSLogin: func(_ context.Context, profile string, region string) error {
+			loginProfile = profile
+			loginRegion = region
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if checks != 2 {
+		t.Fatalf("identity checks: got %d, want 2", checks)
+	}
+	if loginProfile != "sentra" {
+		t.Fatalf("login profile: got %q, want sentra", loginProfile)
+	}
+	if loginRegion != "us-east-1" {
+		t.Fatalf("login region: got %q, want us-east-1", loginRegion)
+	}
+	for _, want := range []string{"AWS browser login complete", "browser login completed"} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestSetup_AWSSSOAuthRunsSSOLoginWhenCredentialsFail(t *testing.T) {
 	chDir(t, t.TempDir())
 	var checks int
 	var configureCalled bool
@@ -741,13 +803,13 @@ func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
 				Config:            current,
 				Backend:           SetupBackendAWS,
 				PrepareAWS:        true,
-				UseAWSCLIAuth:     true,
+				AWSAuthMethod:     SetupAWSAuthSSO,
 				CreateBucket:      true,
 				BlockPublicAccess: true,
 				DefaultEncryption: true,
 			}, nil
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			checks++
 			if checks == 1 {
 				return errors.New("expired sso token")
@@ -792,7 +854,7 @@ func TestSetup_AWSCLIAuthRunsSSOLoginWhenIdentityFails(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthConfiguresSSOWhenProfileMissing(t *testing.T) {
+func TestSetup_AWSSSOAuthConfiguresSSOWhenProfileMissing(t *testing.T) {
 	chDir(t, t.TempDir())
 	var checks int
 	var configuredChecks int
@@ -808,13 +870,13 @@ func TestSetup_AWSCLIAuthConfiguresSSOWhenProfileMissing(t *testing.T) {
 				Config:            current,
 				Backend:           SetupBackendAWS,
 				PrepareAWS:        true,
-				UseAWSCLIAuth:     true,
+				AWSAuthMethod:     SetupAWSAuthSSO,
 				CreateBucket:      true,
 				BlockPublicAccess: true,
 				DefaultEncryption: true,
 			}, nil
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			checks++
 			if checks == 1 {
 				return errors.New("profile not ready")
@@ -867,7 +929,7 @@ func TestSetup_AWSCLIAuthConfiguresSSOWhenProfileMissing(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
+func TestSetup_AWSSSOAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
 	chDir(t, t.TempDir())
 	wantErr := errors.New("configure failed")
 	prepareCalled := false
@@ -880,10 +942,10 @@ func TestSetup_AWSCLIAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
 				Config:        current,
 				Backend:       SetupBackendAWS,
 				PrepareAWS:    true,
-				UseAWSCLIAuth: true,
+				AWSAuthMethod: SetupAWSAuthSSO,
 			}, nil
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			return errors.New("identity missing")
 		},
 		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
@@ -907,7 +969,7 @@ func TestSetup_AWSCLIAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected configure error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "SSO is optional") || !strings.Contains(err.Error(), "choose Skip SSO") {
+	if !strings.Contains(err.Error(), "IAM Identity Center / SSO") || !strings.Contains(err.Error(), "Existing credentials") {
 		t.Fatalf("configure error missing SSO guidance: %v", err)
 	}
 	if prepareCalled {
@@ -918,7 +980,7 @@ func TestSetup_AWSCLIAuthConfigureFailureStopsBeforeWrite(t *testing.T) {
 	}
 }
 
-func TestSetup_AWSCLIAuthLoginFailureStopsBeforeWrite(t *testing.T) {
+func TestSetup_AWSSSOAuthLoginFailureStopsBeforeWrite(t *testing.T) {
 	chDir(t, t.TempDir())
 	wantErr := errors.New("login failed")
 	prepareCalled := false
@@ -931,10 +993,10 @@ func TestSetup_AWSCLIAuthLoginFailureStopsBeforeWrite(t *testing.T) {
 				Config:        current,
 				Backend:       SetupBackendAWS,
 				PrepareAWS:    true,
-				UseAWSCLIAuth: true,
+				AWSAuthMethod: SetupAWSAuthSSO,
 			}, nil
 		},
-		CheckAWSIdentity: func(context.Context, string) error {
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
 			return errors.New("identity missing")
 		},
 		CheckAWSSSOConfigured: func(context.Context, string) (bool, error) {
@@ -958,7 +1020,7 @@ func TestSetup_AWSCLIAuthLoginFailureStopsBeforeWrite(t *testing.T) {
 	if !errors.Is(err, wantErr) {
 		t.Fatalf("expected login error, got %v", err)
 	}
-	if !strings.Contains(err.Error(), "SSO is optional") || !strings.Contains(err.Error(), "choose Skip SSO") {
+	if !strings.Contains(err.Error(), "IAM Identity Center / SSO") || !strings.Contains(err.Error(), "Existing credentials") {
 		t.Fatalf("login error missing SSO guidance: %v", err)
 	}
 	if prepareCalled {

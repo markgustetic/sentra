@@ -20,17 +20,17 @@ func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWS
 
 	plan, ok := defaultAWSCLIInstallPlan()
 	if !ok {
-		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is only required for AWS SSO setup and was not found in PATH. Install it, or rerun setup and choose Skip SSO")
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for the selected AWS sign-in method but was not found in PATH. Install it, or rerun setup and choose Existing credentials")
 	}
 	if confirm == nil {
-		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for AWS SSO setup but no install confirmation was configured")
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for the selected AWS sign-in method but no install confirmation was configured")
 	}
 	ok, err := confirm(plan)
 	if err != nil {
 		return AWSCLIInstallReport{}, err
 	}
 	if !ok {
-		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI install canceled; install it manually or rerun setup and choose Skip SSO")
+		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI install canceled; install it manually or rerun setup and choose Existing credentials")
 	}
 
 	cmd := exec.CommandContext(ctx, plan.Command[0], plan.Command[1:]...) //nolint:gosec // fixed package-manager command selected by Sentra, confirmed by the operator.
@@ -62,6 +62,18 @@ func defaultAWSCLIInstallPlan() (AWSCLIInstallPlan, bool) {
 // scary intermediate errors.
 func DefaultAWSCheckIdentity(ctx context.Context, profile string) error {
 	return runAWSCLI(ctx, []string{"sts", "get-caller-identity"}, profile, false)
+}
+
+// DefaultAWSLogin delegates browser-based AWS CLI sign-in for local
+// development. The AWS CLI stores temporary credentials; Sentra never receives
+// or stores them.
+func DefaultAWSLogin(ctx context.Context, profile string, region string) error {
+	args := []string{"login"}
+	region = strings.TrimSpace(region)
+	if region != "" {
+		args = append(args, "--region", region)
+	}
+	return runAWSCLI(ctx, args, profile, true)
 }
 
 // DefaultAWSSSOConfigured checks whether the selected profile has a complete

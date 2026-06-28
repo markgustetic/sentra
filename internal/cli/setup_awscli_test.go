@@ -107,8 +107,8 @@ func TestDefaultEnsureAWSCLI_NoSupportedInstaller(t *testing.T) {
 	if err == nil {
 		t.Fatal("expected missing installer error, got nil")
 	}
-	if !strings.Contains(err.Error(), "AWS CLI is only required") {
-		t.Fatalf("error = %v, want optional AWS CLI guidance", err)
+	if !strings.Contains(err.Error(), "AWS CLI is required for the selected AWS sign-in method") {
+		t.Fatalf("error = %v, want AWS CLI sign-in guidance", err)
 	}
 }
 
