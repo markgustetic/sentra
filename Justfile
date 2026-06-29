@@ -12,6 +12,12 @@ RESTORE_DIR := env_var_or_default("SENTRA_RESTORE_DIR", "/tmp/sentra-restored")
 build:
 	{{GO}} build -o {{BIN}} ./cmd/sentra
 
+# Run the full local quality, security, and release-tooling check.
+full-check: tools build test vet lint vuln release-check release-snapshot sbom
+	go mod tidy -diff
+	git diff --check
+	test -z "$(gofmt -l cmd internal)"
+
 test:
 	{{GO}} test -race -coverprofile=coverage.out {{PKG}}
 
@@ -84,7 +90,7 @@ sbom:
 		exit 127; \
 	fi
 	mkdir -p dist
-	syft dir:. -o spdx-json=dist/sentra-source-sbom.spdx.json
+	syft dir:. --exclude './dist/**' -o spdx-json=dist/sentra-source-sbom.spdx.json
 
 # Print the environment exports used by local MinIO recipes.
 local-env:

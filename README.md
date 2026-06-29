@@ -318,6 +318,7 @@ the agent loop, and Mermaid diagrams of the `backup`, `restore`, and
 
 ```bash
 just build       # builds bin/sentra
+just full-check  # full local quality, security, and release-tooling check
 just test        # unit tests with -race
 just integration # spins MinIO via testcontainers; Linux only
 just vet         # go vet ./...
