@@ -318,17 +318,17 @@ the agent loop, and Mermaid diagrams of the `backup`, `restore`, and
 
 ```bash
 just build       # builds bin/sentra
-just full-check  # full local quality, security, and release-tooling check
-just test        # unit tests with -race
+just check       # build, race tests, vet, lint, vuln, tidy/gofmt/diff checks
+just full-check  # check + local release artifacts and source SBOM
+just test        # race tests with coverage
 just integration # spins MinIO via testcontainers; Linux only
+just fmt         # go fmt ./...
 just vet         # go vet ./...
 just tidy        # go mod tidy
 just lint        # golangci-lint run; prints install help if missing
 just vuln        # govulncheck ./...
 just tools       # verify optional security/release tools are installed
-just release-check    # validate .goreleaser.yaml
-just release-snapshot # build local release artifacts under dist/
-just sbom             # generate a local source SBOM under dist/
+just release-local # local GoReleaser snapshot + source SBOM under dist/
 ```
 
 Go 1.25+ is required (the dependency ecosystem moved past 1.24 mid-Phase 13).

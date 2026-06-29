@@ -3,43 +3,34 @@ set dotenv-load := true
 GO := env_var_or_default("GO", "go")
 BIN := "bin/sentra"
 PKG := "./..."
+CHECK_DIRS := "cmd internal"
 SENTRA := "./bin/sentra"
 MINIO_ACCESS_KEY := env_var_or_default("MINIO_ROOT_USER", "minioadmin")
 MINIO_SECRET_KEY := env_var_or_default("MINIO_ROOT_PASSWORD", "minioadmin")
 DEMO_DIR := env_var_or_default("SENTRA_DEMO_DIR", "demo-data")
 RESTORE_DIR := env_var_or_default("SENTRA_RESTORE_DIR", "/tmp/sentra-restored")
+RELEASE_SKIP := "publish,sign,sbom,docker"
+SBOM_OUT := "dist/sentra-source-sbom.spdx.json"
 
 build:
 	{{GO}} build -o {{BIN}} ./cmd/sentra
 
-# Run the full local quality, security, and release-tooling check.
-full-check: tools build test vet lint vuln release-check release-snapshot sbom
-	go mod tidy -diff
-	git diff --check
-	test -z "$(gofmt -l cmd internal)"
+# Run the standard local quality gate.
+check: build test vet lint vuln _tidy-check _fmt-check _diff-check
+
+# Run the full quality, security, and release-tooling gate.
+full-check: check release-local
 
 test:
 	{{GO}} test -race -coverprofile=coverage.out {{PKG}}
 
 integration:
-	{{GO}} test -race -tags=integration ./...
+	{{GO}} test -race -tags=integration {{PKG}}
 
-lint:
-	@if ! command -v golangci-lint >/dev/null 2>&1; then \
-		echo "golangci-lint is required for 'just lint'."; \
-		echo "Install it with: brew install golangci-lint"; \
-		echo "Or: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
-		exit 127; \
-	fi
+lint: _require-golangci-lint
 	golangci-lint run
 
-vuln:
-	@if ! command -v govulncheck >/dev/null 2>&1; then \
-		echo "govulncheck is required for 'just vuln'."; \
-		echo "Install it with: brew install govulncheck"; \
-		echo "Or: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
-		exit 127; \
-	fi
+vuln: _require-govulncheck
 	govulncheck {{PKG}}
 
 fmt:
@@ -55,42 +46,69 @@ clean:
 	rm -rf bin coverage.out
 
 # Verify optional security/release tooling is installed.
-tools:
+tools: _require-govulncheck _require-goreleaser _require-cosign _require-syft
 	@for tool in govulncheck goreleaser cosign syft; do \
-		if ! command -v "$tool" >/dev/null 2>&1; then \
-			echo "$tool is missing"; \
-			exit 127; \
-		fi; \
 		printf "%-12s %s\n" "$tool" "$(command -v "$tool")"; \
 	done
 
-# Validate the goreleaser config without producing artifacts.
-release-check:
-	@if ! command -v goreleaser >/dev/null 2>&1; then \
-		echo "goreleaser is required for 'just release-check'."; \
-		echo "Install it with: brew install goreleaser"; \
-		exit 127; \
-	fi
+# Build local release artifacts and a source-tree SBOM under dist/.
+release-local: tools _release-check _release-snapshot _sbom
+
+_release-check: _require-goreleaser
 	goreleaser check
 
-# Build a local snapshot release. Publishes nothing and skips CI-only signing/SBOM/Docker steps.
-release-snapshot:
+_release-snapshot: _require-goreleaser
+	goreleaser release --snapshot --clean --skip={{RELEASE_SKIP}}
+
+_sbom: _require-syft
+	mkdir -p dist
+	syft dir:. --exclude './dist/**' -o spdx-json={{SBOM_OUT}}
+
+_tidy-check:
+	{{GO}} mod tidy -diff
+
+_fmt-check:
+	test -z "$(gofmt -l {{CHECK_DIRS}})"
+
+_diff-check:
+	git diff --check
+
+_require-golangci-lint:
+	@if ! command -v golangci-lint >/dev/null 2>&1; then \
+		echo "golangci-lint is required."; \
+		echo "Install it with: brew install golangci-lint"; \
+		echo "Or: go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest"; \
+		exit 127; \
+	fi
+
+_require-govulncheck:
+	@if ! command -v govulncheck >/dev/null 2>&1; then \
+		echo "govulncheck is required."; \
+		echo "Install it with: brew install govulncheck"; \
+		echo "Or: go install golang.org/x/vuln/cmd/govulncheck@latest"; \
+		exit 127; \
+	fi
+
+_require-goreleaser:
 	@if ! command -v goreleaser >/dev/null 2>&1; then \
-		echo "goreleaser is required for 'just release-snapshot'."; \
+		echo "goreleaser is required."; \
 		echo "Install it with: brew install goreleaser"; \
 		exit 127; \
 	fi
-	goreleaser release --snapshot --clean --skip=publish,sign,sbom,docker
 
-# Generate a local source-tree SBOM for inspection.
-sbom:
+_require-cosign:
+	@if ! command -v cosign >/dev/null 2>&1; then \
+		echo "cosign is required."; \
+		echo "Install it with: brew install cosign"; \
+		exit 127; \
+	fi
+
+_require-syft:
 	@if ! command -v syft >/dev/null 2>&1; then \
-		echo "syft is required for 'just sbom'."; \
+		echo "syft is required."; \
 		echo "Install it with: brew install syft"; \
 		exit 127; \
 	fi
-	mkdir -p dist
-	syft dir:. --exclude './dist/**' -o spdx-json=dist/sentra-source-sbom.spdx.json
 
 # Print the environment exports used by local MinIO recipes.
 local-env:
