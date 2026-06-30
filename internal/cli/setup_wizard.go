@@ -209,14 +209,6 @@ func defaultSetupPlan(current config.Config) SetupPlan {
 		InitRepo:          true,
 	}
 	applySetupSmartDefaults(&plan)
-	if current.Repo.S3.EndpointURL != "" {
-		plan.Backend = SetupBackendS3Compatible
-		plan.PrepareAWS = false
-		plan.CreateBucket = false
-		plan.BlockPublicAccess = false
-		plan.DefaultEncryption = false
-		plan.AWSAuthMethod = SetupAWSAuthSkip
-	}
 	return plan
 }
 

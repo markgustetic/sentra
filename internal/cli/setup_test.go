@@ -33,17 +33,17 @@ func TestDefaultSetupPlanUsesBrowserLoginByDefault(t *testing.T) {
 	}
 }
 
-func TestDefaultSetupPlanUsesCompatibleBackendForEndpoint(t *testing.T) {
+func TestDefaultSetupPlanKeepsAWSBackendForEndpointConfig(t *testing.T) {
 	clearAWSSetupEnv(t)
 	cfg := config.Config{}
 	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
 
 	plan := defaultSetupPlan(cfg)
-	if plan.Backend != SetupBackendS3Compatible {
-		t.Fatalf("backend: got %q, want S3-compatible", plan.Backend)
+	if plan.Backend != SetupBackendAWS {
+		t.Fatalf("backend: got %q, want AWS", plan.Backend)
 	}
-	if plan.PrepareAWS || plan.AWSAuthMethod != SetupAWSAuthSkip || plan.CreateBucket || plan.BlockPublicAccess || plan.DefaultEncryption {
-		t.Fatalf("AWS automation should be disabled for endpoint_url plans: %+v", plan)
+	if plan.Config.Repo.S3.EndpointURL != "http://localhost:9000" {
+		t.Fatalf("endpoint_url should be preserved for S3-compatible if selected, got %q", plan.Config.Repo.S3.EndpointURL)
 	}
 }
 
