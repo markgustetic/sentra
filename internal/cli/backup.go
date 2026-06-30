@@ -330,18 +330,6 @@ func normalizeBackupWalkerOptions(opts *walker.Options) {
 	}
 }
 
-// (HuhBackupApplyConfirm now lives in confirm.go alongside the other
-// two production confirm callbacks; their bodies were identical except
-// for the affirmative/negative label pair.)
-
-// emptyDash renders an empty string as "-" for tabular display.
-func emptyDash(s string) string {
-	if s == "" {
-		return "-"
-	}
-	return s
-}
-
 // startProgressPainter spins up a goroutine that periodically writes
 // the rendered progress bar to w. Returns a stop function that
 // signals the painter to exit, paints one final frame followed by a

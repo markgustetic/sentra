@@ -267,13 +267,9 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 			if !retry {
 				return err
 			}
-			plan = updated
-			normalizeSetupConfig(&plan.Config)
-			applySetupPassphraseConfig(&plan)
-			if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
+			if err := continueSetupAfterAWSRepair(cfgPath, out, &plan, updated); err != nil {
 				return err
 			}
-			printSetupRepairContinue(out, &plan)
 			continue
 		}
 		awsAuthReport = &report
@@ -299,13 +295,9 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 			if !retry {
 				return wrappedErr
 			}
-			plan = updated
-			normalizeSetupConfig(&plan.Config)
-			applySetupPassphraseConfig(&plan)
-			if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
+			if err := continueSetupAfterAWSRepair(cfgPath, out, &plan, updated); err != nil {
 				return err
 			}
-			printSetupRepairContinue(out, &plan)
 			continue
 		}
 		awsReport = &prepareReport
@@ -403,6 +395,17 @@ func promptSetupAWSRepairIfNeeded(deps SetupDeps, plan SetupPlan, cause error) (
 		return updated, false, err
 	}
 	return updated, true, nil
+}
+
+func continueSetupAfterAWSRepair(cfgPath string, out io.Writer, plan *SetupPlan, updated SetupPlan) error {
+	*plan = updated
+	normalizeSetupConfig(&plan.Config)
+	applySetupPassphraseConfig(plan)
+	if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
+		return err
+	}
+	printSetupRepairContinue(out, plan)
+	return nil
 }
 
 func writeSetupDraft(cfgPath string, cfg *config.Config) error {
