@@ -45,6 +45,55 @@ tidy:
 clean:
 	rm -rf bin coverage.out
 
+# Reset local Sentra/AWS CLI profile state for AWS setup testing. Does not delete S3 buckets or objects.
+aws-reset profile="sentra" config="sentra.yaml":
+	@set -eu; \
+	if [ -z "{{profile}}" ]; then \
+		echo "AWS profile cannot be blank for aws-reset."; \
+		exit 1; \
+	fi; \
+	cfg="{{config}}"; \
+	draft="$(dirname "$cfg")/.$(basename "$cfg").setup-draft"; \
+	echo "This will reset local AWS setup test state:"; \
+	echo "  sentra config: $cfg"; \
+	echo "  setup draft:   $draft"; \
+	echo "  AWS profile:   {{profile}}"; \
+	echo; \
+	echo "It will not delete S3 buckets, S3 objects, AWS accounts, or global AWS SSO/browser-login caches."; \
+	printf "Type 'reset' to continue: "; \
+	if ! IFS= read -r answer; then \
+		echo "Canceled."; \
+		exit 1; \
+	fi; \
+	if [ "$answer" != "reset" ]; then \
+		echo "Canceled."; \
+		exit 1; \
+	fi; \
+	rm -f -- "$cfg" "$draft"; \
+	if command -v aws >/dev/null 2>&1; then \
+		for key in \
+			aws_access_key_id \
+			aws_secret_access_key \
+			aws_session_token \
+			credential_process \
+			output \
+			region \
+			role_arn \
+			sso_account_id \
+			sso_region \
+			sso_role_name \
+			sso_session \
+			sso_start_url \
+			source_profile \
+			web_identity_token_file; do \
+			aws configure unset "$key" --profile "{{profile}}" >/dev/null 2>&1 || true; \
+		done; \
+		echo "Cleared AWS CLI config/credential keys for profile '{{profile}}'."; \
+	else \
+		echo "AWS CLI not found; skipped profile cleanup."; \
+	fi; \
+	echo "Done. If AWS_PROFILE or AWS_ACCESS_KEY_ID are exported in your shell, unset them before rerunning setup."
+
 # Verify optional security/release tooling is installed.
 tools: _require-govulncheck _require-goreleaser _require-cosign _require-syft
 	@for tool in govulncheck goreleaser cosign syft; do \
