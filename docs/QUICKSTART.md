@@ -165,6 +165,25 @@ sentra backup ./demo-data --tag second
 The second `backup` reports a new snapshot but uploads only the new
 chunk(s).
 
+Optional policy workflow for repeated backups:
+
+```bash
+sentra policy add demo --path ./demo-data --tag demo --schedule daily@03:00 --check --prune dry-run
+sentra policy run demo
+```
+
+To let the OS run that policy for you, install a user-level schedule:
+
+```bash
+sentra schedule install demo
+sentra schedule status demo
+```
+
+On macOS this writes a LaunchAgent under `~/Library/LaunchAgents`. On Linux it
+writes systemd user service/timer files under `~/.config/systemd/user`. Sentra
+does not install a background daemon; the scheduler launches `sentra policy run
+demo` with your existing config and passphrase resolution.
+
 ## 4. List snapshots
 
 Pretty output:

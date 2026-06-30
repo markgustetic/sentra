@@ -50,12 +50,43 @@ type Config struct {
 		KeepMonthly int `koanf:"keep_monthly"`
 	} `koanf:"retention"`
 
+	// Policies contains named backup policies. Each policy is
+	// non-secret local configuration: source paths, optional tags,
+	// schedule metadata, and post-backup maintenance preferences.
+	Policies map[string]PolicyConfig `koanf:"policies"`
+
 	// Passphrase contains optional passphrase-resolution settings.
 	// Stored under "passphrase" in the YAML; never carries the
 	// passphrase itself. Recognised keys: use_keyring (bool).
 	Passphrase struct {
 		UseKeyring bool `koanf:"use_keyring"`
 	} `koanf:"passphrase"`
+}
+
+// PolicyConfig is the typed view of one entry under sentra.yaml's
+// `policies:` map.
+type PolicyConfig struct {
+	Paths       []string          `koanf:"paths"`
+	Tags        []string          `koanf:"tags"`
+	Schedule    PolicySchedule    `koanf:"schedule"`
+	AfterBackup PolicyAfterBackup `koanf:"after_backup"`
+}
+
+// PolicySchedule describes when a named policy should run. Validation
+// of supported cadences and clock values lives in internal/policy so
+// config loading stays a pure parse/overlay step.
+type PolicySchedule struct {
+	Cadence string `koanf:"cadence"`
+	At      string `koanf:"at"`
+	Weekday string `koanf:"weekday"`
+}
+
+// PolicyAfterBackup controls optional maintenance after a policy run.
+// Prune is a string so the CLI can distinguish "", "off", "dry-run",
+// and "apply" explicitly.
+type PolicyAfterBackup struct {
+	Check bool   `koanf:"check"`
+	Prune string `koanf:"prune"`
 }
 
 // envPrefix is the namespace for SENTRA_* env-var overrides. Sub-keys
@@ -86,6 +117,7 @@ func Defaults() Config {
 	c.Retention.KeepDaily = 7
 	c.Retention.KeepWeekly = 4
 	c.Retention.KeepMonthly = 6
+	c.Policies = map[string]PolicyConfig{}
 	return c
 }
 
@@ -170,6 +202,7 @@ func loadDefaults(k *koanf.Koanf) error {
 		"retention.keep_daily":      def.Retention.KeepDaily,
 		"retention.keep_weekly":     def.Retention.KeepWeekly,
 		"retention.keep_monthly":    def.Retention.KeepMonthly,
+		"policies":                  def.Policies,
 	}
 	if err := k.Load(rawMapProvider{m: m}, nil); err != nil {
 		return fmt.Errorf("config: seed defaults: %w", err)

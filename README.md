@@ -138,6 +138,20 @@ sentra setup iam-policy --bucket my-backups --prefix sentra/
 sentra backup ./Documents --tag weekly
 ```
 
+For repeated backups, save the path and maintenance choices as a policy:
+
+```bash
+sentra policy add home --path ./Documents --tag home --schedule daily@03:00 --check --prune dry-run
+sentra policy run home
+```
+
+Install the policy into your OS user scheduler:
+
+```bash
+sentra schedule install home
+sentra schedule status home
+```
+
 For a reviewed two-step run, write a JSON plan first and apply it after
 inspection:
 
@@ -237,6 +251,8 @@ regexp to the workflow path so it doesn't match arbitrary refs:
 | `sentra backup <path>`          | Snapshot a directory immediately. `--tag` to label the snapshot.           |
 | `sentra backup plan <path>`     | Write a reviewable JSON plan file for the exact file set.                  |
 | `sentra backup apply <plan>`    | Validate and snapshot from a reviewed plan file. `--yes` skips confirm.    |
+| `sentra policy add/list/show/remove/run` | Manage named backup policies stored in `sentra.yaml`.             |
+| `sentra schedule install/status/uninstall` | Install user-level OS schedules for named policies.              |
 | `sentra snapshots`              | List snapshots, newest first. `--json` for scripting.                      |
 | `sentra check`                  | Audit manifests, chunk references, orphan blobs, and stale locks.          |
 | `sentra diff <a> <b>`           | Show added / removed / changed paths between two snapshots.                |
@@ -312,6 +328,19 @@ retention:
 
 passphrase:
   use_keyring: false              # true means future commands read the OS keyring
+
+policies:
+  home:
+    paths:
+      - "~/Documents"
+    tags:
+      - "home"
+    schedule:
+      cadence: "daily"
+      at: "03:00"
+    after_backup:
+      check: true
+      prune: "dry-run"            # off, dry-run, or apply
 ```
 
 A `.sentraignore` file at the walk root applies gitignore-style globs
@@ -320,6 +349,13 @@ A `.sentraignore` file at the walk root applies gitignore-style globs
 
 The Anthropic LLM provider needs `ANTHROPIC_API_KEY`. Without it, every
 non-agent command still works; `sentra agent scan` returns a clear error.
+
+Policies are local, non-secret automation settings. `sentra policy run <name>`
+opens the configured repo once, snapshots every configured path with a
+`policy:<name>` tag, then optionally runs `check` and dry-run/apply prune.
+`sentra schedule install <name>` writes a user-level LaunchAgent on macOS or
+systemd user service/timer files on Linux that call the current `sentra`
+binary with `policy run`. Sentra does not run a background daemon.
 
 ## Threat model
 

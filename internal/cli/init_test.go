@@ -175,6 +175,47 @@ func TestInit_RegisteredOnRoot(t *testing.T) {
 	}
 }
 
+func TestRenderConfigYAML_IncludesPolicies(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["home"] = config.PolicyConfig{
+		Paths: []string{"~/Documents"},
+		Tags:  []string{"home", "daily"},
+		Schedule: config.PolicySchedule{
+			Cadence: "daily",
+			At:      "03:00",
+		},
+		AfterBackup: config.PolicyAfterBackup{
+			Check: true,
+			Prune: "dry-run",
+		},
+	}
+
+	body := renderConfigYAML(&cfg)
+	for _, want := range []string{
+		"policies:",
+		"  home:",
+		"    paths:",
+		"      - \"~/Documents\"",
+		"    tags:",
+		"      - \"home\"",
+		"      - \"daily\"",
+		"    schedule:",
+		"      cadence: \"daily\"",
+		"      at: \"03:00\"",
+		"    after_backup:",
+		"      check: true",
+		"      prune: \"dry-run\"",
+	} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("rendered config missing %q:\n%s", want, body)
+		}
+	}
+	if strings.Contains(body, "hunter2") {
+		t.Fatalf("rendered config must not contain passphrase-looking fixture:\n%s", body)
+	}
+}
+
 // TestInit_RequiresBucketFlag refuses to run with no sentra.yaml and
 // no --bucket flag. Without this guard, `sentra init` against a
 // production S3 store has no path that produces a working config —

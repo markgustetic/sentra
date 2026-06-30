@@ -72,6 +72,15 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Stdout:               os.Stdout,
 		Confirm:              cli.HuhConfirm,
 	}))
+	root.AddCommand(cli.NewPolicy(cli.PolicyDeps{
+		NewStore:             newS3Store,
+		PassphraseWithConfig: openPassphrase,
+		Stdout:               os.Stdout,
+		Stderr:               os.Stderr,
+	}))
+	root.AddCommand(cli.NewSchedule(cli.ScheduleDeps{
+		Stdout: os.Stdout,
+	}))
 	root.AddCommand(cli.NewPasswd(cli.PasswdDeps{
 		NewStore:             newS3Store,
 		PassphraseWithConfig: openPassphrase,

@@ -13,6 +13,7 @@ Sentra code, docs, CI, or release workflow changes.
 - Core repository behavior lives in `internal/repo`.
 - Passphrase resolution and OS keyring helpers live in `internal/config`.
 - CLI command implementations live in `internal/cli`.
+- Named policy validation lives in `internal/policy`.
 - Agent heuristics/orchestration live in `internal/agent`.
 - Bubbletea views live in `internal/tui`.
 - Vendored FastCDC source lives under `third_party/fastcdc-go`.
@@ -72,6 +73,16 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   access/settings, and repo health, but must not create buckets, change bucket
   settings, initialize repos, or write config.
 - `sentra check` is the shared integrity surface for CLI and TUI operations.
+- `sentra policy` manages non-secret named backup policies in `sentra.yaml`.
+  Policy config may include local paths, tags, schedule metadata, and
+  post-backup check/prune preferences, but must never include passphrases,
+  key material, AWS credentials, or other secrets. `sentra policy run` should
+  reuse existing repo snapshot/check/prune primitives instead of duplicating
+  storage logic.
+- `sentra schedule` installs user-level OS scheduler files for named policies.
+  It should generate launchd/systemd files that invoke `sentra policy run`;
+  do not introduce a resident Sentra daemon or write secrets into scheduler
+  files.
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.

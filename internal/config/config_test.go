@@ -90,6 +90,41 @@ func TestLoad_Fixture(t *testing.T) {
 	}
 }
 
+func TestLoad_Policies(t *testing.T) {
+	path := writeYAML(t, t.TempDir(), fixtureYAML+`
+policies:
+  home:
+    paths:
+      - ~/Documents
+    tags:
+      - home
+      - daily
+    schedule:
+      cadence: daily
+      at: "03:00"
+    after_backup:
+      check: true
+      prune: dry-run
+`)
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p := cfg.Policies["home"]
+	if len(p.Paths) != 1 || p.Paths[0] != "~/Documents" {
+		t.Fatalf("paths: %+v", p.Paths)
+	}
+	if len(p.Tags) != 2 || p.Tags[0] != "home" || p.Tags[1] != "daily" {
+		t.Fatalf("tags: %+v", p.Tags)
+	}
+	if p.Schedule.Cadence != "daily" || p.Schedule.At != "03:00" {
+		t.Fatalf("schedule: %+v", p.Schedule)
+	}
+	if !p.AfterBackup.Check || p.AfterBackup.Prune != "dry-run" {
+		t.Fatalf("after_backup: %+v", p.AfterBackup)
+	}
+}
+
 // TestLoad_EnvOverlay verifies SENTRA_* env vars override fields from the
 // YAML file. Documented contract: the env vars use double-underscore as a
 // nesting separator (so SENTRA_REPO__S3__BUCKET maps to repo.s3.bucket).
@@ -216,5 +251,11 @@ func TestDefaults(t *testing.T) {
 	if d.Retention.KeepLast != 10 || d.Retention.KeepDaily != 7 ||
 		d.Retention.KeepWeekly != 4 || d.Retention.KeepMonthly != 6 {
 		t.Errorf("retention defaults wrong: %+v", d.Retention)
+	}
+	if d.Policies == nil {
+		t.Fatal("Policies default map is nil")
+	}
+	if len(d.Policies) != 0 {
+		t.Fatalf("Policies default: got %+v, want empty", d.Policies)
 	}
 }

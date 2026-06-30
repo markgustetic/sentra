@@ -6,6 +6,8 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -93,7 +95,7 @@ retention:
 
 passphrase:
   use_keyring: %t
-`,
+%s`,
 		cfg.Repo.S3.Bucket,
 		cfg.Repo.S3.Prefix,
 		cfg.Repo.S3.Region,
@@ -107,7 +109,51 @@ passphrase:
 		cfg.Retention.KeepWeekly,
 		cfg.Retention.KeepMonthly,
 		cfg.Passphrase.UseKeyring,
+		renderPoliciesYAML(cfg.Policies),
 	)
+}
+
+func renderPoliciesYAML(policies map[string]config.PolicyConfig) string {
+	if len(policies) == 0 {
+		return ""
+	}
+	names := make([]string, 0, len(policies))
+	for name := range policies {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+
+	var b strings.Builder
+	b.WriteString("\npolicies:\n")
+	for _, name := range names {
+		p := policies[name]
+		fmt.Fprintf(&b, "  %s:\n", name)
+		writeYAMLStringList(&b, "    paths", p.Paths)
+		writeYAMLStringList(&b, "    tags", p.Tags)
+		fmt.Fprintln(&b, "    schedule:")
+		fmt.Fprintf(&b, "      cadence: %q\n", p.Schedule.Cadence)
+		if p.Schedule.At != "" {
+			fmt.Fprintf(&b, "      at: %q\n", p.Schedule.At)
+		}
+		if p.Schedule.Weekday != "" {
+			fmt.Fprintf(&b, "      weekday: %q\n", p.Schedule.Weekday)
+		}
+		fmt.Fprintln(&b, "    after_backup:")
+		fmt.Fprintf(&b, "      check: %t\n", p.AfterBackup.Check)
+		fmt.Fprintf(&b, "      prune: %q\n", p.AfterBackup.Prune)
+	}
+	return b.String()
+}
+
+func writeYAMLStringList(b *strings.Builder, key string, values []string) {
+	if len(values) == 0 {
+		fmt.Fprintf(b, "%s: []\n", key)
+		return
+	}
+	fmt.Fprintf(b, "%s:\n", key)
+	for _, value := range values {
+		fmt.Fprintf(b, "      - %q\n", value)
+	}
 }
 
 // NewInit returns the cobra command for `sentra init`. The command
