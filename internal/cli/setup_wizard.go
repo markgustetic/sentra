@@ -86,15 +86,7 @@ const (
 // HuhSetupAWSAuthRepairPrompt offers a recovery path after AWS auth or bucket
 // preparation fails.
 func HuhSetupAWSAuthRepairPrompt(plan SetupPlan, cause error) (SetupPlan, bool, error) {
-	choice := setupAWSRepairLogin
-	switch plan.AWSAuthMethod {
-	case SetupAWSAuthSSO:
-		choice = setupAWSRepairSSO
-	case SetupAWSAuthExisting:
-		choice = setupAWSRepairExisting
-	case SetupAWSAuthSkip:
-		choice = setupAWSRepairConfig
-	}
+	choice := defaultSetupAWSRepairChoice(plan, cause)
 	cfg := plan.Config
 	region := cfg.Repo.S3.Region
 	profile := cfg.Repo.S3.Profile
@@ -161,6 +153,22 @@ func HuhSetupAWSAuthRepairPrompt(plan SetupPlan, cause error) (SetupPlan, bool, 
 	}
 	normalizeSetupConfig(&plan.Config)
 	return plan, true, nil
+}
+
+func defaultSetupAWSRepairChoice(plan SetupPlan, cause error) setupAWSRepairChoice {
+	if cause != nil && !isAWSMissingCredentialsError(cause) {
+		return setupAWSRepairExisting
+	}
+	switch plan.AWSAuthMethod {
+	case SetupAWSAuthSSO:
+		return setupAWSRepairSSO
+	case SetupAWSAuthExisting:
+		return setupAWSRepairExisting
+	case SetupAWSAuthSkip:
+		return setupAWSRepairConfig
+	default:
+		return setupAWSRepairLogin
+	}
 }
 
 // HuhSetupPrompt is the production interactive wizard for `sentra setup`.

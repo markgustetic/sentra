@@ -780,6 +780,115 @@ func TestSetup_AWSAuthRepairCanSwitchToBrowserLogin(t *testing.T) {
 	}
 }
 
+func TestSetup_AWSPrepareErrorPrintsReasonBeforeRepair(t *testing.T) {
+	chDir(t, t.TempDir())
+	wantErr := errors.New(`head bucket "sentra-test" (requires s3:ListBucket on arn:aws:s3:::sentra-test): AccessDenied`)
+	out := &bytes.Buffer{}
+	var repairCause error
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "sentra-test"
+			current.Repo.S3.Region = "us-east-1"
+			current.Repo.S3.Profile = "sentra"
+			return SetupPlan{
+				Config:        current,
+				Backend:       SetupBackendAWS,
+				PrepareAWS:    true,
+				AWSAuthMethod: SetupAWSAuthLogin,
+				CreateBucket:  true,
+			}, nil
+		},
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			return AWSPrepareReport{}, wantErr
+		},
+		PromptAWSAuthRepair: func(plan SetupPlan, cause error) (SetupPlan, bool, error) {
+			repairCause = cause
+			return plan, false, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatal("expected prepare error, got nil")
+	}
+	if repairCause == nil {
+		t.Fatal("repair prompt should receive wrapped prepare error")
+	}
+	for _, want := range []string{
+		"reason:",
+		"advice:",
+		`Using bucket "sentra-test" in region "us-east-1" with AWS profile "sentra".`,
+		"prepare AWS S3",
+		"sentra-test",
+		"s3:ListBucket",
+		"AccessDenied",
+		"generic names like `sentra-test` are often already taken",
+		"sentra setup iam-policy",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestSetupErrorAdviceExplainsRegionMismatch(t *testing.T) {
+	cfg := config.Config{}
+	cfg.Repo.S3.Bucket = "sentra-mark-backups"
+	cfg.Repo.S3.Region = "us-east-1"
+	err := errors.New("prepare AWS S3: operation error S3: HeadBucket, PermanentRedirect: use region us-west-2")
+
+	got := strings.Join(setupErrorAdvice(err, &cfg), "\n")
+	for _, want := range []string{
+		`Using bucket "sentra-mark-backups" in region "us-east-1"`,
+		"different region",
+		"rerun setup with that region",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("advice missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestSetupErrorAdviceExplainsBucketAlreadyExists(t *testing.T) {
+	err := errors.New("prepare AWS S3: create bucket: BucketAlreadyExists")
+
+	got := strings.Join(setupErrorAdvice(err, nil), "\n")
+	for _, want := range []string{
+		"already owned by another AWS account",
+		"globally unique bucket name",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("advice missing %q:\n%s", want, got)
+		}
+	}
+}
+
+func TestDefaultSetupAWSRepairChoiceUsesExistingForBucketPrepFailure(t *testing.T) {
+	plan := SetupPlan{AWSAuthMethod: SetupAWSAuthLogin}
+	err := errors.New(`prepare AWS S3: head bucket "sentra-test": AccessDenied`)
+
+	if got := defaultSetupAWSRepairChoice(plan, err); got != setupAWSRepairExisting {
+		t.Fatalf("repair choice: got %q, want existing credentials", got)
+	}
+}
+
+func TestDefaultSetupAWSRepairChoiceKeepsLoginForMissingCredentials(t *testing.T) {
+	plan := SetupPlan{AWSAuthMethod: SetupAWSAuthLogin}
+	err := errors.New("failed to refresh cached credentials: no EC2 IMDS role found")
+
+	if got := defaultSetupAWSRepairChoice(plan, err); got != setupAWSRepairLogin {
+		t.Fatalf("repair choice: got %q, want browser login", got)
+	}
+}
+
 func TestSetup_AWSAuthRepairCanWriteConfigOnly(t *testing.T) {
 	chDir(t, t.TempDir())
 	var prepareCalled bool

@@ -255,6 +255,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		authMethod = resolveSetupAWSAuthMethod(&plan)
 		report, err := runSetupAWSAuth(cmd.Context(), deps, authMethod, &plan.Config, out)
 		if err != nil {
+			printSetupErrorDetail(out, err, &plan.Config)
 			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, err)
 			if repairErr != nil {
 				return repairErr
@@ -285,6 +286,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		if err != nil {
 			awsStep.Fail()
 			wrappedErr := wrapAWSPrepareError(&plan.Config, authMethod, err)
+			printSetupErrorDetail(out, wrappedErr, &plan.Config)
 			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, wrappedErr)
 			if repairErr != nil {
 				return repairErr
@@ -824,6 +826,73 @@ func printSetupStep(out io.Writer, label string) {
 
 func printSetupOK(out io.Writer, label string) {
 	fmt.Fprintf(out, "%s %s\n", ui.Success.Render("ok"), label)
+}
+
+func printSetupErrorDetail(out io.Writer, err error, cfg *config.Config) {
+	if err == nil {
+		return
+	}
+	fmt.Fprintf(out, "%s %v\n", ui.Danger.Render("reason:"), err)
+	for _, line := range setupErrorAdvice(err, cfg) {
+		fmt.Fprintf(out, "%s %s\n", ui.Subtle.Render("advice:"), line)
+	}
+}
+
+func setupErrorAdvice(err error, cfg *config.Config) []string {
+	if err == nil {
+		return nil
+	}
+	msg := strings.ToLower(err.Error())
+	var advice []string
+	add := func(line string) {
+		for _, existing := range advice {
+			if existing == line {
+				return
+			}
+		}
+		advice = append(advice, line)
+	}
+
+	if cfg != nil {
+		bucket := strings.TrimSpace(cfg.Repo.S3.Bucket)
+		region := strings.TrimSpace(cfg.Repo.S3.Region)
+		profile := strings.TrimSpace(cfg.Repo.S3.Profile)
+		switch {
+		case bucket != "" && region != "" && profile != "":
+			add(fmt.Sprintf("Using bucket %q in region %q with AWS profile %q.", bucket, region, profile))
+		case bucket != "" && region != "":
+			add(fmt.Sprintf("Using bucket %q in region %q with the default AWS credential chain.", bucket, region))
+		case bucket != "":
+			add(fmt.Sprintf("Using bucket %q.", bucket))
+		}
+	}
+
+	switch {
+	case isAWSMissingCredentialsError(err):
+		add("Credentials are still unavailable. Choose Browser login/SSO again, or configure a working profile with `aws configure --profile <profile>`.")
+	case strings.Contains(msg, "accessdenied") || strings.Contains(msg, "access denied") || strings.Contains(msg, "status code: 403") || strings.Contains(msg, "forbidden"):
+		if strings.Contains(msg, "head bucket") {
+			add("S3 HeadBucket can return AccessDenied when the bucket is owned by another account or when your identity lacks s3:ListBucket.")
+			add("If this is a new bucket, choose a globally unique name; generic names like `sentra-test` are often already taken.")
+			add("If this is your existing bucket, grant the selected identity s3:ListBucket on the bucket ARN.")
+		}
+		add("Use `sentra setup iam-policy --bucket <bucket> --prefix <prefix>` or the setup policy option to print the required IAM policy.")
+	case strings.Contains(msg, "bucketalreadyexists"):
+		add("That bucket name is already owned by another AWS account. Pick a globally unique bucket name and rerun setup.")
+	case strings.Contains(msg, "bucketalreadyownedbyyou"):
+		add("That bucket already belongs to you. Rerun setup with create/verify enabled, or choose verify-only if you do not want creation attempts.")
+	case strings.Contains(msg, "permanentredirect") || strings.Contains(msg, "authorizationheadermalformed") || strings.Contains(msg, "wrong region"):
+		add("The bucket appears to be in a different region. Check the bucket region in AWS, then rerun setup with that region.")
+	case strings.Contains(msg, "invalidbucketname") || strings.Contains(msg, "invalid bucket"):
+		add("Use a DNS-compatible S3 bucket name: lowercase letters, numbers, hyphens, and dots; 3-63 characters.")
+	case strings.Contains(msg, "does not exist") || strings.Contains(msg, "nosuchbucket"):
+		add("The bucket was not found. Allow setup to create it, create it manually, or choose a different bucket name.")
+	}
+
+	if len(advice) == 0 {
+		add("You can edit the region/profile, switch sign-in methods, write config only, or cancel and rerun setup after fixing AWS.")
+	}
+	return advice
 }
 
 func setupBackendLabel(backend SetupBackend) string {
