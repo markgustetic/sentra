@@ -58,11 +58,12 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 ## Feature Notes
 
-- `sentra setup` is the guided first-run surface. It may invoke AWS CLI
-  browser login, AWS CLI SSO configure/login flows, write config, prepare AWS
-  S3 bucket settings, and initialize the repo, but must never write secret
-  material to `sentra.yaml`, setup drafts, docs, or logs. Setup drafts are
-  non-secret resume state only and should be removed after successful setup.
+- `sentra setup` is the guided first-run surface. It may print non-secret IAM
+  policy JSON and stop, invoke AWS CLI browser login, AWS CLI SSO
+  configure/login flows, write config, prepare AWS S3 bucket settings, and
+  initialize the repo, but must never write secret material to `sentra.yaml`,
+  setup drafts, docs, or logs. Setup drafts are non-secret resume state only
+  and should be removed after successful setup.
 - `sentra setup iam-policy` must emit non-secret IAM JSON only.
 - `sentra doctor` is read-only. It may validate config, AWS identity, bucket
   access/settings, and repo health, but must not create buckets, change bucket

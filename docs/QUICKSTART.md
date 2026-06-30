@@ -50,17 +50,18 @@ AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 
 ## 2. Configure sentra
 
-Export the credentials MinIO is expecting and a local test passphrase:
+Export the credentials MinIO is expecting:
 
 ```bash
 export AWS_ACCESS_KEY_ID=minioadmin
 export AWS_SECRET_ACCESS_KEY=minioadmin
-export SENTRA_PASSPHRASE='change-me-to-something-good'
 ```
 
-`SENTRA_PASSPHRASE` short-circuits the interactive prompt; in real use,
-either let `sentra` prompt you or store the passphrase in your OS
-keyring with `passphrase.use_keyring: true`.
+When setup initializes the repo, Sentra prompts you to set the repository
+passphrase unless `--passphrase-file`, `SENTRA_PASSPHRASE`, or keyring
+supplies it. For throwaway local demos, you can still set
+`SENTRA_PASSPHRASE='change-me-to-something-good'` in your shell, or in a
+gitignored `.env` when running through a tool that loads it.
 
 Run the guided setup wizard:
 
@@ -73,17 +74,18 @@ bucket before initializing Sentra. The default AWS sign-in method is
 browser login with the AWS CLI, which stores temporary local credentials.
 You can also choose IAM Identity Center / SSO, use an existing
 profile/environment/role, or write config only. Setup shows a final
-review screen before applying changes and, if AWS auth fails, lets you
-retry, switch sign-in methods, edit profile/region, or continue with
-config only. For a normal AWS CLI profile, configure it first, for
-example:
+review screen before applying changes. If you need an AWS administrator
+to grant permissions first, the wizard can print the non-secret
+least-privilege IAM policy and stop before writing config or touching AWS.
+If AWS auth fails, setup lets you retry, switch sign-in methods, edit
+profile/region, or continue with config only. For a normal AWS CLI
+profile, configure it first, for example:
 
 ```bash
 aws configure --profile sentra
 ```
 
-For AWS, you can generate a non-secret least-privilege policy template
-first:
+You can also generate that policy directly:
 
 ```bash
 sentra setup iam-policy --bucket sentra-test --prefix sentra/
@@ -117,11 +119,11 @@ retention:
   keep_monthly: 6
 ```
 
-The wizard writes `sentra.yaml`, derives a passphrase-wrapped repo key
-via Argon2id, encrypts and uploads the `config` object to S3, and
-returns. If a run fails, setup saves a non-secret `.sentra.yaml.setup-draft`
-and loads it the next time you run the wizard. If you choose `Config only`,
-run `sentra init` later.
+The wizard writes `sentra.yaml`, prompts for or resolves the repository
+passphrase, derives a passphrase-wrapped repo key via Argon2id, encrypts
+and uploads the `config` object to S3, and returns. If a run fails, setup
+saves a non-secret `.sentra.yaml.setup-draft` and loads it the next time
+you run the wizard. If you choose `Config only`, run `sentra init` later.
 
 To verify setup without changing anything:
 

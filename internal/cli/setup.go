@@ -48,6 +48,7 @@ type SetupPlan struct {
 	CreateBucket      bool
 	BlockPublicAccess bool
 	DefaultEncryption bool
+	PrintIAMPolicy    bool
 	InitRepo          bool
 }
 
@@ -222,6 +223,12 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	}
 	if err := validateSetupBucketName(plan.Config.Repo.S3.Bucket); err != nil {
 		return err
+	}
+	if plan.PrintIAMPolicy {
+		if err := writeSetupIAMPolicy(out, plan.Config.Repo.S3.Bucket, plan.Config.Repo.S3.Prefix); err != nil {
+			return err
+		}
+		return nil
 	}
 	authMethod := resolveSetupAWSAuthMethod(&plan)
 	if plan.Backend == SetupBackendAWS && authMethod == SetupAWSAuthSkip {
@@ -804,6 +811,7 @@ func printSetupApplyHeader(out io.Writer, cfgPath string, plan *SetupPlan) {
 	fmt.Fprintf(out, "  storage: %s\n", setupBackendLabel(plan.Backend))
 	if plan.InitRepo {
 		fmt.Fprintln(out, "  repo:    initialize after config")
+		fmt.Fprintln(out, "  pass:    prompt or configured passphrase source")
 	} else {
 		fmt.Fprintln(out, "  repo:    config only")
 	}

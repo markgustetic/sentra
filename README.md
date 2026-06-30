@@ -63,13 +63,18 @@ AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
 
 ### 2. Initialize a repo
 
-Export the credentials MinIO is expecting and a local test passphrase:
+Export the credentials MinIO is expecting:
 
 ```bash
 export AWS_ACCESS_KEY_ID=minioadmin
 export AWS_SECRET_ACCESS_KEY=minioadmin
-export SENTRA_PASSPHRASE='change-me-to-something-good'
 ```
+
+When setup initializes the repo, Sentra prompts you to set the repository
+passphrase unless `--passphrase-file`, `SENTRA_PASSPHRASE`, or keyring
+supplies it. For throwaway local demos, you can still set
+`SENTRA_PASSPHRASE='change-me-to-something-good'` in your shell, or in a
+gitignored `.env` when running through a tool that loads it.
 
 Then run the guided setup wizard:
 
@@ -106,16 +111,18 @@ encryption, write `sentra.yaml`, and initialize the repo in one flow.
 The default AWS sign-in method is browser login with the AWS CLI, which
 stores temporary local credentials. You can also choose IAM Identity
 Center / SSO, use an existing profile/environment/role, or write config
-only. Setup reviews the non-secret plan before applying it; if AWS auth
-or bucket prep fails, it lets you retry, switch sign-in methods, edit the
-profile/region, or write config only. For a normal AWS CLI profile,
-configure it first, for example:
+only. If you need an AWS administrator to grant permissions first, the
+wizard can print the non-secret least-privilege IAM policy and stop before
+writing config or touching AWS. Setup reviews the non-secret plan before
+applying it; if AWS auth or bucket prep fails, it lets you retry, switch
+sign-in methods, edit the profile/region, or write config only. For a
+normal AWS CLI profile, configure it first, for example:
 
 ```bash
 aws configure --profile sentra
 ```
 
-To create an AWS policy before setup, print a least-privilege template:
+You can also print that policy directly:
 
 ```bash
 sentra setup iam-policy --bucket my-backups --prefix sentra/
@@ -248,13 +255,16 @@ Every subcommand respects:
 
 ## Configuration
 
-`sentra setup` opens a guided terminal wizard. For AWS S3 it can sign in
-with `aws login --profile <profile>`, run IAM Identity Center / SSO
-setup when selected, verify existing AWS credentials, create or verify
-the bucket, block public access, enable bucket default encryption, write
-`sentra.yaml`, and optionally initialize the encrypted repo. It detects
-`AWS_PROFILE`, `AWS_REGION`, and environment/role credentials for better
-defaults, validates bucket names up front, writes a non-secret
+`sentra setup` opens a guided terminal wizard. For AWS S3 it can print a
+non-secret IAM policy and stop, sign in with
+`aws login --profile <profile>`, run IAM Identity Center / SSO setup when
+selected, verify existing AWS credentials, create or verify the bucket,
+block public access, enable bucket default encryption, write
+`sentra.yaml`, and optionally initialize the encrypted repo. Repo init
+prompts for the repository passphrase unless `--passphrase-file`,
+`SENTRA_PASSPHRASE`, or keyring supplies it. Setup detects `AWS_PROFILE`,
+`AWS_REGION`, and environment/role credentials for better defaults,
+validates bucket names up front, writes a non-secret
 `.sentra.yaml.setup-draft` while setup is in progress, and removes the
 draft after success. For MinIO, LocalStack, or an existing bucket, choose
 the S3-compatible/manual path.

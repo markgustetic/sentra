@@ -234,6 +234,99 @@ func TestSetup_WritesConfigFromWizard(t *testing.T) {
 	}
 }
 
+func TestSetup_PrintIAMPolicyOnlyDoesNotWriteConfigOrTouchAWS(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	out := &bytes.Buffer{}
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "policy-bucket"
+			current.Repo.S3.Prefix = "sentra/"
+			current.Repo.S3.Region = "us-east-1"
+			return SetupPlan{
+				Config:            current,
+				Backend:           SetupBackendAWS,
+				PrepareAWS:        true,
+				AWSAuthMethod:     SetupAWSAuthLogin,
+				CreateBucket:      true,
+				BlockPublicAccess: true,
+				DefaultEncryption: true,
+				PrintIAMPolicy:    true,
+				InitRepo:          true,
+			}, nil
+		},
+		ConfirmReview: func(string, SetupPlan) (bool, error) {
+			t.Fatal("review should not run when setup is only printing IAM policy")
+			return false, nil
+		},
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
+			t.Fatal("AWS identity should not be checked when setup is only printing IAM policy")
+			return nil
+		},
+		PrepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			t.Fatal("PrepareAWS should not run when setup is only printing IAM policy")
+			return AWSPrepareReport{}, nil
+		},
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			t.Fatal("repo init should not run when setup is only printing IAM policy")
+			return blobstore.NewMemory(), nil
+		},
+		Passphrase: func() ([]byte, error) {
+			t.Fatal("passphrase should not resolve when setup is only printing IAM policy")
+			return nil, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	var policy setupIAMPolicyDocument
+	if err := json.Unmarshal(out.Bytes(), &policy); err != nil {
+		t.Fatalf("decode policy: %v\n%s", err, out.String())
+	}
+	got := out.String()
+	for _, want := range []string{
+		"arn:aws:s3:::policy-bucket",
+		"arn:aws:s3:::policy-bucket/sentra/*",
+		"s3:PutBucketPublicAccessBlock",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("policy output missing %q:\n%s", want, got)
+		}
+	}
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml should not be written, stat err=%v", statErr)
+	}
+	if _, statErr := os.Stat(setupDraftPath("sentra.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("setup draft should not be written, stat err=%v", statErr)
+	}
+}
+
+func TestSetupPlanReviewMentionsPassphraseSourceForInit(t *testing.T) {
+	plan := SetupPlan{
+		Config:   config.Config{},
+		InitRepo: true,
+	}
+	plan.Config.Repo.S3.Bucket = "review-bucket"
+
+	got := setupPlanReviewText("sentra.yaml", plan)
+	for _, want := range []string{
+		"Repository: initialize after config",
+		"Passphrase: prompted or read from --passphrase-file, SENTRA_PASSPHRASE, or keyring",
+		"No passphrases",
+	} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("review text missing %q:\n%s", want, got)
+		}
+	}
+}
+
 func TestSetup_RejectsInvalidBucketName(t *testing.T) {
 	chDir(t, t.TempDir())
 	deps := SetupDeps{

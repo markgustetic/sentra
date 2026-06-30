@@ -291,6 +291,7 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 	prefix := cfg.Repo.S3.Prefix
 	region := cfg.Repo.S3.Region
 	profile := cfg.Repo.S3.Profile
+	printIAMPolicy := plan.PrintIAMPolicy
 	if region == "" {
 		region = "us-east-1"
 	}
@@ -301,7 +302,7 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 		prefix = "sentra/"
 	}
 
-	form := newSetupForm(
+	detailsForm := newSetupForm(
 		huh.NewGroup(
 			huh.NewNote().
 				Title("AWS S3").
@@ -339,7 +340,36 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 				Description("Optional shared-config profile name.").
 				Placeholder("default").
 				Value(&profile),
+			huh.NewConfirm().
+				Title("Need IAM policy before setup?").
+				Description("Print least-privilege IAM JSON for this bucket/prefix and stop before AWS or local files change.").
+				Affirmative("Print policy").
+				Negative("Continue setup").
+				Value(&printIAMPolicy),
 		),
+	)
+	if err := detailsForm.Run(); err != nil {
+		return SetupPlan{}, err
+	}
+
+	cfg.Repo.S3.Bucket = bucket
+	cfg.Repo.S3.Prefix = prefix
+	cfg.Repo.S3.Region = region
+	cfg.Repo.S3.Profile = profile
+	cfg.Repo.S3.EndpointURL = ""
+	plan.Config = cfg
+	plan.PrintIAMPolicy = printIAMPolicy
+	if printIAMPolicy {
+		plan.PrepareAWS = false
+		plan.CreateBucket = false
+		plan.BlockPublicAccess = false
+		plan.DefaultEncryption = false
+		plan.InitRepo = false
+		normalizeSetupConfig(&plan.Config)
+		return plan, nil
+	}
+
+	actionsForm := newSetupForm(
 		huh.NewGroup(
 			huh.NewNote().
 				Title("Setup actions").
@@ -379,21 +409,16 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 				Value(&plan.DefaultEncryption),
 			huh.NewConfirm().
 				Title("Initialize the encrypted Sentra repository after writing config?").
+				Description("If initialized now, Sentra will prompt for the repository passphrase unless --passphrase-file, SENTRA_PASSPHRASE, or keyring supplies it. The passphrase is not written to sentra.yaml.").
 				Affirmative("Initialize").
 				Negative("Config only").
 				Value(&plan.InitRepo),
 		),
 	)
-	if err := form.Run(); err != nil {
+	if err := actionsForm.Run(); err != nil {
 		return SetupPlan{}, err
 	}
 
-	cfg.Repo.S3.Bucket = bucket
-	cfg.Repo.S3.Prefix = prefix
-	cfg.Repo.S3.Region = region
-	cfg.Repo.S3.Profile = profile
-	cfg.Repo.S3.EndpointURL = ""
-	plan.Config = cfg
 	plan.PrepareAWS = true
 	if plan.AWSAuthMethod == SetupAWSAuthSkip {
 		plan.PrepareAWS = false
@@ -508,6 +533,7 @@ func setupPlanReviewText(cfgPath string, plan SetupPlan) string {
 	}
 	if plan.InitRepo {
 		fmt.Fprintln(&b, "Repository: initialize after config")
+		fmt.Fprintln(&b, "Passphrase: prompted or read from --passphrase-file, SENTRA_PASSPHRASE, or keyring")
 	} else {
 		fmt.Fprintln(&b, "Repository: config only")
 	}

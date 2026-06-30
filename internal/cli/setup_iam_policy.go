@@ -45,18 +45,22 @@ func newSetupIAMPolicy(out io.Writer) *cobra.Command {
 			if err := validateSetupBucketName(bucket); err != nil {
 				return err
 			}
-			policy := buildSetupIAMPolicy(bucket, prefix)
-			enc := json.NewEncoder(out)
-			enc.SetIndent("", "  ")
-			if err := enc.Encode(policy); err != nil {
-				return fmt.Errorf("encode IAM policy: %w", err)
-			}
-			return nil
+			return writeSetupIAMPolicy(out, bucket, prefix)
 		},
 	}
 	cmd.Flags().StringVar(&bucket, "bucket", "", "S3 bucket name")
 	cmd.Flags().StringVar(&prefix, "prefix", "sentra/", "S3 key prefix Sentra will use")
 	return cmd
+}
+
+func writeSetupIAMPolicy(out io.Writer, bucket string, prefix string) error {
+	policy := buildSetupIAMPolicy(bucket, prefix)
+	enc := json.NewEncoder(out)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(policy); err != nil {
+		return fmt.Errorf("encode IAM policy: %w", err)
+	}
+	return nil
 }
 
 func buildSetupIAMPolicy(bucket string, prefix string) setupIAMPolicyDocument {
