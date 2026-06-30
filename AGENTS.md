@@ -9,7 +9,9 @@ Sentra code, docs, CI, or release workflow changes.
 
 - Sentra is a Go CLI/TUI for encrypted, deduplicated S3 backups.
 - Main command wiring lives in `cmd/sentra/main.go`.
+- Production passphrase/keyring wiring lives in `cmd/sentra/passphrase.go`.
 - Core repository behavior lives in `internal/repo`.
+- Passphrase resolution and OS keyring helpers live in `internal/config`.
 - CLI command implementations live in `internal/cli`.
 - Agent heuristics/orchestration live in `internal/agent`.
 - Bubbletea views live in `internal/tui`.
@@ -74,10 +76,18 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
 - `sentra password` rotates the wrapping passphrase. If
-  `passphrase.use_keyring` is true, successful rotation should update the OS
-  keyring entry. `sentra password forget` may remove the keyring entry and
-  disable keyring lookup locally, but must not change the repo passphrase or
-  delete S3 data. `sentra passwd` is a compatibility alias.
+  `passphrase.use_keyring` is true, it must remove the stale keyring entry
+  before rotating the repo passphrase, then save the new passphrase after the
+  repo rotation succeeds. If old keyring removal fails, the repo passphrase
+  must not rotate. If saving the new keyring entry fails after rotation, return
+  a clear error that the repo passphrase was rotated but the keyring update
+  failed. `sentra passwd` is a compatibility alias.
+- OS keyring entries are scoped by configured S3 bucket and prefix so multiple
+  repos can share one bucket under different prefixes. Keyring lookup may try
+  legacy bucket-only entries only after the bucket+prefix entry is not found;
+  it must not fall back after other keyring errors. `sentra password forget`
+  may remove current and legacy keyring entries and disable keyring lookup
+  locally, but must not change the repo passphrase or delete S3 data.
 - `sentra prune` is dry-run by default. `--apply` mutates; `--explain` shows
   retention reasons.
 - `sentra agent scan --local-only` and `--no-llm` must not call the LLM provider.
