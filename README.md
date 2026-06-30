@@ -71,10 +71,12 @@ export AWS_SECRET_ACCESS_KEY=minioadmin
 ```
 
 When setup initializes the repo, Sentra prompts you to set the repository
-passphrase unless `--passphrase-file`, `SENTRA_PASSPHRASE`, or keyring
-supplies it. For throwaway local demos, you can still set
-`SENTRA_PASSPHRASE='change-me-to-something-good'` in your shell, or in a
-gitignored `.env` when running through a tool that loads it.
+passphrase unless `--passphrase-file` or `SENTRA_PASSPHRASE` supplies it.
+For normal local use, choose `Save in keychain` when setup asks; Sentra saves
+the passphrase in your OS keyring and writes only
+`passphrase.use_keyring: true` to `sentra.yaml`. For throwaway local demos,
+you can still set `SENTRA_PASSPHRASE='change-me-to-something-good'` in your
+shell, or in a gitignored `.env` when running through a tool that loads it.
 
 Then run the guided setup wizard:
 
@@ -103,6 +105,8 @@ retention:
   keep_daily: 7
   keep_weekly: 4
   keep_monthly: 6
+passphrase:
+  use_keyring: true
 ```
 
 For real AWS S3, choose `AWS S3` in the same wizard. Sentra can verify
@@ -250,7 +254,7 @@ Every subcommand respects:
 - `--config <path>` — override the config search (default `sentra.yaml`).
 - `--passphrase-file <path>` — read the passphrase from a file (highest priority).
 - `SENTRA_PASSPHRASE` — env var (second priority).
-- OS keyring — opt in via `passphrase.use_keyring: true` in `sentra.yaml`.
+- OS keyring — setup can save the passphrase there and opt in via `passphrase.use_keyring: true`.
 - Interactive `huh` prompt — last resort, TTY only.
 
 ## Configuration
@@ -261,8 +265,9 @@ non-secret IAM policy and stop, sign in with
 selected, verify existing AWS credentials, create or verify the bucket,
 block public access, enable bucket default encryption, write
 `sentra.yaml`, and optionally initialize the encrypted repo. Repo init
-prompts for the repository passphrase unless `--passphrase-file`,
-`SENTRA_PASSPHRASE`, or keyring supplies it. Setup detects `AWS_PROFILE`,
+prompts for the repository passphrase unless `--passphrase-file` or
+`SENTRA_PASSPHRASE` supplies it. Setup can then save that passphrase to the
+OS keyring so future commands do not need to prompt. Setup detects `AWS_PROFILE`,
 `AWS_REGION`, and environment/role credentials for better defaults,
 validates bucket names up front, writes a non-secret
 `.sentra.yaml.setup-draft` while setup is in progress, and removes the
@@ -295,7 +300,7 @@ retention:
   keep_monthly: 6
 
 passphrase:
-  use_keyring: false              # opt in to OS keyring lookup
+  use_keyring: false              # true means future commands read the OS keyring
 ```
 
 A `.sentraignore` file at the walk root applies gitignore-style globs

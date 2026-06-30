@@ -214,6 +214,7 @@ func defaultSetupPlan(current config.Config) SetupPlan {
 		CreateBucket:      true,
 		BlockPublicAccess: true,
 		DefaultEncryption: true,
+		SavePassphrase:    true,
 		InitRepo:          true,
 	}
 	applySetupSmartDefaults(&plan)
@@ -409,7 +410,7 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 				Value(&plan.DefaultEncryption),
 			huh.NewConfirm().
 				Title("Initialize the encrypted Sentra repository after writing config?").
-				Description("If initialized now, Sentra will prompt for the repository passphrase unless --passphrase-file, SENTRA_PASSPHRASE, or keyring supplies it. The passphrase is not written to sentra.yaml.").
+				Description("If initialized now, Sentra will prompt once to set the repository passphrase unless --passphrase-file or SENTRA_PASSPHRASE supplies it. The passphrase is not written to sentra.yaml.").
 				Affirmative("Initialize").
 				Negative("Config only").
 				Value(&plan.InitRepo),
@@ -426,6 +427,8 @@ func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
 		plan.BlockPublicAccess = false
 		plan.DefaultEncryption = false
 		plan.InitRepo = false
+	} else if err := promptSetupPassphraseStorage(&plan); err != nil {
+		return SetupPlan{}, err
 	}
 	normalizeSetupConfig(&plan.Config)
 	return plan, nil
@@ -502,8 +505,36 @@ func runHuhCompatibleSetup(current config.Config, plan SetupPlan) (SetupPlan, er
 	plan.CreateBucket = false
 	plan.BlockPublicAccess = false
 	plan.DefaultEncryption = false
+	if err := promptSetupPassphraseStorage(&plan); err != nil {
+		return SetupPlan{}, err
+	}
 	normalizeSetupConfig(&plan.Config)
 	return plan, nil
+}
+
+func promptSetupPassphraseStorage(plan *SetupPlan) error {
+	if !plan.InitRepo {
+		plan.SavePassphrase = false
+		return nil
+	}
+
+	save := plan.SavePassphrase
+	form := newSetupForm(
+		huh.NewGroup(
+			huh.NewConfirm().
+				Title("Save repository passphrase in the OS keychain?").
+				Description("Recommended for local use. Sentra stores the passphrase in your OS keyring after repo initialization and writes only use_keyring: true to sentra.yaml.").
+				Affirmative("Save in keychain").
+				Negative("Ask each time").
+				Value(&save),
+		),
+	)
+	if err := form.Run(); err != nil {
+		return err
+	}
+	plan.SavePassphrase = save
+	plan.Config.Passphrase.UseKeyring = save
+	return nil
 }
 
 func setupPlanReviewText(cfgPath string, plan SetupPlan) string {
@@ -533,7 +564,11 @@ func setupPlanReviewText(cfgPath string, plan SetupPlan) string {
 	}
 	if plan.InitRepo {
 		fmt.Fprintln(&b, "Repository: initialize after config")
-		fmt.Fprintln(&b, "Passphrase: prompted or read from --passphrase-file, SENTRA_PASSPHRASE, or keyring")
+		if plan.SavePassphrase {
+			fmt.Fprintln(&b, "Passphrase: save to OS keyring after repo initialization")
+		} else {
+			fmt.Fprintln(&b, "Passphrase: prompted or read from --passphrase-file or SENTRA_PASSPHRASE")
+		}
 	} else {
 		fmt.Fprintln(&b, "Repository: config only")
 	}

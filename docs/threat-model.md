@@ -52,11 +52,13 @@ and the dedup story gets harder).
 
 ## Key handling
 
-- **Passphrase storage.** `sentra` itself never persists your passphrase.
-  The resolution chain is `--passphrase-file` → `SENTRA_PASSPHRASE` env →
-  OS keyring (opt-in) → interactive `huh` prompt. The keyring lookup is
-  off by default; turn it on with `passphrase.use_keyring: true` in
-  `sentra.yaml` if you trust your OS keyring more than re-typing.
+- **Passphrase storage.** `sentra` never writes your passphrase to
+  `sentra.yaml`, setup drafts, logs, recovery kits, or docs. The resolution
+  chain is `--passphrase-file` → `SENTRA_PASSPHRASE` env → OS keyring
+  (opt-in) → interactive `huh` prompt. `sentra setup` can save the
+  passphrase to the OS keyring after repo initialization and write only
+  `passphrase.use_keyring: true` to config if you trust your OS keyring more
+  than re-typing.
 - **Keyring backend.** `zalando/go-keyring` proxies to the OS keychain
   (macOS Keychain, libsecret on Linux, Credential Manager on Windows).
   The same trust assumptions about your OS keyring apply.

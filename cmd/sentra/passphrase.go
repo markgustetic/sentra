@@ -52,12 +52,19 @@ func buildResolveOptsFromConfig(rootFlags *cli.RootFlags, cfg *config.Config, pr
 	if cfg != nil {
 		opts.UseKeyring = cfg.Passphrase.UseKeyring
 		opts.KeyringService = keyringService
-		opts.KeyringUser = cfg.Repo.S3.Bucket
+		opts.KeyringUser = keyringUserForConfig(cfg)
 	}
 	if opts.KeyringUser == "" {
 		opts.KeyringUser = keyringDefaultUser
 	}
 	return opts
+}
+
+func keyringUserForConfig(cfg *config.Config) string {
+	if cfg == nil || cfg.Repo.S3.Bucket == "" {
+		return keyringDefaultUser
+	}
+	return cfg.Repo.S3.Bucket
 }
 
 func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
@@ -68,10 +75,28 @@ func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 	}
 }
 
+func promptSetupPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
+	return func() ([]byte, error) {
+		return config.Resolve(config.ResolveOptions{
+			PassphraseFile: rootFlags.PassphraseFile,
+			Prompt: func() ([]byte, error) {
+				return ui.PromptPassphraseWithConfirm("Set repository passphrase", minPassphraseLen)
+			},
+		})
+	}
+}
+
 func promptOpenPassphraseWithConfig(rootFlags *cli.RootFlags) func(*config.Config) ([]byte, error) {
 	return func(cfg *config.Config) ([]byte, error) {
 		return config.Resolve(buildResolveOptsFromConfig(rootFlags, cfg, func() ([]byte, error) {
 			return ui.PromptPassphrase("Repository passphrase", 0)
 		}))
 	}
+}
+
+func saveRepoPassphraseToKeyring(cfg *config.Config, passphrase []byte) error {
+	return config.StoreKeyringPassphrase(config.StoreKeyringOptions{
+		KeyringService: keyringService,
+		KeyringUser:    keyringUserForConfig(cfg),
+	}, passphrase)
 }

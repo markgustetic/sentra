@@ -58,10 +58,12 @@ export AWS_SECRET_ACCESS_KEY=minioadmin
 ```
 
 When setup initializes the repo, Sentra prompts you to set the repository
-passphrase unless `--passphrase-file`, `SENTRA_PASSPHRASE`, or keyring
-supplies it. For throwaway local demos, you can still set
-`SENTRA_PASSPHRASE='change-me-to-something-good'` in your shell, or in a
-gitignored `.env` when running through a tool that loads it.
+passphrase unless `--passphrase-file` or `SENTRA_PASSPHRASE` supplies it.
+For normal local use, choose `Save in keychain` when setup asks; Sentra saves
+the passphrase in your OS keyring and writes only
+`passphrase.use_keyring: true` to `sentra.yaml`. For throwaway local demos,
+you can still set `SENTRA_PASSPHRASE='change-me-to-something-good'` in your
+shell, or in a gitignored `.env` when running through a tool that loads it.
 
 Run the guided setup wizard:
 
@@ -100,6 +102,7 @@ Enter these values when prompted:
 - AWS profile: leave blank
 - S3 endpoint URL: `http://localhost:9000`
 - Initialize repo: `Initialize`
+- Save repository passphrase: `Save in keychain`
 
 The generated file will include these settings:
 
@@ -117,13 +120,16 @@ retention:
   keep_daily: 7
   keep_weekly: 4
   keep_monthly: 6
+passphrase:
+  use_keyring: true
 ```
 
 The wizard writes `sentra.yaml`, prompts for or resolves the repository
-passphrase, derives a passphrase-wrapped repo key via Argon2id, encrypts
-and uploads the `config` object to S3, and returns. If a run fails, setup
-saves a non-secret `.sentra.yaml.setup-draft` and loads it the next time
-you run the wizard. If you choose `Config only`, run `sentra init` later.
+passphrase, derives a passphrase-wrapped repo key via Argon2id, encrypts and
+uploads the `config` object to S3, then saves the passphrase to the OS keyring
+if selected. If a run fails, setup saves a non-secret `.sentra.yaml.setup-draft`
+and loads it the next time you run the wizard. If you choose `Config only`, run
+`sentra init` later.
 
 To verify setup without changing anything:
 

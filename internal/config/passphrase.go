@@ -63,6 +63,18 @@ type ResolveOptions struct {
 	Prompt func() ([]byte, error)
 }
 
+// StoreKeyringOptions configures where a passphrase should be saved in the
+// OS keyring.
+type StoreKeyringOptions struct {
+	// KeyringService is the service name passed to the keyring lib.
+	// Defaults to "sentra" when empty.
+	KeyringService string
+
+	// KeyringUser is the per-repo identifier passed to the keyring.
+	// Defaults to "default" when empty.
+	KeyringUser string
+}
+
 // Resolve looks up the passphrase per the documented priority and
 // returns the bytes. The caller is responsible for zeroizing the
 // returned slice after deriving keys from it.
@@ -104,6 +116,27 @@ func Resolve(opts ResolveOptions) ([]byte, error) {
 		return opts.Prompt()
 	}
 	return nil, ErrNoPassphraseSource
+}
+
+// StoreKeyringPassphrase saves passphrase in the OS keyring. It never writes
+// the secret to sentra.yaml; callers should store only non-secret keyring
+// lookup settings in config.
+func StoreKeyringPassphrase(opts StoreKeyringOptions, passphrase []byte) error {
+	if len(passphrase) == 0 {
+		return fmt.Errorf("config: cannot store empty passphrase in keyring")
+	}
+	service := opts.KeyringService
+	if service == "" {
+		service = "sentra"
+	}
+	user := opts.KeyringUser
+	if user == "" {
+		user = "default"
+	}
+	if err := keyringSetFn(service, user, passphrase); err != nil {
+		return fmt.Errorf("config: keyring store: %w", err)
+	}
+	return nil
 }
 
 // readPassphraseFile reads the passphrase from path, stripping a
@@ -165,4 +198,8 @@ var keyringLookupFn = func(service, user string) ([]byte, error) {
 		return nil, err
 	}
 	return []byte(v), nil
+}
+
+var keyringSetFn = func(service, user string, value []byte) error {
+	return keyring.Set(service, user, string(value)) //nolint:gosec // go-keyring accepts string values; the secret is handed directly to the OS keyring.
 }

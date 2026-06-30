@@ -253,3 +253,69 @@ func TestResolve_KeyringFallsThroughOnMiss(t *testing.T) {
 		t.Errorf("got %q, want fallback", got)
 	}
 }
+
+func TestStoreKeyringPassphrase_UsesConfiguredServiceAndUser(t *testing.T) {
+	prev := keyringSetFn
+	t.Cleanup(func() { keyringSetFn = prev })
+	var gotService string
+	var gotUser string
+	var gotValue []byte
+	keyringSetFn = func(service, user string, value []byte) error {
+		gotService = service
+		gotUser = user
+		gotValue = append([]byte(nil), value...)
+		return nil
+	}
+
+	err := StoreKeyringPassphrase(StoreKeyringOptions{
+		KeyringService: "sentra",
+		KeyringUser:    "bucket",
+	}, []byte("from-prompt"))
+	if err != nil {
+		t.Fatalf("StoreKeyringPassphrase: %v", err)
+	}
+	if gotService != "sentra" {
+		t.Errorf("service: got %q, want sentra", gotService)
+	}
+	if gotUser != "bucket" {
+		t.Errorf("user: got %q, want bucket", gotUser)
+	}
+	if string(gotValue) != "from-prompt" {
+		t.Errorf("value: got %q, want from-prompt", gotValue)
+	}
+}
+
+func TestStoreKeyringPassphrase_DefaultsServiceAndUser(t *testing.T) {
+	prev := keyringSetFn
+	t.Cleanup(func() { keyringSetFn = prev })
+	var gotService string
+	var gotUser string
+	keyringSetFn = func(service, user string, _ []byte) error {
+		gotService = service
+		gotUser = user
+		return nil
+	}
+
+	if err := StoreKeyringPassphrase(StoreKeyringOptions{}, []byte("from-prompt")); err != nil {
+		t.Fatalf("StoreKeyringPassphrase: %v", err)
+	}
+	if gotService != "sentra" {
+		t.Errorf("service: got %q, want sentra", gotService)
+	}
+	if gotUser != "default" {
+		t.Errorf("user: got %q, want default", gotUser)
+	}
+}
+
+func TestStoreKeyringPassphrase_RejectsEmpty(t *testing.T) {
+	prev := keyringSetFn
+	t.Cleanup(func() { keyringSetFn = prev })
+	keyringSetFn = func(string, string, []byte) error {
+		t.Fatal("keyring set should not be called for empty passphrase")
+		return nil
+	}
+
+	if err := StoreKeyringPassphrase(StoreKeyringOptions{}, nil); err == nil {
+		t.Fatal("expected empty passphrase error, got nil")
+	}
+}

@@ -31,6 +31,9 @@ func TestDefaultSetupPlanUsesBrowserLoginByDefault(t *testing.T) {
 	if !plan.CreateBucket || !plan.BlockPublicAccess || !plan.DefaultEncryption || !plan.InitRepo {
 		t.Fatalf("setup actions = %+v, want safe AWS defaults enabled", plan)
 	}
+	if !plan.SavePassphrase {
+		t.Fatalf("SavePassphrase: got false, want true")
+	}
 }
 
 func TestDefaultSetupPlanKeepsAWSBackendForEndpointConfig(t *testing.T) {
@@ -310,20 +313,27 @@ func TestSetup_PrintIAMPolicyOnlyDoesNotWriteConfigOrTouchAWS(t *testing.T) {
 
 func TestSetupPlanReviewMentionsPassphraseSourceForInit(t *testing.T) {
 	plan := SetupPlan{
-		Config:   config.Config{},
-		InitRepo: true,
+		Config:         config.Config{},
+		InitRepo:       true,
+		SavePassphrase: true,
 	}
 	plan.Config.Repo.S3.Bucket = "review-bucket"
 
 	got := setupPlanReviewText("sentra.yaml", plan)
 	for _, want := range []string{
 		"Repository: initialize after config",
-		"Passphrase: prompted or read from --passphrase-file, SENTRA_PASSPHRASE, or keyring",
+		"Passphrase: save to OS keyring after repo initialization",
 		"No passphrases",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("review text missing %q:\n%s", want, got)
 		}
+	}
+
+	plan.SavePassphrase = false
+	got = setupPlanReviewText("sentra.yaml", plan)
+	if !strings.Contains(got, "Passphrase: prompted or read from --passphrase-file or SENTRA_PASSPHRASE") {
+		t.Fatalf("review text should mention prompt/file/env path:\n%s", got)
 	}
 }
 
@@ -1084,6 +1094,114 @@ func TestSetup_PreparesAWSAndInitializesRepo(t *testing.T) {
 		if !strings.Contains(out.String(), want) {
 			t.Errorf("setup output missing %q:\n%s", want, out.String())
 		}
+	}
+}
+
+func TestSetup_SavesPassphraseToKeyringWhenSelected(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	store := blobstore.NewMemory()
+	out := &bytes.Buffer{}
+	var savedBucket string
+	var savedPass []byte
+
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "keyring-bucket"
+			current.Repo.S3.Region = "us-east-1"
+			return SetupPlan{
+				Config:         current,
+				Backend:        SetupBackendS3Compatible,
+				InitRepo:       true,
+				SavePassphrase: true,
+			}, nil
+		},
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) {
+			return []byte("hunter22"), nil
+		},
+		SavePassphrase: func(cfg *config.Config, passphrase []byte) error {
+			savedBucket = cfg.Repo.S3.Bucket
+			savedPass = append([]byte(nil), passphrase...)
+			return nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	cfg, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("Load(sentra.yaml): %v", err)
+	}
+	if !cfg.Passphrase.UseKeyring {
+		t.Fatal("expected passphrase.use_keyring to be written")
+	}
+	if savedBucket != "keyring-bucket" {
+		t.Fatalf("saved bucket: got %q, want keyring-bucket", savedBucket)
+	}
+	if string(savedPass) != "hunter22" {
+		t.Fatalf("saved passphrase mismatch")
+	}
+	r, err := repo.Open(context.Background(), store, []byte("hunter22"))
+	if err != nil {
+		t.Fatalf("repo.Open: %v", err)
+	}
+	r.Close()
+	for _, want := range []string{
+		"Passphrase saved to OS keyring",
+		"pass:     saved to OS keyring",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("setup output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestSetup_KeyringSaveFailureReturnsError(t *testing.T) {
+	chDir(t, t.TempDir())
+	store := blobstore.NewMemory()
+	wantErr := errors.New("keyring locked")
+	deps := SetupDeps{
+		Prompt: func(current config.Config) (SetupPlan, error) {
+			current.Repo.S3.Bucket = "keyring-bucket"
+			return SetupPlan{
+				Config:         current,
+				Backend:        SetupBackendS3Compatible,
+				InitRepo:       true,
+				SavePassphrase: true,
+			}, nil
+		},
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) {
+			return []byte("hunter22"), nil
+		},
+		SavePassphrase: func(*config.Config, []byte) error {
+			return wantErr
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewSetup(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err := cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected keyring save error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "save passphrase to keyring") {
+		t.Fatalf("error missing keyring context: %v", err)
 	}
 }
 

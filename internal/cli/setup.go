@@ -49,6 +49,7 @@ type SetupPlan struct {
 	BlockPublicAccess bool
 	DefaultEncryption bool
 	PrintIAMPolicy    bool
+	SavePassphrase    bool
 	InitRepo          bool
 }
 
@@ -135,12 +136,14 @@ type SetupDeps struct {
 	PrepareAWS            func(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error)
 	NewStore              func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
 	Passphrase            func() ([]byte, error)
+	SavePassphrase        func(cfg *config.Config, passphrase []byte) error
 	Stdout                io.Writer
 }
 
 type setupInitResult struct {
-	RepoID             string
-	AlreadyInitialized bool
+	RepoID                   string
+	AlreadyInitialized       bool
+	PassphraseSavedToKeyring bool
 }
 
 // NewSetup returns the cobra command for `sentra setup`. The command
@@ -234,6 +237,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	if plan.Backend == SetupBackendAWS && authMethod == SetupAWSAuthSkip {
 		applySetupAWSConfigOnly(&plan)
 	}
+	applySetupPassphraseConfig(&plan)
 	if plan.PrepareAWS && plan.Config.Repo.S3.EndpointURL != "" {
 		return fmt.Errorf("AWS setup does not support endpoint_url - choose S3-compatible/manual setup for MinIO or LocalStack")
 	}
@@ -265,6 +269,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 			}
 			plan = updated
 			normalizeSetupConfig(&plan.Config)
+			applySetupPassphraseConfig(&plan)
 			if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
 				return err
 			}
@@ -296,6 +301,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 			}
 			plan = updated
 			normalizeSetupConfig(&plan.Config)
+			applySetupPassphraseConfig(&plan)
 			if err := writeSetupDraft(cfgPath, &plan.Config); err != nil {
 				return err
 			}
@@ -316,7 +322,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	var initResult *setupInitResult
 	if plan.InitRepo {
 		printSetupStep(out, "Initializing encrypted repository")
-		result, err := runSetupInit(cmd.Context(), deps, &plan.Config)
+		result, err := runSetupInit(cmd.Context(), deps, &plan.Config, plan.SavePassphrase)
 		if err != nil {
 			return err
 		}
@@ -325,6 +331,9 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 			printSetupOK(out, "Repository already initialized")
 		} else {
 			printSetupOK(out, "Repository initialized")
+		}
+		if result.PassphraseSavedToKeyring {
+			printSetupOK(out, "Passphrase saved to OS keyring")
 		}
 	}
 
@@ -425,6 +434,13 @@ func applySetupAWSConfigOnly(plan *SetupPlan) {
 	plan.BlockPublicAccess = false
 	plan.DefaultEncryption = false
 	plan.AWSAuthMethod = SetupAWSAuthSkip
+	plan.SavePassphrase = false
+}
+
+func applySetupPassphraseConfig(plan *SetupPlan) {
+	if plan.InitRepo {
+		plan.Config.Passphrase.UseKeyring = plan.SavePassphrase
+	}
 }
 
 func printSetupRepairContinue(out io.Writer, plan *SetupPlan) {
@@ -702,12 +718,15 @@ func isAWSMissingCredentialsError(err error) bool {
 	return false
 }
 
-func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config) (setupInitResult, error) {
+func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config, savePassphrase bool) (setupInitResult, error) {
 	if deps.NewStore == nil {
 		return setupInitResult{}, fmt.Errorf("initialize repo: missing store factory")
 	}
 	if deps.Passphrase == nil {
 		return setupInitResult{}, fmt.Errorf("initialize repo: missing passphrase resolver")
+	}
+	if savePassphrase && deps.SavePassphrase == nil {
+		return setupInitResult{}, fmt.Errorf("initialize repo: missing keyring passphrase saver")
 	}
 
 	store, err := deps.NewStore(ctx, cfg)
@@ -730,7 +749,14 @@ func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config) (setu
 	}
 	defer r.Close()
 
-	return setupInitResult{RepoID: r.Config().ID}, nil
+	result := setupInitResult{RepoID: r.Config().ID}
+	if savePassphrase {
+		if err := deps.SavePassphrase(cfg, pass); err != nil {
+			return setupInitResult{}, fmt.Errorf("save passphrase to keyring: %w", err)
+		}
+		result.PassphraseSavedToKeyring = true
+	}
+	return result, nil
 }
 
 func printSetupSummary(
@@ -800,6 +826,9 @@ func printSetupSummary(
 		} else {
 			fmt.Fprintf(out, "  repo id:  %s\n", initResult.RepoID)
 		}
+		if initResult.PassphraseSavedToKeyring {
+			fmt.Fprintln(out, "  pass:     saved to OS keyring")
+		}
 	} else {
 		fmt.Fprintln(out, ui.Subtle.Render("Next"))
 		fmt.Fprintln(out, "  Run `sentra init` when you are ready to initialize the encrypted repository.")
@@ -813,7 +842,11 @@ func printSetupApplyHeader(out io.Writer, cfgPath string, plan *SetupPlan) {
 	fmt.Fprintf(out, "  storage: %s\n", setupBackendLabel(plan.Backend))
 	if plan.InitRepo {
 		fmt.Fprintln(out, "  repo:    initialize after config")
-		fmt.Fprintln(out, "  pass:    prompt or configured passphrase source")
+		if plan.SavePassphrase {
+			fmt.Fprintln(out, "  pass:    save to OS keyring after setup prompt")
+		} else {
+			fmt.Fprintln(out, "  pass:    prompt or configured passphrase source")
+		}
 	} else {
 		fmt.Fprintln(out, "  repo:    config only")
 	}

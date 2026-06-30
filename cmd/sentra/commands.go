@@ -14,6 +14,7 @@ import (
 // that touches S3, huh, the OS keyring, and the real LLM provider.
 func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 	initPassphrase := promptInitPassphrase(rootFlags)
+	setupPassphrase := promptSetupPassphrase(rootFlags)
 	openPassphrase := promptOpenPassphraseWithConfig(rootFlags)
 
 	root.AddCommand(cli.NewInit(cli.InitDeps{
@@ -22,9 +23,10 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Stdout:     os.Stdout,
 	}))
 	root.AddCommand(cli.NewSetup(cli.SetupDeps{
-		NewStore:   newS3Store,
-		Passphrase: initPassphrase,
-		Stdout:     os.Stdout,
+		NewStore:       newS3Store,
+		Passphrase:     setupPassphrase,
+		SavePassphrase: saveRepoPassphraseToKeyring,
+		Stdout:         os.Stdout,
 	}))
 	root.AddCommand(cli.NewBackup(cli.BackupDeps{
 		NewStore:             newS3Store,
