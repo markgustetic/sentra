@@ -139,6 +139,26 @@ func StoreKeyringPassphrase(opts StoreKeyringOptions, passphrase []byte) error {
 	return nil
 }
 
+// DeleteKeyringPassphrase removes the configured passphrase from the OS
+// keyring. It returns false without error when no entry exists.
+func DeleteKeyringPassphrase(opts StoreKeyringOptions) (bool, error) {
+	service := opts.KeyringService
+	if service == "" {
+		service = "sentra"
+	}
+	user := opts.KeyringUser
+	if user == "" {
+		user = "default"
+	}
+	if err := keyringDeleteFn(service, user); err != nil {
+		if errors.Is(err, ErrKeyringEntryNotFound) {
+			return false, nil
+		}
+		return false, fmt.Errorf("config: keyring delete: %w", err)
+	}
+	return true, nil
+}
+
 // readPassphraseFile reads the passphrase from path, stripping a
 // single trailing newline (and stripping a leading UTF-8 BOM if
 // present). Editors love to add a trailing \n; users typing the
@@ -202,4 +222,14 @@ var keyringLookupFn = func(service, user string) ([]byte, error) {
 
 var keyringSetFn = func(service, user string, value []byte) error {
 	return keyring.Set(service, user, string(value)) //nolint:gosec // go-keyring accepts string values; the secret is handed directly to the OS keyring.
+}
+
+var keyringDeleteFn = func(service, user string) error {
+	if err := keyring.Delete(service, user); err != nil {
+		if errors.Is(err, keyring.ErrNotFound) {
+			return ErrKeyringEntryNotFound
+		}
+		return err
+	}
+	return nil
 }

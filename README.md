@@ -242,7 +242,7 @@ regexp to the workflow path so it doesn't match arbitrary refs:
 | `sentra diff <a> <b>`           | Show added / removed / changed paths between two snapshots.                |
 | `sentra restore <snap> <dest>`  | Restore a snapshot. `--dry-run` previews; `--verify` validates output.     |
 | `sentra prune`                  | Dry-run retention by default; `--explain` shows keep/drop reasons.         |
-| `sentra passwd`                 | Rotate the wrapping passphrase. Repo key unchanged; existing snapshots stay readable. |
+| `sentra password`               | Rotate or forget the saved wrapping passphrase. `passwd` remains an alias. |
 | `sentra sync --dst-config`      | Replicate this repo to a clone destination. Additive; share the passphrase. |
 | `sentra recovery-kit`           | Export non-secret recovery notes and restore commands.                     |
 | `sentra agent advise-ignore`    | Suggest first-run `.sentraignore` patterns without editing files.          |
@@ -256,6 +256,13 @@ Every subcommand respects:
 - `SENTRA_PASSPHRASE` — env var (second priority).
 - OS keyring — setup can save the passphrase there and opt in via `passphrase.use_keyring: true`.
 - Interactive `huh` prompt — last resort, TTY only.
+
+Use `sentra password` to rotate the repository passphrase. If
+`passphrase.use_keyring: true`, a successful rotation also replaces the saved
+OS-keyring passphrase so the old one is not left behind. Use
+`sentra password forget` to remove the saved OS-keyring passphrase and disable
+keyring lookup in `sentra.yaml`; this does not change the repository
+passphrase or delete S3 data.
 
 ## Configuration
 

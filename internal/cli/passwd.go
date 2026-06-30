@@ -3,8 +3,10 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -14,13 +16,13 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
-// minPasswdNewPassphraseLen is the lower bound `passwd` enforces on
+// minPasswdNewPassphraseLen is the lower bound `password` enforces on
 // the new passphrase. Mirrors the floor `init` applies — the
 // passphrase machinery can technically handle shorter inputs, but
 // 8 bytes is the operational floor across the codebase.
 const minPasswdNewPassphraseLen = 8
 
-// PasswdDeps wires the side-effecting pieces of `sentra passwd` so
+// PasswdDeps wires the side-effecting pieces of `sentra password` so
 // tests can inject deterministic callbacks. Production wires:
 //
 //   - NewStore: the standard S3-store factory (RetryStore-wrapped).
@@ -32,6 +34,10 @@ const minPasswdNewPassphraseLen = 8
 //     intentionally NOT a source for the new passphrase — env vars
 //     persist in shell history / process listings, which is the
 //     wrong default for the new secret.
+//   - SavePassphrase: updates the OS keyring entry after a successful
+//     rotation when passphrase.use_keyring is enabled.
+//   - DeletePassphrase: removes the OS keyring entry for
+//     `sentra password forget`.
 //   - Stdout: where the success summary lands.
 //
 // The deps shape mirrors InitDeps + a NewPassphrase callback. The
@@ -43,17 +49,24 @@ type PasswdDeps struct {
 	Passphrase           func() ([]byte, error)
 	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
 	NewPassphrase        func(passphraseFile string) ([]byte, error)
+	SavePassphrase       func(cfg *config.Config, passphrase []byte) error
+	DeletePassphrase     func(cfg *config.Config) (bool, error)
 	Stdout               io.Writer
 }
 
-// passwdFlags holds the values of `sentra passwd`'s flags. Bundled
+// passwdFlags holds the values of `sentra password`'s flags. Bundled
 // into a struct so the cobra wiring is compact and the runE body
 // can be tested independently.
 type passwdFlags struct {
 	newPassphraseFile string
 }
 
-// NewPasswd returns the cobra command for `sentra passwd`. The
+type passwordForgetFlags struct {
+	configPath string
+	bucket     string
+}
+
+// NewPasswd returns the cobra command for `sentra password`. The
 // command flow:
 //
 //  1. Load sentra.yaml (config.Load).
@@ -76,12 +89,14 @@ type passwdFlags struct {
 func NewPasswd(deps PasswdDeps) *cobra.Command {
 	flags := &passwdFlags{}
 	cmd := &cobra.Command{
-		Use:   "passwd",
-		Short: "Rotate the repository passphrase",
+		Use:     "password",
+		Aliases: []string{"passwd"},
+		Short:   "Manage the repository passphrase",
 		Long: "Rewrite the encrypted config blob so a new passphrase wraps the " +
 			"(unchanged) repo key. Existing chunks, manifests, and the snapshot " +
 			"index remain readable; only the passphrase that Opens the repo " +
-			"changes. Holds the same advisory lock as backup and GC.",
+			"changes. Holds the same advisory lock as backup and GC.\n\n" +
+			"`sentra passwd` remains as a backwards-compatible alias.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -91,10 +106,33 @@ func NewPasswd(deps PasswdDeps) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flags.newPassphraseFile, "new-passphrase-file", "",
 		"path to a file containing the new passphrase (default: interactive prompt)")
+	cmd.AddCommand(newPasswordForget(deps))
 	return cmd
 }
 
-// runPasswd is the body of `sentra passwd`. Pulled out of the
+func newPasswordForget(deps PasswdDeps) *cobra.Command {
+	flags := &passwordForgetFlags{configPath: configFileName}
+	cmd := &cobra.Command{
+		Use:   "forget",
+		Short: "Remove the saved repository passphrase from the OS keyring",
+		Long: "Remove Sentra's saved repository passphrase from the OS keyring " +
+			"and disable passphrase.use_keyring in sentra.yaml when that file exists. " +
+			"This does not change the repository passphrase or delete S3 data.",
+		Args:          cobra.NoArgs,
+		SilenceUsage:  true,
+		SilenceErrors: false,
+		RunE: func(cmd *cobra.Command, _ []string) error {
+			return runPasswordForget(cmd, deps, flags)
+		},
+	}
+	cmd.Flags().StringVar(&flags.configPath, "config", configFileName,
+		"path to sentra.yaml used to identify the keyring entry")
+	cmd.Flags().StringVar(&flags.bucket, "bucket", "",
+		"bucket/keyring user to forget when sentra.yaml is unavailable or should be overridden")
+	return cmd
+}
+
+// runPasswd is the body of `sentra password`. Pulled out of the
 // closure so it's grep-able and unit-testable independently of cobra.
 func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	cmd.SilenceUsage = true
@@ -161,7 +199,73 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 		return fmt.Errorf("rotate passphrase: %w", err)
 	}
 
+	if cfg.Passphrase.UseKeyring {
+		if deps.DeletePassphrase == nil {
+			return fmt.Errorf("remove old keyring passphrase: missing keyring passphrase deleter")
+		}
+		if _, err := deps.DeletePassphrase(cfg); err != nil {
+			return fmt.Errorf("remove old keyring passphrase: %w", err)
+		}
+		if deps.SavePassphrase == nil {
+			return fmt.Errorf("update keyring passphrase: missing keyring passphrase saver")
+		}
+		if err := deps.SavePassphrase(cfg, newPass); err != nil {
+			return fmt.Errorf("update keyring passphrase: %w", err)
+		}
+		fmt.Fprintln(out, "OS keyring passphrase updated.")
+	}
+
 	fmt.Fprintln(out, "Passphrase rotated.")
 	fmt.Fprintln(out, "Old passphrase is no longer accepted; the new passphrase is in effect for subsequent sentra commands.")
+	return nil
+}
+
+func runPasswordForget(cmd *cobra.Command, deps PasswdDeps, flags *passwordForgetFlags) error {
+	cmd.SilenceUsage = true
+	if deps.DeletePassphrase == nil {
+		return fmt.Errorf("forget keyring passphrase: missing keyring passphrase deleter")
+	}
+
+	out := deps.Stdout
+	if out == nil {
+		out = cmd.OutOrStdout()
+	}
+
+	cfgPath := flags.configPath
+	if cfgPath == "" {
+		cfgPath = configFileName
+	}
+	yamlExists := false
+	if _, err := os.Stat(cfgPath); err == nil {
+		yamlExists = true
+	} else if !errors.Is(err, os.ErrNotExist) {
+		return fmt.Errorf("stat %s: %w", cfgPath, err)
+	}
+
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return fmt.Errorf("load %s: %w", cfgPath, err)
+	}
+	deleteCfg := *cfg
+	if flags.bucket != "" {
+		deleteCfg.Repo.S3.Bucket = flags.bucket
+	}
+	deleted, err := deps.DeletePassphrase(&deleteCfg)
+	if err != nil {
+		return fmt.Errorf("forget keyring passphrase: %w", err)
+	}
+	if deleted {
+		fmt.Fprintln(out, "OS keyring passphrase removed.")
+	} else {
+		fmt.Fprintln(out, "No OS keyring passphrase was stored.")
+	}
+
+	if yamlExists && cfg.Passphrase.UseKeyring {
+		cfg.Passphrase.UseKeyring = false
+		if err := os.WriteFile(cfgPath, []byte(renderConfigYAML(cfg)), 0o600); err != nil {
+			return fmt.Errorf("write %s: %w", cfgPath, err)
+		}
+		fmt.Fprintf(out, "%s updated to disable keyring lookup.\n", cfgPath)
+	}
 	return nil
 }

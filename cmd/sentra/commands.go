@@ -76,6 +76,8 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		NewStore:             newS3Store,
 		PassphraseWithConfig: openPassphrase,
 		NewPassphrase:        promptNewRepoPassphrase(),
+		SavePassphrase:       saveRepoPassphraseToKeyring,
+		DeletePassphrase:     deleteRepoPassphraseFromKeyring,
 		Stdout:               os.Stdout,
 	}))
 	root.AddCommand(cli.NewSync(cli.SyncDeps{

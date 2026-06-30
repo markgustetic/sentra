@@ -73,6 +73,11 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
+- `sentra password` rotates the wrapping passphrase. If
+  `passphrase.use_keyring` is true, successful rotation should update the OS
+  keyring entry. `sentra password forget` may remove the keyring entry and
+  disable keyring lookup locally, but must not change the repo passphrase or
+  delete S3 data. `sentra passwd` is a compatibility alias.
 - `sentra prune` is dry-run by default. `--apply` mutates; `--explain` shows
   retention reasons.
 - `sentra agent scan --local-only` and `--no-llm` must not call the LLM provider.

@@ -69,8 +69,8 @@ flowchart TD
     RepoKey -. used directly to encrypt .-> Snapshots & Manifests & Blobs
 ```
 
-The indirection (passphrase → KEK → repo key) means a future
-`sentra passwd` rewrites only the `config` object, never the data.
+The indirection (passphrase → KEK → repo key) means `sentra password`
+rewrites only the `config` object, never the data.
 
 ## Backup flow
 

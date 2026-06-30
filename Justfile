@@ -46,7 +46,7 @@ clean:
 	rm -rf bin coverage.out
 
 # Reset local Sentra/AWS CLI profile state for AWS setup testing. Does not delete S3 buckets or objects.
-aws-reset profile="sentra" config="sentra.yaml":
+aws-reset profile="sentra" config="sentra.yaml": build
 	@set -eu; \
 	if [ -z "{{profile}}" ]; then \
 		echo "AWS profile cannot be blank for aws-reset."; \
@@ -59,6 +59,7 @@ aws-reset profile="sentra" config="sentra.yaml":
 	echo "  setup draft:   $draft"; \
 	echo "  AWS profile:   {{profile}}"; \
 	echo; \
+	echo "It will remove Sentra's saved OS-keyring passphrase for this config if one exists."; \
 	echo "It will not delete S3 buckets, S3 objects, AWS accounts, or global AWS SSO/browser-login caches."; \
 	printf "Type 'reset' to continue: "; \
 	if ! IFS= read -r answer; then \
@@ -69,6 +70,7 @@ aws-reset profile="sentra" config="sentra.yaml":
 		echo "Canceled."; \
 		exit 1; \
 	fi; \
+	{{SENTRA}} password forget --config "$cfg"; \
 	rm -f -- "$cfg" "$draft"; \
 	if command -v aws >/dev/null 2>&1; then \
 		for key in \

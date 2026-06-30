@@ -61,7 +61,10 @@ and the dedup story gets harder).
   than re-typing.
 - **Keyring backend.** `zalando/go-keyring` proxies to the OS keychain
   (macOS Keychain, libsecret on Linux, Credential Manager on Windows).
-  The same trust assumptions about your OS keyring apply.
+  The same trust assumptions about your OS keyring apply. `sentra password`
+  updates the saved keyring passphrase after a successful rotation when
+  keyring lookup is enabled, and `sentra password forget` removes the saved
+  keyring entry without changing the repository passphrase.
 - **Memory.** The plaintext repo key is held in process memory while
   `sentra` is running. A local attacker with code-execution privileges on
   the running process can extract it. `Repo.Close` zeroes the in-process
@@ -72,7 +75,7 @@ and the dedup story gets harder).
   on `Close` collapses the *post-exit* window, not the in-flight one.
 - **Forward secrecy.** There's no per-snapshot key derivation in v1, so
   passphrase compromise means historical snapshot compromise, not just
-  future ones. A future `sentra passwd` will rotate the passphrase
+  future ones. `sentra password` rotates the passphrase
   cheaply (only the `config` object is rewritten), but it does not
   invalidate previously-derived KEKs that an attacker might already
   hold.
@@ -108,7 +111,7 @@ What blocks each attack:
   than racing into an inconsistent state where the new manifest
   references chunks GC just deleted.
 - **Legacy configs (no MAC).** Repos written by pre-MAC sentra builds
-  `Open` with a warning logged; a future `sentra passwd` will rewrite
+  `Open` with a warning logged; `sentra password` will rewrite
   the config with a MAC. This is the single migration window where
   KDF tampering wouldn't be detected by the MAC — it's still bounded
   by the wrap-shadow effect (downgrading KDF.Memory changes the KEK,

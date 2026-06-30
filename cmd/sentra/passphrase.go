@@ -28,8 +28,8 @@ func loadConfigBestEffort(path, where string) *config.Config {
 }
 
 // promptNewRepoPassphrase returns the new-passphrase callback for `sentra
-// passwd`. SENTRA_PASSPHRASE is intentionally not a source for the new secret;
-// non-interactive rotation uses --new-passphrase-file instead.
+// password`. SENTRA_PASSPHRASE is intentionally not a source for the new
+// secret; non-interactive rotation uses --new-passphrase-file instead.
 func promptNewRepoPassphrase() func(passphraseFile string) ([]byte, error) {
 	return func(passphraseFile string) ([]byte, error) {
 		if passphraseFile != "" {
@@ -99,4 +99,11 @@ func saveRepoPassphraseToKeyring(cfg *config.Config, passphrase []byte) error {
 		KeyringService: keyringService,
 		KeyringUser:    keyringUserForConfig(cfg),
 	}, passphrase)
+}
+
+func deleteRepoPassphraseFromKeyring(cfg *config.Config) (bool, error) {
+	return config.DeleteKeyringPassphrase(config.StoreKeyringOptions{
+		KeyringService: keyringService,
+		KeyringUser:    keyringUserForConfig(cfg),
+	})
 }

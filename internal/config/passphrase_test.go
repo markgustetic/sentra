@@ -319,3 +319,70 @@ func TestStoreKeyringPassphrase_RejectsEmpty(t *testing.T) {
 		t.Fatal("expected empty passphrase error, got nil")
 	}
 }
+
+func TestDeleteKeyringPassphrase_UsesConfiguredServiceAndUser(t *testing.T) {
+	prev := keyringDeleteFn
+	t.Cleanup(func() { keyringDeleteFn = prev })
+	var gotService string
+	var gotUser string
+	keyringDeleteFn = func(service, user string) error {
+		gotService = service
+		gotUser = user
+		return nil
+	}
+
+	deleted, err := DeleteKeyringPassphrase(StoreKeyringOptions{
+		KeyringService: "sentra",
+		KeyringUser:    "bucket",
+	})
+	if err != nil {
+		t.Fatalf("DeleteKeyringPassphrase: %v", err)
+	}
+	if !deleted {
+		t.Fatal("deleted: got false, want true")
+	}
+	if gotService != "sentra" {
+		t.Errorf("service: got %q, want sentra", gotService)
+	}
+	if gotUser != "bucket" {
+		t.Errorf("user: got %q, want bucket", gotUser)
+	}
+}
+
+func TestDeleteKeyringPassphrase_DefaultsServiceAndUser(t *testing.T) {
+	prev := keyringDeleteFn
+	t.Cleanup(func() { keyringDeleteFn = prev })
+	var gotService string
+	var gotUser string
+	keyringDeleteFn = func(service, user string) error {
+		gotService = service
+		gotUser = user
+		return nil
+	}
+
+	if _, err := DeleteKeyringPassphrase(StoreKeyringOptions{}); err != nil {
+		t.Fatalf("DeleteKeyringPassphrase: %v", err)
+	}
+	if gotService != "sentra" {
+		t.Errorf("service: got %q, want sentra", gotService)
+	}
+	if gotUser != "default" {
+		t.Errorf("user: got %q, want default", gotUser)
+	}
+}
+
+func TestDeleteKeyringPassphrase_NotFoundIsNotError(t *testing.T) {
+	prev := keyringDeleteFn
+	t.Cleanup(func() { keyringDeleteFn = prev })
+	keyringDeleteFn = func(string, string) error {
+		return ErrKeyringEntryNotFound
+	}
+
+	deleted, err := DeleteKeyringPassphrase(StoreKeyringOptions{})
+	if err != nil {
+		t.Fatalf("DeleteKeyringPassphrase: %v", err)
+	}
+	if deleted {
+		t.Fatal("deleted: got true, want false")
+	}
+}

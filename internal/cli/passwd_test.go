@@ -144,6 +144,124 @@ func TestPasswd_CLI_NewPassphraseFlag(t *testing.T) {
 	r2.Close()
 }
 
+func TestPassword_CLI_UpdatesKeyringAfterRotation(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	yaml := `repo:
+  s3:
+    bucket: keyring-bucket
+passphrase:
+  use_keyring: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("old-pass-123"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	r.Close()
+
+	out := &bytes.Buffer{}
+	var savedBucket string
+	var savedPassphrase []byte
+	var deletedBucket string
+	deps := PasswdDeps{
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		Passphrase: func() ([]byte, error) {
+			return []byte("old-pass-123"), nil
+		},
+		NewPassphrase: func(string) ([]byte, error) {
+			return []byte("new-pass-456"), nil
+		},
+		SavePassphrase: func(cfg *config.Config, passphrase []byte) error {
+			savedBucket = cfg.Repo.S3.Bucket
+			savedPassphrase = append([]byte(nil), passphrase...)
+			return nil
+		},
+		DeletePassphrase: func(cfg *config.Config) (bool, error) {
+			deletedBucket = cfg.Repo.S3.Bucket
+			return true, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewPasswd(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if savedBucket != "keyring-bucket" {
+		t.Fatalf("saved bucket: got %q, want keyring-bucket", savedBucket)
+	}
+	if deletedBucket != "keyring-bucket" {
+		t.Fatalf("deleted bucket: got %q, want keyring-bucket", deletedBucket)
+	}
+	if string(savedPassphrase) != "new-pass-456" {
+		t.Fatalf("saved passphrase mismatch")
+	}
+	if !strings.Contains(out.String(), "OS keyring passphrase updated") {
+		t.Fatalf("output should mention keyring update, got %q", out.String())
+	}
+}
+
+func TestPassword_CLI_KeyringUpdateFailureReturnsError(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	yaml := `repo:
+  s3:
+    bucket: keyring-bucket
+passphrase:
+  use_keyring: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("old-pass-123"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	r.Close()
+	wantErr := errors.New("keyring locked")
+	var deleteCalled bool
+	deps := PasswdDeps{
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		Passphrase:    func() ([]byte, error) { return []byte("old-pass-123"), nil },
+		NewPassphrase: func(string) ([]byte, error) { return []byte("new-pass-456"), nil },
+		SavePassphrase: func(*config.Config, []byte) error {
+			return wantErr
+		},
+		DeletePassphrase: func(*config.Config) (bool, error) {
+			deleteCalled = true
+			return true, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewPasswd(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err = cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected keyring error, got %v", err)
+	}
+	if !strings.Contains(err.Error(), "update keyring passphrase") {
+		t.Fatalf("error missing keyring context: %v", err)
+	}
+	if !deleteCalled {
+		t.Fatal("old keyring passphrase should be removed before saving the new one")
+	}
+}
+
 // TestPasswd_CLI_NewPassphraseTooShort exercises the < 8-char
 // floor (mirroring init's minPassphraseLen). The command must
 // refuse without writing anything.
@@ -246,6 +364,95 @@ func TestPasswd_CLI_OldPassphraseWrong(t *testing.T) {
 	r2.Close()
 }
 
+func TestPasswordForget_RemovesKeyringAndDisablesConfig(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	yaml := `repo:
+  s3:
+    bucket: keyring-bucket
+passphrase:
+  use_keyring: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+	out := &bytes.Buffer{}
+	var deletedBucket string
+	deps := PasswdDeps{
+		DeletePassphrase: func(cfg *config.Config) (bool, error) {
+			deletedBucket = cfg.Repo.S3.Bucket
+			return true, nil
+		},
+		Stdout: out,
+	}
+
+	cmd := NewPasswd(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"forget"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if deletedBucket != "keyring-bucket" {
+		t.Fatalf("deleted bucket: got %q, want keyring-bucket", deletedBucket)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("Load(sentra.yaml): %v", err)
+	}
+	if cfg.Passphrase.UseKeyring {
+		t.Fatal("passphrase.use_keyring should be disabled")
+	}
+	for _, want := range []string{
+		"OS keyring passphrase removed",
+		"sentra.yaml updated to disable keyring lookup",
+	} {
+		if !strings.Contains(out.String(), want) {
+			t.Fatalf("output missing %q:\n%s", want, out.String())
+		}
+	}
+}
+
+func TestPasswordForget_BucketFlagOverridesKeyringUserOnly(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	yaml := `repo:
+  s3:
+    bucket: config-bucket
+passphrase:
+  use_keyring: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+	var deletedBucket string
+	deps := PasswdDeps{
+		DeletePassphrase: func(cfg *config.Config) (bool, error) {
+			deletedBucket = cfg.Repo.S3.Bucket
+			return false, nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewPasswd(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"forget", "--bucket", "override-bucket"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if deletedBucket != "override-bucket" {
+		t.Fatalf("deleted bucket: got %q, want override-bucket", deletedBucket)
+	}
+	cfg, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("Load(sentra.yaml): %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "config-bucket" {
+		t.Fatalf("config bucket changed: got %q", cfg.Repo.S3.Bucket)
+	}
+}
+
 // TestPasswd_CLI_RegisteredOnRoot ensures the command shows up under
 // `sentra --help`. Mirrors TestInit_RegisteredOnRoot.
 func TestPasswd_CLI_RegisteredOnRoot(t *testing.T) {
@@ -254,14 +461,23 @@ func TestPasswd_CLI_RegisteredOnRoot(t *testing.T) {
 	deps, _, _ := passwdFixture(t, dir, "old", "newnewnew")
 	root := NewRoot("v", "c", "d")
 	root.AddCommand(NewPasswd(deps))
-	found := false
+	foundPassword := false
+	foundPasswdAlias := false
 	for _, c := range root.Commands() {
-		if c.Name() == "passwd" {
-			found = true
+		if c.Name() == "password" {
+			foundPassword = true
+			for _, alias := range c.Aliases {
+				if alias == "passwd" {
+					foundPasswdAlias = true
+				}
+			}
 			break
 		}
 	}
-	if !found {
-		t.Fatal("passwd command not registered on root")
+	if !foundPassword {
+		t.Fatal("password command not registered on root")
+	}
+	if !foundPasswdAlias {
+		t.Fatal("passwd alias not registered on password command")
 	}
 }
