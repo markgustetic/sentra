@@ -45,6 +45,57 @@ tidy:
 clean:
 	rm -rf bin coverage.out
 
+# Open the configured AWS S3 bucket in the browser. Override with: just aws-open-bucket <bucket> <region>
+aws-open-bucket bucket="" region="" config="sentra.yaml":
+	@set -eu; \
+	cfg="{{config}}"; \
+	bucket="{{bucket}}"; \
+	region="{{region}}"; \
+	prefix=""; \
+	read_yaml_value() { \
+		key="$1"; \
+		file="$2"; \
+		awk -v want="$key" ' \
+			/^[[:space:]]*repo:/ { in_repo=1; next } \
+			in_repo && /^[^[:space:]]/ { in_repo=0; in_s3=0 } \
+			in_repo && /^[[:space:]]*s3:/ { in_s3=1; next } \
+			in_s3 && /^[[:space:]]{2}[^[:space:]]/ && $1 != "s3:" { in_s3=0 } \
+			in_s3 { \
+				line=$0; \
+				sub("^[[:space:]]*" want ":[[:space:]]*", "", line); \
+				if (line != $0) { \
+					sub("[[:space:]]+#.*$", "", line); \
+					gsub(/^\"|\"$/, "", line); \
+					print line; \
+					exit; \
+				} \
+			} \
+		' "$file"; \
+	}; \
+	if [ -f "$cfg" ]; then \
+		if [ -z "$bucket" ]; then \
+			bucket="$(read_yaml_value bucket "$cfg")"; \
+			prefix="$(read_yaml_value prefix "$cfg")"; \
+		fi; \
+		if [ -z "$region" ]; then region="$(read_yaml_value region "$cfg")"; fi; \
+	fi; \
+	if [ -z "$bucket" ]; then \
+		echo "No S3 bucket found. Run setup first or pass one: just aws-open-bucket <bucket> <region>"; \
+		exit 1; \
+	fi; \
+	if [ -z "$region" ]; then region="us-east-1"; fi; \
+	url="$(python3 -c 'import sys; from urllib.parse import urlencode; bucket, region, prefix = sys.argv[1:4]; query = {"region": region, "bucketType": "general", "tab": "objects"}; query.update({"prefix": prefix} if prefix else {}); print(f"https://s3.console.aws.amazon.com/s3/buckets/{bucket}?{urlencode(query)}")' "$bucket" "$region" "$prefix")"; \
+	echo "Opening $url"; \
+	if command -v open >/dev/null 2>&1; then \
+		open "$url"; \
+	elif command -v xdg-open >/dev/null 2>&1; then \
+		xdg-open "$url"; \
+	elif command -v powershell.exe >/dev/null 2>&1; then \
+		powershell.exe -NoProfile -Command "Start-Process '$url'"; \
+	else \
+		echo "$url"; \
+	fi
+
 # Reset local Sentra/AWS CLI profile state for AWS setup testing. Does not delete S3 buckets or objects.
 aws-reset profile="sentra" config="sentra.yaml": build
 	@set -eu; \
