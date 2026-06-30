@@ -257,6 +257,10 @@ Every subcommand respects:
 - OS keyring — setup can save the passphrase there and opt in via `passphrase.use_keyring: true`.
 - Interactive `huh` prompt — last resort, TTY only.
 
+Keyring entries are scoped to the configured S3 bucket and prefix so multiple
+Sentra repos can safely share one bucket under different prefixes. Older
+bucket-only keyring entries are still read as a migration fallback.
+
 Use `sentra password` to rotate the repository passphrase. If
 `passphrase.use_keyring: true`, a successful rotation also replaces the saved
 OS-keyring passphrase so the old one is not left behind. Use

@@ -254,6 +254,65 @@ func TestResolve_KeyringFallsThroughOnMiss(t *testing.T) {
 	}
 }
 
+func TestResolve_KeyringFallbackUserAfterPrimaryMiss(t *testing.T) {
+	t.Setenv("SENTRA_PASSPHRASE", "")
+	prev := keyringLookupFn
+	t.Cleanup(func() { keyringLookupFn = prev })
+	var calls []string
+	keyringLookupFn = func(_ string, user string) ([]byte, error) {
+		calls = append(calls, user)
+		if user == "shared-bucket" {
+			return []byte("legacy-entry"), nil
+		}
+		return nil, ErrKeyringEntryNotFound
+	}
+
+	got, err := Resolve(ResolveOptions{
+		UseKeyring:           true,
+		KeyringService:       "sentra",
+		KeyringUser:          "shared-bucket/sentra-a/",
+		KeyringFallbackUsers: []string{"shared-bucket"},
+		Prompt: func() ([]byte, error) {
+			t.Fatal("prompt should not run when a fallback keyring entry exists")
+			return nil, nil
+		},
+	})
+	if err != nil {
+		t.Fatalf("Resolve: %v", err)
+	}
+	if string(got) != "legacy-entry" {
+		t.Fatalf("got %q, want legacy-entry", got)
+	}
+	wantCalls := []string{"shared-bucket/sentra-a/", "shared-bucket"}
+	if strings.Join(calls, ",") != strings.Join(wantCalls, ",") {
+		t.Fatalf("keyring users: got %v, want %v", calls, wantCalls)
+	}
+}
+
+func TestResolve_KeyringPrimaryErrorDoesNotTryFallback(t *testing.T) {
+	t.Setenv("SENTRA_PASSPHRASE", "")
+	prev := keyringLookupFn
+	t.Cleanup(func() { keyringLookupFn = prev })
+	wantErr := errors.New("keyring locked")
+	var calls []string
+	keyringLookupFn = func(_ string, user string) ([]byte, error) {
+		calls = append(calls, user)
+		return nil, wantErr
+	}
+
+	_, err := Resolve(ResolveOptions{
+		UseKeyring:           true,
+		KeyringUser:          "shared-bucket/sentra-a/",
+		KeyringFallbackUsers: []string{"shared-bucket"},
+	})
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected keyring error, got %v", err)
+	}
+	if len(calls) != 1 || calls[0] != "shared-bucket/sentra-a/" {
+		t.Fatalf("keyring users: got %v, want primary only", calls)
+	}
+}
+
 func TestStoreKeyringPassphrase_UsesConfiguredServiceAndUser(t *testing.T) {
 	prev := keyringSetFn
 	t.Cleanup(func() { keyringSetFn = prev })

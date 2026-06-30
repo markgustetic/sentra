@@ -262,6 +262,63 @@ passphrase:
 	}
 }
 
+func TestPassword_CLI_KeyringDeleteFailureDoesNotRotate(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	yaml := `repo:
+  s3:
+    bucket: keyring-bucket
+passphrase:
+  use_keyring: true
+`
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(yaml), 0o600); err != nil {
+		t.Fatalf("write sentra.yaml: %v", err)
+	}
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("old-pass-123"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	r.Close()
+	wantErr := errors.New("keyring locked")
+	var saveCalled bool
+	deps := PasswdDeps{
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		Passphrase:    func() ([]byte, error) { return []byte("old-pass-123"), nil },
+		NewPassphrase: func(string) ([]byte, error) { return []byte("new-pass-456"), nil },
+		DeletePassphrase: func(*config.Config) (bool, error) {
+			return false, wantErr
+		},
+		SavePassphrase: func(*config.Config, []byte) error {
+			saveCalled = true
+			return nil
+		},
+		Stdout: io.Discard,
+	}
+
+	cmd := NewPasswd(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	err = cmd.Execute()
+	if !errors.Is(err, wantErr) {
+		t.Fatalf("expected keyring delete error, got %v", err)
+	}
+	if saveCalled {
+		t.Fatal("new keyring passphrase should not be saved when removing the old entry fails")
+	}
+	if _, err := repo.Open(context.Background(), store, []byte("new-pass-456")); !errors.Is(err, repo.ErrWrongPassphrase) {
+		t.Fatalf("Open(new): got %v, want ErrWrongPassphrase", err)
+	}
+	oldRepo, err := repo.Open(context.Background(), store, []byte("old-pass-123"))
+	if err != nil {
+		t.Fatalf("Open(old): %v", err)
+	}
+	oldRepo.Close()
+}
+
 // TestPasswd_CLI_NewPassphraseTooShort exercises the < 8-char
 // floor (mirroring init's minPassphraseLen). The command must
 // refuse without writing anything.

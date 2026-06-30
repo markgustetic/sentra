@@ -64,7 +64,9 @@ and the dedup story gets harder).
   The same trust assumptions about your OS keyring apply. `sentra password`
   updates the saved keyring passphrase after a successful rotation when
   keyring lookup is enabled, and `sentra password forget` removes the saved
-  keyring entry without changing the repository passphrase.
+  keyring entry without changing the repository passphrase. Keyring entries
+  are scoped by configured S3 bucket and prefix, with bucket-only lookup kept
+  as a migration fallback for older local entries.
 - **Memory.** The plaintext repo key is held in process memory while
   `sentra` is running. A local attacker with code-execution privileges on
   the running process can extract it. `Repo.Close` zeroes the in-process

@@ -57,6 +57,11 @@ type ResolveOptions struct {
 	// Defaults to "default" when empty — fine for single-repo users.
 	KeyringUser string
 
+	// KeyringFallbackUsers are legacy per-repo identifiers to try after
+	// KeyringUser misses. Non-empty values are tried in order with duplicates
+	// removed. Other keyring errors still fail closed instead of falling back.
+	KeyringFallbackUsers []string
+
 	// Prompt is the interactive callback. Typically wired to
 	// ui.PromptPassphrase or ui.PromptPassphraseWithConfirm. Nil
 	// disables the prompt branch (useful in tests / scripts).
@@ -95,20 +100,15 @@ func Resolve(opts ResolveOptions) ([]byte, error) {
 		return out, nil
 	}
 	if opts.UseKeyring {
-		service := opts.KeyringService
-		if service == "" {
-			service = "sentra"
-		}
-		user := opts.KeyringUser
-		if user == "" {
-			user = "default"
-		}
-		val, err := keyringLookupFn(service, user)
-		if err == nil {
-			return val, nil
-		}
-		if !errors.Is(err, ErrKeyringEntryNotFound) {
-			return nil, fmt.Errorf("config: keyring lookup: %w", err)
+		service, user := normalizeKeyringTarget(opts.KeyringService, opts.KeyringUser)
+		for _, candidate := range keyringLookupUsers(user, opts.KeyringFallbackUsers) {
+			val, err := keyringLookupFn(service, candidate)
+			if err == nil {
+				return val, nil
+			}
+			if !errors.Is(err, ErrKeyringEntryNotFound) {
+				return nil, fmt.Errorf("config: keyring lookup for %q: %w", candidate, err)
+			}
 		}
 		// Fall through to the prompt on a clean miss.
 	}
@@ -125,14 +125,7 @@ func StoreKeyringPassphrase(opts StoreKeyringOptions, passphrase []byte) error {
 	if len(passphrase) == 0 {
 		return fmt.Errorf("config: cannot store empty passphrase in keyring")
 	}
-	service := opts.KeyringService
-	if service == "" {
-		service = "sentra"
-	}
-	user := opts.KeyringUser
-	if user == "" {
-		user = "default"
-	}
+	service, user := normalizeKeyringTarget(opts.KeyringService, opts.KeyringUser)
 	if err := keyringSetFn(service, user, passphrase); err != nil {
 		return fmt.Errorf("config: keyring store: %w", err)
 	}
@@ -142,14 +135,7 @@ func StoreKeyringPassphrase(opts StoreKeyringOptions, passphrase []byte) error {
 // DeleteKeyringPassphrase removes the configured passphrase from the OS
 // keyring. It returns false without error when no entry exists.
 func DeleteKeyringPassphrase(opts StoreKeyringOptions) (bool, error) {
-	service := opts.KeyringService
-	if service == "" {
-		service = "sentra"
-	}
-	user := opts.KeyringUser
-	if user == "" {
-		user = "default"
-	}
+	service, user := normalizeKeyringTarget(opts.KeyringService, opts.KeyringUser)
 	if err := keyringDeleteFn(service, user); err != nil {
 		if errors.Is(err, ErrKeyringEntryNotFound) {
 			return false, nil
@@ -157,6 +143,32 @@ func DeleteKeyringPassphrase(opts StoreKeyringOptions) (bool, error) {
 		return false, fmt.Errorf("config: keyring delete: %w", err)
 	}
 	return true, nil
+}
+
+func normalizeKeyringTarget(service, user string) (string, string) {
+	if service == "" {
+		service = "sentra"
+	}
+	if user == "" {
+		user = "default"
+	}
+	return service, user
+}
+
+func keyringLookupUsers(primary string, fallbacks []string) []string {
+	seen := map[string]bool{}
+	out := make([]string, 0, 1+len(fallbacks))
+	for _, user := range append([]string{primary}, fallbacks...) {
+		if user == "" {
+			user = "default"
+		}
+		if seen[user] {
+			continue
+		}
+		seen[user] = true
+		out = append(out, user)
+	}
+	return out
 }
 
 // readPassphraseFile reads the passphrase from path, stripping a

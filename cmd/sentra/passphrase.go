@@ -3,6 +3,7 @@ package main
 import (
 	"fmt"
 	"os"
+	"strings"
 
 	"github.com/markgustetic/sentra/internal/cli"
 	"github.com/markgustetic/sentra/internal/config"
@@ -53,6 +54,7 @@ func buildResolveOptsFromConfig(rootFlags *cli.RootFlags, cfg *config.Config, pr
 		opts.UseKeyring = cfg.Passphrase.UseKeyring
 		opts.KeyringService = keyringService
 		opts.KeyringUser = keyringUserForConfig(cfg)
+		opts.KeyringFallbackUsers = legacyKeyringUsersForConfig(cfg)
 	}
 	if opts.KeyringUser == "" {
 		opts.KeyringUser = keyringDefaultUser
@@ -64,7 +66,26 @@ func keyringUserForConfig(cfg *config.Config) string {
 	if cfg == nil || cfg.Repo.S3.Bucket == "" {
 		return keyringDefaultUser
 	}
-	return cfg.Repo.S3.Bucket
+	bucket := strings.TrimSpace(cfg.Repo.S3.Bucket)
+	if bucket == "" {
+		return keyringDefaultUser
+	}
+	prefix := strings.TrimSpace(cfg.Repo.S3.Prefix)
+	if prefix == "" {
+		return bucket
+	}
+	return bucket + "/" + prefix
+}
+
+func legacyKeyringUsersForConfig(cfg *config.Config) []string {
+	if cfg == nil {
+		return nil
+	}
+	bucket := strings.TrimSpace(cfg.Repo.S3.Bucket)
+	if bucket == "" || keyringUserForConfig(cfg) == bucket {
+		return nil
+	}
+	return []string{bucket}
 }
 
 func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
@@ -95,15 +116,30 @@ func promptOpenPassphraseWithConfig(rootFlags *cli.RootFlags) func(*config.Confi
 }
 
 func saveRepoPassphraseToKeyring(cfg *config.Config, passphrase []byte) error {
-	return config.StoreKeyringPassphrase(config.StoreKeyringOptions{
-		KeyringService: keyringService,
-		KeyringUser:    keyringUserForConfig(cfg),
-	}, passphrase)
+	return config.StoreKeyringPassphrase(keyringOptionsForConfig(cfg), passphrase)
 }
 
 func deleteRepoPassphraseFromKeyring(cfg *config.Config) (bool, error) {
-	return config.DeleteKeyringPassphrase(config.StoreKeyringOptions{
+	deleted, err := config.DeleteKeyringPassphrase(keyringOptionsForConfig(cfg))
+	if err != nil {
+		return false, err
+	}
+	for _, user := range legacyKeyringUsersForConfig(cfg) {
+		legacyDeleted, err := config.DeleteKeyringPassphrase(config.StoreKeyringOptions{
+			KeyringService: keyringService,
+			KeyringUser:    user,
+		})
+		if err != nil {
+			return deleted, err
+		}
+		deleted = deleted || legacyDeleted
+	}
+	return deleted, nil
+}
+
+func keyringOptionsForConfig(cfg *config.Config) config.StoreKeyringOptions {
+	return config.StoreKeyringOptions{
 		KeyringService: keyringService,
 		KeyringUser:    keyringUserForConfig(cfg),
-	})
+	}
 }

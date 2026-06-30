@@ -193,24 +193,30 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 		return fmt.Errorf("new passphrase matches old; nothing to rotate")
 	}
 
-	// 5. Rotate. Repo.Passwd acquires the advisory lock, rotates
-	// salt + wrap + MAC, and writes the new config atomically.
-	if err := r.Passwd(cmd.Context(), newPass); err != nil {
-		return fmt.Errorf("rotate passphrase: %w", err)
-	}
-
 	if cfg.Passphrase.UseKeyring {
 		if deps.DeletePassphrase == nil {
 			return fmt.Errorf("remove old keyring passphrase: missing keyring passphrase deleter")
 		}
-		if _, err := deps.DeletePassphrase(cfg); err != nil {
-			return fmt.Errorf("remove old keyring passphrase: %w", err)
-		}
 		if deps.SavePassphrase == nil {
 			return fmt.Errorf("update keyring passphrase: missing keyring passphrase saver")
 		}
+		if _, err := deps.DeletePassphrase(cfg); err != nil {
+			return fmt.Errorf("remove old keyring passphrase: %w", err)
+		}
+	}
+
+	// 5. Rotate. Repo.Passwd acquires the advisory lock, rotates
+	// salt + wrap + MAC, and writes the new config atomically.
+	if err := r.Passwd(cmd.Context(), newPass); err != nil {
+		if cfg.Passphrase.UseKeyring {
+			return fmt.Errorf("rotate passphrase after removing old keyring entry: %w", err)
+		}
+		return fmt.Errorf("rotate passphrase: %w", err)
+	}
+
+	if cfg.Passphrase.UseKeyring {
 		if err := deps.SavePassphrase(cfg, newPass); err != nil {
-			return fmt.Errorf("update keyring passphrase: %w", err)
+			return fmt.Errorf("repository passphrase was rotated, but update keyring passphrase failed: %w", err)
 		}
 		fmt.Fprintln(out, "OS keyring passphrase updated.")
 	}
