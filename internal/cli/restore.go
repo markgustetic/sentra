@@ -75,14 +75,8 @@ func runRestore(
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
-	stderr := deps.Stderr
-	if stderr == nil {
-		stderr = cmd.ErrOrStderr()
-	}
-	stdout := deps.Stdout
-	if stdout == nil {
-		stdout = cmd.OutOrStdout()
-	}
+	stderr := cmdStderr(cmd, deps.Stderr)
+	stdout := cmdStdout(cmd, deps.Stdout)
 
 	if dryRun {
 		plan, err := r.PlanRestore(cmd.Context(), snapID, destDir)

@@ -50,3 +50,19 @@ func openRepoForConfig(cmd *cobra.Command, cfgPath string, deps RepoDeps) (*repo
 	}
 	return r, pass, cfg, nil
 }
+
+// cmdStdout returns w, or the command's default stdout when w is nil.
+func cmdStdout(cmd *cobra.Command, w io.Writer) io.Writer {
+	if w != nil {
+		return w
+	}
+	return cmd.OutOrStdout()
+}
+
+// cmdStderr returns w, or the command's default stderr when w is nil.
+func cmdStderr(cmd *cobra.Command, w io.Writer) io.Writer {
+	if w != nil {
+		return w
+	}
+	return cmd.ErrOrStderr()
+}

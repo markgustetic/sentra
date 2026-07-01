@@ -81,10 +81,7 @@ func runSnapshots(cmd *cobra.Command, deps SnapshotsDeps, asJSON bool, cfgPath s
 		return fmt.Errorf("list snapshots: %w", err)
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	if asJSON {
 		return writeSnapshotsJSON(out, snaps)

@@ -91,10 +91,7 @@ func runRecoveryKit(cmd *cobra.Command, deps RecoveryKitDeps, cfgPath, outPath s
 		return err
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 	if outPath != "" {
 		if err := os.WriteFile(outPath, body, 0o600); err != nil {
 			return fmt.Errorf("write recovery kit: %w", err)

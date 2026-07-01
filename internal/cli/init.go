@@ -294,10 +294,7 @@ func runInit(cmd *cobra.Command, deps InitDeps, force bool, flags *initFlags) er
 		return fmt.Errorf("write sentra.yaml: %w", err)
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 	fmt.Fprintln(out, ui.Primary.Render("Initialized sentra repository"))
 	fmt.Fprintf(out, "  config:   %s\n", configFileName)
 	fmt.Fprintf(out, "  repo id:  %s\n", r.Config().ID)

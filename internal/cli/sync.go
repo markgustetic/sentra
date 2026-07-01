@@ -94,10 +94,7 @@ func NewSync(deps SyncDeps) *cobra.Command {
 func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 	cmd.SilenceUsage = true
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	if flags.dstConfig == "" {
 		return fmt.Errorf("sentra sync: --dst-config is required")

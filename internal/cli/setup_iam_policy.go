@@ -34,9 +34,7 @@ func newSetupIAMPolicy(out io.Writer) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			if out == nil {
-				out = cmd.OutOrStdout()
-			}
+			out = cmdStdout(cmd, out)
 			bucket = strings.TrimSpace(bucket)
 			prefix = strings.TrimSpace(prefix)
 			if bucket == "" {

@@ -137,10 +137,7 @@ func newPasswordForget(deps PasswdDeps) *cobra.Command {
 func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	cmd.SilenceUsage = true
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	cfg, err := config.Load(configFileName)
 	if err != nil {
@@ -236,10 +233,7 @@ func runPasswordForget(cmd *cobra.Command, deps PasswdDeps, flags *passwordForge
 		return fmt.Errorf("forget keyring passphrase: missing keyring passphrase deleter")
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	cfgPath := flags.configPath
 	if cfgPath == "" {

@@ -53,10 +53,7 @@ func NewDoctor(deps DoctorDeps) *cobra.Command {
 }
 
 func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo bool) error {
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 	fmt.Fprintln(out, ui.Primary.Render("Sentra doctor"))
 
 	failures := 0

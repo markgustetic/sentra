@@ -205,10 +205,7 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 		Actions:    actions,
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	// Drain the stream channel into stderr (or discard) in the
 	// background so the model's reasoning text doesn't get lost. We

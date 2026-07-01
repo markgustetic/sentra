@@ -77,10 +77,7 @@ func runDiff(cmd *cobra.Command, deps DiffDeps, idA, idB string, asJSON bool, cf
 	slices.Sort(res.Removed)
 	slices.Sort(res.Changed)
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	if asJSON {
 		return writeDiffJSON(out, res)

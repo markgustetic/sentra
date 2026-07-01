@@ -71,10 +71,7 @@ func runCheck(
 		return fmt.Errorf("check repo: %w", err)
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 	if asJSON {
 		err = writeCheckJSON(out, report)
 	} else {

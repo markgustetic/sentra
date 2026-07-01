@@ -76,10 +76,7 @@ func runAgentAdviseIgnore(
 		return err
 	}
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 	if asJSON {
 		return writeIgnoreAdviceJSON(out, advice)
 	}

@@ -145,10 +145,7 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	decisions := repo.PlanRetentionExplain(snaps, policy)
 	keep, drop := splitRetentionDecisions(decisions)
 
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	// Build a quick lookup for SnapshotInfo by ID so the printer can
 	// surface CreatedAt and Stats.NewBytes for each drop candidate.

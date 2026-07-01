@@ -133,14 +133,8 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
-	stderr := deps.Stderr
-	if stderr == nil {
-		stderr = cmd.ErrOrStderr()
-	}
-	stdout := deps.Stdout
-	if stdout == nil {
-		stdout = cmd.OutOrStdout()
-	}
+	stderr := cmdStderr(cmd, deps.Stderr)
+	stdout := cmdStdout(cmd, deps.Stdout)
 
 	// Wire a ByteProgress + a goroutine that repaints to stderr on
 	// a fixed cadence. The reporter is updated synchronously by
@@ -213,10 +207,7 @@ func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outP
 		return fmt.Errorf("write backup plan: %w", err)
 	}
 
-	stdout := deps.Stdout
-	if stdout == nil {
-		stdout = cmd.OutOrStdout()
-	}
+	stdout := cmdStdout(cmd, deps.Stdout)
 	fmt.Fprintln(stdout, ui.Success.Render("Plan written"))
 	fmt.Fprintf(stdout, "  file:   %s\n", outPath)
 	fmt.Fprintf(stdout, "  root:   %s\n", plan.Root)
@@ -245,14 +236,8 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
-	stdout := deps.Stdout
-	if stdout == nil {
-		stdout = cmd.OutOrStdout()
-	}
-	stderr := deps.Stderr
-	if stderr == nil {
-		stderr = cmd.ErrOrStderr()
-	}
+	stdout := cmdStdout(cmd, deps.Stdout)
+	stderr := cmdStderr(cmd, deps.Stderr)
 
 	if !yes {
 		if deps.Confirm == nil {

@@ -171,10 +171,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	if cfgPath == "" {
 		cfgPath = configFileName
 	}
-	out := deps.Stdout
-	if out == nil {
-		out = cmd.OutOrStdout()
-	}
+	out := cmdStdout(cmd, deps.Stdout)
 
 	yamlExists := false
 	if _, err := os.Stat(cfgPath); err == nil {
