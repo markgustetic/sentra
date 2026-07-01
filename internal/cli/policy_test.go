@@ -31,7 +31,7 @@ func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{Stdout: out})
+	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{
@@ -86,7 +86,7 @@ func TestPolicyListAndShow(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{Stdout: out})
+	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"list"})
@@ -98,7 +98,7 @@ func TestPolicyListAndShow(t *testing.T) {
 	}
 
 	out.Reset()
-	cmd = NewPolicy(PolicyDeps{Stdout: out})
+	cmd = NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"show", "home"})
@@ -122,7 +122,7 @@ func TestPolicyRemove_DeletesPolicy(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{Stdout: out})
+	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"remove", "home"})
@@ -175,13 +175,15 @@ func TestPolicyRun_CreatesTaggedSnapshot(t *testing.T) {
 
 	out := &bytes.Buffer{}
 	deps := PolicyDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) {
+				return []byte("hunter2"), nil
+			},
+			Stdout: out,
 		},
-		Passphrase: func() ([]byte, error) {
-			return []byte("hunter2"), nil
-		},
-		Stdout: out,
 		Stderr: io.Discard,
 	}
 	cmd := NewPolicy(deps)

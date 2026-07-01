@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -23,11 +22,8 @@ import (
 
 // PolicyDeps wires side effects for `sentra policy`.
 type PolicyDeps struct {
-	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase           func() ([]byte, error)
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
-	Stdout               io.Writer
-	Stderr               io.Writer
+	RepoDeps
+	Stderr io.Writer
 }
 
 type policyAddFlags struct {

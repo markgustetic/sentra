@@ -32,11 +32,13 @@ func uiFixture(t *testing.T, passphrase string) (UIDeps, *tui.App) {
 	}
 	var captured tui.App
 	deps := UIDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
 		},
-		Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
-		Provider:   nil, // agent view will show the placeholder
+		Provider: nil, // agent view will show the placeholder
 		Run: func(app tui.App) error {
 			captured = app
 			return nil

@@ -47,11 +47,13 @@ func snapshotsFixture(t *testing.T, passphrase string, n int) (SnapshotsDeps, []
 
 	out := &bytes.Buffer{}
 	deps := SnapshotsDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
-		Stdout:     out,
 	}
 	return deps, ids, out
 }
@@ -132,11 +134,13 @@ func TestSnapshots_EmptyRepo(t *testing.T) {
 	r.Close()
 	out := &bytes.Buffer{}
 	deps := SnapshotsDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte("h"), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte("h"), nil },
-		Stdout:     out,
 	}
 	cmd := NewSnapshots(deps)
 	cmd.SetOut(out)

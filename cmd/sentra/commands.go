@@ -29,21 +29,27 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Stdout:         os.Stdout,
 	}))
 	root.AddCommand(cli.NewBackup(cli.BackupDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
-		Stderr:               os.Stderr,
-		Confirm:              cli.HuhBackupApplyConfirm,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		Stderr:  os.Stderr,
+		Confirm: cli.HuhBackupApplyConfirm,
 	}))
 	root.AddCommand(cli.NewSnapshots(cli.SnapshotsDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
 	}))
 	root.AddCommand(cli.NewCheck(cli.CheckDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
 	}))
 	root.AddCommand(cli.NewDoctor(cli.DoctorDeps{
 		NewStore:             newS3Store,
@@ -51,32 +57,42 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Stdout:               os.Stdout,
 	}))
 	root.AddCommand(cli.NewRecoveryKit(cli.RecoveryKitDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
 	}))
 	root.AddCommand(cli.NewRestore(cli.RestoreDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
-		Stderr:               os.Stderr,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		Stderr: os.Stderr,
 	}))
 	root.AddCommand(cli.NewDiff(cli.DiffDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
 	}))
 	root.AddCommand(cli.NewPrune(cli.PruneDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
-		Confirm:              cli.HuhConfirm,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		Confirm: cli.HuhConfirm,
 	}))
 	root.AddCommand(cli.NewPolicy(cli.PolicyDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
-		Stderr:               os.Stderr,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		Stderr: os.Stderr,
 	}))
 	root.AddCommand(cli.NewSchedule(cli.ScheduleDeps{
 		Stdout: os.Stdout,
@@ -95,21 +111,25 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Stdout:               os.Stdout,
 	}))
 	root.AddCommand(cli.NewAgent(cli.AgentDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
-		ProviderForConfig:    newAgentProvider,
-		Heuristics:           defaultHeuristics(),
-		Actions:              action.NewDefaultRegistry(),
-		Confirm:              cli.HuhAgentConfirm,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		ProviderForConfig: newAgentProvider,
+		Heuristics:        defaultHeuristics(),
+		Actions:           action.NewDefaultRegistry(),
+		Confirm:           cli.HuhAgentConfirm,
 	}))
 
 	uiDeps := cli.UIDeps{
-		NewStore:             newS3Store,
-		PassphraseWithConfig: openPassphrase,
-		Stdout:               os.Stdout,
-		ProviderForConfig:    newAgentProvider,
-		Run:                  cli.DefaultUIRunner,
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		ProviderForConfig: newAgentProvider,
+		Run:               cli.DefaultUIRunner,
 	}
 	root.AddCommand(cli.NewUI(uiDeps))
 	cli.SetUIAsDefault(root, uiDeps)

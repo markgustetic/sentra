@@ -57,11 +57,13 @@ func pruneFixture(t *testing.T, passphrase string, n int) (PruneDeps, *blobstore
 
 	out := &bytes.Buffer{}
 	deps := PruneDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
-		Stdout:     out,
 		// Tests skip the interactive confirm by default — the --yes
 		// flag bypasses the Confirm callback entirely.
 		Confirm: func(string) (bool, error) {
@@ -308,10 +310,12 @@ func TestPrune_AllFlagAllowsWipe(t *testing.T) {
 // TestPrune_RegisteredOnRoot verifies users see `prune` in --help.
 func TestPrune_RegisteredOnRoot(t *testing.T) {
 	deps := PruneDeps{
-		NewStore:   func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },
-		Passphrase: func() ([]byte, error) { return []byte("x"), nil },
-		Stdout:     io.Discard,
-		Confirm:    func(string) (bool, error) { return true, nil },
+		RepoDeps: RepoDeps{
+			NewStore:   func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },
+			Passphrase: func() ([]byte, error) { return []byte("x"), nil },
+			Stdout:     io.Discard,
+		},
+		Confirm: func(string) (bool, error) { return true, nil },
 	}
 	root := NewRoot("v", "c", "d")
 	root.AddCommand(NewPrune(deps))
@@ -355,12 +359,14 @@ func TestPrune_ConfirmDecline(t *testing.T) {
 
 	out := &bytes.Buffer{}
 	deps := PruneDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte("h"), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte("h"), nil },
-		Stdout:     out,
-		Confirm:    func(string) (bool, error) { return false, nil },
+		Confirm: func(string) (bool, error) { return false, nil },
 	}
 	cmd := NewPrune(deps)
 	cmd.SetOut(out)

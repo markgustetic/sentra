@@ -1,9 +1,7 @@
 package cli
 
 import (
-	"context"
 	"fmt"
-	"io"
 
 	"github.com/spf13/cobra"
 
@@ -11,7 +9,6 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/agent/llm"
-	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -29,20 +26,7 @@ import (
 // NewStore + Passphrase open the repo; Confirm is the per-recommendation
 // approval prompt for --apply (skipped under --yes).
 type AgentDeps struct {
-	// NewStore opens the blobstore the repo lives in. Same shape as
-	// every other command's deps.
-	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-
-	// Passphrase returns the bytes used to unwrap the repo key.
-	Passphrase func() ([]byte, error)
-
-	// PassphraseWithConfig is the config-aware production resolver.
-	// When set, it takes precedence over Passphrase so --config paths
-	// feed keyring/user selection instead of hardcoded sentra.yaml.
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
-
-	// Stdout receives the user-facing summary table / JSON.
-	Stdout io.Writer
+	RepoDeps
 
 	// Actions is the registry of action verbs the orchestrator's
 	// system prompt will list and the --apply path will dispatch
@@ -165,25 +149,11 @@ func NewAgentScan(deps AgentDeps) *cobra.Command {
 func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	cmd.SilenceUsage = true
 
-	cfg, err := config.Load(flags.cfgPath)
+	r, pass, cfg, err := openRepoForConfig(cmd, flags.cfgPath, deps.RepoDeps)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	store, err := deps.NewStore(cmd.Context(), cfg)
-	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
-	}
-	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
-	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return err
 	}
 	defer crypto.Zeroize(pass)
-
-	r, err := repo.Open(cmd.Context(), store, pass)
-	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
 	defer r.Close()
 
 	registry := heuristics.NewRegistry(deps.Heuristics...)

@@ -43,12 +43,14 @@ func restoreFixture(t *testing.T, passphrase string) (RestoreDeps, string, strin
 
 	out := &bytes.Buffer{}
 	deps := RestoreDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
-		Stdout:     out,
-		Stderr:     io.Discard,
+		Stderr: io.Discard,
 	}
 	return deps, snap.ID, src, out
 }

@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"io"
@@ -21,20 +20,7 @@ import (
 // flow; tests inject a deterministic "yes/no" function so the run is
 // scriptable.
 type PruneDeps struct {
-	// NewStore opens the blobstore the repo lives in. Same shape as
-	// every other command's deps so wiring is uniform.
-	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-
-	// Passphrase returns the bytes used to unwrap the repo key.
-	Passphrase func() ([]byte, error)
-
-	// PassphraseWithConfig is the config-aware production resolver.
-	// When set, it takes precedence over Passphrase.
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
-
-	// Stdout receives the user-facing summary. cobra.SetOut also goes
-	// here when the caller wants stderr-style routing.
-	Stdout io.Writer
+	RepoDeps
 
 	// Confirm prompts the user with a question and returns the
 	// answer. Production wires this to huh.NewConfirm; tests inject a
@@ -142,28 +128,14 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	cmd.SilenceUsage = true
 
-	cfg, err := config.Load(flags.cfgPath)
+	r, pass, cfg, err := openRepoForConfig(cmd, flags.cfgPath, deps.RepoDeps)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-
-	policy := buildRetentionPolicy(cfg, flags)
-
-	store, err := deps.NewStore(cmd.Context(), cfg)
-	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
-	}
-	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
-	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return err
 	}
 	defer crypto.Zeroize(pass)
-
-	r, err := repo.Open(cmd.Context(), store, pass)
-	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
 	defer r.Close()
+
+	policy := buildRetentionPolicy(cfg, flags)
 
 	snaps, err := r.ListSnapshots(cmd.Context())
 	if err != nil {

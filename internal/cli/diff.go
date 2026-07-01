@@ -1,7 +1,6 @@
 package cli
 
 import (
-	"context"
 	"encoding/json"
 	"fmt"
 	"io"
@@ -9,8 +8,6 @@ import (
 
 	"github.com/spf13/cobra"
 
-	"github.com/markgustetic/sentra/internal/blobstore"
-	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -18,10 +15,7 @@ import (
 
 // DiffDeps wires the side-effecting pieces of `sentra diff`.
 type DiffDeps struct {
-	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase           func() ([]byte, error)
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
-	Stdout               io.Writer
+	RepoDeps
 }
 
 // NewDiff returns the cobra command for `sentra diff <snap-a> <snap-b>`.
@@ -64,24 +58,11 @@ type diffJSONPayload struct {
 func runDiff(cmd *cobra.Command, deps DiffDeps, idA, idB string, asJSON bool, cfgPath string) error {
 	cmd.SilenceUsage = true
 
-	cfg, err := config.Load(cfgPath)
+	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	store, err := deps.NewStore(cmd.Context(), cfg)
-	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
-	}
-	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
-	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return err
 	}
 	defer crypto.Zeroize(pass)
-
-	r, err := repo.Open(cmd.Context(), store, pass)
-	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
 	defer r.Close()
 
 	res, err := r.Diff(cmd.Context(), idA, idB)

@@ -1,14 +1,11 @@
 package cli
 
 import (
-	"context"
 	"fmt"
 	"io"
 
 	"github.com/spf13/cobra"
 
-	"github.com/markgustetic/sentra/internal/blobstore"
-	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -16,11 +13,8 @@ import (
 
 // RestoreDeps wires the side-effecting pieces of `sentra restore`.
 type RestoreDeps struct {
-	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase           func() ([]byte, error)
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
-	Stdout               io.Writer
-	Stderr               io.Writer
+	RepoDeps
+	Stderr io.Writer
 }
 
 // NewRestore returns the cobra command for `sentra restore <snap-id> <dest-dir>`.
@@ -74,24 +68,11 @@ func runRestore(
 		return fmt.Errorf("restore: --dry-run and --verify cannot be combined")
 	}
 
-	cfg, err := config.Load(cfgPath)
+	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	store, err := deps.NewStore(cmd.Context(), cfg)
-	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
-	}
-	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
-	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return err
 	}
 	defer crypto.Zeroize(pass)
-
-	r, err := repo.Open(cmd.Context(), store, pass)
-	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
 	defer r.Close()
 
 	stderr := deps.Stderr

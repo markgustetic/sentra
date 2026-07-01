@@ -92,11 +92,13 @@ func agentFixture(t *testing.T, providerSteps []llm.FakeStep, findings []heurist
 
 	out := &bytes.Buffer{}
 	deps := AgentDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
-		Stdout:     out,
 		Provider:   provider,
 		Heuristics: stubs,
 		Confirm:    func(string) (bool, error) { return true, nil },
@@ -444,9 +446,11 @@ func TestAgentScan_ConfirmDecline(t *testing.T) {
 // the root command's tree.
 func TestAgent_RegisteredOnRoot(t *testing.T) {
 	deps := AgentDeps{
-		NewStore:   func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },
-		Passphrase: func() ([]byte, error) { return []byte("h"), nil },
-		Stdout:     io.Discard,
+		RepoDeps: RepoDeps{
+			NewStore:   func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },
+			Passphrase: func() ([]byte, error) { return []byte("h"), nil },
+			Stdout:     io.Discard,
+		},
 		Provider:   &llm.FakeProvider{},
 		Heuristics: nil,
 		Confirm:    func(string) (bool, error) { return true, nil },
@@ -490,7 +494,7 @@ func TestAgentAdviseIgnore_SuggestsCacheAndLargeFiles(t *testing.T) {
 	}
 
 	out := &bytes.Buffer{}
-	cmd := NewAgent(AgentDeps{Stdout: out})
+	cmd := NewAgent(AgentDeps{RepoDeps: RepoDeps{Stdout: out}})
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"advise-ignore", root, "--large-file-bytes", "10"})

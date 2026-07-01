@@ -32,13 +32,15 @@ func backupFixture(t *testing.T, passphrase string) (BackupDeps, *blobstore.Memo
 	out := &bytes.Buffer{}
 	errBuf := &bytes.Buffer{}
 	deps := BackupDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) {
+				return []byte(passphrase), nil
+			},
+			Stdout: out,
 		},
-		Passphrase: func() ([]byte, error) {
-			return []byte(passphrase), nil
-		},
-		Stdout: out,
 		Stderr: errBuf,
 	}
 	return deps, store, out, errBuf

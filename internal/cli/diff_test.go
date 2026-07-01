@@ -56,11 +56,13 @@ func diffFixture(t *testing.T, passphrase string) (DiffDeps, string, string, *by
 
 	out := &bytes.Buffer{}
 	deps := DiffDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
-		Stdout:     out,
 	}
 	return deps, a.ID, b.ID, out
 }

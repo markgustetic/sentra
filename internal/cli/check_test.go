@@ -39,11 +39,13 @@ func checkFixture(t *testing.T, passphrase string) (CheckDeps, *blobstore.Memory
 
 	out := &bytes.Buffer{}
 	deps := CheckDeps{
-		NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
-			return store, nil
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
+			Stdout:     out,
 		},
-		Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
-		Stdout:     out,
 	}
 	return deps, store, out, snap.ID
 }

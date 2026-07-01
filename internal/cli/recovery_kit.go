@@ -4,14 +4,12 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"os"
 	"strings"
 	"time"
 
 	"github.com/spf13/cobra"
 
-	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -20,10 +18,7 @@ import (
 
 // RecoveryKitDeps wires `sentra recovery-kit`.
 type RecoveryKitDeps struct {
-	NewStore             func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	Passphrase           func() ([]byte, error)
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
-	Stdout               io.Writer
+	RepoDeps
 }
 
 type recoveryKit struct {
@@ -74,24 +69,11 @@ func NewRecoveryKit(deps RecoveryKitDeps) *cobra.Command {
 func runRecoveryKit(cmd *cobra.Command, deps RecoveryKitDeps, cfgPath, outPath string, asJSON bool) error {
 	cmd.SilenceUsage = true
 
-	cfg, err := config.Load(cfgPath)
+	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	store, err := deps.NewStore(cmd.Context(), cfg)
-	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
-	}
-	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
-	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return err
 	}
 	defer crypto.Zeroize(pass)
-
-	r, err := repo.Open(cmd.Context(), store, pass)
-	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
 	defer r.Close()
 
 	kit, err := buildRecoveryKit(cmd.Context(), r, cfg, cfgPath)

@@ -1,10 +1,8 @@
 package cli
 
 import (
-	"context"
 	"errors"
 	"fmt"
-	"io"
 	"os"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -12,10 +10,8 @@ import (
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/agent/llm"
-	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
-	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/tui"
 )
 
@@ -24,18 +20,7 @@ import (
 // "actually launch a Bubbletea program" step behind a function so
 // unit tests don't need a real terminal.
 type UIDeps struct {
-	// NewStore opens the blobstore. Same pattern as every other
-	// command's deps.
-	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-
-	// Passphrase resolves the repo passphrase. May be skipped when
-	// the user has SENTRA_PASSPHRASE set or a keyring entry; under
-	// the hood that's all hidden by the existing resolver chain.
-	Passphrase func() ([]byte, error)
-
-	// PassphraseWithConfig is the config-aware production resolver.
-	// When set, it takes precedence over Passphrase.
-	PassphraseWithConfig func(cfg *config.Config) ([]byte, error)
+	RepoDeps
 
 	// Provider is the LLM provider for the agent view. May be nil
 	// when no API key is configured — the agent view shows a
@@ -45,11 +30,6 @@ type UIDeps struct {
 	// ProviderForConfig builds the LLM provider from the loaded
 	// command config. When set, it takes precedence over Provider.
 	ProviderForConfig func(cfg *config.Config) llm.Provider
-
-	// Stdout receives any pre-launch messages (e.g. "press q to
-	// quit"). The TUI itself writes directly to the terminal via
-	// tea.Program; this is purely for the wrapper's own output.
-	Stdout io.Writer
 
 	// Run is the actual TUI launcher. Production wires it to a
 	// closure that constructs and runs a tea.Program; tests inject
@@ -90,24 +70,11 @@ func NewUI(deps UIDeps) *cobra.Command {
 func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 	cmd.SilenceUsage = true
 
-	cfg, err := config.Load(cfgPath)
+	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	store, err := deps.NewStore(cmd.Context(), cfg)
-	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
-	}
-	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
-	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return err
 	}
 	defer crypto.Zeroize(pass)
-
-	r, err := repo.Open(cmd.Context(), store, pass)
-	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
-	}
 	defer r.Close()
 
 	// Pick a friendly repo name for the top bar. The bucket name is
