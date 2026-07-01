@@ -87,12 +87,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
 - `sentra password` rotates the wrapping passphrase. If
-  `passphrase.use_keyring` is true, it must remove the stale keyring entry
-  before rotating the repo passphrase, then save the new passphrase after the
-  repo rotation succeeds. If old keyring removal fails, the repo passphrase
-  must not rotate. If saving the new keyring entry fails after rotation, return
-  a clear error that the repo passphrase was rotated but the keyring update
-  failed. `sentra passwd` is a compatibility alias.
+  `passphrase.use_keyring` is true, it rotates the repo passphrase FIRST, then
+  overwrites the OS-keyring entry with the new passphrase. The entry is keyed by
+  bucket+prefix, which rotation does not change, so the save overwrites in place
+  and no pre-delete is needed. If the rotation fails, the keyring is left
+  untouched so the repo and keyring stay consistent on the old passphrase. If
+  saving the new keyring entry fails after a successful rotation, return a clear
+  error that the repo passphrase was rotated but the keyring update failed.
+  `sentra passwd` is a compatibility alias.
 - OS keyring entries are scoped by configured S3 bucket and prefix so multiple
   repos can share one bucket under different prefixes. Keyring lookup may try
   legacy bucket-only entries only after the bucket+prefix entry is not found;
