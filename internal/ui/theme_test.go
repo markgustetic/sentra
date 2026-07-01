@@ -3,6 +3,8 @@ package ui
 import (
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // TestSeverity_KnownLevels asserts that Severity returns the expected
@@ -64,5 +66,48 @@ func TestStyles_RenderText(t *testing.T) {
 					name, probe, got, probe)
 			}
 		})
+	}
+}
+
+// TestTheme_ShellStylesRenderContent: the new shell styles must wrap
+// content without losing it. Colors are profile-dependent (stripped in
+// tests); we assert content survives and structural styles differ.
+func TestTheme_ShellStylesRenderContent(t *testing.T) {
+	for name, st := range map[string]lipgloss.Style{
+		"TitleBar":      TitleBar,
+		"SidebarItem":   SidebarItem,
+		"SidebarActive": SidebarActive,
+		"StatusBar":     StatusBar,
+		"ModalBox":      ModalBox,
+		"PanelFocused":  PanelFocused,
+	} {
+		if got := st.Render("content"); !strings.Contains(got, "content") {
+			t.Errorf("%s.Render dropped content: %q", name, got)
+		}
+	}
+}
+
+// TestTheme_ActiveAndInactiveSidebarDiffer: active items carry the
+// "▍" accent marker so selection is visible even with colors stripped.
+func TestTheme_ActiveAndInactiveSidebarDiffer(t *testing.T) {
+	active := SidebarActive.Render("Dashboard")
+	inactive := SidebarItem.Render("Dashboard")
+	if active == inactive {
+		t.Fatal("active and inactive sidebar styles render identically")
+	}
+}
+
+// TestTheme_AdaptiveColorsDeclared: semantic styles must use adaptive
+// colors so light terminals stay readable (spec requirement).
+func TestTheme_AdaptiveColorsDeclared(t *testing.T) {
+	// AccentPink etc. are the palette constants the styles derive from.
+	for name, c := range map[string]lipgloss.AdaptiveColor{
+		"AccentViolet": AccentViolet,
+		"AccentPink":   AccentPink,
+		"AccentAqua":   AccentAqua,
+	} {
+		if c.Dark == "" || c.Light == "" {
+			t.Errorf("%s missing a variant: %+v", name, c)
+		}
 	}
 }
