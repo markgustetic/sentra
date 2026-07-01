@@ -187,10 +187,26 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 		reporter = progress.NopReporter{}
 	}
 
+	// Plan both phases up front (list only, no writes) so we can report a
+	// single combined progress Total that spans data/ + snapshots/. Setting
+	// Total once — rather than per phase — keeps the aggregate bar monotonic
+	// instead of resetting to the small manifest total after the data phase.
+	dataPlan, err := planSyncPhase(ctx, r.store, dest, DataPrefix)
+	if err != nil {
+		stats.Elapsed = time.Since(start)
+		return stats, fmt.Errorf("repo: sync data/: %w", err)
+	}
+	manPlan, err := planSyncPhase(ctx, r.store, dest, snapshotPrefix)
+	if err != nil {
+		stats.Elapsed = time.Since(start)
+		return stats, fmt.Errorf("repo: sync snapshots/: %w", err)
+	}
+	reporter.Total(dataPlan.totalBytes + manPlan.totalBytes)
+
 	// Phase 1: data/ blobs (chunks). Copy every source key under
 	// data/ that isn't already on dest.
-	dataCopied, dataBytes, dataSkipped, err := syncPhase(ctx, r.store, dest,
-		DataPrefix, concurrency, opts.DryRun, reporter)
+	dataCopied, dataBytes, dataSkipped, err := runSyncPhase(ctx, r.store, dest,
+		dataPlan, concurrency, opts.DryRun, reporter)
 	stats.CopiedBlobs += dataCopied
 	stats.CopiedBytes += dataBytes
 	stats.SkippedBlobs += dataSkipped
@@ -201,8 +217,8 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 
 	// Phase 2: snapshots/ blobs (manifests). At this point every
 	// chunk a Phase-2 manifest references already exists on dest.
-	manCopied, manBytes, manSkipped, err := syncPhase(ctx, r.store, dest,
-		snapshotPrefix, concurrency, opts.DryRun, reporter)
+	manCopied, manBytes, manSkipped, err := runSyncPhase(ctx, r.store, dest,
+		manPlan, concurrency, opts.DryRun, reporter)
 	stats.CopiedBlobs += manCopied
 	stats.CopiedBytes += manBytes
 	stats.SkippedBlobs += manSkipped
@@ -251,8 +267,9 @@ func (r *Repo) classifyDest(ctx context.Context, dest blobstore.Store, initDest 
 		// stale key if they're sure they want to sync there.
 		return false, fmt.Errorf("repo: dest config exists but does not decode: %w", err)
 	}
-	if dstCfg.ID != r.cfg.ID {
-		return false, fmt.Errorf("%w: source=%q dest=%q", ErrDifferentRepo, r.cfg.ID, dstCfg.ID)
+	srcID := r.Config().ID // RLocks cfgMu; safe against a concurrent Passwd
+	if dstCfg.ID != srcID {
+		return false, fmt.Errorf("%w: source=%q dest=%q", ErrDifferentRepo, srcID, dstCfg.ID)
 	}
 	return false, nil
 }
@@ -267,7 +284,8 @@ func (r *Repo) classifyDest(ctx context.Context, dest blobstore.Store, initDest 
 // given struct, so dest's MAC verification works on the same
 // canonicalization the source's verifyConfig uses.
 func (r *Repo) copyConfig(ctx context.Context, dest blobstore.Store) error {
-	raw, err := json.Marshal(&r.cfg)
+	cfg := r.Config() // RLocks cfgMu; safe against a concurrent Passwd
+	raw, err := json.Marshal(&cfg)
 	if err != nil {
 		return fmt.Errorf("marshal config: %w", err)
 	}
@@ -277,55 +295,69 @@ func (r *Repo) copyConfig(ctx context.Context, dest blobstore.Store) error {
 	return nil
 }
 
-// syncPhase copies every key under prefix on src to dest, skipping
-// any key dest already has. Returns (copied, copiedBytes, skipped,
-// err). The caller can sum across phases to populate SyncStats.
-//
-// Concurrency: bounded errgroup with limit. Each goroutine reads
-// one src blob and writes it to dest. RetryStore composition is
-// transparent — if either endpoint is wrapped, transient errors
-// retry below this layer.
-func syncPhase(
-	ctx context.Context,
-	src, dst blobstore.Store,
-	prefix string,
-	concurrency int,
-	dryRun bool,
-	reporter progress.Reporter,
-) (copied int, copiedBytes int64, skipped int, err error) {
+// syncPhasePlan is the listing result for one prefix: the source entries
+// to consider, the set of keys dest already has, and the total sealed
+// bytes that would be copied (entries already on dest excluded). Planning
+// is separated from execution so SyncTo can sum the byte totals across ALL
+// phases and report a single combined progress Total up front — resetting
+// Total per phase would drop it below the bytes an earlier phase already
+// reported as done, pinning the aggregate bar at an overshoot.
+type syncPhasePlan struct {
+	prefix     string
+	srcEntries []blobstore.Info
+	dstSet     map[string]struct{}
+	totalBytes int64
+}
+
+// planSyncPhase lists src and dest under prefix and computes what would be
+// copied. It performs no writes.
+func planSyncPhase(ctx context.Context, src, dst blobstore.Store, prefix string) (syncPhasePlan, error) {
 	srcEntries, err := src.List(ctx, prefix)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("list src %s: %w", prefix, err)
+		return syncPhasePlan{}, fmt.Errorf("list src %s: %w", prefix, err)
 	}
-
-	// Build a set of dest keys for O(1) membership lookup. List is
-	// the cheapest call available; doing it once and caching the
-	// set is dramatically cheaper than Stat-per-key.
+	// Build a set of dest keys for O(1) membership lookup. List is the
+	// cheapest call available; doing it once and caching the set is
+	// dramatically cheaper than Stat-per-key.
 	dstEntries, err := dst.List(ctx, prefix)
 	if err != nil {
-		return 0, 0, 0, fmt.Errorf("list dst %s: %w", prefix, err)
+		return syncPhasePlan{}, fmt.Errorf("list dst %s: %w", prefix, err)
 	}
 	dstSet := make(map[string]struct{}, len(dstEntries))
 	for _, info := range dstEntries {
 		dstSet[info.Key] = struct{}{}
 	}
-
-	// Estimate total bytes for the progress reporter. Source's
-	// List returns the sealed-blob byte size on each entry, which
+	// Source's List returns the sealed-blob byte size on each entry, which
 	// is what dst.Put will write — so the estimate is accurate.
-	var estimatedTotal int64
+	var total int64
 	for _, info := range srcEntries {
 		if _, has := dstSet[info.Key]; has {
 			continue
 		}
-		estimatedTotal += info.Size
+		total += info.Size
 	}
-	reporter.Total(estimatedTotal)
+	return syncPhasePlan{prefix: prefix, srcEntries: srcEntries, dstSet: dstSet, totalBytes: total}, nil
+}
 
+// runSyncPhase copies every planned key on src to dest, skipping any key
+// dest already has. It reports per-blob progress via reporter.Add but does
+// NOT touch reporter.Total — SyncTo owns the combined total.
+//
+// Concurrency: bounded errgroup with limit. Each goroutine reads one src
+// blob and writes it to dest. RetryStore composition is transparent — if
+// either endpoint is wrapped, transient errors retry below this layer.
+func runSyncPhase(
+	ctx context.Context,
+	src, dst blobstore.Store,
+	plan syncPhasePlan,
+	concurrency int,
+	dryRun bool,
+	reporter progress.Reporter,
+) (copied int, copiedBytes int64, skipped int, err error) {
 	if dryRun {
 		// Tally and return without writes.
-		for _, info := range srcEntries {
-			if _, has := dstSet[info.Key]; has {
+		for _, info := range plan.srcEntries {
+			if _, has := plan.dstSet[info.Key]; has {
 				skipped++
 				continue
 			}
@@ -342,9 +374,9 @@ func syncPhase(
 	var copiedBytesAtomic atomic.Int64
 	var skippedAtomic atomic.Int64
 
-	for _, info := range srcEntries {
+	for _, info := range plan.srcEntries {
 		info := info
-		if _, has := dstSet[info.Key]; has {
+		if _, has := plan.dstSet[info.Key]; has {
 			skippedAtomic.Add(1)
 			continue
 		}

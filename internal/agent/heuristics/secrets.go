@@ -216,7 +216,15 @@ func scanForSecrets(e walker.Entry) ([]Finding, error) {
 			}
 			for _, loc := range p.rx.FindAllStringIndex(line, -1) {
 				lineMatches = append(lineMatches, match{pattern: p.name, loc: loc})
-				allLocs = append(allLocs, loc)
+				// Redact the whole surrounding non-whitespace token, not
+				// just the regex match. Several value patterns use a base64
+				// class ([A-Za-z0-9+/=]) that stops at '.', '-', or '_', so
+				// the match ends mid-token (e.g. at the first '.' of a JWT);
+				// the trailing token bytes would otherwise survive verbatim
+				// in the preview sent to the LLM. Widening to the token
+				// boundary covers them.
+				s, e := expandToToken(line, loc[0], loc[1])
+				allLocs = append(allLocs, []int{s, e})
 			}
 		}
 		if len(lineMatches) == 0 {
@@ -241,6 +249,31 @@ func scanForSecrets(e walker.Entry) ([]Finding, error) {
 		return out, err
 	}
 	return out, nil
+}
+
+// expandToToken widens [start,end) to cover the surrounding run of
+// non-whitespace bytes. A value regex may end mid-token when its
+// character class excludes a delimiter (base64 stops at '.', '-', '_'),
+// leaving trailing token bytes outside the redaction; widening to the
+// whitespace boundaries redacts the full token so no secret fragment
+// survives in the preview.
+func expandToToken(line string, start, end int) (int, int) {
+	for start > 0 && !isSpaceByte(line[start-1]) {
+		start--
+	}
+	for end < len(line) && !isSpaceByte(line[end]) {
+		end++
+	}
+	return start, end
+}
+
+func isSpaceByte(b byte) bool {
+	switch b {
+	case ' ', '\t', '\n', '\r', '\v', '\f':
+		return true
+	default:
+		return false
+	}
 }
 
 // redactPreview returns a short snippet of line with EVERY match in

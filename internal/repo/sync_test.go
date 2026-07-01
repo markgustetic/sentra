@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
+	"github.com/markgustetic/sentra/internal/progress"
 )
 
 // twoRepos initializes two in-memory repos under the SAME passphrase
@@ -49,6 +50,35 @@ func seedSourceWithSnapshot(t *testing.T, r *Repo, tag string) string {
 		t.Fatalf("snapshot: %v", err)
 	}
 	return snap.ID
+}
+
+// TestSyncTo_ProgressTotalNotResetBelowDone: SyncTo copies data/ then
+// snapshots/ against the SAME reporter. It must set one combined Total up
+// front rather than resetting Total per phase — otherwise the small
+// manifest total in phase 2 drops below the data bytes already reported as
+// done, pinning the aggregate bar at an overshoot.
+func TestSyncTo_ProgressTotalNotResetBelowDone(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstStore := twoRepos(t)
+	// Data bytes must dwarf manifest bytes so a per-phase Total reset would
+	// drop the total below the already-accumulated done.
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "big.dat"), strings.Repeat("progress-payload-", 8000))
+	if _, err := src.CreateSnapshot(ctx, root, SnapshotOptions{}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	rep := &progress.RecordingReporter{}
+	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{InitDest: true, Progress: rep}); err != nil {
+		t.Fatalf("SyncTo: %v", err)
+	}
+	total, done, _ := rep.Snapshot()
+	if done > total {
+		t.Errorf("progress overshoot: done=%d exceeds total=%d (Total reset below accumulated done across phases)", done, total)
+	}
+	if total != done {
+		t.Errorf("final total=%d should equal done=%d after a full sync", total, done)
+	}
 }
 
 // TestSyncTo_FreshDest_InitDestBootstraps is the headline first-sync

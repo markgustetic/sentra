@@ -1751,6 +1751,71 @@ func TestSetup_InitAlreadyInitializedIsSummaryNotError(t *testing.T) {
 	}
 }
 
+// TestRunSetupInit_PopulatesKeyringWhenAlreadyInitialized: if the repo is
+// already initialized and the user chose to save the passphrase to the OS
+// keyring, setup must still populate the keyring (after verifying the
+// passphrase opens the existing repo). Otherwise sentra.yaml advertises
+// use_keyring:true while the keyring is empty, silently breaking later
+// non-interactive/scheduled runs.
+func TestRunSetupInit_PopulatesKeyringWhenAlreadyInitialized(t *testing.T) {
+	store := blobstore.NewMemory()
+	first, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	first.Close()
+
+	var savedPass []byte
+	deps := SetupDeps{
+		NewStore:   func(context.Context, *config.Config) (blobstore.Store, error) { return store, nil },
+		Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+		SavePassphrase: func(cfg *config.Config, pass []byte) error {
+			savedPass = append([]byte(nil), pass...)
+			return nil
+		},
+	}
+	cfg := config.Defaults()
+	res, err := runSetupInit(context.Background(), deps, &cfg, true)
+	if err != nil {
+		t.Fatalf("runSetupInit: %v", err)
+	}
+	if !res.AlreadyInitialized {
+		t.Fatal("expected AlreadyInitialized")
+	}
+	if !res.PassphraseSavedToKeyring {
+		t.Error("passphrase must be saved to the keyring even when the repo was already initialized")
+	}
+	if string(savedPass) != "hunter2" {
+		t.Errorf("keyring saved %q, want hunter2", savedPass)
+	}
+}
+
+// TestRunSetupInit_AlreadyInitializedWrongPassphraseDoesNotSave: on the
+// already-initialized path, a passphrase that does NOT open the existing
+// repo must not be written to the keyring; setup surfaces an error instead.
+func TestRunSetupInit_AlreadyInitializedWrongPassphraseDoesNotSave(t *testing.T) {
+	store := blobstore.NewMemory()
+	first, err := repo.Init(context.Background(), store, []byte("correct-pass"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	first.Close()
+
+	saveCalled := false
+	deps := SetupDeps{
+		NewStore:       func(context.Context, *config.Config) (blobstore.Store, error) { return store, nil },
+		Passphrase:     func() ([]byte, error) { return []byte("wrong-pass"), nil },
+		SavePassphrase: func(*config.Config, []byte) error { saveCalled = true; return nil },
+	}
+	cfg := config.Defaults()
+	if _, err := runSetupInit(context.Background(), deps, &cfg, true); err == nil {
+		t.Fatal("expected an error when the passphrase does not open the existing repo")
+	}
+	if saveCalled {
+		t.Error("must not save a passphrase that does not open the existing repo")
+	}
+}
+
 func TestSetupIAMPolicy_PrintsLeastPrivilegePolicy(t *testing.T) {
 	out := &bytes.Buffer{}
 	cmd := NewSetup(SetupDeps{Stdout: out})

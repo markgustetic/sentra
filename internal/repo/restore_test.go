@@ -724,6 +724,43 @@ func TestRestore_FailedFileLeavesNoPartial(t *testing.T) {
 	}
 }
 
+// TestRestore_ReproducesRecordedModeExactly pins the intended restore
+// behavior: the recorded permission bits are reproduced EXACTLY (like
+// tar / restic / rsync -p), not re-masked by the restoring process's
+// umask. This is what manifest.go promises ("permission bits as observed
+// at backup time"). The temp-file + fchmod restore path bypasses umask by
+// design; this test guards against a regression back to umask-masking.
+func TestRestore_ReproducesRecordedModeExactly(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	root := t.TempDir()
+	src := filepath.Join(root, "wide.sh")
+	writeFile(t, src, "#!/bin/sh\necho hi\n")
+	// Group/other-writable mode that a umask of 022 would clamp to 0644.
+	// chmod (not create) sets it exactly regardless of the test's umask.
+	if err := os.Chmod(src, 0o666); err != nil {
+		t.Fatalf("chmod source: %v", err)
+	}
+
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	dest := t.TempDir()
+	if err := r.Restore(ctx, snap.ID, dest, RestoreOptions{}); err != nil {
+		t.Fatalf("restore: %v", err)
+	}
+	info, err := os.Stat(filepath.Join(dest, "wide.sh"))
+	if err != nil {
+		t.Fatalf("stat restored: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o666 {
+		t.Errorf("restored mode = %o, want 0666 (exact reproduction; umask must not be applied)", got)
+	}
+}
+
 // silence unused-import linters when only some tests reference these
 // helpers under build flags.
 var _ = io.Discard

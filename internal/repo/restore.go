@@ -299,8 +299,14 @@ func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe 
 	// leaves the destination exactly as it was rather than a truncated
 	// file at the real path — the appearance of each file is atomic, and
 	// re-running restore into the same dest is not poisoned by partials.
+	//
 	// Only permission bits from the manifest mode get applied; type bits
-	// come from the open call, and setuid/setgid/sticky are dropped.
+	// come from the open call, and setuid/setgid/sticky are dropped. The
+	// perm is set with fchmod (tmp.Chmod) AFTER creation, so the recorded
+	// mode is reproduced EXACTLY and the restoring process's umask is
+	// intentionally NOT applied — matching manifest.go's "permission bits
+	// as observed at backup time" contract and the behavior of tar /
+	// restic / rsync -p. (os.CreateTemp itself makes the staged file 0600.)
 	perm := fe.Mode.Perm()
 	tmp, err := os.CreateTemp(parent, ".sentra-restore-*")
 	if err != nil {

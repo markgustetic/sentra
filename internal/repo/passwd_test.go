@@ -9,10 +9,44 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 )
+
+// TestRepo_ConfigConcurrentWithPasswd_NoRace: *Repo is documented as safe
+// for concurrent use. Passwd mutates r.cfg while Config() (and SyncTo)
+// read it, so those accesses must be synchronized. Run under -race:
+// unsynchronized cfg access is reported as a data race.
+func TestRepo_ConfigConcurrentWithPasswd_NoRace(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	done := make(chan struct{})
+	var wg sync.WaitGroup
+	for i := 0; i < 4; i++ {
+		wg.Add(1)
+		go func() {
+			defer wg.Done()
+			for {
+				select {
+				case <-done:
+					return
+				default:
+					_ = r.Config()
+				}
+			}
+		}()
+	}
+
+	err := r.Passwd(ctx, []byte("new-passphrase-123"))
+	close(done)
+	wg.Wait()
+	if err != nil {
+		t.Fatalf("Passwd: %v", err)
+	}
+}
 
 // TestPasswd_RoundTrip is the headline contract: Init -> Passwd ->
 // Close -> Open with the new passphrase succeeds; Open with the old

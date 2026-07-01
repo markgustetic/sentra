@@ -104,6 +104,9 @@ func (r *Repo) Passwd(ctx context.Context, newPassphrase []byte) error {
 		return fmt.Errorf("repo: salt: %w", err)
 	}
 	newKEK := crypto.DeriveKEK(newPassphrase, newSalt, r.cfg.KDF)
+	// The KEK is as sensitive as the repo key (it wraps it and signs the
+	// config); wipe it from memory on return.
+	defer crypto.Zeroize(newKEK)
 
 	// Re-wrap the repo key under the new KEK. The repo key itself
 	// is unchanged; only its envelope is rewritten.
@@ -136,8 +139,11 @@ func (r *Repo) Passwd(ctx context.Context, newPassphrase []byte) error {
 	// same process sees the post-rotation config (no current
 	// methods re-read it from the store, but a future caller that
 	// inspects r.Config() after Passwd should see the new salt /
-	// wrap / MAC, not the pre-rotation values).
+	// wrap / MAC, not the pre-rotation values). Take the write lock:
+	// Config()/SyncTo may be reading r.cfg concurrently.
+	r.cfgMu.Lock()
 	r.cfg = newCfg
+	r.cfgMu.Unlock()
 	return nil
 }
 
@@ -153,6 +159,7 @@ func (r *Repo) Passwd(ctx context.Context, newPassphrase []byte) error {
 // shape) and only used by Passwd.
 func currentlySamePassphrase(newPassphrase []byte, cfg *RepoConfig, repoKey []byte) bool {
 	candidateKEK := crypto.DeriveKEK(newPassphrase, cfg.Salt, cfg.KDF)
+	defer crypto.Zeroize(candidateKEK)
 	candidateRepoKey, err := crypto.Open(candidateKEK, cfg.WrappedRepoKey)
 	if err != nil {
 		// New passphrase doesn't unwrap; definitely different.

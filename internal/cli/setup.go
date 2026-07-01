@@ -746,7 +746,27 @@ func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config, saveP
 	r, err := repo.Init(ctx, store, pass)
 	if err != nil {
 		if errors.Is(err, repo.ErrAlreadyInitialized) {
-			return setupInitResult{AlreadyInitialized: true}, nil
+			result := setupInitResult{AlreadyInitialized: true}
+			// The repo already exists, but the user still asked to save the
+			// passphrase to the OS keyring. repo.Init does not verify the
+			// passphrase against an existing repo, so open it to confirm the
+			// passphrase is correct before populating the keyring — otherwise
+			// we'd either leave use_keyring:true dangling with an empty keyring
+			// or store a wrong passphrase. Both silently break later
+			// non-interactive runs.
+			if savePassphrase {
+				existing, oerr := repo.Open(ctx, store, pass)
+				if oerr != nil {
+					return setupInitResult{}, fmt.Errorf("repository already initialized, but the provided passphrase did not open it (keyring not updated): %w", oerr)
+				}
+				result.RepoID = existing.Config().ID
+				existing.Close()
+				if serr := deps.SavePassphrase(cfg, pass); serr != nil {
+					return setupInitResult{}, fmt.Errorf("save passphrase to keyring: %w", serr)
+				}
+				result.PassphraseSavedToKeyring = true
+			}
+			return result, nil
 		}
 		return setupInitResult{}, fmt.Errorf("init repo: %w", err)
 	}

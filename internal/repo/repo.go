@@ -58,6 +58,13 @@ var ErrClosed = errors.New("repo: closed")
 // next call after Close returns ErrClosed.
 type Repo struct {
 	store blobstore.Store
+
+	// cfgMu guards cfg. Passwd rewrites cfg (new salt/wrapped key/MAC)
+	// while Config(), SyncTo, and copyConfig read it; since *Repo is
+	// documented safe for concurrent use, those accesses must be
+	// synchronized. Reads use RLock; Passwd takes the write lock around
+	// the single cfg assignment.
+	cfgMu sync.RWMutex
 	cfg   RepoConfig
 
 	// keyMu guards repoKey from racing with Close. Reads use RLock;
@@ -99,6 +106,10 @@ func Init(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 
 	kdf := crypto.DefaultKDFParams()
 	kek := crypto.DeriveKEK(passphrase, salt, kdf)
+	// The KEK is as sensitive as the repo key (it wraps it and signs the
+	// config); wipe it from memory on return, mirroring the repoKey
+	// zeroization hygiene elsewhere.
+	defer crypto.Zeroize(kek)
 	wrapped, err := crypto.Seal(kek, repoKey)
 	if err != nil {
 		return nil, fmt.Errorf("repo: wrap key: %w", err)
@@ -190,6 +201,10 @@ func Open(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 	}
 
 	kek := crypto.DeriveKEK(passphrase, cfg.Salt, cfg.KDF)
+	// The KEK unwraps the repo key (and derives the config-MAC sub-key
+	// below); it is as sensitive as the repo key itself, so wipe it from
+	// memory on return, mirroring the repoKey zeroization hygiene.
+	defer crypto.Zeroize(kek)
 	repoKey, err := crypto.Open(kek, cfg.WrappedRepoKey)
 	if err != nil {
 		return nil, ErrWrongPassphrase
@@ -267,7 +282,11 @@ func (r *Repo) Close() error {
 // Config returns a copy of the repo's parsed config. Useful for tests
 // and for debug/info commands that want to surface the repo ID or
 // CreatedAt without needing the raw JSON.
-func (r *Repo) Config() RepoConfig { return r.cfg }
+func (r *Repo) Config() RepoConfig {
+	r.cfgMu.RLock()
+	defer r.cfgMu.RUnlock()
+	return r.cfg
+}
 
 // Store returns the underlying blobstore. Exposed primarily for tests
 // and for the CLI to share the connection with other subsystems

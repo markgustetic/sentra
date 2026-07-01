@@ -333,6 +333,36 @@ func TestSecrets_PreviewRedactsMultipleMatchesOnSameLine(t *testing.T) {
 	}
 }
 
+// TestSecrets_PreviewDoesNotLeakTokenPastMatch: several value regexes use
+// a base64 character class ([A-Za-z0-9+/=]) that stops at '.', '-', or '_'.
+// For a JWT-style value the match ends at the first '.', so the payload
+// segment must NOT survive verbatim in the preview that is sent to the LLM.
+func TestSecrets_PreviewDoesNotLeakTokenPastMatch(t *testing.T) {
+	dir := t.TempDir()
+	header := "eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9"          // 36 base64 chars, matches {32,}
+	payload := "eyJzdWIiOiIxMjM0NTY3ODkwU0VDUkVUUEFZTE9BRA00" // the part after the '.'
+	abs := filepath.Join(dir, ".env")
+	if err := os.WriteFile(abs, []byte("JWT_SECRET="+header+"."+payload+"\n"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	st, _ := os.Stat(abs)
+	entry := walker.Entry{AbsPath: abs, RelPath: ".env", Size: st.Size(), Mode: st.Mode(), MTime: st.ModTime()}
+
+	got, err := NewSecrets().Run(context.Background(), Input{Walked: []walker.Entry{entry}})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	if len(got) == 0 {
+		t.Fatal("expected a secret finding for the JWT value")
+	}
+	for i, f := range got {
+		preview, _ := f.Details["preview"].(string)
+		if strings.Contains(preview, payload[:16]) {
+			t.Errorf("finding %d preview leaks JWT payload bytes past the matched span: %q", i, preview)
+		}
+	}
+}
+
 // TestRedactPreview_OverlappingMatchesDoNotLeak: redactPreview is the
 // security boundary between scanned file content and the preview that
 // the orchestrator sends to the LLM/API. It must be correct for
