@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"crypto/sha256"
 	"encoding/hex"
 	"errors"
 	"fmt"
@@ -16,6 +17,12 @@ import (
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/progress"
 )
+
+// ErrChunkHashMismatch is returned by the restore read path when a
+// decrypted, decompressed chunk's SHA-256 does not match the content
+// address it was fetched under — the blob is authentic (sealed under
+// the repo key) but mis-addressed. Callers can errors.Is against it.
+var ErrChunkHashMismatch = errors.New("repo: chunk content-address mismatch")
 
 // RestoreOptions tunes a Restore call. The zero value runs with
 // no progress reporting and the default concurrency (GOMAXPROCS).
@@ -286,35 +293,49 @@ func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe 
 		return fmt.Errorf("repo: mkdir %s: %w", parent, err)
 	}
 
-	// Only permission bits from the manifest mode get applied to the
-	// on-disk file. Type bits (regular, directory) are determined by
-	// the open call, and setuid / setgid / sticky are intentionally
-	// dropped.
+	// Stage into a sibling temp file and rename into place only after the
+	// whole file is written and closed. A failed/interrupted restore
+	// (missing chunk, integrity mismatch, ctx cancel, write error) then
+	// leaves the destination exactly as it was rather than a truncated
+	// file at the real path — the appearance of each file is atomic, and
+	// re-running restore into the same dest is not poisoned by partials.
+	// Only permission bits from the manifest mode get applied; type bits
+	// come from the open call, and setuid/setgid/sticky are dropped.
 	perm := fe.Mode.Perm()
-	f, err := os.OpenFile(dst, os.O_CREATE|os.O_WRONLY|os.O_TRUNC, perm)
+	tmp, err := os.CreateTemp(parent, ".sentra-restore-*")
 	if err != nil {
-		return fmt.Errorf("repo: open dst %s: %w", dst, err)
+		return fmt.Errorf("repo: create temp for %s: %w", dst, err)
 	}
-	closeErr := func() error {
-		// Use a small closer fn so deferred Close errors propagate
-		// when there isn't already a content-write error in flight.
-		return f.Close()
-	}
+	tmpName := tmp.Name()
+	// committed tracks whether the rename succeeded; until then the
+	// deferred cleanup removes the temp file so no partial is left behind.
+	committed := false
+	defer func() {
+		if !committed {
+			_ = tmp.Close()
+			_ = os.Remove(tmpName)
+		}
+	}()
 
 	for _, hexHash := range fe.Chunks {
 		raw, err := r.fetchChunk(ctx, repoKey, hexHash)
 		if err != nil {
-			_ = closeErr()
 			return fmt.Errorf("repo: fetch chunk %s for %s: %w", hexHash, fe.Path, err)
 		}
-		if _, err := f.Write(raw); err != nil {
-			_ = closeErr()
+		if _, err := tmp.Write(raw); err != nil {
 			return fmt.Errorf("repo: write %s: %w", dst, err)
 		}
 	}
-	if err := closeErr(); err != nil {
-		return fmt.Errorf("repo: close %s: %w", dst, err)
+	if err := tmp.Chmod(perm); err != nil {
+		return fmt.Errorf("repo: chmod %s: %w", tmpName, err)
 	}
+	if err := tmp.Close(); err != nil {
+		return fmt.Errorf("repo: close %s: %w", tmpName, err)
+	}
+	if err := os.Rename(tmpName, dst); err != nil {
+		return fmt.Errorf("repo: rename %s -> %s: %w", tmpName, dst, err)
+	}
+	committed = true
 
 	// Best-effort mtime restoration. We log via the returned error
 	// in tests if it ever fires, but in practice Chtimes only fails
@@ -347,6 +368,18 @@ func (r *Repo) fetchChunk(ctx context.Context, repoKey []byte, hexHash string) (
 	raw, err := chunker.Decompress(compressed)
 	if err != nil {
 		return nil, fmt.Errorf("repo: decompress chunk: %w", err)
+	}
+	// Re-verify content addressing: the plaintext must hash to the key it
+	// was fetched under. The AEAD tag only proves the blob was sealed
+	// under the repo key, NOT that it is the chunk this address names, so
+	// a validly-sealed-but-mis-addressed blob (a swapped object, a
+	// corrupted manifest hash, or a future Put-path key-derivation bug)
+	// would otherwise restore silently wrong bytes. Chunks are <=4 MiB so
+	// the re-hash is cheap. sha256 is not secret; a plain compare is fine.
+	sum := sha256.Sum256(raw)
+	if got := hex.EncodeToString(sum[:]); got != hexHash {
+		return nil, fmt.Errorf("repo: chunk %s failed content-address integrity check (got hash %s): %w",
+			hexHash, got, ErrChunkHashMismatch)
 	}
 	return raw, nil
 }

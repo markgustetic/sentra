@@ -65,6 +65,24 @@ func TestValidate_RejectsInvalidClock(t *testing.T) {
 	}
 }
 
+// TestValidClock_RejectsSignedComponents: strconv.Atoi accepts a leading
+// sign, so "+9" parses to 9 and would pass a naive range check while
+// producing a malformed systemd OnCalendar spec ("*-*-* +9:00:00") that
+// silently never fires. validClock must require exactly two ASCII digits
+// per component.
+func TestValidClock_RejectsSignedComponents(t *testing.T) {
+	for _, bad := range []string{"+9:00", "09:+0", "+0:05", "-1:30", "1x:00"} {
+		if validClock(bad) {
+			t.Errorf("validClock(%q) = true, want false", bad)
+		}
+	}
+	for _, good := range []string{"00:00", "09:30", "23:59"} {
+		if !validClock(good) {
+			t.Errorf("validClock(%q) = false, want true", good)
+		}
+	}
+}
+
 func TestValidate_RejectsUnsupportedPruneMode(t *testing.T) {
 	p := config.PolicyConfig{
 		Paths:       []string{"."},

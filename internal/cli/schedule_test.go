@@ -199,3 +199,24 @@ func TestScheduleInstall_RejectsUnsupportedOS(t *testing.T) {
 		t.Fatalf("error: got %v, want unsupported OS error", err)
 	}
 }
+
+// TestSystemdOnCalendar_RejectsSignedClock: the systemd calendar
+// renderer must reject a signed clock component rather than emitting a
+// malformed "*-*-* +9:00:00" OnCalendar spec that systemd silently
+// refuses to schedule.
+func TestSystemdOnCalendar_RejectsSignedClock(t *testing.T) {
+	for _, cad := range []string{"daily", "weekly", "monthly"} {
+		s := config.PolicySchedule{Cadence: cad, At: "+9:00", Weekday: "mon"}
+		if _, err := systemdOnCalendar(s); err == nil {
+			t.Errorf("systemdOnCalendar(%s, +9:00) = nil error, want a rejection", cad)
+		}
+	}
+	// A valid clock still renders with zero-padded components.
+	got, err := systemdOnCalendar(config.PolicySchedule{Cadence: "daily", At: "09:00"})
+	if err != nil {
+		t.Fatalf("valid clock rejected: %v", err)
+	}
+	if !strings.Contains(got, "09:00:00") {
+		t.Errorf("daily 09:00 rendered as %q, want it to contain 09:00:00", got)
+	}
+}

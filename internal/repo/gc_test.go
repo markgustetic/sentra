@@ -182,13 +182,71 @@ func TestDeleteSnapshot_InvalidID(t *testing.T) {
 	}
 }
 
-// TestGC_HonorsKeepIDs: when keepIDs is provided, only those snapshots
-// contribute to the live set. Snapshots not in keepIDs are treated as
-// not-live, so their unique blobs are reaped even if the manifest is
-// still on disk. This is the integration point with prune: prune
-// computes the keep-set, deletes drop manifests, then calls GC with
-// keepIDs to clean up everything that was just dropped.
-func TestGC_HonorsKeepIDs(t *testing.T) {
+// TestGC_KeepIDsProtectsConcurrentSnapshot reproduces the prune/GC
+// TOCTOU data-loss race. prune freezes its keep-set from a ListSnapshots
+// taken before it holds any lock, deletes the drop manifests, then calls
+// GC(keepIDs). If a backup commits a brand-new snapshot in that window,
+// its ID is absent from the frozen keepIDs. GC must NOT reap the new
+// snapshot's chunks — a blob referenced by ANY snapshot present at GC
+// time is live, regardless of keepIDs.
+func TestGC_KeepIDsProtectsConcurrentSnapshot(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	// Snapshot A — the one prune decides to keep.
+	rootA := t.TempDir()
+	writeFile(t, filepath.Join(rootA, "a.txt"), strings.Repeat("keep-content-", 300))
+	a, err := r.CreateSnapshot(ctx, rootA, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot A: %v", err)
+	}
+
+	// prune freezes the keep-set here (no lock held).
+	keepIDs := map[string]bool{a.ID: true}
+
+	// A concurrent backup commits snapshot C with unique content in the
+	// window between prune's ListSnapshots and prune's GC.
+	rootC := t.TempDir()
+	writeFile(t, filepath.Join(rootC, "c.txt"), strings.Repeat("concurrent-content-", 300))
+	c, err := r.CreateSnapshot(ctx, rootC, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot C: %v", err)
+	}
+
+	// Collect C's chunk keys — every one must survive GC.
+	cm, err := r.LoadSnapshot(ctx, c.ID)
+	if err != nil {
+		t.Fatalf("load C: %v", err)
+	}
+	var cKeys []string
+	for _, fe := range cm.Tree {
+		for _, h := range fe.Chunks {
+			cKeys = append(cKeys, ChunkKey(h))
+		}
+	}
+	if len(cKeys) == 0 {
+		t.Fatal("snapshot C has no chunks; test cannot detect the race")
+	}
+
+	// GC with the stale keep-set that predates C.
+	if _, err := r.GC(ctx, keepIDs); err != nil {
+		t.Fatalf("gc: %v", err)
+	}
+
+	// C's chunks must all remain: reaping any of them corrupts a
+	// fully-committed snapshot (silent, unrecoverable data loss).
+	for _, k := range cKeys {
+		if _, err := store.Stat(ctx, k); err != nil {
+			t.Errorf("GC reaped chunk %s referenced by concurrently-created snapshot C: %v", k, err)
+		}
+	}
+}
+
+// TestGC_ReapsDroppedSnapshotChunks: the prune flow deletes a dropped
+// snapshot's manifest, then calls GC(keepIDs). GC reclaims the chunks
+// unique to the now-deleted manifest while retaining those referenced by
+// the surviving snapshots.
+func TestGC_ReapsDroppedSnapshotChunks(t *testing.T) {
 	ctx := context.Background()
 	r, store := newTestRepo(t)
 
@@ -211,10 +269,12 @@ func TestGC_HonorsKeepIDs(t *testing.T) {
 		t.Fatalf("list before: %v", err)
 	}
 
-	// Pretend we're about to drop `old` and only keep `keep`. We pass
-	// keepIDs without first deleting `old`'s manifest — GC builds its
-	// live set from keepIDs only, so `old`'s blobs are reaped even
-	// though the manifest is still there.
+	// Mirror the real prune flow: delete the dropped manifest FIRST,
+	// then GC with the kept ID. GC now builds its live set from the
+	// snapshots actually present, so `old`'s unique chunks are orphans.
+	if err := r.DeleteSnapshot(ctx, old.ID); err != nil {
+		t.Fatalf("delete old: %v", err)
+	}
 	keepIDs := map[string]bool{keep.ID: true}
 	stats, err := r.GC(ctx, keepIDs)
 	if err != nil {
@@ -233,9 +293,16 @@ func TestGC_HonorsKeepIDs(t *testing.T) {
 			len(beforeBlobs), len(afterBlobs))
 	}
 
-	// Sanity: `old`'s manifest is still on disk (we did NOT delete
-	// it; that's the prune flow's responsibility).
-	if _, err := r.LoadSnapshot(ctx, old.ID); err != nil {
-		t.Errorf("old snapshot manifest gone but we didn't delete it: %v", err)
+	// The surviving snapshot must remain fully intact.
+	km, err := r.LoadSnapshot(ctx, keep.ID)
+	if err != nil {
+		t.Fatalf("load keep: %v", err)
+	}
+	for _, fe := range km.Tree {
+		for _, h := range fe.Chunks {
+			if _, err := store.Stat(ctx, ChunkKey(h)); err != nil {
+				t.Errorf("GC reaped chunk %s of the surviving snapshot: %v", ChunkKey(h), err)
+			}
+		}
 	}
 }

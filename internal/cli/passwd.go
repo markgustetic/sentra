@@ -194,27 +194,31 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 	}
 
 	if cfg.Passphrase.UseKeyring {
-		if deps.DeletePassphrase == nil {
-			return fmt.Errorf("remove old keyring passphrase: missing keyring passphrase deleter")
-		}
+		// Validate the saver is wired up BEFORE rotating, so we fail
+		// fast rather than rotate the repo and only then discover we
+		// can't persist the new secret. We do NOT delete the old keyring
+		// entry here: the entry is keyed by bucket+prefix (which rotation
+		// never changes), so SavePassphrase below overwrites it in place.
+		// A pre-delete would only open a window where a rotation failure
+		// leaves the keyring empty while the repo stays on the old
+		// passphrase — breaking non-interactive scheduled runs.
 		if deps.SavePassphrase == nil {
 			return fmt.Errorf("update keyring passphrase: missing keyring passphrase saver")
-		}
-		if _, err := deps.DeletePassphrase(cfg); err != nil {
-			return fmt.Errorf("remove old keyring passphrase: %w", err)
 		}
 	}
 
 	// 5. Rotate. Repo.Passwd acquires the advisory lock, rotates
-	// salt + wrap + MAC, and writes the new config atomically.
+	// salt + wrap + MAC, and writes the new config atomically. On
+	// failure the keyring is left untouched (we haven't touched it yet),
+	// so the repo and keyring stay consistent on the old passphrase.
 	if err := r.Passwd(cmd.Context(), newPass); err != nil {
-		if cfg.Passphrase.UseKeyring {
-			return fmt.Errorf("rotate passphrase after removing old keyring entry: %w", err)
-		}
 		return fmt.Errorf("rotate passphrase: %w", err)
 	}
 
 	if cfg.Passphrase.UseKeyring {
+		// Rotation succeeded; overwrite the keyring entry with the new
+		// secret. Only now do we mutate the keyring, so a rotation
+		// failure never leaves it stale.
 		if err := deps.SavePassphrase(cfg, newPass); err != nil {
 			return fmt.Errorf("repository passphrase was rotated, but update keyring passphrase failed: %w", err)
 		}

@@ -2,6 +2,7 @@ package heuristics
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -329,5 +330,54 @@ func TestSecrets_PreviewRedactsMultipleMatchesOnSameLine(t *testing.T) {
 				t.Errorf("finding %d preview leaks %q: %q", i, leak, preview)
 			}
 		}
+	}
+}
+
+// TestRedactPreview_OverlappingMatchesDoNotLeak: redactPreview is the
+// security boundary between scanned file content and the preview that
+// the orchestrator sends to the LLM/API. It must be correct for
+// arbitrary (including overlapping / nested) match spans, not just the
+// disjoint spans today's pattern set happens to produce. A nested match
+// must not leave raw secret bytes between two markers.
+func TestRedactPreview_OverlappingMatchesDoNotLeak(t *testing.T) {
+	line := "PWSECRETKEYVALUE1234TAIL"
+	focal := []int{0, 20} // the whole "PWSECRETKEYVALUE1234"
+	inner := []int{2, 6}  // "SECR", nested inside the focal span
+	got := redactPreview(line, focal, [][]int{focal, inner})
+
+	for _, leak := range []string{"SECRET", "KEYVALUE", "1234", "UE1234", "SECR"} {
+		if strings.Contains(got, leak) {
+			t.Fatalf("redactPreview leaked %q from an overlapping match: got %q", leak, got)
+		}
+	}
+	if !strings.Contains(got, "[REDACTED]") {
+		t.Fatalf("expected a redaction marker, got %q", got)
+	}
+}
+
+// TestSecretsRun_KeepsPartialFindingsOnScanError: a per-file scan that
+// errors mid-file (e.g. a transient read failure on a network mount)
+// after already matching a secret must NOT cause that secret to be
+// silently dropped. Run keeps the partial findings and moves on.
+func TestSecretsRun_KeepsPartialFindingsOnScanError(t *testing.T) {
+	orig := scanFile
+	t.Cleanup(func() { scanFile = orig })
+	scanFile = func(e walker.Entry) ([]Finding, error) {
+		return []Finding{{
+			ID:       "partial",
+			Category: "secrets",
+			Severity: SeverityCritical,
+			Target:   e.AbsPath,
+		}}, errors.New("simulated mid-file read error")
+	}
+
+	s := NewSecrets()
+	in := Input{Walked: []walker.Entry{{AbsPath: "/x/creds.txt", Size: 10}}}
+	findings, err := s.Run(context.Background(), in)
+	if err != nil {
+		t.Fatalf("Run should not surface per-file scan errors: %v", err)
+	}
+	if len(findings) != 1 {
+		t.Fatalf("Run dropped the secret found before the scan error; got %d findings, want 1", len(findings))
 	}
 }

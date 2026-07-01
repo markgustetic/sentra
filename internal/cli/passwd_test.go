@@ -166,7 +166,6 @@ passphrase:
 	out := &bytes.Buffer{}
 	var savedBucket string
 	var savedPassphrase []byte
-	var deletedBucket string
 	deps := PasswdDeps{
 		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
 			return store, nil
@@ -183,7 +182,9 @@ passphrase:
 			return nil
 		},
 		DeletePassphrase: func(cfg *config.Config) (bool, error) {
-			deletedBucket = cfg.Repo.S3.Bucket
+			// Rotation overwrites the keyring entry via SavePassphrase;
+			// it must not pre-delete. Fail loudly if it ever calls this.
+			t.Error("rotation must not delete the keyring entry")
 			return true, nil
 		},
 		Stdout: out,
@@ -198,9 +199,6 @@ passphrase:
 	}
 	if savedBucket != "keyring-bucket" {
 		t.Fatalf("saved bucket: got %q, want keyring-bucket", savedBucket)
-	}
-	if deletedBucket != "keyring-bucket" {
-		t.Fatalf("deleted bucket: got %q, want keyring-bucket", deletedBucket)
 	}
 	if string(savedPassphrase) != "new-pass-456" {
 		t.Fatalf("saved passphrase mismatch")
@@ -229,7 +227,6 @@ passphrase:
 	}
 	r.Close()
 	wantErr := errors.New("keyring locked")
-	var deleteCalled bool
 	deps := PasswdDeps{
 		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
 			return store, nil
@@ -240,7 +237,7 @@ passphrase:
 			return wantErr
 		},
 		DeletePassphrase: func(*config.Config) (bool, error) {
-			deleteCalled = true
+			t.Error("rotation must not delete the keyring entry")
 			return true, nil
 		},
 		Stdout: io.Discard,
@@ -257,12 +254,30 @@ passphrase:
 	if !strings.Contains(err.Error(), "update keyring passphrase") {
 		t.Fatalf("error missing keyring context: %v", err)
 	}
-	if !deleteCalled {
-		t.Fatal("old keyring passphrase should be removed before saving the new one")
-	}
 }
 
-func TestPassword_CLI_KeyringDeleteFailureDoesNotRotate(t *testing.T) {
+// putFailStore fails Put (used for the config-rotation write) while
+// leaving PutIfAbsent (the advisory lock) and reads working, so a
+// rotation can be made to fail after the repo opened cleanly.
+type putFailStore struct {
+	blobstore.Store
+	failPut bool
+}
+
+func (s *putFailStore) Put(ctx context.Context, key string, r io.Reader) error {
+	if s.failPut {
+		return errors.New("simulated rotation write failure")
+	}
+	return s.Store.Put(ctx, key, r)
+}
+
+// TestPassword_CLI_RotationFailureLeavesKeyringUntouched: if the repo
+// passphrase rotation fails, neither the old keyring entry may be
+// deleted nor a new one saved. Otherwise a rotation failure would leave
+// the repo on the old passphrase but the keyring empty/wrong, breaking
+// non-interactive scheduled runs. Rotate first; only touch the keyring
+// on success.
+func TestPassword_CLI_RotationFailureLeavesKeyringUntouched(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
 	yaml := `repo:
@@ -274,26 +289,29 @@ passphrase:
 	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(yaml), 0o600); err != nil {
 		t.Fatalf("write sentra.yaml: %v", err)
 	}
-	store := blobstore.NewMemory()
-	r, err := repo.Init(context.Background(), store, []byte("old-pass-123"))
+	inner := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), inner, []byte("old-pass-123"))
 	if err != nil {
 		t.Fatalf("repo.Init: %v", err)
 	}
 	r.Close()
-	wantErr := errors.New("keyring locked")
-	var saveCalled bool
+
+	store := &putFailStore{Store: inner}
+	var saveCalled, deleteCalled bool
 	deps := PasswdDeps{
 		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			store.failPut = true // rotation's config write will fail
 			return store, nil
 		},
 		Passphrase:    func() ([]byte, error) { return []byte("old-pass-123"), nil },
 		NewPassphrase: func(string) ([]byte, error) { return []byte("new-pass-456"), nil },
-		DeletePassphrase: func(*config.Config) (bool, error) {
-			return false, wantErr
-		},
 		SavePassphrase: func(*config.Config, []byte) error {
 			saveCalled = true
 			return nil
+		},
+		DeletePassphrase: func(*config.Config) (bool, error) {
+			deleteCalled = true
+			return true, nil
 		},
 		Stdout: io.Discard,
 	}
@@ -302,19 +320,19 @@ passphrase:
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{})
-	err = cmd.Execute()
-	if !errors.Is(err, wantErr) {
-		t.Fatalf("expected keyring delete error, got %v", err)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected rotation to fail")
+	}
+	if deleteCalled {
+		t.Error("keyring entry must not be deleted when rotation fails")
 	}
 	if saveCalled {
-		t.Fatal("new keyring passphrase should not be saved when removing the old entry fails")
+		t.Error("keyring entry must not be saved when rotation fails")
 	}
-	if _, err := repo.Open(context.Background(), store, []byte("new-pass-456")); !errors.Is(err, repo.ErrWrongPassphrase) {
-		t.Fatalf("Open(new): got %v, want ErrWrongPassphrase", err)
-	}
-	oldRepo, err := repo.Open(context.Background(), store, []byte("old-pass-123"))
+	// The repo must still open with the old passphrase — nothing rotated.
+	oldRepo, err := repo.Open(context.Background(), inner, []byte("old-pass-123"))
 	if err != nil {
-		t.Fatalf("Open(old): %v", err)
+		t.Fatalf("Open(old) after failed rotation: %v", err)
 	}
 	oldRepo.Close()
 }

@@ -288,6 +288,12 @@ func (r *RepoRunner) runListSnapshots(ctx context.Context, input map[string]any)
 		if since != nil && s.CreatedAt.Before(*since) {
 			continue
 		}
+		// Check the cap BEFORE appending so limit=0 yields an empty list
+		// rather than one row (the append-then-break order returned one
+		// row too many at the boundary).
+		if len(rows) >= limit {
+			break
+		}
 		rows = append(rows, listSnapshotsRow{
 			ID:        s.ID,
 			CreatedAt: s.CreatedAt,
@@ -295,9 +301,6 @@ func (r *RepoRunner) runListSnapshots(ctx context.Context, input map[string]any)
 			Files:     s.Stats.Files,
 			Bytes:     s.Stats.Bytes,
 		})
-		if len(rows) >= limit {
-			break
-		}
 	}
 
 	return marshalJSON(rows)

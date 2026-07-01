@@ -3,12 +3,30 @@ package repo
 import (
 	"context"
 	"errors"
+	"io"
 	"path/filepath"
 	"strings"
 	"sync"
 	"sync/atomic"
 	"testing"
+
+	"github.com/markgustetic/sentra/internal/blobstore"
 )
+
+// getFailStore wraps a Store and, when failGet is set, makes Get return
+// a transient error. Used to exercise the release path when the current
+// lock holder cannot be read.
+type getFailStore struct {
+	blobstore.Store
+	failGet atomic.Bool
+}
+
+func (s *getFailStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if s.failGet.Load() {
+		return nil, errors.New("injected transient get failure")
+	}
+	return s.Store.Get(ctx, key)
+}
 
 // TestAcquireLock_FreshSucceeds covers the simple case: no lock
 // blob exists, acquireLock writes one and returns lockInfo.
@@ -102,6 +120,35 @@ func TestReleaseLock_MismatchDoesNotDelete(t *testing.T) {
 	}
 	if strings.Contains(got, original.UUID) {
 		t.Errorf("releaseLock stomped on someone else's lock; original UUID still present: %s", got)
+	}
+}
+
+// TestReleaseLock_UnreadableHolderDoesNotDelete: when the current lock
+// holder cannot be read (a transient Get failure makes readLockHolder
+// return ""), releaseLock must NOT delete the lock. Deleting a lock
+// whose ownership we cannot confirm could stomp a lock another process
+// legitimately holds — a mutual-exclusion break, the exact thing the
+// lock exists to prevent. Leaving a lock behind on a transient read
+// error is the safe failure (an operator sees a stale lock, the
+// documented manual-recovery path).
+func TestReleaseLock_UnreadableHolderDoesNotDelete(t *testing.T) {
+	ctx := context.Background()
+	fs := &getFailStore{Store: blobstore.NewMemory()}
+
+	// Another process holds the lock.
+	if _, err := acquireLock(ctx, fs, "foreign"); err != nil {
+		t.Fatalf("foreign acquire: %v", err)
+	}
+
+	// A stale caller tries to release while the holder read is failing.
+	fs.failGet.Store(true)
+	releaseLock(ctx, fs, &lockInfo{UUID: "ours-does-not-match"})
+	fs.failGet.Store(false)
+
+	// The foreign lock must still be present — we could not verify we
+	// owned it, so it must not have been deleted.
+	if _, err := fs.Stat(ctx, lockKey); err != nil {
+		t.Fatalf("releaseLock deleted a lock whose ownership it could not verify: %v", err)
 	}
 }
 

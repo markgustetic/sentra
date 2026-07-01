@@ -51,6 +51,14 @@ func (AddToIgnoreHandler) Apply(
 		fmt.Fprintf(env.Stdout, "  - %s: empty target, skipped\n", id)
 		return nil
 	}
+	// A single verb must write exactly one pattern line. Reject a target
+	// with an embedded CR/LF: otherwise one suggestion would inject
+	// multiple .sentraignore lines — including a "!"-negation that
+	// silently re-includes a file the operator meant to exclude — and
+	// the whole-string dedup would fail to catch the individual lines.
+	if strings.ContainsAny(target, "\r\n") {
+		return fmt.Errorf("%s target %q contains a newline; a pattern must be a single line", ignoreFileName, target)
+	}
 	cwd := env.Cwd
 	if cwd == "" {
 		cwd = "."

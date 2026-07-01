@@ -216,6 +216,42 @@ func TestRenderConfigYAML_IncludesPolicies(t *testing.T) {
 	}
 }
 
+// TestRenderConfigYAML_PreservesCustomAgent: a config rewrite (init,
+// policy add/remove, password forget, setup) must round-trip a user's
+// custom agent.provider/agent.model instead of clobbering them with the
+// hardcoded defaults. Otherwise any config-writing command silently
+// resets a non-default model.
+func TestRenderConfigYAML_PreservesCustomAgent(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Agent.Provider = "openai"
+	cfg.Agent.Model = "gpt-4o"
+
+	body := renderConfigYAML(&cfg)
+	if !strings.Contains(body, "gpt-4o") {
+		t.Errorf("rendered config dropped custom agent.model:\n%s", body)
+	}
+	if !strings.Contains(body, "openai") {
+		t.Errorf("rendered config dropped custom agent.provider:\n%s", body)
+	}
+	if strings.Contains(body, "claude-sonnet-4-6") {
+		t.Errorf("rendered config kept the hardcoded default model despite a custom value:\n%s", body)
+	}
+}
+
+// TestRenderConfigYAML_DefaultsAgentWhenUnset: when Provider/Model are
+// unset (Defaults does not seed them), the render falls back to the
+// documented defaults so a fresh config is still complete.
+func TestRenderConfigYAML_DefaultsAgentWhenUnset(t *testing.T) {
+	cfg := config.Defaults()
+	body := renderConfigYAML(&cfg)
+	if !strings.Contains(body, "anthropic") {
+		t.Errorf("expected default provider anthropic:\n%s", body)
+	}
+	if !strings.Contains(body, "claude-sonnet-4-6") {
+		t.Errorf("expected default model claude-sonnet-4-6:\n%s", body)
+	}
+}
+
 // TestInit_RequiresBucketFlag refuses to run with no sentra.yaml and
 // no --bucket flag. Without this guard, `sentra init` against a
 // production S3 store has no path that produces a working config —

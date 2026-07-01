@@ -588,6 +588,142 @@ func TestRestore_RejectsPathTraversal(t *testing.T) {
 	}
 }
 
+// TestRestore_DetectsChunkContentAddressMismatch: a data blob that is
+// validly sealed under the repo key but stored at the WRONG content-
+// address (a swap of two authentic blobs, a manifest listing a wrong-
+// but-existing hash, or an object-store copy mistake) must be caught.
+// The AEAD tag only proves "sealed under this key", not "content matches
+// its address", so restore must re-derive sha256(plaintext) and refuse
+// on mismatch rather than silently writing wrong bytes.
+func TestRestore_DetectsChunkContentAddressMismatch(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), strings.Repeat("AAAAAAAA", 500))
+	writeFile(t, filepath.Join(root, "b.txt"), strings.Repeat("BBBBBBBB", 500))
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	m, err := r.LoadSnapshot(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var hashA, hashB string
+	for _, fe := range m.Tree {
+		switch filepath.Base(fe.Path) {
+		case "a.txt":
+			if len(fe.Chunks) != 1 {
+				t.Fatalf("a.txt has %d chunks, want 1", len(fe.Chunks))
+			}
+			hashA = fe.Chunks[0]
+		case "b.txt":
+			if len(fe.Chunks) != 1 {
+				t.Fatalf("b.txt has %d chunks, want 1", len(fe.Chunks))
+			}
+			hashB = fe.Chunks[0]
+		}
+	}
+	if hashA == "" || hashB == "" || hashA == hashB {
+		t.Fatalf("expected two distinct single-chunk files, got a=%q b=%q", hashA, hashB)
+	}
+
+	// Place b's validly-sealed blob at a's content-address key. It
+	// decrypts cleanly (same repo key) but its plaintext hashes to
+	// hashB, not hashA.
+	rc, err := store.Get(ctx, ChunkKey(hashB))
+	if err != nil {
+		t.Fatalf("get B blob: %v", err)
+	}
+	sealedB, err := io.ReadAll(rc)
+	rc.Close()
+	if err != nil {
+		t.Fatalf("read B blob: %v", err)
+	}
+	if err := store.Put(ctx, ChunkKey(hashA), bytes.NewReader(sealedB)); err != nil {
+		t.Fatalf("overwrite A blob: %v", err)
+	}
+
+	dest := t.TempDir()
+	err = r.Restore(ctx, snap.ID, dest, RestoreOptions{})
+	if err == nil {
+		t.Fatal("Restore succeeded on a mis-addressed chunk; expected an integrity error")
+	}
+	msg := strings.ToLower(err.Error())
+	if !strings.Contains(msg, "hash") && !strings.Contains(msg, "integrity") &&
+		!strings.Contains(msg, "content address") {
+		t.Fatalf("expected an integrity/hash-mismatch error, got: %v", err)
+	}
+}
+
+// TestRestore_FailedFileLeavesNoPartial: when a file restore fails
+// partway through (here, a later chunk is missing from the store), the
+// destination must not be left with a truncated file at its final path,
+// and no temp litter should remain. restoreFile stages into a sibling
+// temp file and renames only after the whole file is written, so a
+// failure leaves the destination exactly as it was.
+func TestRestore_FailedFileLeavesNoPartial(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	// ~9 MiB of varied bytes -> multiple distinct chunks (maxChunkSize
+	// is 4 MiB, so a single chunk cannot cover the whole file).
+	data := make([]byte, 9<<20)
+	for i := range data {
+		data[i] = byte(i*31 + i>>7)
+	}
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "big.dat"), data, 0o600); err != nil {
+		t.Fatalf("write big.dat: %v", err)
+	}
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	m, err := r.LoadSnapshot(ctx, snap.ID)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	var chunks []string
+	for _, fe := range m.Tree {
+		if filepath.Base(fe.Path) == "big.dat" {
+			chunks = fe.Chunks
+		}
+	}
+	if len(chunks) < 2 {
+		t.Fatalf("big.dat has %d chunks, need >=2 to exercise a mid-file failure", len(chunks))
+	}
+
+	// Remove the LAST chunk so the write fails only after earlier chunks
+	// were already fetched and written.
+	if err := store.Delete(ctx, ChunkKey(chunks[len(chunks)-1])); err != nil {
+		t.Fatalf("delete last chunk: %v", err)
+	}
+
+	dest := t.TempDir()
+	// Single-file restore so the failure is deterministic.
+	if err := r.Restore(ctx, snap.ID, dest, RestoreOptions{Concurrency: 1}); err == nil {
+		t.Fatal("expected Restore to fail on the missing chunk")
+	}
+
+	// The destination must be pristine: no truncated big.dat, no leftover
+	// temp file.
+	entries, err := os.ReadDir(dest)
+	if err != nil {
+		t.Fatalf("readdir dest: %v", err)
+	}
+	if len(entries) != 0 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("failed restore left %d entries in dest (partial/temp litter): %v", len(entries), names)
+	}
+}
+
 // silence unused-import linters when only some tests reference these
 // helpers under build flags.
 var _ = io.Discard

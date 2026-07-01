@@ -92,6 +92,15 @@ func (s *S3) listPrefix(prefix string) string {
 	if s.cfg.Prefix == "" {
 		return prefix
 	}
+	// An empty user prefix means "everything under our namespace". Return
+	// cfg.Prefix as a DIRECTORY boundary (single trailing slash) so the
+	// S3 Prefix filter matches only keys under "<prefix>/" and never a
+	// sibling namespace like "<prefix>-old/..." that shares the string
+	// prefix. path.Join("sentra", "") would drop the boundary to
+	// "sentra", so handle this case explicitly.
+	if prefix == "" {
+		return strings.TrimSuffix(s.cfg.Prefix, "/") + "/"
+	}
 	full := path.Join(s.cfg.Prefix, prefix)
 	if strings.HasSuffix(prefix, "/") && !strings.HasSuffix(full, "/") {
 		full += "/"
@@ -127,8 +136,40 @@ func (s *S3) Put(ctx context.Context, key string, r io.Reader) error {
 	return nil
 }
 
+// lengthCheckedReadCloser wraps an object body and verifies that the
+// number of bytes actually read matches the object's Content-Length. A
+// backend that returns a truncated body with a clean EOF (a flaky
+// connection, or an S3-compatible store returning a short object) would
+// otherwise be handed to the caller silently, caught only later — and
+// less clearly — by the blob's AEAD tag. This surfaces truncation as a
+// precise store-layer error instead.
+type lengthCheckedReadCloser struct {
+	rc       io.ReadCloser
+	expected int64
+	read     int64
+	key      string
+}
+
+func newLengthCheckedReadCloser(rc io.ReadCloser, expected int64, key string) io.ReadCloser {
+	return &lengthCheckedReadCloser{rc: rc, expected: expected, key: key}
+}
+
+func (r *lengthCheckedReadCloser) Read(p []byte) (int, error) {
+	n, err := r.rc.Read(p)
+	r.read += int64(n)
+	if err == io.EOF && r.read != r.expected {
+		return n, fmt.Errorf("blobstore/s3: short read for %q: got %d bytes, want %d: %w",
+			r.key, r.read, r.expected, io.ErrUnexpectedEOF)
+	}
+	return n, err
+}
+
+func (r *lengthCheckedReadCloser) Close() error { return r.rc.Close() }
+
 // Get downloads the object at key and returns its body. Caller is
-// responsible for closing the returned ReadCloser.
+// responsible for closing the returned ReadCloser. When S3 reports a
+// Content-Length, the body is wrapped so a truncated download surfaces
+// as an error on read rather than a silent short read.
 func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 	out, err := s.client.GetObject(ctx, &s3.GetObjectInput{
 		Bucket: aws.String(s.cfg.Bucket),
@@ -139,6 +180,9 @@ func (s *S3) Get(ctx context.Context, key string) (io.ReadCloser, error) {
 			return nil, ErrNotFound
 		}
 		return nil, fmt.Errorf("blobstore/s3: get %q: %w", key, err)
+	}
+	if out.ContentLength != nil {
+		return newLengthCheckedReadCloser(out.Body, *out.ContentLength, key), nil
 	}
 	return out.Body, nil
 }
@@ -166,6 +210,16 @@ func (s *S3) Stat(ctx context.Context, key string) (Info, error) {
 // exist (parity with the in-memory implementation). S3's DeleteObject
 // is idempotent and does not surface NoSuchKey on its own, so we
 // pre-check via HeadObject.
+//
+// The ErrNotFound signal is BEST-EFFORT: the HeadObject pre-check and
+// the DeleteObject are not atomic. If a concurrent actor removes the key
+// in the window between them, this returns nil (a successful delete)
+// rather than ErrNotFound; conversely a key that appears in the window
+// is deleted even though the pre-check saw it absent. Callers that need
+// idempotent "already gone == success" semantics must therefore treat
+// nil and ErrNotFound identically (as DeleteSnapshot / prune / policy
+// do). Data-blob reclamation deliberately uses the idempotent
+// BatchDelete instead, which needs no such pre-check.
 func (s *S3) Delete(ctx context.Context, key string) error {
 	if _, err := s.Stat(ctx, key); err != nil {
 		return err

@@ -267,6 +267,28 @@ func TestAddToIgnoreHandler_SkipsEmptyTarget(t *testing.T) {
 	}
 }
 
+// TestAddToIgnoreHandler_RejectsEmbeddedNewline: a single verb must
+// produce a single pattern line. An LLM-supplied target with an embedded
+// newline would otherwise inject extra .sentraignore lines — including a
+// "!"-negation that silently re-includes a file the operator meant to
+// exclude — and defeat the per-line dedup.
+func TestAddToIgnoreHandler_RejectsEmbeddedNewline(t *testing.T) {
+	dir := t.TempDir()
+	env := Env{Stdout: &bytes.Buffer{}, Cwd: dir}
+
+	target := "build/\n!build/keep.bin"
+	err := (AddToIgnoreHandler{}).Apply(context.Background(), env, "rec-x", target, "warn", "why")
+	if err == nil {
+		t.Fatal("expected Apply to reject a target with an embedded newline")
+	}
+
+	// No injected pattern line may have reached the file.
+	body, _ := os.ReadFile(filepath.Join(dir, ignoreFileName))
+	if strings.Contains(string(body), "!build/keep.bin") {
+		t.Fatalf(".sentraignore contains an injected negation line: %q", string(body))
+	}
+}
+
 // TestEnv_FormatBytesFallback covers the optional formatter: when
 // none is supplied, the default fallback produces a sane string
 // (used by handler stdout when ui isn't wired up, e.g. in tests

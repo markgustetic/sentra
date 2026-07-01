@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"slices"
+	"strings"
 
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -115,6 +116,11 @@ type Secrets struct{}
 // NewSecrets constructs a Secrets heuristic.
 func NewSecrets() *Secrets { return &Secrets{} }
 
+// scanFile is the per-entry scanner Run delegates to. A package var so
+// tests can inject an error-returning scan to prove Run keeps partial
+// findings; production always uses the real file-backed scanForSecrets.
+var scanFile = scanForSecrets
+
 // Name is the registry-visible name of this heuristic.
 func (s *Secrets) Name() string { return "secrets" }
 
@@ -134,14 +140,19 @@ func (s *Secrets) Run(ctx context.Context, in Input) ([]Finding, error) {
 		if e.Size > secretsScanCap {
 			continue
 		}
-		findings, err := scanForSecrets(e)
+		findings, err := scanFile(e)
+		// Keep any findings detected BEFORE an error: scanForSecrets
+		// returns the secrets it already matched alongside a mid-file
+		// error (a transient read failure, or bufio.ErrTooLong on a
+		// later oversized line). Discarding them would silently drop a
+		// real secret — a false negative in a security scanner.
+		out = append(out, findings...)
 		if err != nil {
 			// Per-file errors (transient open failures, race with
-			// deletion) shouldn't fail the whole scan. Skip the file
-			// and move on; the agent caller can re-run if needed.
+			// deletion) shouldn't fail the whole scan. Move on to the
+			// next file; the agent caller can re-run if needed.
 			continue
 		}
-		out = append(out, findings...)
 	}
 	return out, nil
 }
@@ -242,37 +253,72 @@ func scanForSecrets(e walker.Entry) ([]Finding, error) {
 // like `aws_a=AKIA... aws_b=AKIA...` have two secrets, and the focal
 // match's preview must not leak the other one.
 func redactPreview(line string, focalLoc []int, allLocs [][]int) string {
-	if focalLoc == nil || len(focalLoc) != 2 || focalLoc[0] < 0 || focalLoc[1] > len(line) {
-		return "[REDACTED]"
-	}
 	const marker = "[REDACTED]"
-
-	// Sort allLocs by start so we can compute the focal's index in
-	// the redacted output deterministically; also so reverse-order
-	// substitution is well-defined.
-	locs := make([][]int, len(allLocs))
-	copy(locs, allLocs)
-	slices.SortFunc(locs, func(a, b []int) int { return a[0] - b[0] })
-
-	// Track focal's start position in the redacted string. Each
-	// earlier match shifts everything after it by len(marker)-(end-start).
-	focalRedactedStart := focalLoc[0]
-	for _, l := range locs {
-		if l[0] < focalLoc[0] {
-			focalRedactedStart += len(marker) - (l[1] - l[0])
-		}
+	if len(focalLoc) != 2 || focalLoc[0] < 0 || focalLoc[1] > len(line) || focalLoc[0] >= focalLoc[1] {
+		return marker
 	}
 
-	// Build the redacted line by replacing matches in reverse order
-	// (so earlier indices remain valid).
-	redacted := line
-	for i := len(locs) - 1; i >= 0; i-- {
-		l := locs[i]
-		if l[0] < 0 || l[1] > len(redacted) {
-			return "[REDACTED]" // defensive
+	// Normalize and clamp every match span, dropping anything invalid,
+	// and make sure the focal span is included so it's always redacted.
+	type span struct{ start, end int }
+	spans := make([]span, 0, len(allLocs)+1)
+	addSpan := func(s, e int) {
+		if s < 0 {
+			s = 0
 		}
-		redacted = redacted[:l[0]] + marker + redacted[l[1]:]
+		if e > len(line) {
+			e = len(line)
+		}
+		if s < e {
+			spans = append(spans, span{s, e})
+		}
 	}
+	for _, l := range allLocs {
+		if len(l) == 2 {
+			addSpan(l[0], l[1])
+		}
+	}
+	addSpan(focalLoc[0], focalLoc[1])
+
+	// Sort by start, then merge overlapping/adjacent spans into disjoint
+	// intervals. The previous reverse-order, in-place substitution used
+	// stale indices and was incorrect for nested/overlapping spans — it
+	// could leave raw secret bytes between two markers. A single
+	// left-to-right pass over merged intervals is correct for ANY
+	// overlap: every byte covered by a match is inside exactly one marker.
+	slices.SortFunc(spans, func(a, b span) int {
+		if a.start != b.start {
+			return a.start - b.start
+		}
+		return a.end - b.end
+	})
+	merged := make([]span, 0, len(spans))
+	for _, s := range spans {
+		if n := len(merged); n > 0 && s.start <= merged[n-1].end {
+			if s.end > merged[n-1].end {
+				merged[n-1].end = s.end
+			}
+			continue
+		}
+		merged = append(merged, s)
+	}
+
+	// Build the redacted line left-to-right, copying non-secret text
+	// verbatim and emitting one marker per merged interval, recording
+	// where the focal match's marker begins in the output.
+	var b strings.Builder
+	focalRedactedStart := 0
+	prev := 0
+	for _, s := range merged {
+		b.WriteString(line[prev:s.start])
+		if focalLoc[0] >= s.start && focalLoc[0] < s.end {
+			focalRedactedStart = b.Len()
+		}
+		b.WriteString(marker)
+		prev = s.end
+	}
+	b.WriteString(line[prev:])
+	redacted := b.String()
 
 	// Window previewMaxLen chars around the focal redaction.
 	half := previewMaxLen / 2

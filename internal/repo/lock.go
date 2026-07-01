@@ -117,19 +117,35 @@ func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 	if info == nil {
 		return
 	}
-	if current := readLockHolder(ctx, store); current != "" {
-		// readLockHolder returns " (held by ...)" — extract the
-		// UUID inside if present and compare. We don't fail on
-		// mismatch; we log so an operator running with --log-level
-		// debug can see lock-stomping if it ever happens.
-		if !strings.Contains(current, info.UUID) {
-			slog.LogAttrs(ctx, slog.LevelWarn,
-				"repo lock changed under us, not releasing",
-				slog.String("our_uuid", info.UUID),
-				slog.String("found", current),
-			)
-			return
-		}
+	current := readLockHolder(ctx, store)
+	if current == "" {
+		// The current holder could not be read — either the lock is
+		// already gone or (more dangerously) it is transiently
+		// unreadable. We CANNOT confirm we still own it, so we must not
+		// delete: deleting an unverifiable lock could stomp a lock that
+		// another process legitimately re-acquired after ours was
+		// cleared, silently breaking the mutual exclusion the lock
+		// exists to provide. Leaving our own lock behind on a transient
+		// read error is the safe failure — an operator sees a stale lock
+		// (the documented manual-recovery path) instead. This is
+		// fail-closed on purpose.
+		slog.LogAttrs(ctx, slog.LevelWarn,
+			"repo lock holder unreadable, not releasing",
+			slog.String("our_uuid", info.UUID),
+		)
+		return
+	}
+	// readLockHolder returns " (held by ...)" — check our UUID is inside
+	// before deleting. A mismatch means someone else holds the lock now
+	// (e.g. after a manual stale-lock recovery); log and skip rather than
+	// fail, since our protected work already finished.
+	if !strings.Contains(current, info.UUID) {
+		slog.LogAttrs(ctx, slog.LevelWarn,
+			"repo lock changed under us, not releasing",
+			slog.String("our_uuid", info.UUID),
+			slog.String("found", current),
+		)
+		return
 	}
 	if err := store.Delete(ctx, lockKey); err != nil {
 		if errors.Is(err, blobstore.ErrNotFound) {

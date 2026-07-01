@@ -386,28 +386,30 @@ func systemdOnCalendar(schedule config.PolicySchedule) (string, error) {
 	case policycfg.CadenceDaily:
 		return systemdDailyCalendar(s)
 	case policycfg.CadenceWeekly:
-		_, _, err := scheduleClock(s)
+		hh, mm, err := scheduleClock(s)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("%s *-*-* %s:00", systemdWeekday(s.Weekday), s.At), nil
+		return fmt.Sprintf("%s *-*-* %02d:%02d:00", systemdWeekday(s.Weekday), hh, mm), nil
 	case policycfg.CadenceMonthly:
-		_, _, err := scheduleClock(s)
+		hh, mm, err := scheduleClock(s)
 		if err != nil {
 			return "", err
 		}
-		return fmt.Sprintf("*-*-01 %s:00", s.At), nil
+		return fmt.Sprintf("*-*-01 %02d:%02d:00", hh, mm), nil
 	default:
 		return "", fmt.Errorf("unsupported systemd cadence %q", s.Cadence)
 	}
 }
 
 func systemdDailyCalendar(s config.PolicySchedule) (string, error) {
-	_, _, err := scheduleClock(s)
+	// Render from the parsed hour/minute rather than interpolating s.At
+	// verbatim, so a malformed clock can never reach the OnCalendar spec.
+	hh, mm, err := scheduleClock(s)
 	if err != nil {
 		return "", err
 	}
-	return fmt.Sprintf("*-*-* %s:00", s.At), nil
+	return fmt.Sprintf("*-*-* %02d:%02d:00", hh, mm), nil
 }
 
 func scheduleClock(schedule config.PolicySchedule) (int, int, error) {
@@ -415,15 +417,27 @@ func scheduleClock(schedule config.PolicySchedule) (int, int, error) {
 	if !ok {
 		return 0, 0, fmt.Errorf("schedule requires HH:MM")
 	}
+	// Require exactly two ASCII digits per field. strconv.Atoi accepts a
+	// leading sign, so "+9" would parse to 9 and (on the systemd path)
+	// render a malformed OnCalendar spec that never fires. Reject it here
+	// too so the render path is robust independent of upstream validation.
+	if !isTwoASCIIDigits(hourText) || !isTwoASCIIDigits(minuteText) {
+		return 0, 0, fmt.Errorf("schedule requires HH:MM with two digits per field, got %q", schedule.At)
+	}
 	hour, err := strconv.Atoi(hourText)
-	if err != nil {
-		return 0, 0, fmt.Errorf("schedule hour: %w", err)
+	if err != nil || hour > 23 {
+		return 0, 0, fmt.Errorf("schedule hour out of range: %q", hourText)
 	}
 	minute, err := strconv.Atoi(minuteText)
-	if err != nil {
-		return 0, 0, fmt.Errorf("schedule minute: %w", err)
+	if err != nil || minute > 59 {
+		return 0, 0, fmt.Errorf("schedule minute out of range: %q", minuteText)
 	}
 	return hour, minute, nil
+}
+
+// isTwoASCIIDigits reports whether s is exactly two ASCII digits.
+func isTwoASCIIDigits(s string) bool {
+	return len(s) == 2 && s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9'
 }
 
 func launchdWeekday(day string) int {

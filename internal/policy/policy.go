@@ -168,7 +168,11 @@ func FormatScheduleSpec(s config.PolicySchedule) string {
 
 func validClock(s string) bool {
 	hour, minute, ok := strings.Cut(s, ":")
-	if !ok || len(hour) != 2 || len(minute) != 2 {
+	// Require exactly two ASCII digits per component. strconv.Atoi alone
+	// is too lenient: it accepts a leading sign, so "+9" would parse to 9
+	// and pass the range check while producing a malformed systemd
+	// OnCalendar spec that silently never fires.
+	if !ok || !twoASCIIDigits(hour) || !twoASCIIDigits(minute) {
 		return false
 	}
 	h, err := strconv.Atoi(hour)
@@ -177,6 +181,16 @@ func validClock(s string) bool {
 	}
 	m, err := strconv.Atoi(minute)
 	return err == nil && m >= 0 && m <= 59
+}
+
+// twoASCIIDigits reports whether s is exactly two ASCII digits ('0'-'9'),
+// rejecting signs, spaces, and non-ASCII digit runes that strconv.Atoi
+// or unicode digit checks would otherwise accept.
+func twoASCIIDigits(s string) bool {
+	if len(s) != 2 {
+		return false
+	}
+	return s[0] >= '0' && s[0] <= '9' && s[1] >= '0' && s[1] <= '9'
 }
 
 func validWeekday(s string) bool {

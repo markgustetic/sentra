@@ -191,6 +191,21 @@ func TestRunner_ListSnapshots_LimitClips(t *testing.T) {
 	}
 }
 
+func TestRunner_ListSnapshots_ZeroLimitReturnsNoRows(t *testing.T) {
+	r, _ := newTestRunner(t, 3, nil)
+	got, err := r.Run(context.Background(), "list_snapshots", map[string]any{"limit": float64(0)})
+	if err != nil {
+		t.Fatalf("Run: %v", err)
+	}
+	var rows []any
+	if err := json.Unmarshal([]byte(got), &rows); err != nil {
+		t.Fatalf("unmarshal: %v", err)
+	}
+	if len(rows) != 0 {
+		t.Errorf("limit=0 should return 0 rows, got %d", len(rows))
+	}
+}
+
 func TestRunner_ListSnapshots_AcceptsIntegerLimit(t *testing.T) {
 	r, _ := newTestRunner(t, 3, nil)
 	got, err := r.Run(context.Background(), "list_snapshots", map[string]any{"limit": int64(1)})

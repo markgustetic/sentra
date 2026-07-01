@@ -97,17 +97,27 @@ func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 // snapshot manifest. Call after deleting snapshots — orphaned blobs
 // are reclaimed.
 //
-// keepIDs (optional, may be nil) is the set of snapshot IDs that
-// should be considered "live" for the purposes of building the
-// blob live-set. If nil, all snapshots in the repo are considered
-// live (use this when you want a simple "GC orphans" pass after a
-// manual DeleteSnapshot).
+// The live set is ALWAYS computed from the snapshots actually present
+// in the store, listed here under the lock. This is the load-bearing
+// invariant: a blob referenced by ANY manifest present at GC time is
+// retained, so a snapshot committed by a concurrent CreateSnapshot in
+// the window before GC acquired the lock is protected. (An earlier
+// version treated a non-nil keepIDs as the SOLE live set; because prune
+// froze keepIDs from a ListSnapshots taken outside any lock, a backup
+// that committed in the prune→GC window was absent from keepIDs and had
+// its chunks reaped — silent, unrecoverable data loss. keepIDs no
+// longer governs which blobs are live.)
 //
-// Safety: GC refuses to run if the repo has zero snapshots and no
-// keepIDs were provided. Otherwise it would gleefully delete every
-// data blob in the store, which is technically correct per the
-// algorithm but very rarely the user's intent. The intended override
-// for that edge is a future `--all` flag on the prune CLI.
+// keepIDs (optional, may be nil) now only distinguishes caller intent
+// for the empty-store safety guard:
+//   - nil     => a bare "GC orphans" convenience pass (e.g. after a
+//     manual DeleteSnapshot). GC refuses to run against a
+//     store with zero snapshots (ErrEmptyRepo) rather than
+//     wipe every data blob.
+//   - non-nil => the caller (prune/policy) has already decided the drop
+//     set and deleted those manifests. An empty live set is
+//     then a deliberate full drop (e.g. prune --all), so GC
+//     proceeds and reclaims everything now orphaned.
 //
 // Concurrency: GC and CreateSnapshot serialize via the repo-wide
 // advisory lock at meta/lock. Acquiring the lock fails fast with
@@ -135,36 +145,27 @@ func (r *Repo) GC(ctx context.Context, keepIDs map[string]bool) (GCStats, error)
 	}
 	crypto.Zeroize(k)
 
-	// Resolve the live ID set. Two paths: explicit keepIDs (passed in
-	// by prune after deleting drop manifests but before they have any
-	// effect on List) or "every snapshot currently in the repo".
+	// Resolve the live ID set from the snapshots present in the store,
+	// listed under the lock. Never from keepIDs — see the doc comment
+	// for why that was a data-loss race.
+	entries, err := r.store.List(ctx, snapshotPrefix)
+	if err != nil {
+		return GCStats{}, fmt.Errorf("repo: list snapshots: %w", err)
+	}
 	var liveIDs []string
-	if keepIDs != nil {
-		liveIDs = make([]string, 0, len(keepIDs))
-		for id, keep := range keepIDs {
-			if !keep {
-				// keepIDs is a set-as-map; a key set to false is
-				// explicitly NOT live. Lets prune carry around a single
-				// map and toggle entries without rebuilding it.
-				continue
-			}
-			liveIDs = append(liveIDs, id)
+	for _, info := range entries {
+		id := strings.TrimPrefix(info.Key, snapshotPrefix)
+		if id == "" || id == info.Key {
+			continue
 		}
-	} else {
-		entries, err := r.store.List(ctx, snapshotPrefix)
-		if err != nil {
-			return GCStats{}, fmt.Errorf("repo: list snapshots: %w", err)
-		}
-		for _, info := range entries {
-			id := strings.TrimPrefix(info.Key, snapshotPrefix)
-			if id == "" || id == info.Key {
-				continue
-			}
-			liveIDs = append(liveIDs, id)
-		}
-		if len(liveIDs) == 0 {
-			return GCStats{}, ErrEmptyRepo
-		}
+		liveIDs = append(liveIDs, id)
+	}
+	if len(liveIDs) == 0 && keepIDs == nil {
+		// Bare "GC orphans" pass against an empty store: refuse rather
+		// than delete every data blob. A caller-supplied keepIDs (even
+		// empty) signals a deliberate, already-decided prune, so that
+		// path is allowed to proceed to a full reclaim.
+		return GCStats{}, ErrEmptyRepo
 	}
 
 	// Build the live blob-key set from each surviving manifest. A blob
