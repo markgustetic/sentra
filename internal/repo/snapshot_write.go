@@ -175,25 +175,34 @@ func (r *Repo) finishSnapshot(
 	return info, nil
 }
 
-// putManifest serializes m, compresses, encrypts, and writes it to
-// snapshots/<id>.
-func (r *Repo) putManifest(ctx context.Context, repoKey []byte, m Manifest) error {
-	raw, err := json.Marshal(&m)
+// putSealedJSON marshals v, compresses, seals under repoKey, and Puts
+// the result at key. Shared write envelope for manifests and the
+// snapshot index. label appears in each error ("marshal <label>",
+// "compress <label>", "seal <label>", "put <label>") so operator-
+// facing messages match the distinct wording of each call site.
+func (r *Repo) putSealedJSON(ctx context.Context, repoKey []byte, key string, v any, label string) error {
+	raw, err := json.Marshal(v)
 	if err != nil {
-		return fmt.Errorf("repo: marshal manifest: %w", err)
+		return fmt.Errorf("repo: marshal %s: %w", label, err)
 	}
 	compressed, err := chunker.Compress(raw)
 	if err != nil {
-		return fmt.Errorf("repo: compress manifest: %w", err)
+		return fmt.Errorf("repo: compress %s: %w", label, err)
 	}
 	sealed, err := crypto.Seal(repoKey, compressed)
 	if err != nil {
-		return fmt.Errorf("repo: seal manifest: %w", err)
+		return fmt.Errorf("repo: seal %s: %w", label, err)
 	}
-	if err := r.store.Put(ctx, snapshotPrefix+m.ID, bytes.NewReader(sealed)); err != nil {
-		return fmt.Errorf("repo: put manifest: %w", err)
+	if err := r.store.Put(ctx, key, bytes.NewReader(sealed)); err != nil {
+		return fmt.Errorf("repo: put %s: %w", label, err)
 	}
 	return nil
+}
+
+// putManifest serializes m, compresses, encrypts, and writes it to
+// snapshots/<id>.
+func (r *Repo) putManifest(ctx context.Context, repoKey []byte, m Manifest) error {
+	return r.putSealedJSON(ctx, repoKey, snapshotPrefix+m.ID, &m, "manifest")
 }
 
 // snapState aggregates per-snapshot state populated concurrently by

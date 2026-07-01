@@ -1,7 +1,6 @@
 package repo
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"errors"
@@ -96,22 +95,7 @@ func (r *Repo) loadSnapshotIndex(ctx context.Context, repoKey []byte) (*snapshot
 func (r *Repo) saveSnapshotIndex(ctx context.Context, repoKey []byte, idx *snapshotIndex) error {
 	idx.Version = snapshotIndexVersion
 	idx.Updated = time.Now().UTC()
-	raw, err := json.Marshal(idx)
-	if err != nil {
-		return fmt.Errorf("repo: marshal index: %w", err)
-	}
-	compressed, err := chunker.Compress(raw)
-	if err != nil {
-		return fmt.Errorf("repo: compress index: %w", err)
-	}
-	sealed, err := crypto.Seal(repoKey, compressed)
-	if err != nil {
-		return fmt.Errorf("repo: seal index: %w", err)
-	}
-	if err := r.store.Put(ctx, snapshotIndexKey, bytes.NewReader(sealed)); err != nil {
-		return fmt.Errorf("repo: put index: %w", err)
-	}
-	return nil
+	return r.putSealedJSON(ctx, repoKey, snapshotIndexKey, idx, "index")
 }
 
 // updateSnapshotIndex performs a read-modify-write on the index. The
