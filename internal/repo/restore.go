@@ -252,22 +252,38 @@ func (r *Repo) fetchChunk(ctx context.Context, repoKey []byte, hexHash string) (
 // and is empty, the call returns nil. A non-directory file at dest
 // is rejected.
 func ensureDestDir(dest string) error {
-	info, err := os.Stat(dest)
-	if errors.Is(err, os.ErrNotExist) {
+	exists, _, err := statDestDir(dest)
+	if err != nil {
+		return err
+	}
+	if !exists {
 		return os.MkdirAll(dest, 0o755)
 	}
+	return nil
+}
+
+// statDestDir stats a restore destination and reports whether it
+// exists and (if a directory) whether it is empty. A non-directory
+// at dest, or a non-empty directory, is reported as an error. Shared
+// by ensureDestDir (which creates dest on absence) and inspectDestDir
+// (which only reports).
+func statDestDir(dest string) (exists bool, empty bool, err error) {
+	info, err := os.Stat(dest)
+	if errors.Is(err, os.ErrNotExist) {
+		return false, true, nil
+	}
 	if err != nil {
-		return fmt.Errorf("repo: stat dest %s: %w", dest, err)
+		return false, false, fmt.Errorf("repo: stat dest %s: %w", dest, err)
 	}
 	if !info.IsDir() {
-		return fmt.Errorf("repo: dest %s exists and is not a directory", dest)
+		return true, false, fmt.Errorf("repo: dest %s exists and is not a directory", dest)
 	}
 	entries, err := os.ReadDir(dest)
 	if err != nil {
-		return fmt.Errorf("repo: read dest %s: %w", dest, err)
+		return true, false, fmt.Errorf("repo: read dest %s: %w", dest, err)
 	}
 	if len(entries) != 0 {
-		return fmt.Errorf("repo: dest %s is not empty (%d entries)", dest, len(entries))
+		return true, false, fmt.Errorf("repo: dest %s is not empty (%d entries)", dest, len(entries))
 	}
-	return nil
+	return true, true, nil
 }

@@ -159,24 +159,7 @@ func (r *Repo) VerifyRestore(ctx context.Context, snapID, destDir string) (Resto
 }
 
 func inspectDestDir(dest string) (exists bool, empty bool, err error) {
-	info, err := os.Stat(dest)
-	if errors.Is(err, os.ErrNotExist) {
-		return false, true, nil
-	}
-	if err != nil {
-		return false, false, fmt.Errorf("repo: stat dest %s: %w", dest, err)
-	}
-	if !info.IsDir() {
-		return true, false, fmt.Errorf("repo: dest %s exists and is not a directory", dest)
-	}
-	entries, err := os.ReadDir(dest)
-	if err != nil {
-		return true, false, fmt.Errorf("repo: read dest %s: %w", dest, err)
-	}
-	if len(entries) != 0 {
-		return true, false, fmt.Errorf("repo: dest %s is not empty (%d entries)", dest, len(entries))
-	}
-	return true, true, nil
+	return statDestDir(dest)
 }
 
 func verifyRestoreFile(ctx context.Context, absDest string, fe FileEntry) (*RestoreMismatch, error) {
