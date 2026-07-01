@@ -24,12 +24,10 @@ package agent
 import (
 	"cmp"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"path/filepath"
 	"slices"
-	"strings"
 	"sync"
 
 	"github.com/markgustetic/sentra/internal/agent/action"
@@ -149,37 +147,6 @@ func (a *Agent) actionsOrDefault() *action.Registry {
 	}
 	return action.NewDefaultRegistry()
 }
-
-// systemPrompt is the agent's role prompt. It describes Sentra, the
-// agent's job, and — crucially — the safety rails: never request file
-// contents, always emit recommendations as a JSON array.
-//
-// We rebuild this on every Scan rather than storing it on the Agent
-// struct because the available tools depend on the runner, and the
-// action vocabulary depends on the registry — both injectable. The
-// two %s placeholders are filled with: (1) the tool-list fragment
-// produced by formatToolsForPrompt, (2) the action-list fragment
-// produced by action.Registry.PromptFragment. Generating from the
-// live registry guarantees the LLM is told about exactly the verbs
-// the dispatcher knows how to handle.
-const systemPromptTemplate = `You are the Sentra repository auditor. Sentra is an encrypted, ` +
-	`versioned S3 backup tool. Your job is to triage local heuristic findings ` +
-	`(secrets, large files, stale paths, retention drift, ...) and emit a JSON ` +
-	`array of recommendations the operator can review.
-
-Tools available (read-only metadata; you must NEVER request file contents):
-%s
-
-Hard rules:
-- You never see file contents. Don't ask for them; the tools won't return them.
-- Use the tools to investigate findings before recommending action. Be parsimonious — most findings need 0-1 tool calls.
-- Final response MUST be a single JSON array of Recommendation objects:
-  [{"id":"...","action":"...","target":"...","severity":"...","rationale":"..."}]
-  Action must be one of:
-%s
-  Severity is one of: "info", "warn", "critical".
-- If there is nothing to do, respond with "[]".
-- Do NOT include prose outside the JSON array. The array IS your response.`
 
 // Scan runs the heuristics, then drives the LLM loop until the model
 // emits a final JSON array of recommendations or the tool-call budget
@@ -341,222 +308,6 @@ func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]
 	}
 }
 
-// buildInitialMessage formats the heuristic findings as a JSON array
-// for the model's initial user-turn input. JSON keeps the parse cost
-// low for the model and lines up with the recommendation output shape.
-func buildInitialMessage(findings []heuristics.Finding) (string, error) {
-	out, err := json.MarshalIndent(findings, "", "  ")
-	if err != nil {
-		return "", err
-	}
-	return fmt.Sprintf("Heuristic findings (%d total):\n\n%s\n\nReview these and emit recommendations as a JSON array.",
-		len(findings), string(out)), nil
-}
-
-func filterFindingsByCategory(findings []heuristics.Finding, categories []string) []heuristics.Finding {
-	allowed := make(map[string]struct{}, len(categories))
-	for _, category := range categories {
-		category = strings.TrimSpace(strings.ToLower(category))
-		if category == "" {
-			continue
-		}
-		allowed[category] = struct{}{}
-	}
-	if len(allowed) == 0 {
-		return findings
-	}
-	out := make([]heuristics.Finding, 0, len(findings))
-	for _, finding := range findings {
-		category := strings.ToLower(finding.Category)
-		heuristic := strings.ToLower(finding.Heuristic)
-		if _, ok := allowed[category]; ok {
-			out = append(out, finding)
-			continue
-		}
-		if _, ok := allowed[heuristic]; ok {
-			out = append(out, finding)
-		}
-	}
-	return out
-}
-
-func localRecommendations(findings []heuristics.Finding) []Recommendation {
-	recs := make([]Recommendation, 0, len(findings))
-	for _, finding := range findings {
-		action := localActionForFinding(finding)
-		severity := finding.Severity
-		if severity == "" {
-			severity = heuristics.SeverityInfo
-		}
-		category := finding.Category
-		if category == "" {
-			category = finding.Heuristic
-		}
-		recs = append(recs, Recommendation{
-			ID:        "local-" + finding.ID,
-			Action:    action,
-			Target:    finding.Target,
-			Severity:  severity,
-			Rationale: fmt.Sprintf("Local heuristic %q reported this target.", category),
-		})
-	}
-	return recs
-}
-
-func localActionForFinding(finding heuristics.Finding) string {
-	switch finding.Category {
-	case "secrets":
-		return "flag_secret"
-	case "cache_dirs", "large_files":
-		return "add_to_ignore"
-	case "retention_drift":
-		return "prune_snapshot"
-	default:
-		return "none"
-	}
-}
-
-// formatToolsForPrompt renders the toolset into a human-readable list
-// for the system prompt. Each line is "- name: description" so the LLM
-// has both the name (for tool-use) and a one-liner of intent.
-func formatToolsForPrompt(ts []tools.Tool) string {
-	var sb strings.Builder
-	for _, t := range ts {
-		fmt.Fprintf(&sb, "- %s: %s\n", t.Name, t.Description)
-	}
-	return strings.TrimRight(sb.String(), "\n")
-}
-
-// parseRecommendations decodes the model's final text as a list of
-// Recommendation. Real LLM output rarely matches the prompt exactly:
-// models prepend prose, wrap arrays in code fences, return a single
-// object instead of an array, or trail off with "Hope this helps!" —
-// so the parser tries multiple shapes in order and accepts the first
-// one that yields a valid Recommendation slice.
-//
-// Precedence (each step falls through to the next on failure):
-//  1. Direct json.Unmarshal as []Recommendation.
-//  2. Strip a single ``` … ``` (or ```json … ```) code fence and retry
-//     direct array unmarshal.
-//  3. Locate the substring from the first '[' to the last ']' and
-//     unmarshal that as []Recommendation.
-//  4. Try parsing the whole (or the fence-stripped) text as a single
-//     Recommendation object and wrap it in a one-element slice.
-//  5. Locate the substring from the first '{' to the last '}' and
-//     parse that as a single Recommendation.
-//
-// If everything fails, returns an error wrapping a snippet of the
-// actual response (first 200 chars) so logs and the CLI surface point
-// the operator at what came back. Empty input is a clear error,
-// distinct from the empty-array "nothing to recommend" case which
-// step (1) handles cleanly.
-func parseRecommendations(text string) ([]Recommendation, error) {
-	original := text
-	t := strings.TrimSpace(text)
-	if t == "" {
-		return nil, fmt.Errorf("empty response (got %q)", truncate(original, 200))
-	}
-
-	// Step 1: direct array.
-	if recs, ok := tryUnmarshalArray(t); ok {
-		return recs, nil
-	}
-
-	// Step 2: strip code fences (with or without language tag) and retry.
-	stripped := stripFences(t)
-	if stripped != t {
-		if recs, ok := tryUnmarshalArray(stripped); ok {
-			return recs, nil
-		}
-	}
-
-	// Step 3: scan for the first '[' to the last ']' (handles prose
-	// prefixes/suffixes around an inline array).
-	if sub, ok := bracketSubstring(stripped, '[', ']'); ok {
-		if recs, ok := tryUnmarshalArray(sub); ok {
-			return recs, nil
-		}
-	}
-
-	// Step 4: try a single Recommendation object — both on the
-	// fence-stripped text and on a '{'-'}' substring scan.
-	if rec, ok := tryUnmarshalObject(stripped); ok {
-		return []Recommendation{rec}, nil
-	}
-	if sub, ok := bracketSubstring(stripped, '{', '}'); ok {
-		if rec, ok := tryUnmarshalObject(sub); ok {
-			return []Recommendation{rec}, nil
-		}
-	}
-
-	return nil, fmt.Errorf("could not parse JSON recommendations from response (got %q)",
-		truncate(original, 200))
-}
-
-// tryUnmarshalArray attempts to parse t as a JSON []Recommendation.
-// Returns (recs, true) on success; (nil, false) on any failure. The
-// boolean ok pattern avoids leaking parse errors up the chain — at
-// each step we just want to know "did this shape work?".
-func tryUnmarshalArray(t string) ([]Recommendation, bool) {
-	var recs []Recommendation
-	if err := json.Unmarshal([]byte(t), &recs); err != nil {
-		return nil, false
-	}
-	return recs, true
-}
-
-// tryUnmarshalObject attempts to parse t as a single Recommendation.
-// Returns (rec, true) on success; (Recommendation{}, false) otherwise.
-func tryUnmarshalObject(t string) (Recommendation, bool) {
-	var rec Recommendation
-	if err := json.Unmarshal([]byte(t), &rec); err != nil {
-		return Recommendation{}, false
-	}
-	return rec, true
-}
-
-// stripFences removes a single Markdown code-fence wrapper from t.
-// Recognizes "```\n…\n```" and "```json\n…\n```" (and other language
-// tags). If no leading fence is found, returns t unchanged so callers
-// can detect "no fence stripping happened" by identity comparison.
-func stripFences(t string) string {
-	t = strings.TrimSpace(t)
-	if !strings.HasPrefix(t, "```") {
-		return t
-	}
-	// Drop everything up to and including the first newline (the
-	// opening-fence line, optionally with a language tag).
-	if nl := strings.IndexByte(t, '\n'); nl > 0 {
-		t = t[nl+1:]
-	} else {
-		// Single-line "```json[…]```" pathology: just trim the
-		// leading backticks.
-		t = strings.TrimPrefix(t, "```")
-	}
-	// Drop the closing fence and anything after it.
-	if end := strings.LastIndex(t, "```"); end >= 0 {
-		t = t[:end]
-	}
-	return strings.TrimSpace(t)
-}
-
-// bracketSubstring returns the substring from the first occurrence
-// of open to the last occurrence of close (both inclusive). Returns
-// (s, true) when both delimiters were found in valid order, or
-// ("", false) otherwise. Enables "salvage the JSON out of prose
-// noise" without parsing the prose itself.
-func bracketSubstring(t string, open, close byte) (string, bool) {
-	start := strings.IndexByte(t, open)
-	if start < 0 {
-		return "", false
-	}
-	end := strings.LastIndexByte(t, close)
-	if end < 0 || end <= start {
-		return "", false
-	}
-	return t[start : end+1], true
-}
-
 // writeStream sends s to stream non-blocking; nil and full channels
 // are silently no-op'd. We intentionally drop rather than block so a
 // slow consumer (e.g. a test that hasn't drained yet) doesn't stall
@@ -570,15 +321,6 @@ func writeStream(stream chan<- string, s string) {
 	case stream <- s:
 	default:
 	}
-}
-
-// truncate clips s to at most n bytes (with an ellipsis), used for
-// error context where we don't want to dump a multi-KB model response.
-func truncate(s string, n int) string {
-	if len(s) <= n {
-		return s
-	}
-	return s[:n] + "..."
 }
 
 // collectWalked runs the shared walker over root and returns a
