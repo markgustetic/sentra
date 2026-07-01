@@ -249,6 +249,22 @@ func (r *RetryStore) delay(attempt int) time.Duration {
 	return d
 }
 
+// retryResult runs op through the store's retry policy, capturing and
+// returning its typed result. Collapses the per-method result-capture
+// boilerplate shared by Get/Stat/List/BatchDelete.
+func retryResult[T any](r *RetryStore, ctx context.Context, op func() (T, error)) (T, error) {
+	var out T
+	err := r.retry(ctx, func() error {
+		v, err := op()
+		if err != nil {
+			return err
+		}
+		out = v
+		return nil
+	})
+	return out, err
+}
+
 // --- Store implementation: each method delegates to the inner store
 // through the retry helper. ---
 
@@ -269,30 +285,12 @@ func (r *RetryStore) Put(ctx context.Context, key string, body io.Reader) error 
 // passed through verbatim; if it errors mid-read the caller must
 // handle it (we can't replay a half-consumed HTTP stream).
 func (r *RetryStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
-	var rc io.ReadCloser
-	err := r.retry(ctx, func() error {
-		got, gerr := r.inner.Get(ctx, key)
-		if gerr != nil {
-			return gerr
-		}
-		rc = got
-		return nil
-	})
-	return rc, err
+	return retryResult(r, ctx, func() (io.ReadCloser, error) { return r.inner.Get(ctx, key) })
 }
 
 // Stat retries the HeadObject call.
 func (r *RetryStore) Stat(ctx context.Context, key string) (Info, error) {
-	var info Info
-	err := r.retry(ctx, func() error {
-		got, gerr := r.inner.Stat(ctx, key)
-		if gerr != nil {
-			return gerr
-		}
-		info = got
-		return nil
-	})
-	return info, err
+	return retryResult(r, ctx, func() (Info, error) { return r.inner.Stat(ctx, key) })
 }
 
 // Delete retries the DeleteObject call.
@@ -305,16 +303,7 @@ func (r *RetryStore) Delete(ctx context.Context, key string) error {
 // List retries the ListObjectsV2 paginator. The whole pagination is
 // retried on transient failure — partial pages are not preserved.
 func (r *RetryStore) List(ctx context.Context, prefix string) ([]Info, error) {
-	var out []Info
-	err := r.retry(ctx, func() error {
-		got, gerr := r.inner.List(ctx, prefix)
-		if gerr != nil {
-			return gerr
-		}
-		out = got
-		return nil
-	})
-	return out, err
+	return retryResult(r, ctx, func() ([]Info, error) { return r.inner.List(ctx, prefix) })
 }
 
 // PutIfAbsent intentionally does NOT retry. The at-least-once
@@ -333,14 +322,5 @@ func (r *RetryStore) PutIfAbsent(ctx context.Context, key string, body io.Reader
 // implementation already chunks at 1000 keys/request; on retry the
 // whole input is re-sent. Idempotency is from S3's DeleteObjects.
 func (r *RetryStore) BatchDelete(ctx context.Context, keys []string) (int, error) {
-	var deleted int
-	err := r.retry(ctx, func() error {
-		got, gerr := r.inner.BatchDelete(ctx, keys)
-		if gerr != nil {
-			return gerr
-		}
-		deleted = got
-		return nil
-	})
-	return deleted, err
+	return retryResult(r, ctx, func() (int, error) { return r.inner.BatchDelete(ctx, keys) })
 }
