@@ -325,12 +325,7 @@ func runPolicyCheck(cmd *cobra.Command, out io.Writer, r *repo.Repo) error {
 		return nil
 	}
 	fmt.Fprintln(out, "  check: failed")
-	return fmt.Errorf("%w: missing=%d manifests=%d lock_stale=%t",
-		ErrCheckFailed,
-		len(report.MissingBlobs),
-		len(report.ManifestIssues),
-		report.Lock != nil && (report.Lock.Stale || report.Lock.Unreadable),
-	)
+	return checkFailedError(report)
 }
 
 func runPolicyPrune(cmd *cobra.Command, out io.Writer, r *repo.Repo, cfg *config.Config, mode string) error {

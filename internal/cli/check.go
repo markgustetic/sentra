@@ -81,14 +81,22 @@ func runCheck(
 		return err
 	}
 	if !report.Healthy() {
-		return fmt.Errorf("%w: missing=%d manifests=%d lock_stale=%t",
-			ErrCheckFailed,
-			len(report.MissingBlobs),
-			len(report.ManifestIssues),
-			report.Lock != nil && (report.Lock.Stale || report.Lock.Unreadable),
-		)
+		return checkFailedError(report)
 	}
 	return nil
+}
+
+// checkFailedError builds the standard ErrCheckFailed error from a
+// check report, centralizing the stale-lock predicate. Byte-identical
+// to the former inline construction at both call sites (here and in
+// runPolicyCheck).
+func checkFailedError(report repo.CheckReport) error {
+	return fmt.Errorf("%w: missing=%d manifests=%d lock_stale=%t",
+		ErrCheckFailed,
+		len(report.MissingBlobs),
+		len(report.ManifestIssues),
+		report.Lock != nil && (report.Lock.Stale || report.Lock.Unreadable),
+	)
 }
 
 type checkJSONReport struct {
