@@ -56,14 +56,6 @@ func defaultAWSCLIInstallPlan() (AWSCLIInstallPlan, bool) {
 	return AWSCLIInstallPlan{}, false
 }
 
-// DefaultAWSCheckIdentity verifies that the selected AWS profile can
-// resolve a caller identity through the AWS CLI. It captures output so
-// a failed preflight can be retried through SSO login without printing
-// scary intermediate errors.
-func DefaultAWSCheckIdentity(ctx context.Context, profile string) error {
-	return runAWSCLI(ctx, []string{"sts", "get-caller-identity"}, profile, false)
-}
-
 // DefaultAWSLogin delegates browser-based AWS CLI sign-in for local
 // development. The AWS CLI stores temporary credentials; Sentra never receives
 // or stores them.
