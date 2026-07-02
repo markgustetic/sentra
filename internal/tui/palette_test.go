@@ -37,6 +37,11 @@ func TestPalette_EnterActivatesTopMatch(t *testing.T) {
 	if !ok || act.id != "diff" {
 		t.Fatalf("got %v, want activateMsg{diff}", cmd())
 	}
+	// Enter activates without mutating the input — clearing the query
+	// is the App's job (Reset on the next open), not the palette's.
+	if got := p.Query(); got != "diff" {
+		t.Fatalf("enter clobbered the query: got %q, want diff", got)
+	}
 }
 
 func TestPalette_EnterOnNoMatchesDoesNothing(t *testing.T) {

@@ -4,14 +4,20 @@
 // is a pure model that renders data the deps layer hands it, and never
 // owns its own goroutines beyond the agent stream channel.
 //
-// The parent App owns the active view, the window size, and a small
-// help toggle. Each sub-model handles its own internal state — App
-// just routes keys and renders top/bottom chrome.
+// The shell is a persistent sidebar rail beside a content pane, with
+// a ctrl+p command palette, a status bar of contextual key hints, and
+// a stack of modal overlays. Views register in a command Registry
+// that drives both the rail and the palette, so adding a view is one
+// registration rather than parallel edits to every chrome renderer.
+// App owns all overlay and focus state: keys route modals-first, then
+// palette, then global bindings, then the focused region — a view can
+// never trap input, because the trapping layers live above it.
 package tui
 
 import (
 	"context"
 	"fmt"
+	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -149,6 +155,10 @@ func NewApp(deps Deps) App {
 	}
 }
 
+// Init starts every view's Init at once, not just the active view's:
+// background loads (snapshot lists, dashboard data) belong to the
+// views, and batching them here means a view the user hasn't visited
+// yet already has data by the time they switch to it.
 func (m App) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.views))
 	for _, v := range m.views {
@@ -157,6 +167,11 @@ func (m App) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// Update handles shell-owned messages (size, navigation, modal
+// results) here and splits the rest by kind: key messages go through
+// routeKey's focus rules so exactly one region sees each keystroke,
+// while everything else is broadcast to all views — a data load must
+// land even when its view isn't focused.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
@@ -174,6 +189,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				m.active = i
 				m.sidebar.Select(msg.id)
 				m.focus = focusContent
+				break
 			}
 		}
 		return m, nil
@@ -241,6 +257,8 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.focus = focusSidebar
 		}
 		return m, nil
+	case key.Matches(msg, m.keys.Help):
+		return m.pushHelpModal(), nil
 	case key.Matches(msg, m.keys.Quit):
 		m.cleanup()
 		return m, tea.Quit
@@ -266,6 +284,35 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return m, cmd
 }
 
+// pushHelpModal builds the `?` key-reference modal from the live
+// keymap and the active view's ShortHelp, rather than a hardcoded
+// string — the review caught the status bar advertising "?" while
+// nothing handled it, and deriving the text from the bindings keeps
+// the help from drifting the same way.
+func (m App) pushHelpModal() App {
+	var b strings.Builder
+	writeBinding := func(kb key.Binding) {
+		fmt.Fprintf(&b, "%-8s %s\n", kb.Help().Key, kb.Help().Desc)
+	}
+	for _, kb := range m.keys.shortHelp() {
+		writeBinding(kb)
+	}
+	if vh, ok := m.views[m.active].model.(viewShortHelper); ok {
+		for _, kb := range vh.ShortHelp() {
+			writeBinding(kb)
+		}
+	}
+	w, h := m.width, m.height
+	if w == 0 || h == 0 {
+		// No WindowSizeMsg yet (headless tests): fall back to the
+		// minimum-supported size so the modal still centers sanely.
+		w, h = minWidth, minHeight
+	}
+	body := strings.TrimRight(b.String(), "\n")
+	m.modals = append(m.modals, NewInfoModal("Keys", body, w, h))
+	return m
+}
+
 // broadcast forwards a non-key message to every view.
 func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 	cmds := make([]tea.Cmd, 0, len(m.views))
@@ -282,8 +329,14 @@ func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 // keeps working unchanged.
 func (m App) resize(msg tea.WindowSizeMsg) App {
 	m.width, m.height = msg.Width, msg.Height
-	contentW := msg.Width - sidebarWidth - 3 // rail + border + gap
-	contentH := msg.Height - 4               // title bar + status bar + borders
+	// Horizontal chrome around the content text: the sidebar rail
+	// (sidebarWidth), the 1-col gap View joins between rail and panel,
+	// and ui.Panel's border+padding (1+1 each side = 4). Vertical
+	// chrome: title bar (1) + status bar (1) + panel border (2); the
+	// panel has no vertical padding. TestApp_NoOverflowAtMinSize pins
+	// these budgets against the real styles.
+	contentW := msg.Width - sidebarWidth - 5 // gap(1) + panel border+padding(4)
+	contentH := msg.Height - 4               // title(1) + status(1) + panel border(2)
 	if contentW < 1 {
 		contentW = 1
 	}
@@ -303,6 +356,13 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	return m
 }
 
+// View renders the topmost overlay when one is up (modal stack, then
+// palette), otherwise the standard chrome: title bar, rail+content
+// row, status bar. Overlays replace the whole frame instead of
+// compositing over it — lipgloss has no z-axis, and lipgloss.Place
+// gives the visual effect of a centered dialog without a hand-rolled
+// cell-level blitter. The too-small guard comes first so a shrunken
+// terminal shows a resize hint rather than a mangled layout.
 func (m App) View() string {
 	if m.width > 0 && (m.width < minWidth || m.height < minHeight) {
 		hint := fmt.Sprintf("terminal too small (%dx%d)\nneed at least %dx%d",

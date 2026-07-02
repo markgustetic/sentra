@@ -36,6 +36,11 @@ func TestSidebar_ArrowMovesSelectionAndEnterActivates(t *testing.T) {
 	if act.id != "snapshots" {
 		t.Fatalf("activated %q, want snapshots", act.id)
 	}
+	// Enter emits the activation but must not move the highlight — the
+	// rail keeps tracking the row the user chose.
+	if it, ok := s.list.SelectedItem().(sidebarItem); !ok || it.cmd.ID != "snapshots" {
+		t.Fatalf("enter moved the sidebar selection: %+v", s.list.SelectedItem())
+	}
 }
 
 func TestSidebar_BadgeVisible(t *testing.T) {
