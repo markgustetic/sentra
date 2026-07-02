@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -60,6 +61,18 @@ func NewSnapshots(deps Deps) Snapshots {
 		}
 	}
 	return NewSnapshotsWithLoader(deps, loader)
+}
+
+// Title names the view in the sidebar, palette, and title bar.
+func (Snapshots) Title() string { return "Snapshots" }
+
+// ShortHelp lists the view-specific keys for the status bar.
+func (Snapshots) ShortHelp() []key.Binding {
+	return []key.Binding{
+		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "row")),
+		key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "detail")),
+		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+	}
 }
 
 // NewSnapshotsWithLoader is the tests' construction path. It exposes

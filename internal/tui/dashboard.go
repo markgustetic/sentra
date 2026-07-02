@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -54,6 +55,12 @@ func NewDashboard(deps Deps) Dashboard {
 	d.data = hydrateDashboardData(deps)
 	return d
 }
+
+// Title names the view in the sidebar, palette, and title bar.
+func (Dashboard) Title() string { return "Dashboard" }
+
+// ShortHelp lists the view-specific keys for the status bar.
+func (Dashboard) ShortHelp() []key.Binding { return nil }
 
 // SetData replaces the model's data. Tests use this to inject canned
 // state; production code calls it after a backup or scan completes

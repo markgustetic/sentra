@@ -6,6 +6,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -32,6 +33,12 @@ func NewOperations(deps Deps) Operations {
 	o.data = hydrateOperationsData(deps)
 	return o
 }
+
+// Title names the view in the sidebar, palette, and title bar.
+func (Operations) Title() string { return "Operations" }
+
+// ShortHelp lists the view-specific keys for the status bar.
+func (Operations) ShortHelp() []key.Binding { return nil }
 
 // SetData replaces the model's data. Tests use this to inject canned
 // check reports.

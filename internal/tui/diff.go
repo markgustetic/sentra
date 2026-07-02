@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -34,6 +35,12 @@ type Diff struct {
 func NewDiff(deps Deps) Diff {
 	return Diff{deps: deps}
 }
+
+// Title names the view in the sidebar, palette, and title bar.
+func (Diff) Title() string { return "Diff" }
+
+// ShortHelp lists the view-specific keys for the status bar.
+func (Diff) ShortHelp() []key.Binding { return nil }
 
 // SetResult replaces the rendered diff. Returns the updated model
 // so callers can chain.

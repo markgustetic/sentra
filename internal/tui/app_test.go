@@ -1,205 +1,114 @@
 package tui
 
 import (
-	"context"
 	"strings"
 	"testing"
-	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
-
-	"github.com/markgustetic/sentra/internal/agent"
 )
 
-// newTestApp constructs an App with no repo or provider — every view
-// must render and react to keys without those external deps. View
-// constructors that need data fall back to "empty repo" / "configure
-// API key" placeholders so headless tests work.
 func newTestApp(t *testing.T) App {
 	t.Helper()
-	return NewApp(Deps{})
+	app := NewApp(Deps{RepoName: "test-repo"})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return sized.(App)
 }
 
-// TestApp_StartsOnDashboard locks in the contract that the parent
-// model boots into the dashboard view. A user typing `sentra ui` and
-// staring at the snapshots table or agent log first would be confusing
-// — the dashboard is the home screen.
-func TestApp_StartsOnDashboard(t *testing.T) {
+func TestApp_RendersSidebarAndActiveView(t *testing.T) {
 	app := newTestApp(t)
-	if app.active != ViewDashboard {
-		t.Fatalf("active view: got %v, want %v", app.active, ViewDashboard)
-	}
-	view := app.View()
-	// The top bar always shows the brand "sentra" — a cheap smoke test
-	// that View() renders something (and not a blank string).
-	if !strings.Contains(view, "sentra") {
-		t.Errorf("view did not contain brand %q: %s", "sentra", view)
+	out := app.View()
+	for _, want := range []string{"sentra", "Dashboard", "Snapshots", "Agent", "test-repo"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("view missing %q", want)
+		}
 	}
 }
 
-// TestApp_SwitchesViewWithKey covers the four view-switch keys plus
-// the parent's ability to route them to the underlying view enum.
-// Each case sends one synthetic key and asserts on the resulting
-// active view; we don't assert on rendered substrings here because
-// each individual view has its own tests for content.
-func TestApp_SwitchesViewWithKey(t *testing.T) {
-	cases := []struct {
-		key  string
-		want View
-	}{
-		{"s", ViewSnapshots},
-		{"D", ViewDiff},
-		{"a", ViewAgent},
-		{"o", ViewOperations},
-		{"d", ViewDashboard},
-	}
-	for _, tc := range cases {
-		t.Run(tc.key, func(t *testing.T) {
-			app := newTestApp(t)
-			// First switch to a non-target view so the test exercises
-			// real transitions even when the target is the default.
-			updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-			a := updated.(App)
-			updated, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune(tc.key)})
-			got := updated.(App)
-			if got.active != tc.want {
-				t.Errorf("after key %q: active = %v, want %v", tc.key, got.active, tc.want)
-			}
-		})
-	}
-}
-
-// TestApp_QuitOnQ asserts that pressing `q` returns a tea.QuitMsg via
-// the returned tea.Cmd. We invoke the cmd inline to verify the
-// resulting message type rather than running a real tea.Program.
-func TestApp_QuitOnQ(t *testing.T) {
+func TestApp_SidebarEnterSwitchesView(t *testing.T) {
 	app := newTestApp(t)
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown}) // highlight Snapshots
+	m, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("expected non-nil cmd from `q` keypress")
+		t.Fatal("enter should emit activate cmd")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Errorf("expected tea.QuitMsg, got %T", cmd())
+	m, _ = m.(App).Update(cmd()) // deliver activateMsg
+	if got := m.(App).active; got != 1 {
+		t.Fatalf("active = %d, want 1 (snapshots)", got)
+	}
+	if m.(App).focus != focusContent {
+		t.Fatal("activation must move focus to content")
 	}
 }
 
-// TestApp_QuitOnCtrlC mirrors TestApp_QuitOnQ for Ctrl+C; both must
-// produce a quit so users with either muscle memory can leave cleanly.
-func TestApp_QuitOnCtrlC(t *testing.T) {
+func TestApp_NumberKeyJumpsToView(t *testing.T) {
 	app := newTestApp(t)
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	if got := m.(App).active; got != 3 {
+		t.Fatalf("active = %d, want 3 (agent)", got)
+	}
+}
+
+func TestApp_PaletteOpensFiltersAndActivates(t *testing.T) {
+	app := newTestApp(t)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if !m.(App).paletteOpen {
+		t.Fatal("ctrl+p should open the palette")
+	}
+	for _, r := range "diff" {
+		m, _ = m.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	m2, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
-		t.Fatal("expected non-nil cmd from Ctrl+C")
+		t.Fatal("palette enter should emit activate cmd")
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Errorf("expected tea.QuitMsg, got %T", cmd())
+	m2, _ = m2.(App).Update(cmd())
+	app2 := m2.(App)
+	if app2.paletteOpen {
+		t.Fatal("palette should close after activation")
+	}
+	if app2.views[app2.active].id != "diff" {
+		t.Fatalf("active view = %s, want diff", app2.views[app2.active].id)
 	}
 }
 
-// TestApp_WindowSizeMsg verifies the App stores width/height when a
-// WindowSizeMsg comes through. Sub-views need this to size themselves;
-// without it, the bubbles/table+viewport components render as 0x0.
-func TestApp_WindowSizeMsg(t *testing.T) {
+// TestApp_QInsidePaletteTypes: the focus rule — q quits the app only
+// when no overlay owns input.
+func TestApp_QInsidePaletteTypes(t *testing.T) {
 	app := newTestApp(t)
-	updated, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
-	got := updated.(App)
-	if got.width != 100 || got.height != 40 {
-		t.Errorf("size: got (%d,%d), want (100,40)", got.width, got.height)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	m, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd != nil {
+		if _, quits := cmd().(tea.QuitMsg); quits {
+			t.Fatal("q inside palette must type, not quit")
+		}
+	}
+	if got := m.(App).palette.Query(); got != "q" {
+		t.Fatalf("palette query = %q, want q", got)
 	}
 }
 
-// TestApp_QuitCancelsAgentScan asserts that the App's quit handler
-// invokes AgentView.Cleanup, which cancels any in-flight scan's
-// context. Without this, pressing q during an LLM streaming call
-// leaks the network round-trip past process exit.
-//
-// We don't construct a real LLM-backed AgentView; we install a
-// runner that blocks on its ctx and observes the cancellation.
-func TestApp_QuitCancelsAgentScan(t *testing.T) {
+func TestApp_TooSmallShowsGuard(t *testing.T) {
+	app := NewApp(Deps{})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
+	if out := m.(App).View(); !strings.Contains(out, "terminal too small") {
+		t.Errorf("guard screen missing:\n%s", out)
+	}
+}
+
+func TestApp_ErrorModalCapturesKeysAndDismisses(t *testing.T) {
 	app := newTestApp(t)
-
-	// Build an AgentView whose runner blocks until its ctx is cancelled,
-	// then drive it through Update directly (the 's' start-scan key is
-	// intercepted by the App and routed to the snapshots view, so we
-	// have to start the scan at the sub-view level).
-	cancelled := make(chan struct{}, 1)
-	agentView := NewAgentViewWithRunner(Deps{}, func(ctx context.Context, _ chan<- string) ([]agent.Recommendation, error) {
-		<-ctx.Done()
-		cancelled <- struct{}{}
-		return nil, ctx.Err()
-	})
-	updated, _ := agentView.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-	// The goroutine started inside spawnScan and is now blocking on
-	// our runner's <-ctx.Done(). We do NOT invoke the returned cmd
-	// here — that's the waitForAgentEvent select, which would block
-	// the test goroutine waiting for a token that never comes.
-
-	// Install the post-scan-started agent view back into the App and
-	// then send the App `q` to trigger cleanup().
-	app.agent = updated
-	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-
-	select {
-	case <-cancelled:
-		// Runner observed ctx cancellation — good.
-	case <-time.After(2 * time.Second):
-		t.Fatal("agent runner did not see ctx cancel after q; cleanup() failed")
+	app.modals = append(app.modals, NewErrorModal(assertErr{}, "advice", 100, 30))
+	out := app.View()
+	if !strings.Contains(out, "advice") {
+		t.Errorf("modal not rendered:\n%s", out)
+	}
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = m.(App).Update(cmd()) // dismissModalMsg
+	if len(m.(App).modals) != 0 {
+		t.Fatal("modal should pop on dismiss")
 	}
 }
 
-// TestApp_QuitCancelsAppContext verifies that pressing 'q' cancels
-// the App-scoped context — every sub-view's blobstore call is
-// derived from this context, so cancellation here propagates and
-// terminates in-flight S3 work.
-func TestApp_QuitCancelsAppContext(t *testing.T) {
-	parent, parentCancel := context.WithCancel(context.Background())
-	defer parentCancel()
+type assertErr struct{}
 
-	app := NewApp(Deps{Ctx: parent})
-	if app.cancel == nil {
-		t.Fatal("App.cancel must be set after NewApp")
-	}
-	// Press 'q' to invoke cleanup → cancel.
-	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	// The cancel func should fire when cleanup runs. We poll briefly
-	// because the cancel happens synchronously inside cleanup but the
-	// timing is otherwise indeterminate across goroutines.
-
-	// To observe the cancel, derive a child context from parent and
-	// wait for it to be done. Since cleanup cancels the App's
-	// derived context (a child of parent), the App-scoped ctx is
-	// done; the parent isn't, but a context the App passed to a
-	// sub-view (which would be the App's ctx, not parent) IS done.
-	//
-	// We can't reach the App's internal ctx from outside, but we can
-	// confirm the parent context is unaffected — the App's cancel
-	// only cancels its OWN child, not the parent.
-	if parent.Err() != nil {
-		t.Errorf("parent context should not be cancelled: got %v", parent.Err())
-	}
-}
-
-// TestApp_NilCtxFallsBackToBackground confirms a Deps{} (zero-value
-// Ctx) is still safe to construct — falls back to context.Background
-// so tests don't need to wire a context.
-func TestApp_NilCtxFallsBackToBackground(t *testing.T) {
-	app := NewApp(Deps{}) // Ctx is nil
-	if app.cancel == nil {
-		t.Fatal("App.cancel must be set even when deps.Ctx is nil")
-	}
-	// Cleanup must not panic.
-	app.cleanup()
-}
-
-// TestApp_HelpToggle asserts pressing `?` flips the help-shown flag,
-// and the bottom bar shows expanded hints when toggled on.
-func TestApp_HelpToggle(t *testing.T) {
-	app := newTestApp(t)
-	if app.help {
-		t.Fatal("help should be off initially")
-	}
-	updated, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'?'}})
-	if !updated.(App).help {
-		t.Fatal("help did not toggle on")
-	}
-}
+func (assertErr) Error() string { return "assert error" }

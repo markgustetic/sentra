@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
@@ -98,6 +99,16 @@ func NewAgentView(deps Deps) AgentView {
 		return a.Scan(ctx, ".", stream)
 	}
 	return baseAgentView(deps, runner)
+}
+
+// Title names the view in the sidebar, palette, and title bar.
+func (AgentView) Title() string { return "Agent" }
+
+// ShortHelp lists the view-specific keys for the status bar.
+func (AgentView) ShortHelp() []key.Binding {
+	return []key.Binding{
+		key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scan")),
+	}
 }
 
 // NewAgentViewWithRunner is the tests' construction path. It lets

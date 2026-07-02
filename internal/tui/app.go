@@ -11,34 +11,15 @@ package tui
 
 import (
 	"context"
+	"fmt"
 
+	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
-)
-
-// View identifies which sub-model the parent App is currently
-// rendering. The order is the navigation order users see in the top
-// bar — keep them stable.
-type View int
-
-const (
-	// ViewDashboard is the home screen: repo summary panels and a
-	// recent-activity glance. Default on launch.
-	ViewDashboard View = iota
-	// ViewSnapshots is the sortable snapshot list with detail drill-in.
-	ViewSnapshots
-	// ViewDiff is the three-column added/removed/changed view.
-	ViewDiff
-	// ViewAgent is the streaming agent reasoning + recommendations
-	// split. Pressing `s` inside it kicks off a scan.
-	ViewAgent
-	// ViewOperations shows repository health, integrity, and cleanup
-	// signals from repo.Check.
-	ViewOperations
 )
 
 // Deps is the wiring App needs to construct the sub-views. Every
@@ -74,38 +55,61 @@ type Deps struct {
 	Ctx context.Context
 }
 
-// App is the parent Bubbletea model. It owns the active view and
-// global window dimensions; sub-models own their own internal state.
+// viewEntry pairs a registered command ID with its model. Order is
+// sidebar order.
+type viewEntry struct {
+	id    string
+	model tea.Model
+}
+
+// focusArea tracks which region owns plain keystrokes.
+type focusArea int
+
+const (
+	focusSidebar focusArea = iota
+	focusContent
+)
+
+// minWidth/minHeight guard tiny terminals: below these we render a
+// resize hint instead of a broken layout.
+const (
+	minWidth     = 80
+	minHeight    = 20
+	sidebarWidth = 18
+)
+
+// viewShortHelper is the optional part of the view contract; views
+// without extra keys return nil.
+type viewShortHelper interface{ ShortHelp() []key.Binding }
+
+// App is the root model: layout (title bar, sidebar, content, status
+// bar), focus, overlays (palette, modal stack), and the command
+// registry that drives navigation.
 type App struct {
-	active View
+	deps     Deps
+	registry *Registry
+	keys     globalKeymap
+
+	views  []viewEntry
+	active int
+	focus  focusArea
+
+	sidebar Sidebar
+	palette Palette
+	status  StatusBar
+
+	paletteOpen bool
+	modals      []Modal
+
 	width  int
 	height int
-	help   bool
 
-	dashboard  tea.Model
-	snapshots  tea.Model
-	diff       tea.Model
-	agent      tea.Model
-	operations tea.Model
-
-	// cancel cancels the App-scoped context that was derived from
-	// deps.Ctx in NewApp. Sub-views derive per-call timeouts from
-	// that App-scoped context, so calling cancel() on quit
-	// terminates every in-flight blobstore call rather than letting
-	// it drain to its own per-call timeout.
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the App with each sub-view pre-built from deps.
-// Sub-views are built eagerly so switching between them is a tab-key
-// away with no construction cost; for the v1 view set this is cheap
-// (each view is a few KB of state).
-//
-// NewApp wraps deps.Ctx (or context.Background() if nil) in a
-// cancellable child and stores the cancel func on the returned App.
-// Every sub-view receives Deps with that same cancellable Ctx, so
-// when the App's cleanup runs every in-flight derived context fires
-// ctx.Err() at once.
+// NewApp constructs the shell with the 5 v1 views registered. Deps
+// semantics (nil-tolerant, cancellable ctx) are unchanged from the
+// previous implementation.
 func NewApp(deps Deps) App {
 	parent := deps.Ctx
 	if parent == nil {
@@ -114,239 +118,236 @@ func NewApp(deps Deps) App {
 	ctx, cancel := context.WithCancel(parent)
 	deps.Ctx = ctx
 
+	registry := NewRegistry()
+	views := []viewEntry{
+		{id: "dashboard", model: NewDashboard(deps)},
+		{id: "snapshots", model: NewSnapshots(deps)},
+		{id: "diff", model: NewDiff(deps)},
+		{id: "agent", model: NewAgentView(deps)},
+		{id: "operations", model: NewOperations(deps)},
+	}
+	for _, v := range views {
+		title := v.id
+		if t, ok := v.model.(interface{ Title() string }); ok {
+			title = t.Title()
+		}
+		registry.Add(Command{ID: v.id, Title: title, Category: "Views"})
+	}
+
+	keys := newGlobalKeymap()
 	return App{
-		active:     ViewDashboard,
-		dashboard:  NewDashboard(deps),
-		snapshots:  NewSnapshots(deps),
-		diff:       NewDiff(deps),
-		agent:      NewAgentView(deps),
-		operations: NewOperations(deps),
-		cancel:     cancel,
+		deps:     deps,
+		registry: registry,
+		keys:     keys,
+		views:    views,
+		active:   0,
+		focus:    focusSidebar,
+		sidebar:  NewSidebar(registry, sidebarWidth, minHeight),
+		palette:  NewPalette(registry, minWidth, minHeight),
+		status:   NewStatusBar(keys, minWidth),
+		cancel:   cancel,
 	}
 }
 
-// Init is the Bubbletea entry point. We forward to whichever sub-
-// view is initially active so it can kick off any background work
-// (the agent view, for instance, primes nothing here — it spawns the
-// agent only on user request).
 func (m App) Init() tea.Cmd {
-	// Aggregate Init cmds from each sub-view. Some views may want to
-	// schedule a tick or a stream-drain at boot; collecting them here
-	// keeps the wiring honest.
-	return tea.Batch(
-		m.dashboard.Init(),
-		m.snapshots.Init(),
-		m.diff.Init(),
-		m.agent.Init(),
-		m.operations.Init(),
-	)
+	cmds := make([]tea.Cmd, 0, len(m.views))
+	for _, v := range m.views {
+		cmds = append(cmds, v.model.Init())
+	}
+	return tea.Batch(cmds...)
 }
 
-// Update routes messages to the active sub-view. Top-level keys
-// (view switch, quit, help) are intercepted before delegation so they
-// work regardless of which view is focused. Window-size events are
-// broadcast to all sub-views so panel widths stay consistent on
-// resize without forcing a full rebuild.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		m.width = msg.Width
-		m.height = msg.Height
-		// Forward the size to every sub-view so they can self-size.
-		var cmds []tea.Cmd
-		var c tea.Cmd
-		m.dashboard, c = m.dashboard.Update(msg)
-		cmds = append(cmds, c)
-		m.snapshots, c = m.snapshots.Update(msg)
-		cmds = append(cmds, c)
-		m.diff, c = m.diff.Update(msg)
-		cmds = append(cmds, c)
-		m.agent, c = m.agent.Update(msg)
-		cmds = append(cmds, c)
-		m.operations, c = m.operations.Update(msg)
-		cmds = append(cmds, c)
-		return m, tea.Batch(cmds...)
+		return m.resize(msg), nil
 
-	case tea.KeyMsg:
-		// Quit keys take precedence so a panicked sub-view can't
-		// trap the user. Both `q` and Ctrl+C produce QuitMsg —
-		// matches conventional terminal app expectations. Before
-		// quitting, cancel any in-flight agent scan so the LLM call
-		// doesn't outlive the TUI process.
-		if msg.Type == tea.KeyCtrlC {
+	case badgeMsg:
+		m.registry.SetBadge(msg.id, msg.badge)
+		m.sidebar.Refresh()
+		return m, nil
+
+	case activateMsg:
+		m.paletteOpen = false
+		for i, v := range m.views {
+			if v.id == msg.id {
+				m.active = i
+				m.sidebar.Select(msg.id)
+				m.focus = focusContent
+			}
+		}
+		return m, nil
+
+	case dismissModalMsg:
+		if n := len(m.modals); n > 0 {
+			m.modals = m.modals[:n-1]
+		}
+		return m, nil
+
+	case confirmedMsg:
+		if n := len(m.modals); n > 0 {
+			m.modals = m.modals[:n-1]
+		}
+		if msg.id == "confirm-quit" {
 			m.cleanup()
 			return m, tea.Quit
 		}
-		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-			switch msg.Runes[0] {
-			case 'q':
-				m.cleanup()
-				return m, tea.Quit
-			case '?':
-				m.help = !m.help
-				return m, nil
-			case 'd':
-				m.active = ViewDashboard
-				return m, nil
-			case 's':
-				m.active = ViewSnapshots
-				return m, nil
-			case 'D':
-				m.active = ViewDiff
-				return m, nil
-			case 'a':
-				m.active = ViewAgent
-				return m, nil
-			case 'o':
-				m.active = ViewOperations
-				return m, nil
-			}
+		return m, nil
+
+	case tea.KeyMsg:
+		return m.routeKey(msg)
+	}
+	// Non-key messages (view data loads, agent stream) go to every
+	// view: background loads must land even when the view isn't
+	// focused.
+	return m.broadcast(msg)
+}
+
+// routeKey implements the focus rules: modals first, palette second,
+// then global bindings, then the focused region.
+func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// Ctrl+C always quits, even under overlays — a stuck modal must
+	// never trap the terminal.
+	if msg.Type == tea.KeyCtrlC {
+		m.cleanup()
+		return m, tea.Quit
+	}
+
+	if n := len(m.modals); n > 0 {
+		var cmd tea.Cmd
+		m.modals[n-1], cmd = m.modals[n-1].Update(msg)
+		return m, cmd
+	}
+
+	if m.paletteOpen {
+		if msg.Type == tea.KeyEsc {
+			m.paletteOpen = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.palette, cmd = m.palette.Update(msg)
+		return m, cmd
+	}
+
+	switch {
+	case key.Matches(msg, m.keys.Palette):
+		m.paletteOpen = true
+		m.palette.Reset()
+		return m, nil
+	case key.Matches(msg, m.keys.Focus):
+		if m.focus == focusSidebar {
+			m.focus = focusContent
+		} else {
+			m.focus = focusSidebar
+		}
+		return m, nil
+	case key.Matches(msg, m.keys.Quit):
+		m.cleanup()
+		return m, tea.Quit
+	}
+
+	// Number keys jump straight to the nth view.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		if n := int(msg.Runes[0] - '1'); n >= 0 && n < len(m.views) {
+			m.active = n
+			m.sidebar.Select(m.views[n].id)
+			m.focus = focusContent
+			return m, nil
 		}
 	}
 
-	// Anything else: delegate to the active view. Sub-models handle
-	// their own arrow / enter / esc routing.
-	return m.delegate(msg)
-}
-
-// delegate forwards msg to the currently-active sub-view and writes
-// the returned model back into the App struct field by field. Sub-
-// models in Bubbletea return tea.Model rather than their concrete
-// type, so we re-store the interface value directly.
-func (m App) delegate(msg tea.Msg) (tea.Model, tea.Cmd) {
-	var cmd tea.Cmd
-	switch m.active {
-	case ViewDashboard:
-		m.dashboard, cmd = m.dashboard.Update(msg)
-	case ViewSnapshots:
-		m.snapshots, cmd = m.snapshots.Update(msg)
-	case ViewDiff:
-		m.diff, cmd = m.diff.Update(msg)
-	case ViewAgent:
-		m.agent, cmd = m.agent.Update(msg)
-	case ViewOperations:
-		m.operations, cmd = m.operations.Update(msg)
+	if m.focus == focusSidebar {
+		var cmd tea.Cmd
+		m.sidebar, cmd = m.sidebar.Update(msg)
+		return m, cmd
 	}
+	var cmd tea.Cmd
+	m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
 	return m, cmd
 }
 
-// View renders the full screen: top bar (brand + tabs + repo
-// stats), the active sub-view body, and a bottom hint bar. The
-// bottom bar is one of two strings — minimal hint when help is off,
-// full key list when toggled on.
+// broadcast forwards a non-key message to every view.
+func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
+	cmds := make([]tea.Cmd, 0, len(m.views))
+	for i := range m.views {
+		var c tea.Cmd
+		m.views[i].model, c = m.views[i].model.Update(msg)
+		cmds = append(cmds, c)
+	}
+	return m, tea.Batch(cmds...)
+}
+
+// resize recomputes layout regions and forwards content-pane sizes to
+// views as a synthetic WindowSizeMsg so their existing size handling
+// keeps working unchanged.
+func (m App) resize(msg tea.WindowSizeMsg) App {
+	m.width, m.height = msg.Width, msg.Height
+	contentW := msg.Width - sidebarWidth - 3 // rail + border + gap
+	contentH := msg.Height - 4               // title bar + status bar + borders
+	if contentW < 1 {
+		contentW = 1
+	}
+	if contentH < 1 {
+		contentH = 1
+	}
+	m.sidebar.SetSize(sidebarWidth, contentH)
+	m.palette.SetSize(msg.Width, msg.Height)
+	m.status.SetWidth(msg.Width)
+	for i := range m.modals {
+		m.modals[i] = m.modals[i].SetSize(msg.Width, msg.Height)
+	}
+	inner := tea.WindowSizeMsg{Width: contentW, Height: contentH}
+	for i := range m.views {
+		m.views[i].model, _ = m.views[i].model.Update(inner)
+	}
+	return m
+}
+
 func (m App) View() string {
-	top := m.renderTopBar()
-	body := m.activeView()
-	bottom := m.renderBottomBar()
-
-	// JoinVertical with no styling — sub-views own their own borders
-	// and padding (via ui.Panel etc.). This keeps the parent layout
-	// dumb and lets each sub-view choose its own visual frame.
-	return lipgloss.JoinVertical(lipgloss.Left, top, body, bottom)
-}
-
-// renderTopBar formats the brand + tab line + repo stats. We don't
-// truncate based on width — terminals smaller than ~60 cols are out
-// of scope for v1 and will line-wrap on the user's emulator.
-func (m App) renderTopBar() string {
-	brand := ui.Primary.Render("sentra")
-	tabs := m.renderTabs()
-	return brand + "  " + tabs
-}
-
-// renderTabs renders the four-view nav. The active view is rendered
-// in Primary (the brand color); inactive tabs are Muted so they're
-// visually backgrounded.
-func (m App) renderTabs() string {
-	tabSpec := []struct {
-		key   string
-		label string
-		view  View
-	}{
-		{"d", "dashboard", ViewDashboard},
-		{"s", "snapshots", ViewSnapshots},
-		{"D", "diff", ViewDiff},
-		{"a", "agent", ViewAgent},
-		{"o", "operations", ViewOperations},
+	if m.width > 0 && (m.width < minWidth || m.height < minHeight) {
+		hint := fmt.Sprintf("terminal too small (%dx%d)\nneed at least %dx%d",
+			m.width, m.height, minWidth, minHeight)
+		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
+			ui.Subtle.Render(hint))
 	}
-	parts := make([]string, 0, len(tabSpec))
-	for _, t := range tabSpec {
-		label := "[" + t.key + "]" + t.label
-		if t.view == m.active {
-			parts = append(parts, ui.Primary.Render(label))
-		} else {
-			parts = append(parts, ui.Muted.Render(label))
-		}
+	if n := len(m.modals); n > 0 {
+		return m.modals[n-1].View()
 	}
-	return lipgloss.JoinHorizontal(lipgloss.Left, joinSpaces(parts)...)
+	if m.paletteOpen {
+		return m.palette.View()
+	}
+
+	title := ui.TitleBar.Render("✦ sentra") + "  " +
+		ui.Muted.Render(m.deps.RepoName)
+
+	rail := m.sidebar.View()
+	body := m.views[m.active].model.View()
+	contentStyle := ui.Panel
+	if m.focus == focusContent {
+		contentStyle = ui.PanelFocused
+	}
+	content := contentStyle.Render(body)
+	row := lipgloss.JoinHorizontal(lipgloss.Top, rail, " ", content)
+
+	var viewKeys []key.Binding
+	if vh, ok := m.views[m.active].model.(viewShortHelper); ok {
+		viewKeys = vh.ShortHelp()
+	}
+	bottom := m.status.View(m.deps.RepoName, viewKeys, "")
+
+	return lipgloss.JoinVertical(lipgloss.Left, title, row, bottom)
 }
 
-// activeView returns the rendered body of whichever sub-view is
-// currently focused. A view returning the empty string still leaves
-// a small body block — better than the screen jumping when a
-// sub-view briefly has nothing to show.
-func (m App) activeView() string {
-	switch m.active {
-	case ViewDashboard:
-		return m.dashboard.View()
-	case ViewSnapshots:
-		return m.snapshots.View()
-	case ViewDiff:
-		return m.diff.View()
-	case ViewAgent:
-		return m.agent.View()
-	case ViewOperations:
-		return m.operations.View()
-	}
-	return ""
-}
-
-// renderBottomBar renders the global hint line. When help is toggled
-// off (default), the bar lists the most-used keys: arrows / enter /
-// esc. When toggled on, it lists every top-level key. Sub-views
-// don't get to inject their own hints into this bar — that keeps the
-// bottom row a stable screen anchor.
-func (m App) renderBottomBar() string {
-	if m.help {
-		return ui.Subtle.Render(
-			"d:dashboard  s:snapshots  D:diff  a:agent  o:operations  ?:help  q/^C:quit  ↑/↓:navigate  ⏎:select  esc:back",
-		)
-	}
-	return ui.Subtle.Render("?:help  q:quit")
-}
-
-// cleanup releases resources held by sub-views and cancels the
-// App-scoped context so any goroutine blocked on a deps.Ctx-derived
-// blobstore call wakes up with ctx.Canceled rather than draining its
-// per-call timeout. Idempotent — quit-and-cancel followed by another
-// signal-driven cancel is a no-op the second time.
+// cleanup cancels the app-scoped context and releases sub-view
+// resources (unchanged semantics from the previous shell).
 func (m App) cleanup() {
 	if m.cancel != nil {
 		m.cancel()
 	}
 	type cleaner interface{ Cleanup() }
-	// AgentView.Cleanup is a value-receiver method, so the AgentView
-	// value stored in m.agent's tea.Model interface satisfies the
-	// cleaner interface directly. Sub-views without Cleanup are
-	// quietly skipped.
-	if c, ok := m.agent.(cleaner); ok {
-		c.Cleanup()
-	}
-}
-
-// joinSpaces inserts a two-space separator between elements. Used by
-// the tab line. Pulled out into a helper so resizes don't have to
-// recompute the formatter each call.
-func joinSpaces(parts []string) []string {
-	if len(parts) == 0 {
-		return parts
-	}
-	out := make([]string, 0, 2*len(parts)-1)
-	for i, p := range parts {
-		if i > 0 {
-			out = append(out, "  ")
+	for _, v := range m.views {
+		if c, ok := v.model.(cleaner); ok {
+			c.Cleanup()
 		}
-		out = append(out, p)
 	}
-	return out
 }
