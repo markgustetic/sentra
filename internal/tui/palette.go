@@ -23,8 +23,14 @@ type Palette struct {
 	input    textinput.Model
 	matches  []Command
 	cursor   int
-	width    int
-	height   int
+	// top is the index of the first match rendered — a scroll window
+	// offset. View() shows only paletteMaxResults rows, so without this
+	// the cursor could walk past the visible window and Enter would
+	// activate a command the user can't see. clampWindow keeps
+	// [top, top+paletteMaxResults) always covering the cursor.
+	top    int
+	width  int
+	height int
 }
 
 func NewPalette(registry *Registry, width, height int) Palette {
@@ -41,6 +47,7 @@ func NewPalette(registry *Registry, width, height int) Palette {
 func (p *Palette) Reset() {
 	p.input.SetValue("")
 	p.cursor = 0
+	p.top = 0
 	p.refilter()
 }
 
@@ -51,6 +58,28 @@ func (p *Palette) refilter() {
 	p.matches = p.registry.Filter(p.input.Value())
 	if p.cursor >= len(p.matches) {
 		p.cursor = 0
+	}
+	p.clampWindow()
+}
+
+// clampWindow keeps the scroll window [top, top+paletteMaxResults)
+// covering the cursor and inside the match list. Called after any
+// cursor move or refilter so View() always renders the cursor row.
+func (p *Palette) clampWindow() {
+	if p.cursor < p.top {
+		p.top = p.cursor
+	}
+	if p.cursor >= p.top+paletteMaxResults {
+		p.top = p.cursor - paletteMaxResults + 1
+	}
+	// Don't scroll past the end (leaves the last page anchored) and
+	// never go negative on a short list.
+	maxTop := len(p.matches) - paletteMaxResults
+	if p.top > maxTop {
+		p.top = maxTop
+	}
+	if p.top < 0 {
+		p.top = 0
 	}
 }
 
@@ -66,11 +95,13 @@ func (p Palette) Update(msg tea.Msg) (Palette, tea.Cmd) {
 		case tea.KeyUp:
 			if p.cursor > 0 {
 				p.cursor--
+				p.clampWindow()
 			}
 			return p, nil
 		case tea.KeyDown:
 			if p.cursor < len(p.matches)-1 {
 				p.cursor++
+				p.clampWindow()
 			}
 			return p, nil
 		}
@@ -81,20 +112,23 @@ func (p Palette) Update(msg tea.Msg) (Palette, tea.Cmd) {
 	return p, cmd
 }
 
-// View renders the boxed palette: input row, then up to
-// paletteMaxResults matches with the cursor row accented.
+// View renders the boxed palette: input row, then the scroll window of
+// up to paletteMaxResults matches with the cursor row accented. The
+// window starts at p.top (kept covering the cursor by clampWindow), so
+// the highlighted row — the one Enter activates — is always on screen.
 func (p Palette) View() string {
 	var b strings.Builder
 	b.WriteString(p.input.View())
 	b.WriteString("\n")
-	shown := p.matches
-	if len(shown) > paletteMaxResults {
-		shown = shown[:paletteMaxResults]
-	}
-	if len(shown) == 0 {
+	if len(p.matches) == 0 {
 		b.WriteString(ui.Muted.Render("no matches"))
 	}
-	for i, c := range shown {
+	end := p.top + paletteMaxResults
+	if end > len(p.matches) {
+		end = len(p.matches)
+	}
+	for i := p.top; i < end; i++ {
+		c := p.matches[i]
 		b.WriteString("\n")
 		label := c.Title
 		if c.Category != "" {

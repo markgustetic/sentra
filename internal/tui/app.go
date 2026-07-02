@@ -110,6 +110,17 @@ type App struct {
 	width  int
 	height int
 
+	// contentW/contentH are the interior dimensions of the content
+	// panel's *text* region — the terminal minus all chrome (sidebar,
+	// gap, panel border+padding, title/status rows). resize() computes
+	// them once and View() sizes the panel frame to them explicitly, so
+	// the frame is budget-sized by construction rather than inheriting
+	// whatever width the active view happened to render. That's what
+	// makes the resize budget load-bearing: a size-ignoring view (e.g.
+	// the Dashboard) can no longer mask an off-by-N budget bug.
+	contentW int
+	contentH int
+
 	cancel context.CancelFunc
 }
 
@@ -155,10 +166,16 @@ func NewApp(deps Deps) App {
 	}
 }
 
-// Init starts every view's Init at once, not just the active view's:
-// background loads (snapshot lists, dashboard data) belong to the
-// views, and batching them here means a view the user hasn't visited
-// yet already has data by the time they switch to it.
+// Init batches every view's Init at once, not just the active view's,
+// so a view the user hasn't visited yet is already initialized by the
+// time they switch to it.
+//
+// Note: in Phase 1 the views' data is hydrated *synchronously* during
+// NewApp (e.g. NewDashboard / NewSnapshots do a blocking ListSnapshots
+// before the first frame), so these Init cmds are effectively no-ops
+// today — the loading isn't deferred. Async, non-blocking hydration via
+// tea.Cmd arrives with Phase 2's operation flows, at which point this
+// batching starts carrying real background loads.
 func (m App) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.views))
 	for _, v := range m.views {
@@ -204,6 +221,11 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if n := len(m.modals); n > 0 {
 			m.modals = m.modals[:n-1]
 		}
+		// The "confirm-quit" branch is unreachable in Phase 1: nothing
+		// pushes a quit-confirm modal yet (quit is unconditional). It's
+		// kept wired because Phase 2's operation guard will push exactly
+		// this modal — "quit while a backup is running?" — and route the
+		// confirmed result back here to tear down and exit.
 		if msg.id == "confirm-quit" {
 			m.cleanup()
 			return m, tea.Quit
@@ -219,6 +241,15 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m.broadcast(msg)
 }
 
+// tooSmall reports whether the terminal is below the minimum layout
+// size. It mirrors View()'s guard condition: width == 0 means no
+// WindowSizeMsg has arrived yet (headless / first frame), which we treat
+// as "not too small" so tests and the pre-size frame route keys
+// normally.
+func (m App) tooSmall() bool {
+	return m.width > 0 && (m.width < minWidth || m.height < minHeight)
+}
+
 // routeKey implements the focus rules: modals first, palette second,
 // then global bindings, then the focused region.
 func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -227,6 +258,22 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyCtrlC {
 		m.cleanup()
 		return m, tea.Quit
+	}
+
+	// Below the minimum size, View() shows the resize-hint guard and
+	// hides every overlay. But an overlay left open (e.g. a palette the
+	// user opened before shrinking the terminal) is still live in state,
+	// so without this gate its Update would keep eating keystrokes the
+	// user can't see the effect of ('q' typed into an invisible palette
+	// instead of quitting). While too small, only quit keys act; we
+	// deliberately do NOT close or clear the overlays — they reappear
+	// intact when the terminal is resized back up.
+	if m.tooSmall() {
+		if key.Matches(msg, m.keys.Quit) {
+			m.cleanup()
+			return m, tea.Quit
+		}
+		return m, nil
 	}
 
 	if n := len(m.modals); n > 0 {
@@ -331,11 +378,27 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	m.width, m.height = msg.Width, msg.Height
 	// Horizontal chrome around the content text: the sidebar rail
 	// (sidebarWidth), the 1-col gap View joins between rail and panel,
-	// and ui.Panel's border+padding (1+1 each side = 4). Vertical
-	// chrome: title bar (1) + status bar (1) + panel border (2); the
-	// panel has no vertical padding. TestApp_NoOverflowAtMinSize pins
-	// these budgets against the real styles.
-	contentW := msg.Width - sidebarWidth - 5 // gap(1) + panel border+padding(4)
+	// and ui.Panel's border. In this lipgloss version Style.Width sets
+	// the content+padding box and adds only the border (1 each side)
+	// outside it — the Padding(0,1) lives *inside* the Width we pass —
+	// so the rendered panel block is exactly contentW+2 wide, and the
+	// whole content row is sidebarWidth + gap(1) + (contentW+2). For an
+	// exact fit to the terminal that must equal msg.Width, hence the
+	// budget below is sidebarWidth + gap(1) + border(2) = -3, not -5.
+	// (The prior -5 under-filled by 2 columns; harmless visually but it
+	// meant the budget wasn't the binding constraint, so the overflow
+	// test couldn't detect drift.)
+	//
+	// Vertical: Style.Height sets content+padding rows and adds the
+	// border (1 top + 1 bottom = 2). With title bar (1) + status bar (1)
+	// + panel border (2) that's msg.Height - 4.
+	//
+	// View() sizes the panel to exactly contentW×contentH, so the frame
+	// is (contentW+2) wide within the row and the whole row is pinned to
+	// msg.Width. TestApp_NoOverflowAtMinSize checks this at 80×20: bump
+	// the width budget (e.g. -3 → -1) and the panel block grows to 82,
+	// overflowing, and the test fails.
+	contentW := msg.Width - sidebarWidth - 3 // gap(1) + panel border(2); padding is inside Width
 	contentH := msg.Height - 4               // title(1) + status(1) + panel border(2)
 	if contentW < 1 {
 		contentW = 1
@@ -343,6 +406,7 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	if contentH < 1 {
 		contentH = 1
 	}
+	m.contentW, m.contentH = contentW, contentH
 	m.sidebar.SetSize(sidebarWidth, contentH)
 	m.palette.SetSize(msg.Width, msg.Height)
 	m.status.SetWidth(msg.Width)
@@ -380,13 +444,35 @@ func (m App) View() string {
 	title := ui.TitleBar.Render("✦ sentra") + "  " +
 		ui.Muted.Render(m.deps.RepoName)
 
-	rail := m.sidebar.View()
+	// Pin the rail to sidebarWidth. bubbles/list renders each row at its
+	// natural content width, so m.sidebar.View() comes back only as wide
+	// as its longest label — leaving the layout width non-deterministic
+	// and, worse, giving the content row so much slack that the resize
+	// budget stops being the binding constraint (the whole point of the
+	// budget). Forcing the rail to sidebarWidth makes the content row
+	// exactly sidebarWidth + gap(1) + (contentW+2), so the budget is what
+	// determines overflow — see resize() and TestApp_NoOverflowAtMinSize.
+	rail := lipgloss.NewStyle().Width(sidebarWidth).Render(m.sidebar.View())
 	body := m.views[m.active].model.View()
 	contentStyle := ui.Panel
 	if m.focus == focusContent {
 		contentStyle = ui.PanelFocused
 	}
-	content := contentStyle.Render(body)
+	// Size the panel's text region to the resize budget explicitly.
+	// Width/Height fix the box at contentW×contentH (padding inside,
+	// border outside), so the panel no longer inherits whatever width
+	// the active view rendered — a size-ignoring view (e.g. the
+	// Dashboard) can't mask an off-by-N budget, and the rendered block
+	// is exactly (contentW+2)×(contentH+2). We deliberately do NOT clamp
+	// with MaxWidth: it composes with the border oddly and would pin the
+	// frame regardless of the budget, defeating the load-bearing
+	// property the resize arithmetic is supposed to have. Views render
+	// within the inner size they were handed via the synthetic
+	// WindowSizeMsg; TestApp_NoOverflowAtMinSize pins the whole frame to
+	// 80×20 as the backstop.
+	content := contentStyle.
+		Width(m.contentW).Height(m.contentH).
+		Render(body)
 	row := lipgloss.JoinHorizontal(lipgloss.Top, rail, " ", content)
 
 	var viewKeys []key.Binding

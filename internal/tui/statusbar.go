@@ -36,7 +36,15 @@ func (s StatusBar) View(repoLabel string, viewKeys []key.Binding, running string
 	if gap < 1 {
 		gap = 1
 	}
-	return ui.StatusBar.Render(left + lipgloss.NewStyle().Width(gap).Render("") + hints)
+	// Clamp to the bar's width. When a view contributes enough ShortHelp
+	// keys that left + hints exceed s.width, the gap floors at 1 and the
+	// row would otherwise spill past the terminal (and, in the shell,
+	// push every JoinVertical row out to the overflowing width). MaxWidth
+	// truncates the rendered bar so it never exceeds its budget; the
+	// hints on the right are what get clipped, which is the right
+	// trade-off — the repo label and highest-priority keys stay visible.
+	return ui.StatusBar.MaxWidth(s.width).
+		Render(left + lipgloss.NewStyle().Width(gap).Render("") + hints)
 }
 
 // SetWidth resizes the bar (called on WindowSizeMsg).

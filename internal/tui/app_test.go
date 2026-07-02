@@ -20,6 +20,21 @@ func newTestApp(t *testing.T) App {
 	return sized.(App)
 }
 
+// installView swaps the model registered under id for a test double so
+// tests can assert against a view pre-loaded with data (the default
+// Deps{} views are empty). Same-package access into App.views is the
+// intended seam here.
+func installView(t *testing.T, app *App, id string, model tea.Model) {
+	t.Helper()
+	for i := range app.views {
+		if app.views[i].id == id {
+			app.views[i].model = model
+			return
+		}
+	}
+	t.Fatalf("no view registered under id %q", id)
+}
+
 func TestApp_RendersSidebarAndActiveView(t *testing.T) {
 	app := newTestApp(t)
 	out := app.View()
@@ -98,6 +113,42 @@ func TestApp_TooSmallShowsGuard(t *testing.T) {
 	m, _ := app.Update(tea.WindowSizeMsg{Width: 40, Height: 10})
 	if out := m.(App).View(); !strings.Contains(out, "terminal too small") {
 		t.Errorf("guard screen missing:\n%s", out)
+	}
+}
+
+// TestApp_TooSmallRoutesOnlyQuit pins the guard-routing rule: with the
+// terminal below the minimum size the resize-hint guard is shown and all
+// overlays are hidden, but an overlay left open (here, the palette) is
+// still live in state. Keys must not route into it — pressing `q` must
+// quit, not get typed into the invisible palette.
+func TestApp_TooSmallRoutesOnlyQuit(t *testing.T) {
+	app := newTestApp(t)
+	// Open the palette while at a normal size.
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if !m.(App).paletteOpen {
+		t.Fatal("ctrl+p should open the palette")
+	}
+	// Shrink below the minimum: the guard takes over the screen.
+	m, _ = m.(App).Update(tea.WindowSizeMsg{Width: 40, Height: 10})
+	if out := m.(App).View(); !strings.Contains(out, "terminal too small") {
+		t.Fatalf("guard screen missing:\n%s", out)
+	}
+	// `q` must quit — not be swallowed by the still-open palette.
+	before := m.(App).palette.Query()
+	m2, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("expected a quit cmd from `q` while too small")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Errorf("expected tea.QuitMsg, got %T", cmd())
+	}
+	// The palette must not have absorbed the keystroke.
+	if got := m2.(App).palette.Query(); got != before {
+		t.Errorf("q leaked into palette: query %q, want %q", got, before)
+	}
+	// The overlay stays open (it comes back on resize), just inert.
+	if !m2.(App).paletteOpen {
+		t.Error("guard routing must not close the palette")
 	}
 }
 
@@ -259,23 +310,51 @@ func TestApp_BadgeMsgUpdatesSidebar(t *testing.T) {
 }
 
 // TestApp_NoOverflowAtMinSize renders the shell at exactly the minimum
-// supported terminal (80x20) and asserts nothing spills: every line
-// fits the width and the frame fits the height. This is the guarantee
-// behind resize()'s chrome arithmetic — if the budget constants drift
-// from the real border/padding/gap widths, this fails instead of the
-// layout silently wrapping.
+// supported terminal (80x20) and asserts nothing spills: the frame is
+// exactly 20 rows, no line exceeds 80 columns, and the content panel's
+// border rows sit at exactly 80 columns (the layout fills the row to
+// the terminal width, so a too-wide budget would push a border row past
+// 80 and a too-narrow one would leave it short).
+//
+// This is the load-bearing guarantee behind resize()'s chrome
+// arithmetic AND View()'s explicit panel sizing: because View() sizes
+// the panel to contentW×contentH rather than inheriting the active
+// view's own dimensions, a size-ignoring view (like the Dashboard) can
+// no longer mask a wrong budget. Mutation-checked: widening resize()'s
+// contentW budget from `- 3` to `- 1` grows the panel block by 2 and
+// every border row jumps to width 82, failing this test.
 func TestApp_NoOverflowAtMinSize(t *testing.T) {
 	app := NewApp(Deps{RepoName: "test-repo"})
 	m, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
-	out := m.(App).View()
+	a := m.(App)
+	out := a.View()
 	lines := strings.Split(out, "\n")
-	if len(lines) > 20 {
-		t.Fatalf("view is %d lines, want <= 20:\n%s", len(lines), out)
+
+	// Explicit panel sizing makes the row count exact, not just bounded.
+	if len(lines) != 20 {
+		t.Fatalf("view is %d lines, want exactly 20:\n%s", len(lines), out)
 	}
 	for i, line := range lines {
 		if w := lipgloss.Width(line); w > 80 {
 			t.Errorf("line %d overflows: width %d > 80: %q", i, w, line)
 		}
+	}
+
+	// The content panel's rounded border rows must sit at exactly the
+	// terminal width. These are the rows most sensitive to a budget
+	// drift, so pinning them (not just "<= 80") is what catches an
+	// off-by-N that a trailing short line would otherwise hide.
+	borderRows := 0
+	for i, line := range lines {
+		if strings.ContainsAny(line, "╭╮╰╯│") {
+			if w := lipgloss.Width(line); w != 80 {
+				t.Errorf("panel border row %d width %d, want exactly 80: %q", i, w, line)
+			}
+			borderRows++
+		}
+	}
+	if borderRows == 0 {
+		t.Fatal("found no content-panel border rows to check; layout changed?")
 	}
 }
 
@@ -295,5 +374,219 @@ func TestApp_HelpKeyShowsKeysModal(t *testing.T) {
 		if !strings.Contains(out, want) {
 			t.Errorf("help modal missing %q:\n%s", want, out)
 		}
+	}
+}
+
+// T1 — TestApp_KeysRouteToFocusedContent: activating a view moves focus
+// to content, and plain keys then route to that view (not the sidebar).
+// We install a Snapshots view with rows so a Down key has an observable
+// effect (its table cursor advances). Then tab toggles focus back to the
+// sidebar and a Down key moves the *rail* highlight instead of the
+// table — proving the focus switch actually re-routes plain keys.
+func TestApp_KeysRouteToFocusedContent(t *testing.T) {
+	app := newTestApp(t)
+	snaps := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	installView(t, &app, "snapshots", snaps)
+
+	// Press '2' to jump to Snapshots; focus must move to content.
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	a := m.(App)
+	if a.active != 1 {
+		t.Fatalf("active = %d, want 1 (snapshots)", a.active)
+	}
+	if a.focus != focusContent {
+		t.Fatalf("focus = %v, want focusContent", a.focus)
+	}
+	beforeCursor := a.views[1].model.(Snapshots).cursor()
+
+	// A Down key must reach the table and advance its cursor.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
+	a = m.(App)
+	if got := a.views[1].model.(Snapshots).cursor(); got == beforeCursor {
+		t.Fatalf("content Down did not advance table cursor (stayed %d)", got)
+	}
+
+	// Tab toggles focus back to the sidebar.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
+	a = m.(App)
+	if a.focus != focusSidebar {
+		t.Fatalf("tab did not return focus to sidebar (focus=%v)", a.focus)
+	}
+
+	// Now a Down key must move the sidebar highlight, not the table.
+	tableBefore := a.views[1].model.(Snapshots).cursor()
+	sidebarBefore := a.sidebar.list.Index()
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
+	a = m.(App)
+	if got := a.sidebar.list.Index(); got == sidebarBefore {
+		t.Errorf("sidebar-focused Down did not move rail highlight (stayed %d)", got)
+	}
+	if got := a.views[1].model.(Snapshots).cursor(); got != tableBefore {
+		t.Errorf("sidebar-focused Down leaked into the table cursor (%d -> %d)", tableBefore, got)
+	}
+}
+
+// T2 — TestApp_ResizeForwardsInnerSize: resize() must forward the
+// content-pane inner size to views, not the raw terminal size. We
+// install a Snapshots view, resize the shell to 100x30, and assert the
+// table's height reflects the inner content height (contentH-8), not the
+// height it would derive from the raw 30. If resize() stops forwarding
+// the synthetic WindowSizeMsg, this fails.
+func TestApp_ResizeForwardsInnerSize(t *testing.T) {
+	const termW, termH = 100, 30
+	const innerH = termH - 4 // resize()'s vertical budget (contentH)
+
+	// Derive the expected table heights empirically from the view itself
+	// (bubbles/table subtracts a header row, so we don't hardcode the
+	// offset): the height a fresh view produces when handed the INNER
+	// size vs. the RAW terminal size. They must differ, and the shell
+	// must forward the inner one.
+	innerRef, _ := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps()).
+		Update(tea.WindowSizeMsg{Width: termW - sidebarWidth - 3, Height: innerH})
+	rawRef, _ := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps()).
+		Update(tea.WindowSizeMsg{Width: termW, Height: termH})
+	wantInnerH := innerRef.(Snapshots).tbl.Height()
+	rawH := rawRef.(Snapshots).tbl.Height()
+	if wantInnerH == rawH {
+		t.Fatalf("test setup broken: inner and raw table heights coincide (%d) — pick a size where they differ", wantInnerH)
+	}
+
+	app := NewApp(Deps{RepoName: "test-repo"})
+	installView(t, &app, "snapshots", NewSnapshots(Deps{}).SetSnapshots(sampleSnaps()))
+	m, _ := app.Update(tea.WindowSizeMsg{Width: termW, Height: termH})
+	a := m.(App)
+
+	got := a.views[1].model.(Snapshots).tbl.Height()
+	if got == rawH {
+		t.Fatalf("table height %d matches the RAW terminal size — resize() stopped forwarding inner size", got)
+	}
+	if got != wantInnerH {
+		t.Fatalf("table height = %d, want %d (the inner content height)", got, wantInnerH)
+	}
+}
+
+// T3 — TestApp_SidebarHighlightTracksActive: number keys and palette
+// activation both keep the rail highlight in sync with the active view.
+func TestApp_SidebarHighlightTracksActive(t *testing.T) {
+	app := newTestApp(t)
+
+	// '4' jumps to the 4th view (agent, index 3) — rail selects index 3.
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	a := m.(App)
+	if got := a.sidebar.list.Index(); got != 3 {
+		t.Fatalf("after '4', sidebar index = %d, want 3", got)
+	}
+
+	// Open the palette and activate "diff" (view index 2) — rail follows.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a = m.(App)
+	for _, r := range "diff" {
+		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		a = m.(App)
+	}
+	m, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("palette enter should emit an activate cmd")
+	}
+	m, _ = m.(App).Update(cmd()) // deliver activateMsg
+	a = m.(App)
+	if got := a.sidebar.list.Index(); got != 2 {
+		t.Fatalf("after activating diff, sidebar index = %d, want 2", got)
+	}
+}
+
+// T4 — TestApp_PaletteDownActivatesSecondMatch: with two matches for a
+// query, Down then Enter activates the SECOND match, not the first.
+func TestApp_PaletteDownActivatesSecondMatch(t *testing.T) {
+	app := newTestApp(t)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a := m.(App)
+	// "s" matches both "Snapshots" and "Operations" (subsequence); the
+	// registry order puts Snapshots (idx 1) before Operations (idx 4).
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	a = m.(App)
+	matches := a.palette.matches
+	if len(matches) < 2 {
+		t.Fatalf("query 's' produced %d matches, need >= 2 for this test: %+v", len(matches), matches)
+	}
+	wantSecond := matches[1].ID
+
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
+	a = m.(App)
+	_, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("palette enter should emit an activate cmd")
+	}
+	act, ok := cmd().(activateMsg)
+	if !ok || act.id != wantSecond {
+		t.Fatalf("Down+Enter activated %v, want %s (the second match)", cmd(), wantSecond)
+	}
+}
+
+// T5 — TestApp_PaletteEscResetLifecycle: esc closes the palette; ctrl+p
+// reopens it with a cleared query (Reset ran on the new open).
+func TestApp_PaletteEscResetLifecycle(t *testing.T) {
+	app := newTestApp(t)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a := m.(App)
+	for _, r := range "diff" {
+		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		a = m.(App)
+	}
+	if got := a.palette.Query(); got != "diff" {
+		t.Fatalf("query = %q, want diff before esc", got)
+	}
+
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	a = m.(App)
+	if a.paletteOpen {
+		t.Fatal("esc must close the palette")
+	}
+
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a = m.(App)
+	if !a.paletteOpen {
+		t.Fatal("ctrl+p must reopen the palette")
+	}
+	if got := a.palette.Query(); got != "" {
+		t.Fatalf("reopened palette query = %q, want empty (Reset should clear it)", got)
+	}
+}
+
+// T6 — TestApp_BroadcastReachesInactiveView: a non-key message must be
+// broadcast to every view, not just the active one. We install an agent
+// view (with a runner so it renders its stream pane rather than the
+// unavailable-placeholder), leave the Dashboard active, and deliver a
+// tokenMsg — the agent's stream message. The agent view must absorb it
+// even though it isn't focused, proving broadcast() forwards to all
+// views.
+func TestApp_BroadcastReachesInactiveView(t *testing.T) {
+	app := newTestApp(t)
+	// A runner is required for the agent view to render its viewport (nil
+	// run => "configure ANTHROPIC_API_KEY" placeholder). The runner body
+	// is never called here — we deliver the token msg directly.
+	agentView := NewAgentViewWithRunner(Deps{}, func(context.Context, chan<- string) ([]agent.Recommendation, error) {
+		return nil, nil
+	})
+	installView(t, &app, "agent", agentView)
+
+	// Dashboard (index 0) stays active; the agent view is not focused.
+	if app.active != 0 {
+		t.Fatalf("expected dashboard active, got %d", app.active)
+	}
+
+	const token = "REASONING-TOKEN-XYZ"
+	m, _ := app.Update(tokenMsg(token))
+	a := m.(App)
+
+	// Find the agent view and confirm it absorbed the token.
+	var agentOut string
+	for _, v := range a.views {
+		if v.id == "agent" {
+			agentOut = v.model.View()
+		}
+	}
+	if !strings.Contains(agentOut, token) {
+		t.Errorf("inactive agent view did not absorb broadcast tokenMsg:\n%s", agentOut)
 	}
 }
