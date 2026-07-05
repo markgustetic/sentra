@@ -618,3 +618,134 @@ func TestApp_BroadcastReachesInactiveView(t *testing.T) {
 		t.Errorf("inactive agent view did not absorb broadcast tokenMsg:\n%s", agentOut)
 	}
 }
+
+// TestApp_PruneTypedConfirmRoundTripThroughShell drives the prune flow's
+// typed-confirmation gate through the REAL App, not directly against
+// PruneView. The existing flow tests (prune_test.go) deliver confirmedMsg
+// straight to the view, which passes even if the App never forwards it —
+// they can't catch a shell-level routing bug. This test goes through
+// App.Update at every step, exactly like a real terminal session, so it
+// exercises the actual path: modal owns keys while it's on the stack, then
+// the App must hand the resulting confirmedMsg back to the views (the
+// owning flow, PruneView, is the only one that acts on pruneConfirmID).
+//
+// Before the fix, `case confirmedMsg` in app.go pops the modal and returns
+// early for any id other than "confirm-quit" — it never calls
+// m.broadcast(msg) — so PruneView.Update never sees the confirmation, the
+// flow never starts the op, and the two seeded snapshots survive.
+func TestApp_PruneTypedConfirmRoundTripThroughShell(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+
+	app := NewApp(pruneDeps(r))
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	a := sized.(App)
+
+	// Navigate to the prune view via the registry, same as a real palette
+	// activation or sidebar selection would.
+	m, _ := a.Update(activateMsg{id: "prune"})
+	a = m.(App)
+	if a.views[a.active].id != "prune" {
+		t.Fatalf("active view = %s, want prune", a.views[a.active].id)
+	}
+
+	// Enter on the preview requests the typed-confirm modal.
+	m, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	a = m.(App)
+	if cmd == nil {
+		t.Fatal("enter on the prune preview should return a pushModalMsg cmd")
+	}
+	msgs := execCmds(t, cmd)
+	var pushed pushModalMsg
+	var foundPush bool
+	for _, msg := range msgs {
+		if pm, ok := msg.(pushModalMsg); ok {
+			pushed, foundPush = pm, true
+		}
+	}
+	if !foundPush {
+		t.Fatalf("expected pushModalMsg in %#v", msgs)
+	}
+	m, _ = a.Update(pushed)
+	a = m.(App)
+	if len(a.modals) != 1 {
+		t.Fatalf("modal stack = %d, want 1 after pushModalMsg", len(a.modals))
+	}
+
+	// The modal owns keys now: type "prune" then enter. Route every key
+	// through the App (not the modal directly) to prove the shell's
+	// modal-first routing is what's under test.
+	for _, ch := range "prune" {
+		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		a = m.(App)
+	}
+	m, cmd = a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	a = m.(App)
+	if cmd == nil {
+		t.Fatal("typed confirm enter should return a confirmedMsg cmd")
+	}
+	msgs = execCmds(t, cmd)
+	var confirmed confirmedMsg
+	var foundConfirm bool
+	for _, msg := range msgs {
+		if cm, ok := msg.(confirmedMsg); ok {
+			confirmed, foundConfirm = cm, true
+		}
+	}
+	if !foundConfirm {
+		t.Fatalf("expected confirmedMsg in %#v", msgs)
+	}
+	if confirmed.id != pruneConfirmID {
+		t.Fatalf("confirmedMsg.id = %q, want %q", confirmed.id, pruneConfirmID)
+	}
+
+	// Deliver the confirmation to the App. This is the crux of the bug:
+	// the App must pop the modal AND forward the message to the views so
+	// PruneView starts the op.
+	m, cmd = a.Update(confirmed)
+	a = m.(App)
+	if len(a.modals) != 0 {
+		t.Fatalf("modal stack after confirmedMsg = %d, want 0", len(a.modals))
+	}
+	if cmd == nil {
+		t.Fatal("confirmedMsg must be forwarded to views: expected a cmd chain yielding startOpMsg, got nil")
+	}
+	msgs = execCmds(t, cmd)
+	var start startOpMsg
+	var foundStart bool
+	for _, msg := range msgs {
+		if sm, ok := msg.(startOpMsg); ok {
+			start, foundStart = sm, true
+		}
+	}
+	if !foundStart {
+		snaps, _ := r.ListSnapshots(context.Background())
+		t.Fatalf("confirmedMsg was not forwarded to PruneView (no startOpMsg produced); msgs=%#v; snapshots still %d", msgs, len(snaps))
+	}
+
+	// Deliver startOpMsg to the App (this is what a real tea.Program does),
+	// then execute the op's run function and deliver the result.
+	m, _ = a.Update(start)
+	a = m.(App)
+	if a.opRunning != "prune" {
+		t.Fatalf("opRunning = %q, want prune", a.opRunning)
+	}
+	res := start.run(context.Background())
+	done, ok := res.(pruneDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("prune op result: %#v", res)
+	}
+	m, _ = a.Update(done)
+	a = m.(App)
+	if a.opRunning != "" {
+		t.Fatalf("opRunning after done = %q, want empty", a.opRunning)
+	}
+
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("ListSnapshots after full round trip = %d, want 1", len(snaps))
+	}
+}

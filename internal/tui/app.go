@@ -302,7 +302,13 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cleanup()
 			return m, tea.Quit
 		}
-		return m, nil
+		// Every other confirmation belongs to a flow (e.g. prune's typed
+		// "prune" gate): forward it to every view so the owning flow can
+		// act on its id. Without this, popping the modal here silently
+		// discards the confirmation — the flow that pushed the modal
+		// never learns the user confirmed, and a destructive op that
+		// should have started never does.
+		return m.broadcast(msg)
 
 	case tea.KeyMsg:
 		return m.routeKey(msg)
