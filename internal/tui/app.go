@@ -128,6 +128,14 @@ type App struct {
 	contentW int
 	contentH int
 
+	// opRunning names the in-flight operation ("" when idle); opCancel
+	// cancels its context. One mutating operation at a time — the
+	// repo's advisory lock would reject a second anyway; failing fast
+	// here gives the user a clear modal instead of a lock error.
+	opRunning string
+	opCancel  context.CancelFunc
+
+	ctx    context.Context
 	cancel context.CancelFunc
 }
 
@@ -169,8 +177,17 @@ func NewApp(deps Deps) App {
 		sidebar:  NewSidebar(registry, sidebarWidth, minHeight),
 		palette:  NewPalette(registry, minWidth, minHeight),
 		status:   NewStatusBar(keys, minWidth),
+		ctx:      ctx,
 		cancel:   cancel,
 	}
+}
+
+// appCtx returns the App-scoped context operations derive from.
+func (m App) appCtx() context.Context {
+	if m.ctx != nil {
+		return m.ctx
+	}
+	return context.Background()
 }
 
 // Init batches every view's Init at once, not just the active view's,
@@ -197,9 +214,40 @@ func (m App) Init() tea.Cmd {
 // while everything else is broadcast to all views — a data load must
 // land even when its view isn't focused.
 func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	// Terminal operation results clear the guard regardless of type.
+	if res, ok := msg.(opResultMsg); ok {
+		_ = res
+		m.opRunning = ""
+		if m.opCancel != nil {
+			m.opCancel()
+			m.opCancel = nil
+		}
+		return m.broadcast(msg)
+	}
+
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		return m.resize(msg), nil
+
+	case startOpMsg:
+		if m.opRunning != "" {
+			m.modals = append(m.modals, NewErrorModal(
+				fmt.Errorf("%s is already in progress", m.opRunning),
+				"One operation at a time: wait for it to finish or cancel it with esc.",
+				m.width, m.height))
+			return m, nil
+		}
+		opCtx, cancel := context.WithCancel(m.appCtx())
+		m.opRunning = msg.name
+		m.opCancel = cancel
+		run := msg.run
+		return m, func() tea.Msg { return run(opCtx) }
+
+	case cancelOpMsg:
+		if m.opCancel != nil {
+			m.opCancel()
+		}
+		return m, nil
 
 	case badgeMsg:
 		m.registry.SetBadge(msg.id, msg.badge)
@@ -486,7 +534,7 @@ func (m App) View() string {
 	if vh, ok := m.views[m.active].model.(viewShortHelper); ok {
 		viewKeys = vh.ShortHelp()
 	}
-	bottom := m.status.View(m.deps.RepoName, viewKeys, "")
+	bottom := m.status.View(m.deps.RepoName, viewKeys, m.opRunning)
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, row, bottom)
 }
