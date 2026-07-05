@@ -11,7 +11,19 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/agent"
+	"github.com/markgustetic/sentra/internal/config"
 )
+
+// TestApp_DepsCarryConfig: flows need the resolved config (retention
+// policy, walker options). Deps must carry it nil-tolerantly.
+func TestApp_DepsCarryConfig(t *testing.T) {
+	cfg := config.Defaults()
+	cfg.Retention.KeepLast = 7
+	app := NewApp(Deps{RepoName: "x", Config: &cfg})
+	if app.deps.Config == nil || app.deps.Config.Retention.KeepLast != 7 {
+		t.Fatal("Deps.Config not carried through NewApp")
+	}
+}
 
 func newTestApp(t *testing.T) App {
 	t.Helper()

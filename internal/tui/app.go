@@ -24,6 +24,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/agent/llm"
+	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -51,6 +52,12 @@ type Deps struct {
 	// because the user-facing label often comes from sentra.yaml's
 	// bucket field, not from anything inside the repo struct.
 	RepoName string
+
+	// Config is the resolved sentra configuration. Operation flows
+	// read retention limits and walker options from it. May be nil
+	// (tests, unconfigured installs) — flows must fall back to
+	// config.Defaults() semantics when absent.
+	Config *config.Config
 
 	// Ctx is the parent context for all TUI-driven I/O. NewApp
 	// derives a cancellable child from this and threads the child

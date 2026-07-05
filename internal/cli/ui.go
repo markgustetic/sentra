@@ -95,6 +95,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		Repo:     r,
 		Provider: provider,
 		RepoName: repoName,
+		Config:   cfg,
 		// Pass the cobra command's context so:
 		//   1. Signals (Ctrl+C wired by cobra) cancel TUI work.
 		//   2. The TUI's App.cleanup() can cancel the same context
