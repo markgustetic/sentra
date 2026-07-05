@@ -46,9 +46,27 @@ func TestBackupFlow_EnterEmitsStartOpWithTypedPath(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("enter on a valid path must emit a command")
 	}
-	start, ok := cmd().(startOpMsg)
-	if !ok {
-		t.Fatalf("expected startOpMsg, got %T", cmd())
+	// The command batches the startOpMsg with the seeded first opTickMsg.
+	// Both must be present: the startOpMsg launches the op, and the
+	// opTickMsg seeds the progress-repaint self-loop. A missing tick is
+	// the regression this asserts against — without it the progress bar
+	// never repaints during a real run.
+	msgs := execCmds(t, cmd)
+	var start startOpMsg
+	var foundStart, foundTick bool
+	for _, msg := range msgs {
+		switch mm := msg.(type) {
+		case startOpMsg:
+			start, foundStart = mm, true
+		case opTickMsg:
+			foundTick = true
+		}
+	}
+	if !foundStart {
+		t.Fatalf("expected a startOpMsg in the batch, got %#v", msgs)
+	}
+	if !foundTick {
+		t.Fatalf("expected a seeded opTickMsg in the batch (progress repaint seed), got %#v", msgs)
 	}
 	if start.name != "backup" {
 		t.Fatalf("op name = %q", start.name)

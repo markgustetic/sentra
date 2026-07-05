@@ -191,12 +191,13 @@ func (v BackupView) startBackup() (tea.Model, tea.Cmd) {
 			return backupDoneMsg{info: info, err: err}
 		},
 	}
-	// The command resolves to startOpMsg exactly (not a batch): the App
-	// intercepts it, launches the op, and — because the running stage is
-	// now active — the progress tick is seeded from the first opTickMsg
-	// the view returns below. Batching opTick() in here would hide the
-	// startOpMsg behind a BatchMsg the App's guard never sees.
-	return v, func() tea.Msg { return start }
+	// Batch the startOpMsg with the FIRST opTickMsg. The App's op guard
+	// unwraps the BatchMsg and sees the startOpMsg to launch the op; the
+	// seeded opTickMsg is what starts the progress-repaint self-loop
+	// (opTickMsg → opTick() while running). Without this seed nothing
+	// ever emits the first tick — bubbletea only redraws on messages, so
+	// the progress bar would never repaint during a real run.
+	return v, tea.Batch(func() tea.Msg { return start }, opTick())
 }
 
 func (v BackupView) View() string {

@@ -15,6 +15,33 @@ type fakeDoneMsg struct{ err error }
 
 func (fakeDoneMsg) opResult() {}
 
+// execCmds runs a tea.Cmd and flattens any BatchMsg into its messages.
+// Flows that start an operation return tea.Batch(start, opTick()); the
+// App unwraps that BatchMsg to find the startOpMsg. Tests need the same
+// flattening to inspect both the startOpMsg AND the seeded opTickMsg in
+// one batch — a direct type assertion on cmd() would only ever see the
+// opaque BatchMsg. A nil cmd yields no messages; a non-batch cmd yields
+// exactly its single message.
+func execCmds(t *testing.T, cmd tea.Cmd) []tea.Msg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	msg := cmd()
+	batch, ok := msg.(tea.BatchMsg)
+	if !ok {
+		return []tea.Msg{msg}
+	}
+	var msgs []tea.Msg
+	for _, sub := range batch {
+		if sub == nil {
+			continue
+		}
+		msgs = append(msgs, sub())
+	}
+	return msgs
+}
+
 func startFakeOp(name string, block <-chan struct{}) startOpMsg {
 	return startOpMsg{
 		name: name,

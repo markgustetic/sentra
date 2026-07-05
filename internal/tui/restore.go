@@ -238,10 +238,11 @@ func (v RestoreView) startRestore() (tea.Model, tea.Cmd) {
 			return restoreDoneMsg{}
 		},
 	}
-	// Resolves to startOpMsg exactly (not a batch): the App's op guard
-	// intercepts it to launch the restore. See backup.go for why opTick
-	// is not batched in here.
-	return v, func() tea.Msg { return start }
+	// Batch the startOpMsg with the FIRST opTickMsg so the progress
+	// self-loop is seeded — see backup.go's startBackup for the full
+	// rationale. The App's op guard unwraps the BatchMsg to find the
+	// startOpMsg.
+	return v, tea.Batch(func() tea.Msg { return start }, opTick())
 }
 
 func (v RestoreView) View() string {

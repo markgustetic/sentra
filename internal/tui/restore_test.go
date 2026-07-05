@@ -61,15 +61,31 @@ func TestRestoreFlow_FullPath(t *testing.T) {
 		t.Errorf("plan preview should show file count:\n%s", v.View())
 	}
 
-	// Stage 3: confirm starts the op.
+	// Stage 3: confirm starts the op. The command batches the startOpMsg
+	// with the seeded first opTickMsg — both must be present (the tick
+	// seeds the progress-repaint self-loop; its absence is the regression
+	// this guards against).
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(RestoreView)
 	if cmd == nil {
-		t.Fatal("confirm must emit startOpMsg")
+		t.Fatal("confirm must emit a command")
 	}
-	start, ok := cmd().(startOpMsg)
-	if !ok || start.name != "restore" {
-		t.Fatalf("got %#v, want startOpMsg{restore}", cmd())
+	msgs := execCmds(t, cmd)
+	var start startOpMsg
+	var foundStart, foundTick bool
+	for _, msg := range msgs {
+		switch mm := msg.(type) {
+		case startOpMsg:
+			start, foundStart = mm, true
+		case opTickMsg:
+			foundTick = true
+		}
+	}
+	if !foundStart || start.name != "restore" {
+		t.Fatalf("expected startOpMsg{restore} in the batch, got %#v", msgs)
+	}
+	if !foundTick {
+		t.Fatalf("expected a seeded opTickMsg in the batch (progress repaint seed), got %#v", msgs)
 	}
 	res := start.run(context.Background())
 	done, ok := res.(restoreDoneMsg)
