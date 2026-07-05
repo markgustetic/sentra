@@ -157,7 +157,7 @@ func NewApp(deps Deps) App {
 		{id: "snapshots", model: NewSnapshots(deps)},
 		{id: "diff", model: NewDiff(deps)},
 		{id: "agent", model: NewAgentView(deps)},
-		{id: "operations", model: NewOperations(deps)},
+		{id: "check", model: NewCheckView(deps)},
 		{id: "backup", model: NewBackupView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
