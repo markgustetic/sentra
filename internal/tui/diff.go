@@ -102,7 +102,11 @@ func (d Diff) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case diffPickB:
 		switch msg.Type {
 		case tea.KeyEsc:
+			// Back out to the first picker, clearing any prior failure so the
+			// live picker reappears — View() gates on d.err ahead of the stage
+			// switch, so a stale error would otherwise mask the picker forever.
 			d.stage = diffPickA
+			d.err = ""
 			return d, nil
 		case tea.KeyEnter:
 			if len(d.snaps) == 0 {
@@ -111,6 +115,9 @@ func (d Diff) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			idB := d.snaps[d.tbl.Cursor()].ID
 			ctx, cancel := context.WithTimeout(ctxOrBackground(d.deps.Ctx), 20*time.Second)
 			defer cancel()
+			// Each attempt starts clean, so a prior failure never masks a
+			// subsequent successful diff.
+			d.err = ""
 			res, err := d.deps.Repo.Diff(ctx, d.idA, idB)
 			if err != nil {
 				d.err = err.Error()
