@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -147,3 +148,64 @@ func (m ConfirmModal) View() string {
 }
 
 func (m ConfirmModal) SetSize(w, h int) Modal { m.width, m.height = w, h; return m }
+
+// --- typed confirm modal --------------------------------------------
+
+// TypedConfirmModal is the destructive-operation gate: the user must
+// type an exact word (e.g. "prune") before enter confirms. A plain
+// yes/no modal is too easy to blow through for operations that delete
+// data; retyping the verb forces deliberate intent — same rationale
+// as the CLI's --yes-less confirmation prompts.
+type TypedConfirmModal struct {
+	title  string
+	body   string
+	word   string
+	id     string
+	input  textinput.Model
+	width  int
+	height int
+}
+
+func NewTypedConfirmModal(title, body, word, id string, width, height int) TypedConfirmModal {
+	ti := textinput.New()
+	ti.Prompt = "> "
+	ti.Focus()
+	return TypedConfirmModal{title: title, body: body, word: word, id: id,
+		input: ti, width: width, height: height}
+}
+
+func (m TypedConfirmModal) Update(msg tea.Msg) (Modal, tea.Cmd) {
+	k, ok := msg.(tea.KeyMsg)
+	if !ok {
+		return m, nil
+	}
+	switch k.Type {
+	case tea.KeyEnter:
+		if m.input.Value() != m.word {
+			return m, nil // wrong word: stay, let the user see the mismatch
+		}
+		id := m.id
+		return m, func() tea.Msg { return confirmedMsg{id: id} }
+	case tea.KeyEsc:
+		return m, func() tea.Msg { return dismissModalMsg{} }
+	}
+	var cmd tea.Cmd
+	m.input, cmd = m.input.Update(msg)
+	return m, cmd
+}
+
+func (m TypedConfirmModal) View() string {
+	var b strings.Builder
+	b.WriteString(ui.Primary.Render(m.title))
+	b.WriteString("\n\n")
+	b.WriteString(m.body)
+	b.WriteString("\n\n")
+	b.WriteString("Type " + ui.Danger.Bold(true).Render(m.word) + " to confirm:\n")
+	b.WriteString(m.input.View())
+	b.WriteString("\n\n")
+	b.WriteString(ui.Muted.Render("⏎ confirm · esc cancel"))
+	box := ui.ModalBox.Width(min(m.width-8, 64)).Render(b.String())
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, box)
+}
+
+func (m TypedConfirmModal) SetSize(w, h int) Modal { m.width, m.height = w, h; return m }

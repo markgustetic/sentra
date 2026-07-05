@@ -43,3 +43,43 @@ func TestConfirmModal_EscCancelsEnterConfirms(t *testing.T) {
 		t.Fatalf("enter: expected confirmedMsg{confirm-quit}, got %v", cmd())
 	}
 }
+
+func TestTypedConfirmModal_RequiresExactWord(t *testing.T) {
+	m := Modal(NewTypedConfirmModal("Confirm prune", "Deletes 9 snapshots.", "prune", "prune-apply", 80, 24))
+
+	// Enter with the wrong word: no confirmation, modal stays.
+	for _, r := range "prun" {
+		m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd != nil {
+		t.Fatal("wrong word must not confirm")
+	}
+
+	// Complete the word: enter confirms with the modal's id.
+	m2 := Modal(NewTypedConfirmModal("Confirm prune", "b", "prune", "prune-apply", 80, 24))
+	for _, r := range "prune" {
+		m2, _ = m2.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	}
+	_, cmd = m2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("exact word must confirm")
+	}
+	res, ok := cmd().(confirmedMsg)
+	if !ok || res.id != "prune-apply" {
+		t.Fatalf("got %#v, want confirmedMsg{prune-apply}", cmd())
+	}
+}
+
+func TestTypedConfirmModal_EscCancelsAndQTypes(t *testing.T) {
+	m := Modal(NewTypedConfirmModal("t", "b", "prune", "id", 80, 24))
+	// 'q' must be typed into the input, not treated as quit/dismiss.
+	m, _ = m.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if !strings.Contains(m.View(), "q") {
+		t.Fatal("'q' should appear in the typed input")
+	}
+	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if _, ok := cmd().(dismissModalMsg); !ok {
+		t.Fatalf("esc must dismiss, got %#v", cmd())
+	}
+}
