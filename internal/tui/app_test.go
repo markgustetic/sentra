@@ -749,3 +749,20 @@ func TestApp_PruneTypedConfirmRoundTripThroughShell(t *testing.T) {
 		t.Fatalf("ListSnapshots after full round trip = %d, want 1", len(snaps))
 	}
 }
+
+// TestApp_CheckReplacesOperationsInSidebar: after Phase 2b, the sidebar
+// exposes Check (not the old Operations placeholder), and the view count
+// is unchanged (operations → check is a swap, not an addition).
+func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
+	app := newTestApp(t)
+	out := app.View()
+	if !strings.Contains(out, "Check") {
+		t.Errorf("sidebar should list Check:\n%s", out)
+	}
+	if strings.Contains(out, "Operations") {
+		t.Errorf("Operations placeholder should be gone:\n%s", out)
+	}
+	if got := len(app.views); got != 8 {
+		t.Fatalf("views = %d, want 8 (check swapped in for operations)", got)
+	}
+}

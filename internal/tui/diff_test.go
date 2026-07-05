@@ -16,13 +16,19 @@ import (
 func seedDiffPair(t *testing.T, r *repo.Repo) {
 	t.Helper()
 	a := t.TempDir()
-	os.WriteFile(filepath.Join(a, "keep.txt"), []byte("same"), 0o600)
+	if err := os.WriteFile(filepath.Join(a, "keep.txt"), []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.CreateSnapshot(context.Background(), a, repo.SnapshotOptions{}); err != nil {
 		t.Fatal(err)
 	}
 	b := t.TempDir()
-	os.WriteFile(filepath.Join(b, "keep.txt"), []byte("same"), 0o600)
-	os.WriteFile(filepath.Join(b, "added.txt"), []byte("new"), 0o600)
+	if err := os.WriteFile(filepath.Join(b, "keep.txt"), []byte("same"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(b, "added.txt"), []byte("new"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	if _, err := r.CreateSnapshot(context.Background(), b, repo.SnapshotOptions{}); err != nil {
 		t.Fatal(err)
 	}
