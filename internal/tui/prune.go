@@ -165,15 +165,15 @@ func (v PruneView) View() string {
 			b.WriteString("\n\n" + v.result.err.Error())
 		} else {
 			b.WriteString(ui.Success.Render("Prune complete"))
-			b.WriteString(fmt.Sprintf("\n\n  deleted snapshots  %d\n  reclaimed blobs    %d\n  reclaimed bytes    %s\n  live blobs         %d",
+			fmt.Fprintf(&b, "\n\n  deleted snapshots  %d\n  reclaimed blobs    %d\n  reclaimed bytes    %s\n  live blobs         %d",
 				v.result.deleted, v.result.stats.DeletedBlobs,
-				ui.FormatBytes(v.result.stats.DeletedBytes), v.result.stats.LiveBlobs))
+				ui.FormatBytes(v.result.stats.DeletedBytes), v.result.stats.LiveBlobs)
 		}
 		b.WriteString("\n\n" + ui.Muted.Render("⏎ recompute"))
 	default:
 		b.WriteString(ui.Primary.Render("Retention preview"))
-		b.WriteString(fmt.Sprintf("  %s\n\n", ui.Muted.Render(
-			fmt.Sprintf("keep %d · drop %d", len(v.keep), len(v.drop)))))
+		fmt.Fprintf(&b, "  %s\n\n", ui.Muted.Render(
+			fmt.Sprintf("keep %d · drop %d", len(v.keep), len(v.drop))))
 		for _, d := range v.decisions {
 			verdict := ui.Success.Render("keep")
 			reason := strings.Join(d.Reasons, ", ")
@@ -183,7 +183,7 @@ func (v PruneView) View() string {
 					reason = "not selected by retention policy"
 				}
 			}
-			b.WriteString(fmt.Sprintf("  %s  %s  %s\n", d.Snapshot.ID, verdict, ui.Muted.Render(reason)))
+			fmt.Fprintf(&b, "  %s  %s  %s\n", d.Snapshot.ID, verdict, ui.Muted.Render(reason))
 		}
 		if len(v.drop) > 0 {
 			b.WriteString("\n" + ui.Muted.Render("⏎ prune (typed confirmation required)"))

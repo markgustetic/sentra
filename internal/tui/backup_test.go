@@ -124,7 +124,9 @@ func TestBackupFlow_MissingPathRefusesToStart(t *testing.T) {
 func TestBackupFlow_EscDuringRunEmitsCancel(t *testing.T) {
 	r := newFlowRepo(t)
 	src := t.TempDir()
-	os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o600)
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	v := NewBackupView(Deps{Repo: r})
 	v = typeInto(v, src)
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})

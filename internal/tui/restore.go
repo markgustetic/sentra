@@ -262,8 +262,8 @@ func (v RestoreView) View() string {
 		}
 	case restoreConfirm:
 		b.WriteString(ui.Primary.Render("Ready to restore"))
-		b.WriteString(fmt.Sprintf("\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  dest      %s",
-			v.plan.SnapshotID, v.plan.Files, ui.FormatBytes(v.plan.Bytes), v.plan.DestDir))
+		fmt.Fprintf(&b, "\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  dest      %s",
+			v.plan.SnapshotID, v.plan.Files, ui.FormatBytes(v.plan.Bytes), v.plan.DestDir)
 		mark := "off"
 		if v.verify {
 			mark = "on"
@@ -278,7 +278,7 @@ func (v RestoreView) View() string {
 		}
 		b.WriteString(ui.Primary.Render("Restoring…"))
 		b.WriteString("\n\n" + v.bar.ViewAs(pct))
-		b.WriteString(fmt.Sprintf("\n\n%s / %s", ui.FormatBytes(done), ui.FormatBytes(total)))
+		fmt.Fprintf(&b, "\n\n%s / %s", ui.FormatBytes(done), ui.FormatBytes(total))
 	default:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Restore failed"))
@@ -289,8 +289,8 @@ func (v RestoreView) View() string {
 				if v.result.verification.OK() {
 					b.WriteString("\n\nverification: " + ui.Success.Render("all files match"))
 				} else {
-					b.WriteString(fmt.Sprintf("\n\nverification: %s (%d mismatches)",
-						ui.Danger.Render("FAILED"), len(v.result.verification.Mismatches)))
+					fmt.Fprintf(&b, "\n\nverification: %s (%d mismatches)",
+						ui.Danger.Render("FAILED"), len(v.result.verification.Mismatches))
 				}
 			}
 		}

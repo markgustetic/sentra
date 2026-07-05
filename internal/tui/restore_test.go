@@ -115,7 +115,9 @@ func TestRestoreFlow_NonEmptyDestSurfacedBeforeStart(t *testing.T) {
 	v = m.(RestoreView)
 
 	dest := t.TempDir() // non-empty? make it so:
-	os.WriteFile(filepath.Join(dest, "existing.txt"), []byte("x"), 0o600)
+	if err := os.WriteFile(filepath.Join(dest, "existing.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
 	for _, r := range dest {
 		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		v = m.(RestoreView)

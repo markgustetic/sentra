@@ -212,8 +212,8 @@ func (v BackupView) View() string {
 			pct = float64(done) / float64(total)
 		}
 		b.WriteString(v.bar.ViewAs(pct))
-		b.WriteString(fmt.Sprintf("\n\n%s / %s uploaded",
-			ui.FormatBytes(done), ui.FormatBytes(total)))
+		fmt.Fprintf(&b, "\n\n%s / %s uploaded",
+			ui.FormatBytes(done), ui.FormatBytes(total))
 		b.WriteString("\n" + ui.Muted.Render("esc cancel"))
 
 	case backupDone:
@@ -223,9 +223,9 @@ func (v BackupView) View() string {
 		} else {
 			b.WriteString(ui.Success.Render("Backup complete"))
 			info := v.result.info
-			b.WriteString(fmt.Sprintf("\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  new       %s",
+			fmt.Fprintf(&b, "\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  new       %s",
 				info.ID, info.Stats.Files,
-				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes)))
+				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes))
 		}
 		b.WriteString("\n\n" + ui.Muted.Render("⏎ run another backup"))
 
