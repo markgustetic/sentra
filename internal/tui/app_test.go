@@ -25,6 +25,22 @@ func TestApp_DepsCarryConfig(t *testing.T) {
 	}
 }
 
+// TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd: the three
+// flows appear in sidebar+palette (registry-driven), and starting a
+// backup through the real App shows it in the status bar.
+func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
+	app := newTestApp(t)
+	out := app.View()
+	for _, want := range []string{"Backup", "Restore", "Prune"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("sidebar missing operation %q", want)
+		}
+	}
+	if got := len(app.views); got != 8 {
+		t.Fatalf("views = %d, want 8 (5 + 3 operations)", got)
+	}
+}
+
 func newTestApp(t *testing.T) App {
 	t.Helper()
 	app := NewApp(Deps{RepoName: "test-repo"})

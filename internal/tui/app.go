@@ -139,7 +139,8 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with the 5 v1 views registered. Deps
+// NewApp constructs the shell with the 5 read-only views plus the 3
+// Phase 2a operation flows (backup, restore, prune) registered. Deps
 // semantics (nil-tolerant, cancellable ctx) are unchanged from the
 // previous implementation.
 func NewApp(deps Deps) App {
@@ -157,13 +158,25 @@ func NewApp(deps Deps) App {
 		{id: "diff", model: NewDiff(deps)},
 		{id: "agent", model: NewAgentView(deps)},
 		{id: "operations", model: NewOperations(deps)},
+		{id: "backup", model: NewBackupView(deps)},
+		{id: "restore", model: NewRestoreView(deps)},
+		{id: "prune", model: NewPruneView(deps)},
+	}
+	// The three mutating flows form their own "Operations" category in
+	// the rail and palette; the read-only views default to "Views".
+	categories := map[string]string{
+		"backup": "Operations", "restore": "Operations", "prune": "Operations",
 	}
 	for _, v := range views {
 		title := v.id
 		if t, ok := v.model.(interface{ Title() string }); ok {
 			title = t.Title()
 		}
-		registry.Add(Command{ID: v.id, Title: title, Category: "Views"})
+		cat := categories[v.id]
+		if cat == "" {
+			cat = "Views"
+		}
+		registry.Add(Command{ID: v.id, Title: title, Category: cat})
 	}
 
 	keys := newGlobalKeymap()
