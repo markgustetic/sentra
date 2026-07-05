@@ -266,6 +266,10 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case pushModalMsg:
+		m.modals = append(m.modals, msg.modal.SetSize(m.width, m.height))
+		return m, nil
+
 	case dismissModalMsg:
 		if n := len(m.modals); n > 0 {
 			m.modals = m.modals[:n-1]

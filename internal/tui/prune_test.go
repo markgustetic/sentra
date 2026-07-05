@@ -1,0 +1,104 @@
+package tui
+
+import (
+	"context"
+	"os"
+	"path/filepath"
+	"strings"
+	"testing"
+
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/repo"
+)
+
+// seedTwoSnapshots creates two snapshots with distinct content so a
+// KeepLast=1 policy drops exactly one.
+func seedTwoSnapshots(t *testing.T, r *repo.Repo) {
+	t.Helper()
+	for _, name := range []string{"one", "two"} {
+		src := t.TempDir()
+		if err := os.WriteFile(filepath.Join(src, name+".txt"),
+			[]byte(strings.Repeat(name, 200)), 0o600); err != nil {
+			t.Fatal(err)
+		}
+		if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
+			t.Fatalf("seed %s: %v", name, err)
+		}
+	}
+}
+
+func pruneDeps(r *repo.Repo) Deps {
+	cfg := config.Defaults()
+	cfg.Retention.KeepLast = 1
+	cfg.Retention.KeepDaily = 0
+	cfg.Retention.KeepWeekly = 0
+	cfg.Retention.KeepMonthly = 0
+	return Deps{Repo: r, Config: &cfg}
+}
+
+func TestPruneFlow_PreviewShowsKeepAndDropWithReasons(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	v := NewPruneView(pruneDeps(r))
+	out := v.View()
+	if !strings.Contains(out, "keep") || !strings.Contains(out, "drop") {
+		t.Errorf("preview must show keep/drop decisions:\n%s", out)
+	}
+}
+
+// TestPruneFlow_NoDeletionWithoutTypedConfirm is THE confirmation-gate
+// test: starting the flow and pressing enter must NOT delete anything —
+// only the typed-confirm path may. This is the spec's core safety rule.
+func TestPruneFlow_NoDeletionWithoutTypedConfirm(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	v := NewPruneView(pruneDeps(r))
+
+	// Enter requests the typed-confirm modal (a pushModalMsg), nothing else.
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should request the confirm modal")
+	}
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatalf("expected pushModalMsg, got %#v", cmd())
+	}
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 2 {
+		t.Fatalf("snapshots deleted without confirmation: %d left", len(snaps))
+	}
+}
+
+func TestPruneFlow_ConfirmedRunDeletesAndGCs(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	v := NewPruneView(pruneDeps(r))
+
+	// Simulate the App delivering the typed-confirm result.
+	m, cmd := v.Update(confirmedMsg{id: pruneConfirmID})
+	v = m.(PruneView)
+	if cmd == nil {
+		t.Fatal("confirmation must start the op")
+	}
+	start, ok := cmd().(startOpMsg)
+	if !ok || start.name != "prune" {
+		t.Fatalf("got %#v, want startOpMsg{prune}", cmd())
+	}
+	res := start.run(context.Background())
+	done, ok := res.(pruneDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("prune result: %#v", res)
+	}
+	if done.deleted != 1 {
+		t.Fatalf("deleted = %d, want 1", done.deleted)
+	}
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots after prune = %d, want 1", len(snaps))
+	}
+	m, _ = v.Update(res)
+	if m.(PruneView).stage != pruneDone {
+		t.Fatal("flow must land in done stage")
+	}
+}

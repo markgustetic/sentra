@@ -27,6 +27,11 @@ type dismissModalMsg struct{}
 // given ID. The App maps IDs to pending actions.
 type confirmedMsg struct{ id string }
 
+// pushModalMsg asks the App to push a modal onto the stack. Flows emit
+// it (e.g. prune's typed confirm) so modal ownership stays with the
+// shell — the single place that routes keys modal-first.
+type pushModalMsg struct{ modal Modal }
+
 // --- error modal ---------------------------------------------------
 
 // ErrorModal shows an operation error plus operator advice. Any key
