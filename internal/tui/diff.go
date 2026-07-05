@@ -1,106 +1,173 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
-// Diff renders the three-column added / removed / changed view for
-// a pair of snapshots. For v1 the user picks the snapshot pair from
-// outside the TUI (via the snapshots view's "compare" affordance,
-// once that lands) — Diff just renders whatever DiffResult it was
-// handed.
+type diffStage int
+
+const (
+	diffPickA diffStage = iota
+	diffPickB
+	diffShow
+)
+
+// Diff walks a two-snapshot picker, then renders the added/removed/
+// changed lists from repo.Diff. Snapshots load synchronously at
+// construction (a manifest-list read, like the Snapshots view); the diff
+// itself is two manifest reads, also fast, so it runs inline at the B
+// selection rather than through the async op machinery.
 type Diff struct {
-	deps Deps
-
-	// idA, idB identify the snapshots being compared. Shown in the
-	// header so the user knows what the columns are comparing
-	// against. Empty values render the empty-state.
-	idA, idB string
-
-	// res is the latest diff result. Zero-value (empty slices) is
-	// fine and shows three empty columns under the header.
-	res repo.DiffResult
+	deps  Deps
+	stage diffStage
+	snaps []repo.SnapshotInfo
+	tbl   table.Model
+	idA   string
+	res   repo.DiffResult
+	err   string
+	width int
 }
 
-// NewDiff returns the v1 Diff model. Construction is cheap; the
-// model is data-driven via SetResult.
 func NewDiff(deps Deps) Diff {
-	return Diff{deps: deps}
-}
-
-// Title names the view in the sidebar, palette, and title bar.
-func (Diff) Title() string { return "Diff" }
-
-// ShortHelp lists the view-specific keys for the status bar.
-func (Diff) ShortHelp() []key.Binding { return nil }
-
-// SetResult replaces the rendered diff. Returns the updated model
-// so callers can chain.
-func (d Diff) SetResult(idA, idB string, res repo.DiffResult) Diff {
-	d.idA = idA
-	d.idB = idB
-	d.res = res
+	d := Diff{deps: deps}
+	if deps.Repo != nil {
+		ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 20*time.Second)
+		defer cancel()
+		if snaps, err := deps.Repo.ListSnapshots(ctx); err == nil {
+			d.snaps = snaps
+		}
+	}
+	cols := []table.Column{
+		{Title: "ID", Width: 34},
+		{Title: "Created", Width: 17},
+		{Title: "Tag", Width: 12},
+	}
+	rows := make([]table.Row, len(d.snaps))
+	for i, s := range d.snaps {
+		rows[i] = table.Row{s.ID, s.CreatedAt.UTC().Format("2006-01-02 15:04"), s.Tag}
+	}
+	d.tbl = table.New(table.WithColumns(cols), table.WithRows(rows), table.WithFocused(true))
 	return d
 }
 
-// Init is a no-op — diff is data-driven, no background work.
 func (Diff) Init() tea.Cmd { return nil }
 
-// Update accepts any message and returns the model unchanged for
-// v1. Future iterations will add an inline snapshot picker; for
-// now the diff is set externally (via SetResult).
-func (d Diff) Update(_ tea.Msg) (tea.Model, tea.Cmd) {
+func (d Diff) Title() string { return "Diff" }
+
+func (d Diff) ShortHelp() []key.Binding {
+	switch d.stage {
+	case diffShow:
+		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back"))}
+	default:
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "snapshot")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "choose")),
+		}
+	}
+}
+
+func (d Diff) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		d.width = msg.Width
+		d.tbl.SetHeight(max(msg.Height-8, 3))
+		return d, nil
+	case tea.KeyMsg:
+		return d.handleKey(msg)
+	}
 	return d, nil
 }
 
-// View renders the three columns. When idA / idB are empty (no
-// snapshot pair selected yet) the user sees a hint to pick two
-// snapshots from the snapshots view. The actual selection wiring
-// is out of scope for v1.
-func (d Diff) View() string {
-	if d.idA == "" || d.idB == "" {
-		body := ui.Subtle.Render("diff") + "\n" +
-			ui.Muted.Render("select two snapshots from the snapshots view to compare")
-		return ui.Panel.Render(body) + "\n"
+func (d Diff) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch d.stage {
+	case diffPickA:
+		if msg.Type == tea.KeyEnter && len(d.snaps) > 0 {
+			d.idA = d.snaps[d.tbl.Cursor()].ID
+			d.stage = diffPickB
+			return d, nil
+		}
+		var cmd tea.Cmd
+		d.tbl, cmd = d.tbl.Update(msg)
+		return d, cmd
+	case diffPickB:
+		switch msg.Type {
+		case tea.KeyEsc:
+			d.stage = diffPickA
+			return d, nil
+		case tea.KeyEnter:
+			if len(d.snaps) == 0 {
+				return d, nil
+			}
+			idB := d.snaps[d.tbl.Cursor()].ID
+			ctx, cancel := context.WithTimeout(ctxOrBackground(d.deps.Ctx), 20*time.Second)
+			defer cancel()
+			res, err := d.deps.Repo.Diff(ctx, d.idA, idB)
+			if err != nil {
+				d.err = err.Error()
+				return d, nil
+			}
+			d.res = res
+			d.stage = diffShow
+			return d, nil
+		}
+		var cmd tea.Cmd
+		d.tbl, cmd = d.tbl.Update(msg)
+		return d, cmd
+	default: // diffShow
+		if msg.Type == tea.KeyEsc {
+			d.stage = diffPickA
+			d.err = ""
+			return d, nil
+		}
+		return d, nil
 	}
-
-	header := fmt.Sprintf("%s ↔ %s",
-		ui.Primary.Render(d.idA),
-		ui.Primary.Render(d.idB),
-	)
-
-	added := renderDiffColumn("added", ui.Success, d.res.Added)
-	removed := renderDiffColumn("removed", ui.Danger, d.res.Removed)
-	changed := renderDiffColumn("changed", ui.Warn, d.res.Changed)
-
-	cols := lipgloss.JoinHorizontal(lipgloss.Top, added, removed, changed)
-	return header + "\n" + cols + "\n"
 }
 
-// renderDiffColumn formats one column: header in the given color,
-// then each path one per line. Wrapped in ui.Panel for the visual
-// frame; column width is set to a fixed 28 chars so the three
-// columns fit a typical 100-col terminal.
-//
-// Empty paths render "(none)" so the user sees an explicit "this
-// column had nothing" rather than a blank panel.
-func renderDiffColumn(label string, color lipgloss.Style, paths []string) string {
-	title := color.Bold(true).Render(label)
-	count := ui.Subtle.Render(fmt.Sprintf("(%d)", len(paths)))
-	body := title + " " + count + "\n"
-	if len(paths) == 0 {
-		body += ui.Muted.Render("(none)")
-	} else {
-		body += strings.Join(paths, "\n")
+func (d Diff) View() string {
+	if d.deps.Repo == nil {
+		return ui.Muted.Render("no repository configured")
 	}
-	style := ui.Panel.Width(28)
-	return style.Render(body)
+	if d.err != "" {
+		return ui.Danger.Render("Diff failed") + "\n\n" + d.err
+	}
+	switch d.stage {
+	case diffPickA:
+		return ui.Primary.Render("Diff: choose the FIRST snapshot") + "\n\n" + d.tbl.View()
+	case diffPickB:
+		return ui.Primary.Render("Diff "+d.idA+" → choose the SECOND snapshot") + "\n\n" + d.tbl.View()
+	default:
+		return d.renderResult()
+	}
+}
+
+func (d Diff) renderResult() string {
+	var b strings.Builder
+	b.WriteString(ui.Primary.Render("Diff result"))
+	fmt.Fprintf(&b, "  %s\n\n", ui.Muted.Render(
+		fmt.Sprintf("+%d  -%d  ~%d", len(d.res.Added), len(d.res.Removed), len(d.res.Changed))))
+	writeCol := func(label string, style func(...string) string, paths []string) {
+		if len(paths) == 0 {
+			return
+		}
+		b.WriteString(label + "\n")
+		for _, p := range paths {
+			b.WriteString("  " + style(p) + "\n")
+		}
+		b.WriteString("\n")
+	}
+	writeCol(ui.Success.Render("Added"), func(s ...string) string { return ui.Success.Render(strings.Join(s, "")) }, d.res.Added)
+	writeCol(ui.Danger.Render("Removed"), func(s ...string) string { return ui.Danger.Render(strings.Join(s, "")) }, d.res.Removed)
+	writeCol(ui.Warn.Render("Changed"), func(s ...string) string { return ui.Warn.Render(strings.Join(s, "")) }, d.res.Changed)
+	b.WriteString(ui.Muted.Render("esc back"))
+	return b.String()
 }

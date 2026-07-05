@@ -1,6 +1,9 @@
 package tui
 
 import (
+	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -9,86 +12,64 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
-// TestDiff_RendersAdded surfaces every Added path in the rendered
-// view. We don't pin the column order — left vs right doesn't
-// matter for v1 — just the content.
-func TestDiff_RendersAdded(t *testing.T) {
-	d := NewDiff(Deps{})
-	d = d.SetResult("snap-a", "snap-b", repo.DiffResult{
-		Added: []string{"new-1.txt", "subdir/new-2.go"},
-	})
-	view := d.View()
-	if !strings.Contains(view, "new-1.txt") {
-		t.Errorf("view missing added path new-1.txt: %s", view)
+// seedDiffPair makes two snapshots that differ by one added file.
+func seedDiffPair(t *testing.T, r *repo.Repo) {
+	t.Helper()
+	a := t.TempDir()
+	os.WriteFile(filepath.Join(a, "keep.txt"), []byte("same"), 0o600)
+	if _, err := r.CreateSnapshot(context.Background(), a, repo.SnapshotOptions{}); err != nil {
+		t.Fatal(err)
 	}
-	if !strings.Contains(view, "subdir/new-2.go") {
-		t.Errorf("view missing added path subdir/new-2.go: %s", view)
-	}
-}
-
-// TestDiff_RendersRemoved surfaces every Removed path.
-func TestDiff_RendersRemoved(t *testing.T) {
-	d := NewDiff(Deps{})
-	d = d.SetResult("snap-a", "snap-b", repo.DiffResult{
-		Removed: []string{"old.txt", "stale/path.go"},
-	})
-	view := d.View()
-	if !strings.Contains(view, "old.txt") {
-		t.Errorf("view missing removed path: %s", view)
-	}
-	if !strings.Contains(view, "stale/path.go") {
-		t.Errorf("view missing removed path: %s", view)
+	b := t.TempDir()
+	os.WriteFile(filepath.Join(b, "keep.txt"), []byte("same"), 0o600)
+	os.WriteFile(filepath.Join(b, "added.txt"), []byte("new"), 0o600)
+	if _, err := r.CreateSnapshot(context.Background(), b, repo.SnapshotOptions{}); err != nil {
+		t.Fatal(err)
 	}
 }
 
-// TestDiff_RendersChanged surfaces every Changed path.
-func TestDiff_RendersChanged(t *testing.T) {
-	d := NewDiff(Deps{})
-	d = d.SetResult("snap-a", "snap-b", repo.DiffResult{
-		Changed: []string{"src/a.go", "config/x.yml"},
-	})
-	view := d.View()
-	if !strings.Contains(view, "src/a.go") {
-		t.Errorf("view missing changed path: %s", view)
+func TestDiffFlow_PickPairAndRender(t *testing.T) {
+	r := newFlowRepo(t)
+	seedDiffPair(t, r)
+
+	v := NewDiff(Deps{Repo: r})
+	if len(v.snaps) != 2 {
+		t.Fatalf("snaps = %d, want 2", len(v.snaps))
 	}
-	if !strings.Contains(view, "config/x.yml") {
-		t.Errorf("view missing changed path: %s", view)
+	// Pick A (first row), then B (move down one, enter).
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(Diff)
+	if v.stage != diffPickB {
+		t.Fatalf("stage = %v, want diffPickB", v.stage)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	v = m.(Diff)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(Diff)
+	if v.stage != diffShow {
+		t.Fatalf("stage = %v, want diffShow", v.stage)
+	}
+	out := v.View()
+	if !strings.Contains(out, "added.txt") {
+		t.Errorf("diff should show the added file:\n%s", out)
 	}
 }
 
-// TestDiff_NoResultPlaceholder asserts the empty-state copy when
-// the user hasn't selected two snapshots yet.
-func TestDiff_NoResultPlaceholder(t *testing.T) {
-	d := NewDiff(Deps{})
-	view := d.View()
-	if !strings.Contains(strings.ToLower(view), "select two snapshots") {
-		t.Errorf("expected hint about selecting snapshots: %s", view)
+func TestDiffFlow_EscGoesBack(t *testing.T) {
+	r := newFlowRepo(t)
+	seedDiffPair(t, r)
+	v := NewDiff(Deps{Repo: r})
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // -> pickB
+	v = m.(Diff)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back to pickA
+	v = m.(Diff)
+	if v.stage != diffPickA {
+		t.Fatalf("esc should return to pickA; stage = %v", v.stage)
 	}
 }
 
-// TestDiff_DoesNotPanicOnUpdate ensures arrow / enter keys don't
-// crash the model. The view has no input bindings yet beyond
-// "show me what was set" — but a missing default case in a switch
-// would break the parent App, so we exercise a few common keys.
-func TestDiff_DoesNotPanicOnUpdate(t *testing.T) {
-	d := NewDiff(Deps{})
-	d = d.SetResult("a", "b", repo.DiffResult{Added: []string{"x"}})
-	for _, msg := range []tea.Msg{
-		tea.KeyMsg{Type: tea.KeyDown},
-		tea.KeyMsg{Type: tea.KeyEnter},
-		tea.KeyMsg{Type: tea.KeyEsc},
-	} {
-		_, _ = d.Update(msg)
-	}
-}
-
-// TestDiff_RendersHeader shows both snapshot IDs the diff is between
-// so the user knows what the columns are comparing.
-func TestDiff_RendersHeader(t *testing.T) {
-	d := NewDiff(Deps{})
-	d = d.SetResult("snap-aaaa", "snap-bbbb", repo.DiffResult{})
-	view := d.View()
-	if !strings.Contains(view, "snap-aaaa") || !strings.Contains(view, "snap-bbbb") {
-		t.Errorf("diff header missing snapshot IDs: %s", view)
+func TestDiff_NilRepoPlaceholder(t *testing.T) {
+	if !strings.Contains(NewDiff(Deps{}).View(), "no repository") {
+		t.Error("nil-repo diff should render a placeholder")
 	}
 }
