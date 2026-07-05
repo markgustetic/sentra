@@ -43,6 +43,18 @@ func opTick() tea.Cmd {
 	return tea.Tick(100*time.Millisecond, func(time.Time) tea.Msg { return opTickMsg{} })
 }
 
+// hydrateTimeout bounds the synchronous metadata reads flows do at
+// construction / stage transitions (list snapshots, plan restore).
+const hydrateTimeout = 20 * time.Second
+
+// depsCtx returns the deps context or Background for tests with Deps{}.
+func depsCtx(d Deps) context.Context {
+	if d.Ctx != nil {
+		return d.Ctx
+	}
+	return context.Background()
+}
+
 // opReporter is a poll-based progress.Reporter. Repo worker pools call
 // Total/Add concurrently; the flow's Update polls Snapshot on each
 // opTickMsg. Polling avoids per-chunk channel sends entirely — at
