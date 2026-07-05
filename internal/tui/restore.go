@@ -52,7 +52,9 @@ type RestoreView struct {
 	reporter *opReporter
 	bar      progress.Model
 	result   restoreDoneMsg
+	notice   string // transient banner, e.g. after an op rejection
 	width    int
+	height   int
 }
 
 func NewRestoreView(deps Deps) RestoreView {
@@ -68,7 +70,7 @@ func NewRestoreView(deps Deps) RestoreView {
 	// Synchronous hydrate, Phase 1 style (async loading arrives with a
 	// later phase). Nil repo renders a placeholder.
 	if deps.Repo != nil {
-		ctx, cancel := context.WithTimeout(depsCtx(deps), hydrateTimeout)
+		ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), hydrateTimeout)
 		defer cancel()
 		if snaps, err := deps.Repo.ListSnapshots(ctx); err == nil {
 			v.snaps = snaps
@@ -119,12 +121,21 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
+		v.height = msg.Height
 		v.bar.Width = min(msg.Width-8, 60)
 		v.tbl.SetHeight(max(msg.Height-8, 3))
 		return v, nil
 	case restoreDoneMsg:
 		v.stage = restoreDone
 		v.result = msg
+		return v, nil
+	case opRejectedMsg:
+		// Our start was refused; return to the confirm stage instead of
+		// hanging in running.
+		if v.stage == restoreRunning && msg.name == "restore" {
+			v.stage = restoreConfirm
+			v.notice = "another operation is in progress — try again when it finishes"
+		}
 		return v, nil
 	case opTickMsg:
 		if v.stage == restoreRunning {
@@ -135,6 +146,12 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v.handleKey(msg)
 	}
 	return v, nil
+}
+
+// resetTo returns a fresh restore view carrying the current window size,
+// so the snapshot table and progress bar keep their dimensions.
+func (v RestoreView) resetTo() (tea.Model, tea.Cmd) {
+	return NewRestoreView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
 }
 
 func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -184,9 +201,7 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	default: // restoreDone
 		if msg.Type == tea.KeyEnter {
-			fresh := NewRestoreView(v.deps)
-			fresh.width = v.width
-			return fresh, nil
+			return v.resetTo()
 		}
 		return v, nil
 	}
@@ -200,7 +215,7 @@ func (v RestoreView) planIt() (tea.Model, tea.Cmd) {
 		v.destErr = "destination is required"
 		return v, nil
 	}
-	ctx, cancel := context.WithTimeout(depsCtx(v.deps), hydrateTimeout)
+	ctx, cancel := context.WithTimeout(ctxOrBackground(v.deps.Ctx), hydrateTimeout)
 	defer cancel()
 	plan, err := v.deps.Repo.PlanRestore(ctx, v.snapID, dest)
 	if err != nil {
@@ -218,6 +233,7 @@ func (v RestoreView) planIt() (tea.Model, tea.Cmd) {
 
 func (v RestoreView) startRestore() (tea.Model, tea.Cmd) {
 	v.reporter = newOpReporter()
+	v.notice = ""
 	v.stage = restoreRunning
 	r := v.deps.Repo
 	reporter := v.reporter
@@ -262,6 +278,9 @@ func (v RestoreView) View() string {
 		}
 	case restoreConfirm:
 		b.WriteString(ui.Primary.Render("Ready to restore"))
+		if v.notice != "" {
+			b.WriteString("\n" + ui.Warn.Render(v.notice))
+		}
 		fmt.Fprintf(&b, "\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  dest      %s",
 			v.plan.SnapshotID, v.plan.Files, ui.FormatBytes(v.plan.Bytes), v.plan.DestDir)
 		mark := "off"

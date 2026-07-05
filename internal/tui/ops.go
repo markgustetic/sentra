@@ -29,6 +29,14 @@ type startOpMsg struct {
 // its opResultMsg — cancel is a request, not a state change.
 type cancelOpMsg struct{}
 
+// opRejectedMsg is sent back to the flows when the App refuses to launch
+// an operation because another is already running. Without it, a flow
+// that optimistically set its "running" stage before emitting startOpMsg
+// would be stuck there forever (the op never launched, so no opResultMsg
+// ever clears it). The flow whose name matches resets to its pre-run
+// stage; other flows (including the one holding the guard) ignore it.
+type opRejectedMsg struct{ name string }
+
 // opResultMsg marks a flow's terminal operation message. The App
 // clears the guard on ANY message implementing it, then broadcasts it
 // so the owning flow can render its result.
@@ -46,14 +54,6 @@ func opTick() tea.Cmd {
 // hydrateTimeout bounds the synchronous metadata reads flows do at
 // construction / stage transitions (list snapshots, plan restore).
 const hydrateTimeout = 20 * time.Second
-
-// depsCtx returns the deps context or Background for tests with Deps{}.
-func depsCtx(d Deps) context.Context {
-	if d.Ctx != nil {
-		return d.Ctx
-	}
-	return context.Background()
-}
 
 // opReporter is a poll-based progress.Reporter. Repo worker pools call
 // Total/Add concurrently; the flow's Update polls Snapshot on each

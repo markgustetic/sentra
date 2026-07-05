@@ -2,12 +2,14 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -32,10 +34,11 @@ type pruneDoneMsg struct {
 func (pruneDoneMsg) opResult() {}
 
 // PruneView shows the retention preview and, after a TYPED confirmation
-// ("prune"), deletes the dropped snapshots and runs GC. Mirrors the CLI
-// prune --apply sequence exactly: DeleteSnapshot per drop, then GC with
-// the keep-set (GC's live set is derived from the store under its lock;
-// keepIDs only marks the deliberate-prune path).
+// ("prune"), deletes the dropped snapshots and runs GC. It follows the CLI
+// prune --apply sequence: DeleteSnapshot per drop (skipping already-gone
+// snapshots, as the CLI does), then GC with the keep-set (GC's live set is
+// derived from the store under its lock; keepIDs only marks the
+// deliberate-prune path).
 type PruneView struct {
 	deps      Deps
 	stage     pruneStage
@@ -43,6 +46,7 @@ type PruneView struct {
 	keep      []string
 	drop      []string
 	loadErr   string
+	notice    string // transient banner, e.g. after an op rejection
 
 	result pruneDoneMsg
 	width  int
@@ -54,7 +58,7 @@ func NewPruneView(deps Deps) PruneView {
 		v.loadErr = "no repository configured"
 		return v
 	}
-	ctx, cancel := context.WithTimeout(depsCtx(deps), hydrateTimeout)
+	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), hydrateTimeout)
 	defer cancel()
 	snaps, err := deps.Repo.ListSnapshots(ctx)
 	if err != nil {
@@ -103,14 +107,25 @@ func (v PruneView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.result = msg
 		return v, nil
 
+	case opRejectedMsg:
+		// Our start was refused (another op holds the guard). Leave the
+		// running stage we optimistically entered so we don't hang.
+		if v.stage == pruneRunning && msg.name == "prune" {
+			v.stage = prunePreview
+			v.notice = "another operation is in progress — try again when it finishes"
+		}
+		return v, nil
+
 	case confirmedMsg:
 		if msg.id != pruneConfirmID || v.stage != prunePreview {
 			return v, nil
 		}
+		v.notice = ""
 		return v.startPrune()
 
 	case tea.KeyMsg:
 		if v.stage == prunePreview && msg.Type == tea.KeyEnter && len(v.drop) > 0 {
+			v.notice = ""
 			body := fmt.Sprintf("This deletes %d snapshot(s) and reclaims their unique chunks.\nChunks still referenced by kept snapshots are never touched.", len(v.drop))
 			modal := NewTypedConfirmModal("Confirm prune", body, "prune", pruneConfirmID, 80, 24)
 			return v, func() tea.Msg { return pushModalMsg{modal: modal} }
@@ -136,6 +151,12 @@ func (v PruneView) startPrune() (tea.Model, tea.Cmd) {
 			deleted := 0
 			for _, id := range drop {
 				if err := r.DeleteSnapshot(ctx, id); err != nil {
+					// Already gone (idempotent re-run / raced delete) is
+					// fine — skip and keep pruning, matching the CLI. Any
+					// other error aborts before GC.
+					if errors.Is(err, blobstore.ErrNotFound) {
+						continue
+					}
 					return pruneDoneMsg{deleted: deleted, err: err}
 				}
 				deleted++
@@ -172,6 +193,9 @@ func (v PruneView) View() string {
 		b.WriteString("\n\n" + ui.Muted.Render("⏎ recompute"))
 	default:
 		b.WriteString(ui.Primary.Render("Retention preview"))
+		if v.notice != "" {
+			b.WriteString("  " + ui.Warn.Render(v.notice))
+		}
 		fmt.Fprintf(&b, "  %s\n\n", ui.Muted.Render(
 			fmt.Sprintf("keep %d · drop %d", len(v.keep), len(v.drop))))
 		for _, d := range v.decisions {

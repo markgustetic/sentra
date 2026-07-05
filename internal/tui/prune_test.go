@@ -102,3 +102,37 @@ func TestPruneFlow_ConfirmedRunDeletesAndGCs(t *testing.T) {
 		t.Fatal("flow must land in done stage")
 	}
 }
+
+// TestPruneFlow_ContinuesPastAlreadyDeleted: matching the CLI, a
+// drop-set snapshot deleted out-of-band between preview and apply must
+// not abort the whole prune — the loop skips ErrNotFound and still GCs.
+func TestPruneFlow_ContinuesPastAlreadyDeleted(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	v := NewPruneView(pruneDeps(r))
+	if len(v.drop) != 1 {
+		t.Fatalf("drop = %d, want 1", len(v.drop))
+	}
+	// Delete the dropped snapshot out-of-band before the op runs.
+	if err := r.DeleteSnapshot(context.Background(), v.drop[0]); err != nil {
+		t.Fatalf("pre-delete: %v", err)
+	}
+	m, cmd := v.Update(confirmedMsg{id: pruneConfirmID})
+	v = m.(PruneView)
+	start, ok := cmd().(startOpMsg)
+	if !ok {
+		t.Fatalf("expected startOpMsg, got %#v", cmd())
+	}
+	res := start.run(context.Background())
+	done, ok := res.(pruneDoneMsg)
+	if !ok {
+		t.Fatalf("expected pruneDoneMsg, got %#v", res)
+	}
+	if done.err != nil {
+		t.Fatalf("prune must not error on an already-deleted snapshot: %v", done.err)
+	}
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots after prune = %d, want 1 (kept)", len(snaps))
+	}
+}

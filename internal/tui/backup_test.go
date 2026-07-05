@@ -139,3 +139,19 @@ func TestBackupFlow_EscDuringRunEmitsCancel(t *testing.T) {
 		t.Fatalf("expected cancelOpMsg, got %#v", cmd())
 	}
 }
+
+// TestBackupFlow_RunAnotherKeepsSizing: "run another" must not reset the
+// progress-bar width to its default — bubbletea won't re-emit a
+// WindowSizeMsg after a model swap, so the fresh view must carry the last
+// known size forward.
+func TestBackupFlow_RunAnotherKeepsSizing(t *testing.T) {
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = m.(BackupView)
+	v.stage = backupDone // simulate a finished backup
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	fresh := m.(BackupView)
+	if got, want := fresh.bar.Width, min(100-8, 60); got != want {
+		t.Errorf("bar width after 'run another' = %d, want %d (sizing lost on reset)", got, want)
+	}
+}

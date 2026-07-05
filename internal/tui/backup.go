@@ -48,7 +48,9 @@ type BackupView struct {
 	reporter *opReporter
 	bar      progress.Model
 	result   backupDoneMsg
+	notice   string // transient banner, e.g. after an op rejection
 	width    int
+	height   int
 }
 
 func NewBackupView(deps Deps) BackupView {
@@ -89,12 +91,22 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
+		v.height = msg.Height
 		v.bar.Width = min(msg.Width-8, 60)
 		return v, nil
 
 	case backupDoneMsg:
 		v.stage = backupDone
 		v.result = msg
+		return v, nil
+
+	case opRejectedMsg:
+		// Our start was refused; leave the running stage we optimistically
+		// entered so the flow doesn't hang forever.
+		if v.stage == backupRunning && msg.name == "backup" {
+			v.stage = backupConfigure
+			v.notice = "another operation is in progress — try again when it finishes"
+		}
 		return v, nil
 
 	case opTickMsg:
@@ -109,6 +121,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
+// resetTo returns a fresh view carrying the current window size so the
+// progress bar keeps its width (bubbletea does not re-emit WindowSizeMsg
+// after a model swap).
+func (v BackupView) resetTo() (tea.Model, tea.Cmd) {
+	return NewBackupView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+}
+
 func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch v.stage {
 	case backupRunning:
@@ -119,9 +138,7 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case backupDone:
 		if msg.Type == tea.KeyEnter {
-			fresh := NewBackupView(v.deps)
-			fresh.width = v.width
-			return fresh, nil
+			return v.resetTo()
 		}
 		return v, nil
 
@@ -147,6 +164,7 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.path, cmd = v.path.Update(msg)
 			v.pathErr = "" // typing clears the last validation error
 		}
+		v.notice = "" // any interaction dismisses the rejection banner
 		return v, cmd
 	}
 }
@@ -231,6 +249,9 @@ func (v BackupView) View() string {
 
 	default:
 		b.WriteString(ui.Primary.Render("New backup"))
+		if v.notice != "" {
+			b.WriteString("\n" + ui.Warn.Render(v.notice))
+		}
 		b.WriteString("\n\n" + v.path.View())
 		b.WriteString("\n" + v.tag.View())
 		if v.pathErr != "" {

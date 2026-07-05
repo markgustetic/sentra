@@ -207,12 +207,12 @@ func (m App) appCtx() context.Context {
 // so a view the user hasn't visited yet is already initialized by the
 // time they switch to it.
 //
-// Note: in Phase 1 the views' data is hydrated *synchronously* during
-// NewApp (e.g. NewDashboard / NewSnapshots do a blocking ListSnapshots
-// before the first frame), so these Init cmds are effectively no-ops
-// today — the loading isn't deferred. Async, non-blocking hydration via
-// tea.Cmd arrives with Phase 2's operation flows, at which point this
-// batching starts carrying real background loads.
+// Note: views still hydrate their data *synchronously* during NewApp
+// (e.g. NewSnapshots / NewRestoreView / NewPruneView do a blocking
+// ListSnapshots before the first frame), so these Init cmds are
+// effectively no-ops today — the loading isn't deferred. Moving that
+// hydration onto async, non-blocking tea.Cmds is a future item; when it
+// lands, this batching starts carrying real background loads.
 func (m App) Init() tea.Cmd {
 	cmds := make([]tea.Cmd, 0, len(m.views))
 	for _, v := range m.views {
@@ -248,13 +248,21 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				fmt.Errorf("%s is already in progress", m.opRunning),
 				"One operation at a time: wait for it to finish or cancel it with esc.",
 				m.width, m.height))
-			return m, nil
+			// Tell the rejected flow so it leaves its optimistic running
+			// stage instead of hanging there forever.
+			name := msg.name
+			return m, func() tea.Msg { return opRejectedMsg{name: name} }
 		}
 		opCtx, cancel := context.WithCancel(m.appCtx())
 		m.opRunning = msg.name
 		m.opCancel = cancel
 		run := msg.run
 		return m, func() tea.Msg { return run(opCtx) }
+
+	case opRejectedMsg:
+		// Not an opResultMsg (no guard to clear) — just route it to the
+		// flows so the rejected one resets.
+		return m.broadcast(msg)
 
 	case cancelOpMsg:
 		if m.opCancel != nil {

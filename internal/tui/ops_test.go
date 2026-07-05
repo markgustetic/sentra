@@ -88,8 +88,14 @@ func TestOpGuard_RejectsSecondOpWithErrorModal(t *testing.T) {
 	if a.opRunning != "backup" {
 		t.Fatalf("second op must not replace the first; running = %q", a.opRunning)
 	}
-	if cmd2 != nil {
-		t.Fatal("rejected op must not return a run command")
+	// The rejection returns a notifier command — NOT the op's run cmd. It
+	// must yield opRejectedMsg (so the rejected flow can reset), not the
+	// operation result.
+	if cmd2 == nil {
+		t.Fatal("rejected op must return the opRejectedMsg notifier")
+	}
+	if rej, ok := cmd2().(opRejectedMsg); !ok || rej.name != "prune" {
+		t.Fatalf("rejected op cmd = %#v, want opRejectedMsg{prune}", cmd2())
 	}
 	if len(a.modals) == 0 || !strings.Contains(a.modals[len(a.modals)-1].View(), "in progress") {
 		t.Fatal("rejection must push an operation-in-progress error modal")
