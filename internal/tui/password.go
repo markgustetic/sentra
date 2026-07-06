@@ -185,8 +185,13 @@ func (v PasswordView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // typed-confirm modal. It never starts the rotation itself — the modal's
 // confirmedMsg does, so the destructive step is always gated.
 func (v PasswordView) requestConfirm() (tea.Model, tea.Cmd) {
+	// These are throwaway copies made only to length-check and compare the
+	// two entries; wipe them on return so the validation step doesn't widen
+	// the plaintext-residency window beyond startRotate's single zeroized copy.
 	newVal := []byte(v.newPass.Value())
 	confVal := []byte(v.confirmPass.Value())
+	defer crypto.Zeroize(newVal)
+	defer crypto.Zeroize(confVal)
 	if len(newVal) < minPasswordLen {
 		v.inputErr = fmt.Sprintf("new passphrase must be at least %d characters", minPasswordLen)
 		return v, nil
