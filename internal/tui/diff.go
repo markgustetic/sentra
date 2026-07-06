@@ -47,16 +47,14 @@ func NewDiff(deps Deps) Diff {
 			d.snaps = snaps
 		}
 	}
-	cols := []table.Column{
-		{Title: "ID", Width: 34},
-		{Title: "Created", Width: 17},
-		{Title: "Tag", Width: 12},
-	}
 	rows := make([]table.Row, len(d.snaps))
 	for i, s := range d.snaps {
 		rows[i] = table.Row{s.ID, s.CreatedAt.UTC().Format("2006-01-02 15:04"), s.Tag}
 	}
-	d.tbl = table.New(table.WithColumns(cols), table.WithRows(rows), table.WithFocused(true))
+	// Ideal widths until the first WindowSizeMsg; Update re-sizes columns
+	// to the interior the App forwards so the table fits the content panel.
+	d.tbl = table.New(table.WithColumns(snapshotPickerColumns(pickerIdealWidth, false)),
+		table.WithRows(rows), table.WithFocused(true))
 	return d
 }
 
@@ -80,6 +78,7 @@ func (d Diff) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
+		d.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(d.width), false))
 		d.tbl.SetHeight(max(msg.Height-8, 3))
 		return d, nil
 	case tea.KeyMsg:

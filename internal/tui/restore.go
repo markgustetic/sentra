@@ -76,18 +76,15 @@ func NewRestoreView(deps Deps) RestoreView {
 			v.snaps = snaps
 		}
 	}
-	cols := []table.Column{
-		{Title: "ID", Width: 34},
-		{Title: "Created", Width: 17},
-		{Title: "Tag", Width: 10},
-		{Title: "Files", Width: 7},
-	}
 	rows := make([]table.Row, len(v.snaps))
 	for i, s := range v.snaps {
 		rows[i] = table.Row{s.ID, s.CreatedAt.UTC().Format("2006-01-02 15:04"), s.Tag,
 			fmt.Sprintf("%d", s.Stats.Files)}
 	}
-	v.tbl = table.New(table.WithColumns(cols), table.WithRows(rows), table.WithFocused(true))
+	// Ideal widths until the first WindowSizeMsg; Update re-sizes columns
+	// to the interior the App forwards so the table fits the content panel.
+	v.tbl = table.New(table.WithColumns(snapshotPickerColumns(pickerIdealWidth, true)),
+		table.WithRows(rows), table.WithFocused(true))
 	return v
 }
 
@@ -123,6 +120,7 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		v.bar.Width = min(msg.Width-8, 60)
+		v.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(v.width), true))
 		v.tbl.SetHeight(max(msg.Height-8, 3))
 		return v, nil
 	case restoreDoneMsg:

@@ -8,6 +8,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -199,13 +200,26 @@ func (v PruneView) View() string {
 		fmt.Fprintf(&b, "  %s\n\n", ui.Muted.Render(
 			fmt.Sprintf("keep %d · drop %d", len(v.keep), len(v.drop))))
 		for _, d := range v.decisions {
-			verdict := ui.Success.Render("keep")
+			verdictText := "keep"
 			reason := strings.Join(d.Reasons, ", ")
 			if !d.Keep {
-				verdict = ui.Danger.Render("drop")
+				verdictText = "drop"
 				if reason == "" {
 					reason = "not selected by retention policy"
 				}
+			}
+			// Keep each decision on one line: without this the ID + verdict
+			// + (often long, multi-rule) reason ran past the panel interior
+			// and reflowed. The reason is the expendable tail, so truncate it
+			// to the width left after the fixed "  ID  verdict  " prefix.
+			// width == 0 (pre-WindowSizeMsg) means unbounded.
+			if v.width > 0 {
+				prefix := len("  ") + lipgloss.Width(d.Snapshot.ID) + len("  ") + len(verdictText) + len("  ")
+				reason = truncateToWidth(reason, pickerContentWidth(v.width)-prefix)
+			}
+			verdict := ui.Success.Render(verdictText)
+			if !d.Keep {
+				verdict = ui.Danger.Render(verdictText)
 			}
 			fmt.Fprintf(&b, "  %s  %s  %s\n", d.Snapshot.ID, verdict, ui.Muted.Render(reason))
 		}
