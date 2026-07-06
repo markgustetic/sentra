@@ -5,7 +5,6 @@ import (
 	"context"
 	"errors"
 	"io"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -21,7 +20,7 @@ func TestDoctor_AWSAndRepoHealthy(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "sentra-prod"
 	cfg.Repo.S3.Region = "us-east-1"
-	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(renderConfigYAML(&cfg)), 0o600); err != nil {
+	if err := config.Write(filepath.Join(dir, "sentra.yaml"), &cfg); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	store := blobstore.NewMemory()
@@ -74,7 +73,7 @@ func TestDoctor_InvalidBucketFailsBeforeAWS(t *testing.T) {
 	chDir(t, dir)
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "Bad_Bucket"
-	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(renderConfigYAML(&cfg)), 0o600); err != nil {
+	if err := config.Write(filepath.Join(dir, "sentra.yaml"), &cfg); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	out := &bytes.Buffer{}
@@ -105,7 +104,7 @@ func TestDoctor_NotInitializedIsGuidance(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "local-bucket"
 	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
-	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(renderConfigYAML(&cfg)), 0o600); err != nil {
+	if err := config.Write(filepath.Join(dir, "sentra.yaml"), &cfg); err != nil {
 		t.Fatalf("write config: %v", err)
 	}
 	out := &bytes.Buffer{}

@@ -292,7 +292,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 	}
 
 	printSetupStep(out, "Writing "+cfgPath)
-	if err := os.WriteFile(cfgPath, []byte(renderConfigYAML(&plan.Config)), 0o600); err != nil {
+	if err := config.Write(cfgPath, &plan.Config); err != nil {
 		return fmt.Errorf("write %s: %w", cfgPath, err)
 	}
 	printSetupOK(out, "Config written")
@@ -396,7 +396,7 @@ func continueSetupAfterAWSRepair(cfgPath string, out io.Writer, plan *SetupPlan,
 
 func writeSetupDraft(cfgPath string, cfg *config.Config) error {
 	draftPath := setupDraftPath(cfgPath)
-	if err := os.WriteFile(draftPath, []byte(renderConfigYAML(cfg)), 0o600); err != nil {
+	if err := config.Write(draftPath, cfg); err != nil {
 		return fmt.Errorf("write setup draft %s: %w", draftPath, err)
 	}
 	return nil

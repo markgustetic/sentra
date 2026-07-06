@@ -266,7 +266,7 @@ func runPasswordForget(cmd *cobra.Command, deps PasswdDeps, flags *passwordForge
 
 	if yamlExists && cfg.Passphrase.UseKeyring {
 		cfg.Passphrase.UseKeyring = false
-		if err := os.WriteFile(cfgPath, []byte(renderConfigYAML(cfg)), 0o600); err != nil {
+		if err := config.Write(cfgPath, cfg); err != nil {
 			return fmt.Errorf("write %s: %w", cfgPath, err)
 		}
 		fmt.Fprintf(out, "%s updated to disable keyring lookup.\n", cfgPath)

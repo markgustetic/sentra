@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"sort"
 	"strings"
 	"time"
@@ -166,7 +165,7 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 		return err
 	}
 	cfg.Policies[name] = p
-	if err := writeRenderedConfig(*flags.configPath, cfg); err != nil {
+	if err := config.Write(*flags.configPath, cfg); err != nil {
 		return err
 	}
 
@@ -238,7 +237,7 @@ func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) 
 		return fmt.Errorf("policy %q not found", name)
 	}
 	delete(cfg.Policies, name)
-	if err := writeRenderedConfig(cfgPath, cfg); err != nil {
+	if err := config.Write(cfgPath, cfg); err != nil {
 		return err
 	}
 	out := policyStdout(cmd, deps)
@@ -377,13 +376,6 @@ func policyStdout(cmd *cobra.Command, deps PolicyDeps) io.Writer {
 		return deps.Stdout
 	}
 	return cmd.OutOrStdout()
-}
-
-func writeRenderedConfig(path string, cfg *config.Config) error {
-	if err := os.WriteFile(path, []byte(renderConfigYAML(cfg)), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
-	}
-	return nil
 }
 
 func sortedPolicyNames(policies map[string]config.PolicyConfig) []string {

@@ -17,7 +17,7 @@ import (
 func writePolicyConfigFile(t *testing.T, dir string, cfg *config.Config) string {
 	t.Helper()
 	path := filepath.Join(dir, "sentra.yaml")
-	if err := os.WriteFile(path, []byte(renderConfigYAML(cfg)), 0o600); err != nil {
+	if err := config.Write(path, cfg); err != nil {
 		t.Fatalf("write sentra.yaml: %v", err)
 	}
 	return path
