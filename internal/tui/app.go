@@ -28,6 +28,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
@@ -97,6 +98,14 @@ type Deps struct {
 	// are never retained in Deps. May be nil when no keyring is wired
 	// (the password flow then skips the keyring update).
 	SaveKeyringPassphrase func(cfg *config.Config, pass []byte) error
+
+	// SetupEffects is the headless side-effecting seam the setup wizard
+	// view drives (AWS CLI checks, login/SSO, bucket prep, repo init,
+	// keyring save). Production wires it to setup.DefaultEffects(); tests
+	// inject fakes. It holds no secrets — every method receives its inputs
+	// at call time. May be nil when the wizard view isn't reachable (a
+	// repo that's already configured and unlocked never needs it).
+	SetupEffects setup.Effects
 }
 
 // viewEntry pairs a registered command ID with its model. Order is

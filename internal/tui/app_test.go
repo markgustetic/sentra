@@ -14,7 +14,19 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/setup"
 )
+
+// TestApp_DepsCarrySetupEffects: the setup wizard view needs a headless
+// effects seam. Deps must carry it nil-tolerantly and NewApp must not panic
+// when it is set.
+func TestApp_DepsCarrySetupEffects(t *testing.T) {
+	eff := setup.DefaultEffects()
+	app := NewApp(Deps{RepoName: "x", SetupEffects: eff})
+	if app.deps.SetupEffects == nil {
+		t.Fatal("Deps.SetupEffects not carried through NewApp")
+	}
+}
 
 // TestApp_DepsCarryConfig: flows need the resolved config (retention
 // policy, walker options). Deps must carry it nil-tolerantly.

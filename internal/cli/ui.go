@@ -14,6 +14,7 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/tui"
 )
 
@@ -48,6 +49,11 @@ type UIDeps struct {
 	// after the TUI's password flow changes it. Same hook the `passwd`
 	// command uses. May be nil when no keyring is wired.
 	SavePassphrase func(cfg *config.Config, passphrase []byte) error
+
+	// SetupEffects overrides the setup engine's side-effecting seam. Nil
+	// means runUI constructs the production setup.DefaultEffects(); tests
+	// inject a fake to keep AWS/keyring calls out of the process.
+	SetupEffects setup.Effects
 }
 
 // NewUI returns the cobra command for `sentra ui`. The command
@@ -131,6 +137,12 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		NewStore:              deps.NewStore,
 		Actions:               deps.Actions,
 		SaveKeyringPassphrase: deps.SavePassphrase,
+		SetupEffects: func() setup.Effects {
+			if deps.SetupEffects != nil {
+				return deps.SetupEffects
+			}
+			return setup.DefaultEffects()
+		}(),
 	})
 
 	if deps.Run == nil {

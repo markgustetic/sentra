@@ -192,3 +192,24 @@ func TestRunUI_ThreadsNewDepsFields(t *testing.T) {
 		t.Error("Deps.SaveKeyringPassphrase is not the func passed via UIDeps")
 	}
 }
+
+// TestRunUI_ThreadsSetupEffects proves runUI constructs setup.DefaultEffects()
+// and threads it into tui.Deps when UIDeps carries no explicit override. The
+// effects seam holds no secrets — it is a call-time interface of func hooks.
+func TestRunUI_ThreadsSetupEffects(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".")
+
+	deps, captured := uiFixture(t, "hunter2")
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if captured.Deps().SetupEffects == nil {
+		t.Error("Deps.SetupEffects not threaded from runUI")
+	}
+}
