@@ -13,7 +13,7 @@ func TestKeyringUserForConfigIncludesBucketAndPrefix(t *testing.T) {
 	cfg.Repo.S3.Bucket = "shared-bucket"
 	cfg.Repo.S3.Prefix = "repo-a/"
 
-	got := keyringUserForConfig(&cfg)
+	got := config.KeyringUserForConfig(&cfg)
 	if got != "shared-bucket/repo-a/" {
 		t.Fatalf("keyring user: got %q, want bucket/prefix identity", got)
 	}
@@ -24,13 +24,13 @@ func TestLegacyKeyringUsersForConfigFallsBackToBucketOnly(t *testing.T) {
 	cfg.Repo.S3.Bucket = "shared-bucket"
 	cfg.Repo.S3.Prefix = "repo-a/"
 
-	got := legacyKeyringUsersForConfig(&cfg)
+	got := config.LegacyKeyringUsersForConfig(&cfg)
 	if len(got) != 1 || got[0] != "shared-bucket" {
 		t.Fatalf("legacy users: got %v, want [shared-bucket]", got)
 	}
 
 	cfg.Repo.S3.Prefix = ""
-	if got := legacyKeyringUsersForConfig(&cfg); len(got) != 0 {
+	if got := config.LegacyKeyringUsersForConfig(&cfg); len(got) != 0 {
 		t.Fatalf("legacy users without prefix: got %v, want none", got)
 	}
 }

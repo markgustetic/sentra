@@ -3,7 +3,6 @@ package main
 import (
 	"fmt"
 	"os"
-	"strings"
 
 	"github.com/markgustetic/sentra/internal/cli"
 	"github.com/markgustetic/sentra/internal/config"
@@ -11,10 +10,6 @@ import (
 )
 
 const minPassphraseLen = 8
-
-const keyringService = "sentra"
-
-const keyringDefaultUser = "default"
 
 // loadConfigBestEffort is used by startup-time helpers. A missing file is
 // fine; a malformed file is surfaced as a warning and callers fall back to
@@ -52,40 +47,14 @@ func buildResolveOptsFromConfig(rootFlags *cli.RootFlags, cfg *config.Config, pr
 	}
 	if cfg != nil {
 		opts.UseKeyring = cfg.Passphrase.UseKeyring
-		opts.KeyringService = keyringService
-		opts.KeyringUser = keyringUserForConfig(cfg)
-		opts.KeyringFallbackUsers = legacyKeyringUsersForConfig(cfg)
+		opts.KeyringService = config.KeyringService
+		opts.KeyringUser = config.KeyringUserForConfig(cfg)
+		opts.KeyringFallbackUsers = config.LegacyKeyringUsersForConfig(cfg)
 	}
 	if opts.KeyringUser == "" {
-		opts.KeyringUser = keyringDefaultUser
+		opts.KeyringUser = config.KeyringDefaultUser
 	}
 	return opts
-}
-
-func keyringUserForConfig(cfg *config.Config) string {
-	if cfg == nil || cfg.Repo.S3.Bucket == "" {
-		return keyringDefaultUser
-	}
-	bucket := strings.TrimSpace(cfg.Repo.S3.Bucket)
-	if bucket == "" {
-		return keyringDefaultUser
-	}
-	prefix := strings.TrimSpace(cfg.Repo.S3.Prefix)
-	if prefix == "" {
-		return bucket
-	}
-	return bucket + "/" + prefix
-}
-
-func legacyKeyringUsersForConfig(cfg *config.Config) []string {
-	if cfg == nil {
-		return nil
-	}
-	bucket := strings.TrimSpace(cfg.Repo.S3.Bucket)
-	if bucket == "" || keyringUserForConfig(cfg) == bucket {
-		return nil
-	}
-	return []string{bucket}
 }
 
 func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
@@ -116,17 +85,17 @@ func promptOpenPassphraseWithConfig(rootFlags *cli.RootFlags) func(*config.Confi
 }
 
 func saveRepoPassphraseToKeyring(cfg *config.Config, passphrase []byte) error {
-	return config.StoreKeyringPassphrase(keyringOptionsForConfig(cfg), passphrase)
+	return config.StoreKeyringPassphrase(config.KeyringOptionsForConfig(cfg), passphrase)
 }
 
 func deleteRepoPassphraseFromKeyring(cfg *config.Config) (bool, error) {
-	deleted, err := config.DeleteKeyringPassphrase(keyringOptionsForConfig(cfg))
+	deleted, err := config.DeleteKeyringPassphrase(config.KeyringOptionsForConfig(cfg))
 	if err != nil {
 		return false, err
 	}
-	for _, user := range legacyKeyringUsersForConfig(cfg) {
+	for _, user := range config.LegacyKeyringUsersForConfig(cfg) {
 		legacyDeleted, err := config.DeleteKeyringPassphrase(config.StoreKeyringOptions{
-			KeyringService: keyringService,
+			KeyringService: config.KeyringService,
 			KeyringUser:    user,
 		})
 		if err != nil {
@@ -135,11 +104,4 @@ func deleteRepoPassphraseFromKeyring(cfg *config.Config) (bool, error) {
 		deleted = deleted || legacyDeleted
 	}
 	return deleted, nil
-}
-
-func keyringOptionsForConfig(cfg *config.Config) config.StoreKeyringOptions {
-	return config.StoreKeyringOptions{
-		KeyringService: keyringService,
-		KeyringUser:    keyringUserForConfig(cfg),
-	}
 }
