@@ -7,6 +7,7 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -103,6 +104,7 @@ func (v PoliciesView) ShortHelp() []key.Binding {
 	}
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "policy")),
+		key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
 		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "run")),
 		key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "remove")),
 	}
@@ -115,40 +117,129 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case tea.KeyMsg:
-		if v.stage != policiesList {
-			return v, nil // form/run handling added in later tasks
+		switch v.stage {
+		case policiesForm:
+			return v.updateForm(msg)
+		case policiesList:
+			switch msg.Type {
+			case tea.KeyUp:
+				if v.selected > 0 {
+					v.selected--
+				}
+				v.notice = ""
+				return v, nil
+			case tea.KeyDown:
+				if v.selected < len(v.names)-1 {
+					v.selected++
+				}
+				v.notice = ""
+				return v, nil
+			case tea.KeyRunes:
+				if len(msg.Runes) != 1 {
+					return v, nil
+				}
+				switch msg.Runes[0] {
+				case 'a':
+					v.stage = policiesForm
+					v.form = newPolicyForm()
+					v.notice = ""
+					return v, nil
+				case 'd':
+					if len(v.names) > 0 {
+						name := v.names[v.selected]
+						body := fmt.Sprintf("Remove policy %q from sentra.yaml?\nThis edits local config only — no snapshots are touched.", name)
+						modal := NewConfirmModal("Confirm remove", body, policyRemoveConfirmID, 80, 24)
+						return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+					}
+				}
+				return v, nil
+			}
+			return v, nil
+		default:
+			return v, nil
 		}
-		switch msg.Type {
-		case tea.KeyUp:
-			if v.selected > 0 {
-				v.selected--
-			}
-			v.notice = ""
-			return v, nil
-		case tea.KeyDown:
-			if v.selected < len(v.names)-1 {
-				v.selected++
-			}
-			v.notice = ""
-			return v, nil
-		case tea.KeyRunes:
-			if len(msg.Runes) == 1 && msg.Runes[0] == 'd' && len(v.names) > 0 {
-				name := v.names[v.selected]
-				body := fmt.Sprintf("Remove policy %q from sentra.yaml?\nThis edits local config only — no snapshots are touched.", name)
-				modal := NewConfirmModal("Confirm remove", body, policyRemoveConfirmID, 80, 24)
-				return v, func() tea.Msg { return pushModalMsg{modal: modal} }
-			}
-			return v, nil
-		}
-		return v, nil
 
 	case confirmedMsg:
 		switch msg.id {
 		case policyRemoveConfirmID:
 			return v.removeSelected()
+		case policyAddConfirmID:
+			return v.addFromForm()
 		}
 		return v, nil
 	}
+	return v, nil
+}
+
+func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		v.stage = policiesList
+		return v, nil
+	case tea.KeyTab:
+		v.form.focus = (v.form.focus + 1) % 3
+		v.form.name.Blur()
+		v.form.path.Blur()
+		v.form.schedule.Blur()
+		switch v.form.focus {
+		case 0:
+			v.form.name.Focus()
+		case 1:
+			v.form.path.Focus()
+		case 2:
+			v.form.schedule.Focus()
+		}
+		return v, nil
+	case tea.KeyEnter:
+		name, _, err := v.form.build()
+		if err != nil {
+			v.form.err = err.Error()
+			return v, nil
+		}
+		body := fmt.Sprintf("Add policy %q to sentra.yaml?\nThis edits local config only.", name)
+		modal := NewConfirmModal("Confirm add", body, policyAddConfirmID, 80, 24)
+		return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+	}
+	var cmd tea.Cmd
+	switch v.form.focus {
+	case 0:
+		v.form.name, cmd = v.form.name.Update(msg)
+	case 1:
+		v.form.path, cmd = v.form.path.Update(msg)
+	case 2:
+		v.form.schedule, cmd = v.form.schedule.Update(msg)
+	}
+	v.form.err = "" // typing clears the last validation error
+	return v, cmd
+}
+
+// addFromForm rebuilds + revalidates the form, writes the new policy into
+// sentra.yaml, and reloads. Config-only: no repo lock, no op guard.
+func (v PoliciesView) addFromForm() (tea.Model, tea.Cmd) {
+	name, p, err := v.form.build()
+	if err != nil {
+		v.stage = policiesForm
+		v.form.err = err.Error()
+		return v, nil
+	}
+	cfg, err := config.Load(v.deps.ConfigPath)
+	if err != nil {
+		v.notice = "reload failed: " + err.Error()
+		v.stage = policiesList
+		return v, nil
+	}
+	if cfg.Policies == nil {
+		cfg.Policies = map[string]config.PolicyConfig{}
+	}
+	cfg.Policies[name] = p
+	if err := config.Write(v.deps.ConfigPath, cfg); err != nil {
+		v.notice = "write failed: " + err.Error()
+		v.stage = policiesList
+		return v, nil
+	}
+	v.stage = policiesList
+	v.reload()
+	v.notice = fmt.Sprintf("added %q", name)
 	return v, nil
 }
 
@@ -178,6 +269,18 @@ func (v PoliciesView) removeSelected() (tea.Model, tea.Cmd) {
 func (v PoliciesView) View() string {
 	if v.loadErr != "" {
 		return ui.Danger.Render(v.loadErr)
+	}
+	if v.stage == policiesForm {
+		var b strings.Builder
+		b.WriteString(ui.Primary.Render("New policy") + "\n\n")
+		b.WriteString(v.form.name.View() + "\n")
+		b.WriteString(v.form.path.View() + "\n")
+		b.WriteString(v.form.schedule.View() + "\n")
+		if v.form.err != "" {
+			b.WriteString("\n" + ui.Danger.Render(v.form.err) + "\n")
+		}
+		b.WriteString("\n" + ui.Muted.Render("⏎ save · tab field · esc cancel"))
+		return b.String()
 	}
 	var b strings.Builder
 	b.WriteString(ui.Primary.Render("Backup policies"))
@@ -243,9 +346,60 @@ func policyPruneModeOrOff(mode string) string {
 	return mode
 }
 
-// policyForm and policyRunState are placeholders wired by the ADD and RUN
-// tasks; declared here so the PoliciesView struct compiles as one unit.
-type policyForm struct{}
+// policyForm is the inline ADD form: name + path + optional schedule
+// shorthand ("daily@03:00", "manual", …). It stays deliberately minimal —
+// the same fields the CLI's `policy add` exposes for the common case;
+// power users still edit sentra.yaml directly. A built policy is validated
+// with policycfg.Validate before the confirm modal, so a bad entry never
+// reaches disk.
+type policyForm struct {
+	name     textinput.Model
+	path     textinput.Model
+	schedule textinput.Model
+	focus    int // 0=name, 1=path, 2=schedule
+	err      string
+}
+
+func newPolicyForm() policyForm {
+	name := textinput.New()
+	name.Prompt = "name>     "
+	name.Placeholder = "policy name"
+	name.Focus()
+	path := textinput.New()
+	path.Prompt = "path>     "
+	path.Placeholder = "directory to back up"
+	schedule := textinput.New()
+	schedule.Prompt = "schedule> "
+	schedule.Placeholder = "manual | daily@03:00 | weekly@mon:03:00"
+	return policyForm{name: name, path: path, schedule: schedule}
+}
+
+// build assembles a config.PolicyConfig from the form and validates it.
+// Returns the built name + policy, or a non-nil error to display inline.
+func (f policyForm) build() (string, config.PolicyConfig, error) {
+	name := strings.TrimSpace(f.name.Value())
+	path := strings.TrimSpace(f.path.Value())
+	spec := strings.TrimSpace(f.schedule.Value())
+	if spec == "" {
+		spec = policycfg.CadenceManual
+	}
+	sched, err := policycfg.ParseScheduleSpec(spec)
+	if err != nil {
+		return "", config.PolicyConfig{}, err
+	}
+	var paths []string
+	if path != "" {
+		paths = []string{path}
+	}
+	p := config.PolicyConfig{
+		Paths:    paths,
+		Schedule: sched,
+	}
+	if err := policycfg.Validate(name, p); err != nil {
+		return "", config.PolicyConfig{}, err
+	}
+	return name, p, nil
+}
 
 type policyRunState struct {
 	reporter *opReporter

@@ -137,3 +137,79 @@ func TestPoliciesView_RemoveConfirmedRewritesConfigAndReloads(t *testing.T) {
 		t.Fatalf("view names after remove = %v, want [beta]", v.names)
 	}
 }
+
+func TestPoliciesView_AddOpensInlineForm(t *testing.T) {
+	deps, _ := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+	if v.stage != policiesForm {
+		t.Fatalf("stage = %v, want policiesForm after 'a'", v.stage)
+	}
+	if !strings.Contains(v.View(), "New policy") {
+		t.Errorf("form view must show the new-policy header:\n%s", v.View())
+	}
+}
+
+func TestPoliciesView_AddConfirmedWritesPolicyAndReloads(t *testing.T) {
+	deps, path := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+	// Type a name, tab to path, type a path.
+	v = typeIntoPolicies(t, v, "gamma")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(PoliciesView)
+	v = typeIntoPolicies(t, v, "/data/gamma")
+	// Enter on the form arms the simple confirm modal.
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(PoliciesView)
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("form enter must push a confirm modal, got %#v", cmd())
+	}
+	if _, ok := push.modal.(ConfirmModal); !ok {
+		t.Fatalf("add must use the simple ConfirmModal, got %T", push.modal)
+	}
+	// Confirm: config.Write happens, view reloads, gamma is present.
+	m, _ = v.Update(confirmedMsg{id: policyAddConfirmID})
+	v = m.(PoliciesView)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	p, ok := cfg.Policies["gamma"]
+	if !ok || len(p.Paths) != 1 || p.Paths[0] != "/data/gamma" {
+		t.Fatalf("gamma not written correctly: %+v", cfg.Policies["gamma"])
+	}
+	if v.stage != policiesList {
+		t.Fatalf("stage after add = %v, want policiesList", v.stage)
+	}
+}
+
+func TestPoliciesView_AddRejectsInvalidPolicy(t *testing.T) {
+	deps, _ := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+	// Name only, no path: policy.Validate rejects (needs >=1 path). Enter
+	// must surface the error and NOT push a confirm modal.
+	v = typeIntoPolicies(t, v, "noPaths")
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(PoliciesView)
+	if cmd != nil {
+		t.Fatalf("invalid policy must not push a modal, got %#v", cmd())
+	}
+	if v.form.err == "" {
+		t.Fatal("invalid policy must set a form error")
+	}
+}
+
+func typeIntoPolicies(t *testing.T, v PoliciesView, s string) PoliciesView {
+	t.Helper()
+	for _, r := range s {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(PoliciesView)
+	}
+	return v
+}
