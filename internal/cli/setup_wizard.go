@@ -2,7 +2,6 @@ package cli
 
 import (
 	"fmt"
-	"os"
 	"strings"
 
 	"github.com/charmbracelet/huh"
@@ -157,19 +156,7 @@ func HuhSetupAWSAuthRepairPrompt(plan SetupPlan, cause error) (SetupPlan, bool, 
 }
 
 func defaultSetupAWSRepairChoice(plan SetupPlan, cause error) setupAWSRepairChoice {
-	if cause != nil && !isAWSMissingCredentialsError(cause) {
-		return setupAWSRepairExisting
-	}
-	switch plan.AWSAuthMethod {
-	case SetupAWSAuthSSO:
-		return setupAWSRepairSSO
-	case SetupAWSAuthExisting:
-		return setupAWSRepairExisting
-	case SetupAWSAuthSkip:
-		return setupAWSRepairConfig
-	default:
-		return setupAWSRepairLogin
-	}
+	return setup.DefaultAWSRepairChoice(plan, cause)
 }
 
 // HuhSetupPrompt is the production interactive wizard for `sentra setup`.
@@ -207,84 +194,7 @@ func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 }
 
 func defaultSetupPlan(current config.Config) SetupPlan {
-	plan := SetupPlan{
-		Config:            current,
-		Backend:           SetupBackendAWS,
-		PrepareAWS:        true,
-		AWSAuthMethod:     SetupAWSAuthLogin,
-		CreateBucket:      true,
-		BlockPublicAccess: true,
-		DefaultEncryption: true,
-		SavePassphrase:    true,
-		InitRepo:          true,
-	}
-	applySetupSmartDefaults(&plan)
-	return plan
-}
-
-func applySetupSmartDefaults(plan *SetupPlan) {
-	if plan.Config.Repo.S3.Region == "" {
-		plan.Config.Repo.S3.Region = firstNonEmptyEnv("AWS_REGION", "AWS_DEFAULT_REGION")
-	}
-	if plan.Config.Repo.S3.Profile == "" {
-		plan.Config.Repo.S3.Profile = firstNonEmptyEnv("AWS_PROFILE", "AWS_DEFAULT_PROFILE")
-	}
-	if plan.Config.Repo.S3.Profile == "" {
-		plan.Config.Repo.S3.Profile = defaultAWSProfileFromConfig()
-	}
-	if hasAWSEnvironmentCredentials() || plan.Config.Repo.S3.Profile != "" {
-		plan.AWSAuthMethod = SetupAWSAuthExisting
-	}
-}
-
-func firstNonEmptyEnv(keys ...string) string {
-	for _, key := range keys {
-		if value := strings.TrimSpace(os.Getenv(key)); value != "" {
-			return value
-		}
-	}
-	return ""
-}
-
-func hasAWSEnvironmentCredentials() bool {
-	if strings.TrimSpace(os.Getenv("AWS_ROLE_ARN")) != "" &&
-		strings.TrimSpace(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")) != "" {
-		return true
-	}
-	if strings.TrimSpace(os.Getenv("AWS_ACCESS_KEY_ID")) == "" {
-		return false
-	}
-	return strings.TrimSpace(os.Getenv("AWS_SECRET_ACCESS_KEY")) != "" ||
-		strings.TrimSpace(os.Getenv("AWS_SESSION_TOKEN")) != ""
-}
-
-func defaultAWSProfileFromConfig() string {
-	cfg, err := loadAWSCLIConfig()
-	if err != nil || cfg == nil {
-		return ""
-	}
-	for _, profile := range []string{"sentra", "default"} {
-		if len(cfg[awsProfileSection(profile)]) > 0 {
-			return profile
-		}
-	}
-	for section := range cfg {
-		if profile := awsProfileNameFromSection(section); profile != "" {
-			return profile
-		}
-	}
-	return ""
-}
-
-func awsProfileNameFromSection(section string) string {
-	section = strings.TrimSpace(section)
-	if section == "default" {
-		return "default"
-	}
-	if strings.HasPrefix(section, "profile ") {
-		return strings.TrimSpace(strings.TrimPrefix(section, "profile "))
-	}
-	return ""
+	return setup.DefaultPlan(current, setup.DefaultEnvProbe())
 }
 
 func runHuhAWSSetup(current config.Config, plan SetupPlan) (SetupPlan, error) {
@@ -579,11 +489,7 @@ func setupPlanReviewText(cfgPath string, plan SetupPlan) string {
 }
 
 func normalizeSetupConfig(cfg *config.Config) {
-	cfg.Repo.S3.Bucket = strings.TrimSpace(cfg.Repo.S3.Bucket)
-	cfg.Repo.S3.Prefix = strings.TrimSpace(cfg.Repo.S3.Prefix)
-	cfg.Repo.S3.Region = strings.TrimSpace(cfg.Repo.S3.Region)
-	cfg.Repo.S3.Profile = strings.TrimSpace(cfg.Repo.S3.Profile)
-	cfg.Repo.S3.EndpointURL = strings.TrimSpace(cfg.Repo.S3.EndpointURL)
+	setup.NormalizeConfig(cfg)
 }
 
 func newSetupForm(groups ...*huh.Group) *huh.Form {

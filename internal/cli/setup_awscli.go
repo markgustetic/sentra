@@ -25,11 +25,3 @@ func DefaultAWSConfigureSSO(ctx context.Context, profile string) error {
 func DefaultAWSSSOLogin(ctx context.Context, profile string) error {
 	return setup.DefaultAWSSSOLogin(ctx, profile)
 }
-
-func loadAWSCLIConfig() (setup.AWSCLIConfig, error) {
-	return setup.LoadAWSCLIConfig()
-}
-
-func awsProfileSection(profile string) string {
-	return setup.AWSProfileSection(profile)
-}

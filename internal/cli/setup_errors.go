@@ -25,10 +25,6 @@ func wrapAWSLoginFlowError(profile string, err error) error {
 	return setup.WrapAWSLoginFlowError(profile, err)
 }
 
-func isAWSMissingCredentialsError(err error) bool {
-	return setup.IsAWSMissingCredentialsError(err)
-}
-
 func printSetupErrorDetail(out io.Writer, err error, cfg *config.Config) {
 	if err == nil {
 		return

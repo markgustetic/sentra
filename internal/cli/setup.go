@@ -377,31 +377,8 @@ func setupDraftPath(cfgPath string) string {
 	return filepath.Join(dir, "."+base+".setup-draft")
 }
 
-func applySetupAWSConfigOnly(plan *SetupPlan) {
-	plan.PrepareAWS = false
-	plan.InitRepo = false
-	plan.CreateBucket = false
-	plan.BlockPublicAccess = false
-	plan.DefaultEncryption = false
-	plan.AWSAuthMethod = SetupAWSAuthSkip
-	plan.SavePassphrase = false
-}
-
-func applySetupPassphraseConfig(plan *SetupPlan) {
-	if plan.InitRepo {
-		plan.Config.Passphrase.UseKeyring = plan.SavePassphrase
-	}
-}
-
+func applySetupAWSConfigOnly(plan *SetupPlan)    { setup.ApplyAWSConfigOnly(plan) }
+func applySetupPassphraseConfig(plan *SetupPlan) { setup.ApplyPassphraseConfig(plan) }
 func resolveSetupAWSAuthMethod(plan *SetupPlan) SetupAWSAuthMethod {
-	if plan == nil {
-		return SetupAWSAuthExisting
-	}
-	if plan.AWSAuthMethod != "" {
-		return plan.AWSAuthMethod
-	}
-	if plan.PrepareAWS {
-		return SetupAWSAuthExisting
-	}
-	return SetupAWSAuthSkip
+	return setup.ResolveAWSAuthMethod(plan)
 }
