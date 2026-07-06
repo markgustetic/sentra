@@ -55,6 +55,34 @@ type agentDoneMsg struct {
 	err  error
 }
 
+// agentApplyDoneMsg is the terminal message of the agent-apply flow. It
+// carries the per-action result lines and the applied/declined/errors
+// tally. It implements opResult() so the App's one-op-at-a-time guard
+// clears when apply finishes — apply mutates the repo (prune → GC under
+// the repo lock) so it MUST go through the mutating-op protocol.
+//
+// lines/applied/errs/err are produced by startApply and rendered by
+// viewApplyDone (both land in the apply-dispatch task); declined is
+// already set on the all-declined path in beginConfirm.
+//
+//nolint:unused // fields wired by the immediately-following apply task
+type agentApplyDoneMsg struct {
+	lines    []string
+	applied  int
+	declined int
+	errs     int
+	err      error
+}
+
+func (agentApplyDoneMsg) opResult() {}
+
+// agentConfirmID ties a per-rec simple confirm modal back to this view;
+// agentWipeConfirmID ties the empty-repo typed "wipe" gate back to it.
+const (
+	agentConfirmID     = "agent-apply-confirm"
+	agentWipeConfirmID = "agent-apply-wipe"
+)
+
 // AgentView renders the streaming agent: top half is a viewport
 // auto-tailing reasoning tokens, bottom half is a recommendations
 // table that fills in once the orchestrator finishes. Pressing `s`
@@ -90,6 +118,27 @@ type AgentView struct {
 	// cursor is the highlighted row during agentReviewing. Up/down move
 	// it; space toggles approved[cursor].
 	cursor int
+
+	// confirmQueue holds the indices into recs (in table order) of the
+	// approved, actionable recommendations still awaiting their per-rec
+	// confirm modal. Popped front-to-back as each confirmedMsg arrives;
+	// when it empties the flow moves to agentApplying.
+	confirmQueue []int
+
+	// wipePending is set when the approved prunes would delete every
+	// snapshot in the repo. It gates on an extra TypedConfirmModal
+	// (word "wipe") shown before the per-rec confirms — the TUI mirror
+	// of the CLI's --allow-wipe rail. Cleared once the typed gate is
+	// satisfied.
+	wipePending bool
+
+	// confirmCursor walks confirmQueue during agentConfirming: each
+	// per-rec confirmedMsg advances it; when it reaches len(confirmQueue)
+	// the last confirm has cleared and the flow moves to applying.
+	confirmCursor int
+
+	// result carries the terminal apply outcome for the done screen.
+	result agentApplyDoneMsg
 
 	// run is the orchestrator hook. Real production wires it via
 	// the deps' Provider; tests inject a closure. nil run + nil
@@ -237,7 +286,40 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.doneCh = nil
 		return a, nil
 
+	case confirmedMsg:
+		if a.applyStage != agentConfirming {
+			return a, nil
+		}
+		// The typed wipe gate clears first, then the per-rec walk begins.
+		if msg.id == agentWipeConfirmID && a.wipePending {
+			a.wipePending = false
+			return a, a.pushNextConfirm()
+		}
+		if msg.id == agentConfirmID && len(a.confirmQueue) > 0 {
+			// Approved: advance the cursor over the fixed queue. When the
+			// last confirm clears, move to applying. We track progress with
+			// confirmCursor rather than popping so the queue stays intact as
+			// the approved-and-confirmed set the apply task consumes.
+			a.confirmCursor++
+			if a.confirmCursor >= len(a.confirmQueue) {
+				a.applyStage = agentApplying
+				return a, nil
+			}
+			return a, a.pushNextConfirmAt(a.confirmCursor)
+		}
+		return a, nil
+
 	case tea.KeyMsg:
+		if a.applyStage == agentConfirming && msg.Type == tea.KeyEsc {
+			// A modal esc already popped the overlay; return to review so
+			// the operator can re-decide rather than being stranded.
+			a.applyStage = agentReviewing
+			a.confirmQueue = nil
+			a.confirmCursor = 0
+			a.wipePending = false
+			return a, nil
+		}
+
 		// Scan key: only when not reviewing/applying an existing result.
 		if a.applyStage == agentIdle && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 's' {
 			if a.busy || a.run == nil {
@@ -290,6 +372,8 @@ func (a AgentView) updateReviewing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		a.applyStage = agentIdle
 		return a, nil
+	case tea.KeyEnter:
+		return a.beginConfirm()
 	case tea.KeyUp:
 		if a.cursor > 0 {
 			a.cursor--
@@ -320,6 +404,88 @@ func (a AgentView) updateReviewing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return a, nil
+}
+
+// beginConfirm transitions from reviewing into the confirmation walk.
+// It builds the queue of approved actionable recs, then re-derives the
+// CLI's wipe-guard: seed the remaining-snapshot count from ListSnapshots
+// and, if the approved prunes would drive it to zero, require the typed
+// "wipe" gate before any per-rec confirm. When nothing is approved the
+// flow returns to a done tally rather than confirming an empty set.
+func (a AgentView) beginConfirm() (tea.Model, tea.Cmd) {
+	queue := make([]int, 0, len(a.recs))
+	for i := range a.recs {
+		if a.approved[i] && a.recs[i].Action != "none" {
+			queue = append(queue, i)
+		}
+	}
+	if len(queue) == 0 {
+		// Nothing to apply — go straight to a done tally of all-declined.
+		a.applyStage = agentApplyDone
+		a.result = agentApplyDoneMsg{declined: a.declinedCount()}
+		return a, nil
+	}
+	a.confirmQueue = queue
+	a.confirmCursor = 0
+
+	// Wipe guard: count snapshots that would be pruned and compare with
+	// what's in the repo. remaining-prunes >= remaining-snapshots means
+	// the sequence empties the repo. Mirrors applyRecommendations'
+	// remaining/len(currentSnaps) accounting (cli/agent_apply.go:82-139).
+	prunes := 0
+	for _, i := range queue {
+		if a.recs[i].Action == "prune_snapshot" {
+			prunes++
+		}
+	}
+	a.wipePending = false
+	if prunes > 0 && a.deps.Repo != nil {
+		ctx, cancel := context.WithTimeout(ctxOrBackground(a.deps.Ctx), hydrateTimeout)
+		snaps, err := a.deps.Repo.ListSnapshots(ctx)
+		cancel()
+		// On a list error we conservatively arm the wipe gate: better to
+		// force an explicit "wipe" than to silently allow a destructive
+		// sequence we couldn't bound.
+		if err != nil || prunes >= len(snaps) {
+			a.wipePending = true
+		}
+	}
+
+	a.applyStage = agentConfirming
+	if a.wipePending {
+		body := "Applying these recommendations would prune every snapshot in the repo.\nThe repository will be left empty."
+		modal := NewTypedConfirmModal("Confirm repo wipe", body, "wipe", agentWipeConfirmID, 80, 24)
+		return a, func() tea.Msg { return pushModalMsg{modal: modal} }
+	}
+	return a, a.pushNextConfirm()
+}
+
+// pushNextConfirmAt pushes the simple confirm modal for confirmQueue[i].
+// Out-of-range i yields nil so the caller can transition to applying.
+func (a AgentView) pushNextConfirmAt(i int) tea.Cmd {
+	if i < 0 || i >= len(a.confirmQueue) {
+		return nil
+	}
+	rec := a.recs[a.confirmQueue[i]]
+	body := fmt.Sprintf("Apply %s on %q?\n\nrationale: %s", rec.Action, rec.Target, rec.Rationale)
+	modal := NewConfirmModal("Confirm apply", body, agentConfirmID, 80, 24)
+	return func() tea.Msg { return pushModalMsg{modal: modal} }
+}
+
+// pushNextConfirm pushes the confirm modal for the current cursor.
+func (a AgentView) pushNextConfirm() tea.Cmd { return a.pushNextConfirmAt(a.confirmCursor) }
+
+// declinedCount returns how many actionable recs the operator declined
+// during review (approved==false, action != "none"). Used to seed the
+// done tally when nothing is applied.
+func (a AgentView) declinedCount() int {
+	n := 0
+	for i, r := range a.recs {
+		if r.Action != "none" && !a.approved[i] {
+			n++
+		}
+	}
+	return n
 }
 
 // spawnScan kicks off the agent runner in a goroutine, stashes the
