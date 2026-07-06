@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"strings"
 	"testing"
 
@@ -175,5 +176,114 @@ func TestAgentApply_ConfirmWalkReachesApplying(t *testing.T) {
 	v = m.(AgentView)
 	if v.applyStage != agentApplying {
 		t.Fatalf("applyStage = %v, want agentApplying after last confirm", v.applyStage)
+	}
+}
+
+// driveToApplying walks a single-rec AgentView from review through the
+// (single) confirm to the agentApplying stage, returning the view and
+// the tea.Cmd the last confirm produced.
+func driveToApplying(t *testing.T, v AgentView) (AgentView, tea.Cmd) {
+	t.Helper()
+	v = enterReview(t, v)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(AgentView)
+	m, cmd := v.Update(confirmedMsg{id: agentConfirmID})
+	v = m.(AgentView)
+	if v.applyStage != agentApplying {
+		t.Fatalf("applyStage = %v, want agentApplying", v.applyStage)
+	}
+	return v, cmd
+}
+
+// TestAgentApply_StartOpDispatchesPrune runs the full apply for a real
+// prune rec against a real in-memory repo and asserts the snapshot is
+// gone after the run closure executes.
+func TestAgentApply_StartOpDispatchesPrune(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r) // two snaps; prune one → repo not emptied
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := snaps[0].ID
+	recs := []agent.Recommendation{
+		{ID: "rec-prune", Action: "prune_snapshot", Target: victim, Severity: "warn", Rationale: "stale"},
+	}
+	deps := Deps{Repo: r, Actions: action.NewDefaultRegistry()}
+	m0, _ := NewAgentViewWithRunner(deps, nil).Update(agentDoneMsg{recs: recs})
+	v := m0.(AgentView)
+
+	_, cmd := driveToApplying(t, v)
+	// The applying stage batches startOpMsg + opTick. Pull the startOpMsg
+	// and execute its run closure directly (bypassing the App's guard,
+	// which is exercised elsewhere) to verify the side effect.
+	msgs := execCmds(t, cmd)
+	var start startOpMsg
+	var found bool
+	for _, msg := range msgs {
+		if s, ok := msg.(startOpMsg); ok {
+			start, found = s, true
+		}
+	}
+	if !found {
+		t.Fatal("agentApplying must emit a startOpMsg")
+	}
+	if start.name != "agent-apply" {
+		t.Fatalf("op name = %q, want agent-apply", start.name)
+	}
+	done := start.run(context.Background())
+	dm, ok := done.(agentApplyDoneMsg)
+	if !ok {
+		t.Fatalf("run returned %T, want agentApplyDoneMsg", done)
+	}
+	if dm.applied != 1 {
+		t.Errorf("applied = %d, want 1", dm.applied)
+	}
+	// Verify the actual side effect: victim snapshot is gone.
+	after, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range after {
+		if s.ID == victim {
+			t.Fatalf("snapshot %s still present after apply", victim)
+		}
+	}
+	// agentApplyDoneMsg is an opResultMsg.
+	var _ opResultMsg = agentApplyDoneMsg{}
+}
+
+// TestAgentApply_DoneShowsTally feeds the terminal message and asserts the
+// view renders the applied/declined/errors tally.
+func TestAgentApply_DoneShowsTally(t *testing.T) {
+	v := NewAgentViewWithRunner(Deps{}, nil)
+	v.applyStage = agentApplying
+	m, _ := v.Update(agentApplyDoneMsg{
+		lines:    []string{"  - rec-1: pruned snap-x"},
+		applied:  1,
+		declined: 2,
+		errs:     0,
+	})
+	got := m.(AgentView)
+	if got.applyStage != agentApplyDone {
+		t.Fatalf("applyStage = %v, want agentApplyDone", got.applyStage)
+	}
+	out := got.View()
+	if !strings.Contains(out, "applied") || !strings.Contains(out, "declined") {
+		t.Errorf("done view missing tally:\n%s", out)
+	}
+	if !strings.Contains(out, "rec-1") {
+		t.Errorf("done view missing per-action line:\n%s", out)
+	}
+}
+
+// TestAgentApply_RejectedResetsToReviewing asserts that if the App
+// rejects the op (another op in flight), the flow leaves agentApplying.
+func TestAgentApply_RejectedResetsToReviewing(t *testing.T) {
+	v := NewAgentViewWithRunner(Deps{}, nil)
+	v.applyStage = agentApplying
+	m, _ := v.Update(opRejectedMsg{name: "agent-apply"})
+	if m.(AgentView).applyStage != agentReviewing {
+		t.Fatalf("applyStage = %v, want agentReviewing after rejection", m.(AgentView).applyStage)
 	}
 }

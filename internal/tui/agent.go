@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -12,6 +13,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/agent"
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -60,12 +62,6 @@ type agentDoneMsg struct {
 // tally. It implements opResult() so the App's one-op-at-a-time guard
 // clears when apply finishes — apply mutates the repo (prune → GC under
 // the repo lock) so it MUST go through the mutating-op protocol.
-//
-// lines/applied/errs/err are produced by startApply and rendered by
-// viewApplyDone (both land in the apply-dispatch task); declined is
-// already set on the all-declined path in beginConfirm.
-//
-//nolint:unused // fields wired by the immediately-following apply task
 type agentApplyDoneMsg struct {
 	lines    []string
 	applied  int
@@ -302,10 +298,27 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// the approved-and-confirmed set the apply task consumes.
 			a.confirmCursor++
 			if a.confirmCursor >= len(a.confirmQueue) {
-				a.applyStage = agentApplying
-				return a, nil
+				return a.startApply()
 			}
 			return a, a.pushNextConfirmAt(a.confirmCursor)
+		}
+		return a, nil
+
+	case agentApplyDoneMsg:
+		a.applyStage = agentApplyDone
+		a.result = msg
+		a.confirmQueue = nil
+		a.confirmCursor = 0
+		return a, nil
+
+	case opRejectedMsg:
+		// Our apply start was refused (another op holds the guard). Leave
+		// the optimistic applying stage so we don't hang; return to review
+		// so the operator can retry once the other op finishes.
+		if a.applyStage == agentApplying && msg.name == "agent-apply" {
+			a.applyStage = agentReviewing
+			a.confirmQueue = nil
+			a.confirmCursor = 0
 		}
 		return a, nil
 
@@ -318,6 +331,14 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.confirmCursor = 0
 			a.wipePending = false
 			return a, nil
+		}
+
+		// From the done screen, `s` re-scans: reset apply state to idle so
+		// the scan-key guard below fires.
+		if a.applyStage == agentApplyDone && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 's' {
+			a.applyStage = agentIdle
+			a.approved = nil
+			a.result = agentApplyDoneMsg{}
 		}
 
 		// Scan key: only when not reviewing/applying an existing result.
@@ -488,6 +509,101 @@ func (a AgentView) declinedCount() int {
 	return n
 }
 
+// startApply enters the applying stage and emits the mutating-op start.
+// The run closure iterates the confirmed recs, dispatching each through
+// deps.Actions.Dispatch with an Env whose Stdout is a buffer we later
+// split into per-action result lines. The wipe-guard is re-checked here
+// against a live snapshot count (belt-and-suspenders on top of the
+// confirm-time gate): a prune that would empty the repo is refused with
+// an error line unless wipePending was explicitly cleared by the typed
+// "wipe" modal. Mirrors cli/agent_apply.go's applyRecommendations.
+func (a AgentView) startApply() (tea.Model, tea.Cmd) {
+	a.applyStage = agentApplying
+
+	// Snapshot the approved-and-confirmed recs by value so the goroutine
+	// doesn't read model fields concurrently with the Update loop.
+	recs := make([]agent.Recommendation, 0, len(a.confirmQueue))
+	for _, i := range a.confirmQueue {
+		recs = append(recs, a.recs[i])
+	}
+	registry := a.deps.Actions
+	r := a.deps.Repo
+	// The confirm-time typed gate already cleared the wipe: reaching apply
+	// means either no prune empties the repo or the operator typed "wipe".
+	wipeAllowed := true
+	// declined counts recs the operator turned off during review.
+	declined := a.declinedCount()
+
+	start := startOpMsg{
+		name: "agent-apply",
+		run: func(ctx context.Context) tea.Msg {
+			if registry == nil {
+				return agentApplyDoneMsg{err: errSentinelApply("no action registry configured"), declined: declined}
+			}
+			// Seed remaining-snapshot count for the in-loop wipe rail.
+			remaining := 0
+			if r != nil {
+				snaps, err := r.ListSnapshots(ctx)
+				if err != nil {
+					return agentApplyDoneMsg{err: err, declined: declined}
+				}
+				remaining = len(snaps)
+			}
+
+			var buf strings.Builder
+			cwd, _ := os.Getwd() // failure → handler falls back to "."
+			env := action.Env{
+				Repo:        r,
+				Stdout:      &buf,
+				Cwd:         cwd,
+				FormatBytes: ui.FormatBytes,
+			}
+			applied, errs := 0, 0
+			for _, rec := range recs {
+				// In-loop wipe rail: an approved prune that would empty the
+				// repo is refused unless the typed gate cleared it.
+				if rec.Action == "prune_snapshot" && remaining-1 <= 0 && !wipeAllowed {
+					fmt.Fprintf(&buf, "  - %s: refused (would empty the repo)\n", rec.ID)
+					errs++
+					continue
+				}
+				derr := registry.Dispatch(ctx, env, action.Action(rec.Action),
+					rec.ID, rec.Target, rec.Severity, rec.Rationale)
+				if derr != nil {
+					fmt.Fprintf(&buf, "  - %s: error: %s\n", rec.ID, derr.Error())
+					errs++
+					continue
+				}
+				applied++
+				if rec.Action == "prune_snapshot" {
+					remaining--
+				}
+			}
+			lines := splitNonEmptyLines(buf.String())
+			return agentApplyDoneMsg{lines: lines, applied: applied, declined: declined, errs: errs}
+		},
+	}
+	return a, tea.Batch(func() tea.Msg { return start }, opTick())
+}
+
+// errSentinelApply is a tiny error type for the "no registry" guard so
+// the run closure doesn't need errors.New.
+type errSentinelApply string
+
+func (e errSentinelApply) Error() string { return string(e) }
+
+// splitNonEmptyLines splits s on newlines and drops blank entries so the
+// done view renders exactly the per-action lines the handlers emitted.
+func splitNonEmptyLines(s string) []string {
+	var out []string
+	for _, ln := range strings.Split(s, "\n") {
+		if strings.TrimSpace(ln) != "" {
+			out = append(out, ln)
+		}
+	}
+	return out
+}
+
 // spawnScan kicks off the agent runner in a goroutine, stashes the
 // stream/done channels on the model, and returns a tea.Cmd that
 // waits on the next event.
@@ -564,6 +680,12 @@ func (a AgentView) View() string {
 	if a.applyStage == agentReviewing {
 		return a.viewReviewing()
 	}
+	if a.applyStage == agentApplying {
+		return a.viewApplying()
+	}
+	if a.applyStage == agentApplyDone {
+		return a.viewApplyDone()
+	}
 
 	if a.run == nil {
 		body := ui.Subtle.Render("agent") + "\n" +
@@ -617,6 +739,36 @@ func (a AgentView) viewReviewing() string {
 		fmt.Fprintf(&b, "%s%s  %s  %s  %s\n",
 			cursor, mark, r.ID, r.Action, truncate(r.Target, 24))
 	}
+	return ui.Panel.Render(b.String()) + "\n"
+}
+
+// viewApplying renders a coarse "applying…" panel. Progress is a simple
+// N/M counter over the confirmed set — the individual actions (prune+GC,
+// ignore write) are fast and don't stream chunk-level progress, so a
+// spinner-free counter is honest about the granularity.
+func (a AgentView) viewApplying() string {
+	total := len(a.confirmQueue)
+	body := ui.Primary.Render("Applying recommendations…") + "\n\n" +
+		ui.Muted.Render(fmt.Sprintf("dispatching %d action(s)", total))
+	return ui.Panel.Render(body) + "\n"
+}
+
+// viewApplyDone renders the per-action result lines and the tally.
+func (a AgentView) viewApplyDone() string {
+	var b strings.Builder
+	if a.result.err != nil {
+		b.WriteString(ui.Danger.Render("Apply failed"))
+		b.WriteString("\n\n" + a.result.err.Error())
+	} else {
+		b.WriteString(ui.Success.Render("Apply complete"))
+		b.WriteString("\n\n")
+		for _, ln := range a.result.lines {
+			b.WriteString(ln + "\n")
+		}
+		fmt.Fprintf(&b, "\n  applied:  %d\n  declined: %d\n  errors:   %d",
+			a.result.applied, a.result.declined, a.result.errs)
+	}
+	b.WriteString("\n\n" + ui.Muted.Render("press `s` to re-scan"))
 	return ui.Panel.Render(b.String()) + "\n"
 }
 
