@@ -98,6 +98,10 @@ func TestUI_PropagatesRunError(t *testing.T) {
 func TestUI_PassesProviderToApp(t *testing.T) {
 	chDir(t, t.TempDir())
 	writeBackupConfigFile(t, ".")
+	// A non-interactive passphrase source so launch routing lands on the
+	// dashboard (not the unlock gate); otherwise the agent-tab assertion
+	// below would render the unlock view and vacuously pass.
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
 	deps, captured := uiFixture(t, "hunter2")
 	deps.Provider = &llm.FakeProvider{}
 	cmd := NewUI(deps)
