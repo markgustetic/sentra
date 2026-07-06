@@ -1,0 +1,61 @@
+package setup
+
+import (
+	"context"
+	"testing"
+
+	"github.com/markgustetic/sentra/internal/config"
+)
+
+// DefaultEffects must satisfy the Effects interface and wire the moved
+// Default* drivers. We only assert the wiring is complete (non-nil,
+// implements Effects) — the subprocess/AWS bodies are exercised by the
+// existing cli oracle and by AWS integration tests, not unit tests.
+func TestDefaultEffectsImplementsInterface(t *testing.T) {
+	eff := DefaultEffects()
+	if eff == nil {
+		t.Fatal("DefaultEffects returned nil")
+	}
+}
+
+// CheckAWSSDKIdentity must delegate to diag.CheckSDKIdentity. With no AWS
+// credentials configured in the test environment it must return a non-nil
+// error rather than panicking, proving the delegation is wired.
+func TestDefaultEffectsCheckIdentityDelegates(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+	t.Setenv("AWS_PROFILE", "")
+	t.Setenv("AWS_CONFIG_FILE", t.TempDir()+"/nonexistent-config")
+	t.Setenv("AWS_SHARED_CREDENTIALS_FILE", t.TempDir()+"/nonexistent-creds")
+	eff := DefaultEffects()
+	cfg := &config.Config{}
+	cfg.Repo.S3.Region = "us-east-1"
+	if err := eff.CheckAWSSDKIdentity(context.Background(), cfg); err == nil {
+		t.Fatal("CheckAWSSDKIdentity: got nil error with no credentials, want non-nil")
+	}
+}
+
+// DefaultAWSPrepare must reject a config with no region before touching AWS,
+// preserving the guard moved from internal/cli/setup_awss3.go:33-35.
+func TestDefaultAWSPrepareRequiresRegion(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Repo.S3.Bucket = "example-bucket"
+	if _, err := DefaultAWSPrepare(context.Background(), cfg, AWSPrepareOptions{}); err == nil {
+		t.Fatal("DefaultAWSPrepare: got nil error with empty region, want non-nil")
+	}
+}
+
+// NewStore must build a live blobstore.Store (no network at construction).
+func TestDefaultEffectsNewStore(t *testing.T) {
+	eff := DefaultEffects()
+	cfg := &config.Config{}
+	cfg.Repo.S3.Bucket = "example-bucket"
+	cfg.Repo.S3.Region = "us-east-1"
+	store, err := eff.NewStore(context.Background(), cfg)
+	if err != nil {
+		t.Fatalf("NewStore: %v", err)
+	}
+	if store == nil {
+		t.Fatal("NewStore returned a nil Store")
+	}
+}
