@@ -3,13 +3,11 @@ package cli
 import (
 	"bytes"
 	"context"
-	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
-	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -91,42 +89,40 @@ func TestRecoveryKit_WritesNonSecretMarkdown(t *testing.T) {
 	}
 }
 
-func TestMarshalRecoveryKitJSON(t *testing.T) {
-	kit := recoveryKit{
-		GeneratedAt:       time.Date(2026, 6, 24, 12, 0, 0, 0, time.UTC),
-		ConfigPath:        "sentra.yaml",
-		RepoID:            "repo-123",
-		RepoCreatedAt:     time.Date(2026, 6, 1, 8, 30, 0, 0, time.UTC),
-		Bucket:            "sentra-prod",
-		Prefix:            "backups/home",
-		Region:            "us-east-1",
-		SnapshotCount:     1,
-		LatestSnapshotID:  "20260624T120000Z-abcdef",
-		LatestSnapshotTag: "latest",
-		Commands: []string{
-			"sentra check --config sentra.yaml",
-			"sentra restore 20260624T120000Z-abcdef <dest-dir> --config sentra.yaml --verify",
-		},
+func TestRecoveryKit_JSONThroughCommand(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	if err := os.WriteFile(filepath.Join(dir, "sentra.yaml"), []byte(`repo:
+  s3:
+    bucket: sentra-prod
+    prefix: backups/home
+    region: us-east-1
+`), 0o600); err != nil {
+		t.Fatalf("write config: %v", err)
 	}
 
-	body, err := marshalRecoveryKitJSON(kit)
-	if err != nil {
-		t.Fatalf("marshalRecoveryKitJSON: %v", err)
+	deps, repoID, snapID, out := recoveryKitFixture(t, "hunter2")
+	cmd := NewRecoveryKit(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
 	}
+
+	body := out.Bytes()
 	if !bytes.HasSuffix(body, []byte("\n")) {
 		t.Fatalf("JSON should end with newline, got %q", body)
 	}
-	var decoded recoveryKit
-	if err := json.Unmarshal(body, &decoded); err != nil {
-		t.Fatalf("unmarshal: %v\n%s", err, body)
+	got := string(body)
+	for _, want := range []string{repoID, snapID, "sentra-prod"} {
+		if !strings.Contains(got, want) {
+			t.Fatalf("json missing %q:\n%s", want, got)
+		}
 	}
-	if decoded.RepoID != kit.RepoID {
-		t.Fatalf("RepoID = %q, want %q", decoded.RepoID, kit.RepoID)
-	}
-	if len(decoded.Commands) != len(kit.Commands) || decoded.Commands[1] != kit.Commands[1] {
-		t.Fatalf("Commands = %+v, want %+v", decoded.Commands, kit.Commands)
-	}
-	if strings.Contains(string(body), "hunter2") || strings.Contains(string(body), "wrapped_repo_key") {
-		t.Fatalf("recovery kit JSON leaked secret-like material:\n%s", body)
+	for _, forbidden := range []string{"hunter2", "wrapped_repo_key", "\"salt\"", "\"mac\""} {
+		if strings.Contains(got, forbidden) {
+			t.Fatalf("json leaked %q:\n%s", forbidden, got)
+		}
 	}
 }
