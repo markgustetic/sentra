@@ -170,10 +170,14 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with the 5 read-only views plus the
-// Phase 2a operation flows (backup, restore, prune) and the Phase 2c
-// Policies flow registered. Deps semantics (nil-tolerant, cancellable
-// ctx) are unchanged from the previous implementation.
+// NewApp constructs the shell with all 14 Phase 2c views registered:
+// the original read-only views (dashboard, snapshots, diff), the
+// async-check views (check, doctor), the management views
+// (recovery-kit, policies, schedule), the agent view (which now also
+// hosts agent-apply in place, so it gets no separate id), and the
+// direct data operations (backup, restore, prune, sync, password).
+// Deps semantics (nil-tolerant, cancellable ctx) are unchanged from
+// the previous implementation.
 func NewApp(deps Deps) App {
 	parent := deps.Ctx
 	if parent == nil {
@@ -187,20 +191,26 @@ func NewApp(deps Deps) App {
 		{id: "dashboard", model: NewDashboard(deps)},
 		{id: "snapshots", model: NewSnapshots(deps)},
 		{id: "diff", model: NewDiff(deps)},
-		{id: "agent", model: NewAgentView(deps)},
 		{id: "check", model: NewCheckView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
+		{id: "recovery-kit", model: NewRecoveryKitView(deps)},
+		{id: "policies", model: NewPoliciesView(deps)},
+		{id: "schedule", model: NewScheduleView(deps)},
+		{id: "agent", model: NewAgentView(deps)},
 		{id: "backup", model: NewBackupView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
+		{id: "sync", model: NewSyncView(deps)},
 		{id: "password", model: NewPasswordView(deps)},
-		{id: "policies", model: NewPoliciesView(deps)},
 	}
-	// The mutating flows form their own "Operations" category in
-	// the rail and palette; the read-only views default to "Views".
+	// The direct data operations form the "Operations" category in the
+	// rail and palette; every read-only/management view defaults to
+	// "Views". Policies carries destructive add/remove/run actions and
+	// was registered under Operations back in Part 2 — kept here for
+	// consistency with that earlier decision.
 	categories := map[string]string{
 		"backup": "Operations", "restore": "Operations", "prune": "Operations",
-		"password": "Operations", "policies": "Operations",
+		"sync": "Operations", "password": "Operations", "policies": "Operations",
 	}
 	for _, v := range views {
 		title := v.id

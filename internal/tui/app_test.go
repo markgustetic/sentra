@@ -38,8 +38,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 11 {
-		t.Fatalf("views = %d, want 11 (5 + check + doctor + 3 operations + policies + password)", got)
+	if got := len(app.views); got != 14 {
+		t.Fatalf("views = %d, want 14 (3 read-only + check + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password)", got)
 	}
 }
 
@@ -764,8 +764,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 11 {
-		t.Fatalf("views = %d, want 11 (check swapped in for operations, plus policies, doctor, password)", got)
+	if got := len(app.views); got != 14 {
+		t.Fatalf("views = %d, want 14 (Phase 2c end-state: all 14 views registered)", got)
 	}
 }
 
@@ -833,5 +833,40 @@ func TestApp_RegistersPoliciesView(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("App must register the policies view")
+	}
+}
+
+// TestApp_Phase2cViewsRegistered: after Phase 2c, all six new standalone
+// views are present (doctor, recovery-kit, policies, schedule, sync,
+// password) alongside the eight pre-existing ones, for a total of 14.
+// agent-apply is NOT a new view — it extends the existing "agent" view in
+// place — so it adds no id.
+func TestApp_Phase2cViewsRegistered(t *testing.T) {
+	app := newTestApp(t)
+
+	want := []string{
+		"dashboard", "snapshots", "diff", "check", "doctor", "recovery-kit",
+		"policies", "schedule", "agent", "backup", "restore", "prune",
+		"sync", "password",
+	}
+	got := make(map[string]bool, len(app.views))
+	for _, v := range app.views {
+		got[v.id] = true
+	}
+	for _, id := range want {
+		if !got[id] {
+			t.Errorf("view %q not registered", id)
+		}
+	}
+	if len(app.views) != len(want) {
+		t.Fatalf("views = %d, want %d", len(app.views), len(want))
+	}
+
+	// The direct data operations carry the "Operations" palette category.
+	out := app.View()
+	for _, label := range []string{"Sync", "Password", "Doctor", "Policies"} {
+		if !strings.Contains(out, label) {
+			t.Errorf("sidebar/palette should list %q:\n%s", label, out)
+		}
 	}
 }
