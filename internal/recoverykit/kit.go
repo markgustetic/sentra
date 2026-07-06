@@ -136,6 +136,6 @@ func RenderMarkdown(k Kit) string {
 	}
 	fmt.Fprintln(&b, "```")
 	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "This file intentionally excludes passphrases, wrapped keys, salts, and authentication tags.")
+	fmt.Fprintln(&b, "This file intentionally excludes passphrases, wrapped keys, salts, and MAC material.")
 	return b.String()
 }

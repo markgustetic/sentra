@@ -3,6 +3,8 @@ package recoverykit
 import (
 	"bytes"
 	"context"
+	"encoding/base64"
+	"encoding/hex"
 	"encoding/json"
 	"os"
 	"path/filepath"
@@ -113,13 +115,69 @@ func TestRenderMarkdown_NonSecretAndEmptyDashInlined(t *testing.T) {
 	if !strings.Contains(md, "- Prefix: -") {
 		t.Fatalf("empty prefix must render as '-':\n%s", md)
 	}
-	if !strings.Contains(md, "intentionally excludes passphrases") {
-		t.Fatalf("markdown missing the no-secret disclaimer:\n%s", md)
+	// The disclaimer must match the pre-extraction CLI output verbatim (and
+	// the package doc comment): naming the excluded categories, including
+	// "MAC material", is documentation — not a secret leak.
+	if !strings.Contains(md, "intentionally excludes passphrases, wrapped keys, salts, and MAC material.") {
+		t.Fatalf("markdown missing the exact no-secret disclaimer:\n%s", md)
 	}
-	for _, forbidden := range []string{"hunter2", "WrappedRepoKey", "wrapped_repo_key", "MAC", "Salt"} {
-		if strings.Contains(md, forbidden) {
-			t.Fatalf("markdown leaked %q:\n%s", forbidden, md)
+}
+
+// TestRenderMarkdown_LeaksNoSecretValues seeds a REAL repo (so Salt,
+// WrappedRepoKey, and MAC hold actual random secret bytes) and asserts the
+// rendered kit never contains those exact byte values in any common
+// encoding. This is the meaningful no-leak guarantee: it forbids the
+// secret VALUES, not the innocuous words "MAC"/"Salt" that legitimately
+// appear in the exclusion disclaimer.
+func TestRenderMarkdown_LeaksNoSecretValues(t *testing.T) {
+	store := blobstore.NewMemory()
+	const pass = "hunter2-super-secret"
+	r, err := repo.Init(context.Background(), store, []byte(pass))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	t.Cleanup(func() { _ = r.Close() })
+
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{Tag: "latest"}); err != nil {
+		t.Fatalf("snapshot: %v", err)
+	}
+
+	cfg := &config.Config{}
+	cfg.Repo.S3.Bucket = "sentra-prod"
+	kit, err := Build(context.Background(), r, cfg, "sentra.yaml")
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	md := RenderMarkdown(kit)
+
+	// The real secret material carried in the repo config.
+	rc := r.Config()
+	secrets := map[string][]byte{
+		"salt":             rc.Salt,
+		"wrapped_repo_key": rc.WrappedRepoKey,
+		"mac":              rc.MAC,
+	}
+	for name, raw := range secrets {
+		if len(raw) == 0 {
+			t.Fatalf("expected %s to be populated by repo.Init so the leak check is meaningful", name)
 		}
+		for enc, val := range map[string]string{
+			"hex":       hex.EncodeToString(raw),
+			"base64":    base64.StdEncoding.EncodeToString(raw),
+			"base64url": base64.RawURLEncoding.EncodeToString(raw),
+		} {
+			if strings.Contains(md, val) {
+				t.Fatalf("markdown leaked %s value (%s encoding):\n%s", name, enc, md)
+			}
+		}
+	}
+	// The passphrase itself must never appear either.
+	if strings.Contains(md, pass) {
+		t.Fatalf("markdown leaked the passphrase:\n%s", md)
 	}
 }
 
