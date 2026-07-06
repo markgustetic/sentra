@@ -5,11 +5,13 @@ import (
 	"context"
 	"errors"
 	"io"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -140,5 +142,53 @@ func TestRoot_BareSentraLaunchesUI(t *testing.T) {
 	}
 	if !uiCalled {
 		t.Errorf("bare sentra invocation did not launch ui")
+	}
+}
+
+// TestRunUI_ThreadsNewDepsFields proves runUI populates the four Unit-1
+// Deps fields from UIDeps: the store factory, the action registry, the
+// keyring saver, and an absolute ConfigPath. No secret is threaded — the
+// func values are call-time hooks and ConfigPath is plain data.
+func TestRunUI_ThreadsNewDepsFields(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".")
+
+	deps, captured := uiFixture(t, "hunter2")
+	var saveKeyringCalled bool
+	deps.Actions = action.NewDefaultRegistry()
+	deps.SavePassphrase = func(_ *config.Config, _ []byte) error {
+		saveKeyringCalled = true
+		return nil
+	}
+
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	// Relative --config so we can assert runUI absolutizes it.
+	cmd.SetArgs([]string{"--config", "sentra.yaml"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	d := captured.Deps()
+	wantAbs, err := filepath.Abs("sentra.yaml")
+	if err != nil {
+		t.Fatalf("filepath.Abs: %v", err)
+	}
+	if d.ConfigPath != wantAbs {
+		t.Errorf("Deps.ConfigPath = %q, want absolutized %q", d.ConfigPath, wantAbs)
+	}
+	if d.NewStore == nil {
+		t.Error("Deps.NewStore not threaded")
+	}
+	if d.Actions == nil {
+		t.Error("Deps.Actions not threaded")
+	}
+	if d.SaveKeyringPassphrase == nil {
+		t.Fatal("Deps.SaveKeyringPassphrase not threaded")
+	}
+	if err := d.SaveKeyringPassphrase(nil, nil); err != nil || !saveKeyringCalled {
+		t.Error("Deps.SaveKeyringPassphrase is not the func passed via UIDeps")
 	}
 }

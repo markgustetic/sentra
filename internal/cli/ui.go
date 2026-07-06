@@ -4,11 +4,13 @@ import (
 	"errors"
 	"fmt"
 	"os"
+	"path/filepath"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
@@ -35,6 +37,17 @@ type UIDeps struct {
 	// closure that constructs and runs a tea.Program; tests inject
 	// a stub that captures the constructed App and returns nil.
 	Run func(app tui.App) error
+
+	// Actions is the agent action registry the TUI's agent-apply flow
+	// executes confirmed recommendations through. Same registry the
+	// `agent` command builds. May be nil (agent-apply then reports no
+	// registry configured).
+	Actions *action.Registry
+
+	// SavePassphrase re-saves a rotated passphrase to the OS keyring
+	// after the TUI's password flow changes it. Same hook the `passwd`
+	// command uses. May be nil when no keyring is wired.
+	SavePassphrase func(cfg *config.Config, passphrase []byte) error
 }
 
 // NewUI returns the cobra command for `sentra ui`. The command
@@ -91,6 +104,15 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		provider = deps.ProviderForConfig(cfg)
 	}
 
+	// Resolve the config path to an absolute location so config-writing
+	// flows (setup, policy, schedule) write back to the file the user
+	// actually launched against, regardless of the process cwd. Abs only
+	// fails when the cwd is unreadable; fall back to the raw path then.
+	absCfgPath := cfgPath
+	if p, err := filepath.Abs(cfgPath); err == nil {
+		absCfgPath = p
+	}
+
 	app := tui.NewApp(tui.Deps{
 		Repo:     r,
 		Provider: provider,
@@ -102,6 +124,13 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		//      tree on a 'q' quit, terminating in-flight blobstore
 		//      calls instead of letting them drain to per-call timeouts.
 		Ctx: cmd.Context(),
+
+		// Unit-1 plumbing: call-time hooks + plain data the ported
+		// operation flows consume. None hold resolved secrets.
+		ConfigPath:            absCfgPath,
+		NewStore:              deps.RepoDeps.NewStore,
+		Actions:               deps.Actions,
+		SaveKeyringPassphrase: deps.SavePassphrase,
 	})
 
 	if deps.Run == nil {

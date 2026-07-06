@@ -226,6 +226,12 @@ func NewApp(deps Deps) App {
 	}
 }
 
+// Deps returns the App's dependency set. Exported for cross-package
+// wiring tests (internal/cli) that need to assert runUI threaded the
+// right values in; production code inside the tui package reads the
+// unexported field directly.
+func (m App) Deps() Deps { return m.deps }
+
 // appCtx returns the App-scoped context operations derive from.
 func (m App) appCtx() context.Context {
 	if m.ctx != nil {

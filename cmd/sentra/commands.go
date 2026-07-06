@@ -129,6 +129,8 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 			Stdout:               os.Stdout,
 		},
 		ProviderForConfig: newAgentProvider,
+		Actions:           action.NewDefaultRegistry(),
+		SavePassphrase:    saveRepoPassphraseToKeyring,
 		Run:               cli.DefaultUIRunner,
 	}
 	root.AddCommand(cli.NewUI(uiDeps))
