@@ -106,6 +106,13 @@ type Deps struct {
 	// at call time. May be nil when the wizard view isn't reachable (a
 	// repo that's already configured and unlocked never needs it).
 	SetupEffects setup.Effects
+
+	// InitialView names the registered command the App should land on at
+	// launch, instead of the dashboard. runUI sets it to "setup" for a
+	// first-run (no sentra.yaml) and "unlock" for a configured-but-locked
+	// repo. Empty (or an unknown id) starts on the dashboard. Plain routing
+	// data, never a secret.
+	InitialView string
 }
 
 // viewEntry pairs a registered command ID with its model. Order is
@@ -234,14 +241,37 @@ func NewApp(deps Deps) App {
 	}
 
 	keys := newGlobalKeymap()
+
+	// InitialView lets runUI land the App on a non-dashboard view (the
+	// first-run wizard or the unlock gate). An empty or unknown id leaves
+	// active at 0, so the dashboard stays the default landing screen.
+	active := 0
+	if deps.InitialView != "" {
+		for i, v := range views {
+			if v.id == deps.InitialView {
+				active = i
+				break
+			}
+		}
+	}
+	// Landing on a non-dashboard view (wizard/unlock) focuses the content
+	// pane so keystrokes reach it immediately; the default dashboard landing
+	// keeps focus on the sidebar rail.
+	focus := focusSidebar
+	if active != 0 {
+		focus = focusContent
+	}
+	sidebar := NewSidebar(registry, sidebarWidth, minHeight)
+	sidebar.Select(views[active].id)
+
 	return App{
 		deps:     deps,
 		registry: registry,
 		keys:     keys,
 		views:    views,
-		active:   0,
-		focus:    focusSidebar,
-		sidebar:  NewSidebar(registry, sidebarWidth, minHeight),
+		active:   active,
+		focus:    focus,
+		sidebar:  sidebar,
 		palette:  NewPalette(registry, minWidth, minHeight),
 		status:   NewStatusBar(keys, minWidth),
 		ctx:      ctx,
@@ -281,6 +311,16 @@ func (m App) Init() tea.Cmd {
 	return tea.Batch(cmds...)
 }
 
+// repoReadyMsg is emitted by the unlock flow once it has opened the repository
+// with a verified passphrase. The App rebuilds its views against the now-live
+// repo (they were constructed with a nil Repo on the launch path) and switches
+// to the dashboard, so the configured-but-locked landing screen is replaced by
+// the real dashboard exactly once, at unlock time.
+type repoReadyMsg struct {
+	repo   *repo.Repo
+	config *config.Config
+}
+
 // Update handles shell-owned messages (size, navigation, modal
 // results) here and splits the rest by kind: key messages go through
 // routeKey's focus rules so exactly one region sees each keystroke,
@@ -299,6 +339,26 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case repoReadyMsg:
+		// Rebuild the whole shell against the unlocked repo. Reusing NewApp
+		// keeps view registration in one place (it changes as views are
+		// added) rather than duplicating the slice here. We carry over the
+		// resolved config, drop the InitialView so the rebuilt App lands on
+		// the dashboard, and replay the last WindowSizeMsg so layout is
+		// identical to a normal launch.
+		nd := m.deps
+		nd.Repo = msg.repo
+		if msg.config != nil {
+			nd.Config = msg.config
+		}
+		nd.InitialView = ""
+		rebuilt := NewApp(nd)
+		if m.width > 0 {
+			sized, _ := rebuilt.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
+			rebuilt = sized.(App)
+		}
+		return rebuilt, rebuilt.Init()
+
 	case tea.WindowSizeMsg:
 		return m.resize(msg), nil
 

@@ -28,6 +28,56 @@ func TestApp_DepsCarrySetupEffects(t *testing.T) {
 	}
 }
 
+// TestApp_InitialViewSelectsStartingView: when Deps.InitialView names a
+// registered view, NewApp starts focused on it instead of the dashboard, so
+// the first-run wizard / unlock gate can be the landing screen.
+func TestApp_InitialViewSelectsStartingView(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", InitialView: "restore"})
+	if got := app.views[app.active].id; got != "restore" {
+		t.Fatalf("active view = %q, want restore", got)
+	}
+}
+
+// TestApp_InitialViewUnknownFallsBackToDashboard: an InitialView that names no
+// registered command must not crash or leave active out of range — it falls
+// back to the first view.
+func TestApp_InitialViewUnknownFallsBackToDashboard(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", InitialView: "does-not-exist"})
+	if app.active != 0 {
+		t.Fatalf("active = %d, want 0 (dashboard fallback)", app.active)
+	}
+}
+
+// TestApp_RepoReadyRebuildsViewsWithLiveRepoAndShowsDashboard: the unlock flow
+// hands the App an opened repo via repoReadyMsg; the App rebuilds its views
+// against it (so every view now sees a non-nil Repo) and switches to the
+// dashboard, dropping any first-run/unlock landing view.
+func TestApp_RepoReadyRebuildsViewsWithLiveRepoAndShowsDashboard(t *testing.T) {
+	r := newFlowRepo(t)
+	cfg := config.Defaults()
+	// Start as if on the unlock gate: no repo, unlock is the landing view.
+	app := NewApp(Deps{RepoName: "x", InitialView: "unlock"})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = sized.(App)
+
+	m, _ := app.Update(repoReadyMsg{repo: r, config: &cfg})
+	next := m.(App)
+	if next.deps.Repo != r {
+		t.Fatal("repoReadyMsg did not swap the live repo into Deps")
+	}
+	if got := next.views[next.active].id; got != "dashboard" {
+		t.Fatalf("active view after repoReady = %q, want dashboard", got)
+	}
+	// Every rebuilt view must see the live repo. Sample the snapshots view.
+	for _, v := range next.views {
+		if v.id == "snapshots" {
+			if sv, ok := v.model.(interface{ Deps() Deps }); ok && sv.Deps().Repo != r {
+				t.Fatal("rebuilt snapshots view did not receive the live repo")
+			}
+		}
+	}
+}
+
 // TestApp_DepsCarryConfig: flows need the resolved config (retention
 // policy, walker options). Deps must carry it nil-tolerantly.
 func TestApp_DepsCarryConfig(t *testing.T) {
