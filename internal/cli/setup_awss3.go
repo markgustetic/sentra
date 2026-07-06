@@ -4,64 +4,27 @@ import (
 	"context"
 	"fmt"
 
-	"github.com/aws/aws-sdk-go-v2/service/s3"
-	"github.com/aws/aws-sdk-go-v2/service/sts"
-
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/diag"
 )
 
-// AWSInspectReport summarizes read-only AWS bucket diagnostics.
-type AWSInspectReport struct {
-	BucketAccessible          bool
-	PublicAccessReadable      bool
-	PublicAccessBlocked       bool
-	DefaultEncryptionReadable bool
-	DefaultEncryptionEnabled  bool
-}
+// AWSInspectReport is an alias for diag.AWSReport, preserved so existing
+// DoctorDeps callers and tests keep compiling after the read-only AWS
+// diagnostics moved to internal/diag.
+type AWSInspectReport = diag.AWSReport
 
 // DefaultAWSCheckSDKIdentity verifies credentials through the AWS SDK
-// credential chain Sentra will use for S3.
+// credential chain. Thin wrapper over diag.CheckSDKIdentity so the
+// doctor's nil-fallback and setup's identity checker keep their names.
 func DefaultAWSCheckSDKIdentity(ctx context.Context, cfg *config.Config) error {
-	awsCfg, err := loadSetupAWSConfig(ctx, cfg)
-	if err != nil {
-		return err
-	}
-	client := sts.NewFromConfig(awsCfg)
-	if _, err := client.GetCallerIdentity(ctx, &sts.GetCallerIdentityInput{}); err != nil {
-		return fmt.Errorf("verify AWS identity: %w", err)
-	}
-	return nil
+	return diag.CheckSDKIdentity(ctx, cfg)
 }
 
-// DefaultAWSInspect performs read-only AWS checks for `sentra doctor`.
+// DefaultAWSInspect performs the read-only AWS checks for `sentra doctor`.
+// Thin wrapper over diag.Inspect.
 func DefaultAWSInspect(ctx context.Context, cfg *config.Config) (AWSInspectReport, error) {
-	awsCfg, err := loadSetupAWSConfig(ctx, cfg)
-	if err != nil {
-		return AWSInspectReport{}, err
-	}
-	client := s3.NewFromConfig(awsCfg)
-	bucket := cfg.Repo.S3.Bucket
-	report := AWSInspectReport{}
-	if err := headBucket(ctx, client, bucket); err != nil {
-		return AWSInspectReport{}, err
-	}
-	report.BucketAccessible = true
-
-	readPublic, blocked, err := getBucketPublicAccessBlock(ctx, client, bucket)
-	if err != nil {
-		return AWSInspectReport{}, err
-	}
-	report.PublicAccessReadable = readPublic
-	report.PublicAccessBlocked = blocked
-
-	readEncryption, encrypted, err := getBucketDefaultEncryption(ctx, client, bucket)
-	if err != nil {
-		return AWSInspectReport{}, err
-	}
-	report.DefaultEncryptionReadable = readEncryption
-	report.DefaultEncryptionEnabled = encrypted
-	return report, nil
+	return diag.Inspect(ctx, cfg)
 }
 
 // DefaultAWSPrepare performs the deterministic AWS S3 setup work chosen

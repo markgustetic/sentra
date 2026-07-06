@@ -11,8 +11,21 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/diag"
 	"github.com/markgustetic/sentra/internal/repo"
 )
+
+// acceptsDiagAWSReport and acceptsAWSInspectReport only both compile if
+// AWSInspectReport is a type alias for diag.AWSReport (not merely an
+// identical struct) — a defined type would fail to satisfy the other's
+// parameter without an explicit conversion.
+func acceptsDiagAWSReport(diag.AWSReport)      {}
+func acceptsAWSInspectReport(AWSInspectReport) {}
+
+func TestAWSInspectReportIsDiagAlias(t *testing.T) {
+	acceptsDiagAWSReport(AWSInspectReport{})
+	acceptsAWSInspectReport(diag.AWSReport{})
+}
 
 func TestDoctor_AWSAndRepoHealthy(t *testing.T) {
 	dir := t.TempDir()
