@@ -3,14 +3,13 @@ package cli
 import (
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
-	"runtime"
 
 	"github.com/spf13/cobra"
 
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
+	"github.com/markgustetic/sentra/internal/scheduler"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
@@ -88,25 +87,24 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 	if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
 		return fmt.Errorf("policy %q has manual schedule; use `sentra policy add --schedule ... --replace` before installing", name)
 	}
-	paths, err := schedulerPaths(deps, name)
+	home, err := scheduleHome(deps)
 	if err != nil {
 		return err
 	}
-	exe, err := scheduleExecutable(deps)
+	paths, err := scheduler.PathsFor(scheduleOS(deps), home, name)
 	if err != nil {
 		return err
 	}
-	files, err := renderScheduleFiles(paths, exe, absConfig, name, p.Schedule)
+	exe, err := scheduler.Executable(scheduleExe(deps))
 	if err != nil {
 		return err
 	}
-	for path, body := range files {
-		if err := os.MkdirAll(filepath.Dir(path), 0o755); err != nil {
-			return fmt.Errorf("create scheduler dir %s: %w", filepath.Dir(path), err)
-		}
-		if err := os.WriteFile(path, []byte(body), 0o600); err != nil {
-			return fmt.Errorf("write scheduler file %s: %w", path, err)
-		}
+	files, err := scheduler.Render(paths, exe, absConfig, name, p.Schedule)
+	if err != nil {
+		return err
+	}
+	if err := scheduler.Install(files); err != nil {
+		return err
 	}
 
 	out := scheduleStdout(cmd, deps)
@@ -123,19 +121,17 @@ func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name stri
 	if _, _, err := loadScheduledPolicy(cfgPath, name); err != nil {
 		return err
 	}
-	paths, err := schedulerPaths(deps, name)
+	home, err := scheduleHome(deps)
 	if err != nil {
 		return err
 	}
-	installed := true
-	for _, path := range paths.Files {
-		if _, err := os.Stat(path); err != nil {
-			if os.IsNotExist(err) {
-				installed = false
-				continue
-			}
-			return fmt.Errorf("stat scheduler file %s: %w", path, err)
-		}
+	paths, err := scheduler.PathsFor(scheduleOS(deps), home, name)
+	if err != nil {
+		return err
+	}
+	installed, err := scheduler.Installed(paths)
+	if err != nil {
+		return err
 	}
 	out := scheduleStdout(cmd, deps)
 	if installed {
@@ -154,14 +150,16 @@ func runScheduleUninstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name s
 	if _, _, err := loadScheduledPolicy(cfgPath, name); err != nil {
 		return err
 	}
-	paths, err := schedulerPaths(deps, name)
+	home, err := scheduleHome(deps)
 	if err != nil {
 		return err
 	}
-	for _, path := range paths.Files {
-		if err := os.Remove(path); err != nil && !os.IsNotExist(err) {
-			return fmt.Errorf("remove scheduler file %s: %w", path, err)
-		}
+	paths, err := scheduler.PathsFor(scheduleOS(deps), home, name)
+	if err != nil {
+		return err
+	}
+	if err := scheduler.Uninstall(paths); err != nil {
+		return err
 	}
 	out := scheduleStdout(cmd, deps)
 	fmt.Fprintln(out, ui.Success.Render("Schedule removed"))
@@ -188,66 +186,35 @@ func loadScheduledPolicy(cfgPath, name string) (config.PolicyConfig, string, err
 	return p, filepath.Clean(absConfig), nil
 }
 
-type schedulePaths struct {
-	OS    string
-	Files []string
-	Home  string
+// scheduleOS returns the target GOOS, honoring the deps override used by
+// tests; "" lets scheduler.PathsFor fall back to runtime.GOOS.
+func scheduleOS(deps ScheduleDeps) string { return deps.OS }
+
+// scheduleHome resolves the home dir via the deps hook (tests inject a temp
+// dir) or the OS default. It resolves here rather than passing "" to
+// scheduler.PathsFor so the deps.HomeDir override is honored.
+func scheduleHome(deps ScheduleDeps) (string, error) {
+	if deps.HomeDir == nil {
+		return "", nil // let scheduler.PathsFor default to os.UserHomeDir
+	}
+	home, err := deps.HomeDir()
+	if err != nil {
+		return "", fmt.Errorf("locate home dir: %w", err)
+	}
+	return home, nil
 }
 
-func schedulerPaths(deps ScheduleDeps, name string) (schedulePaths, error) {
-	if err := policycfg.ValidateName(name); err != nil {
-		return schedulePaths{}, err
+// scheduleExe returns the executable path from the deps hook (tests inject a
+// fixed path); "" lets scheduler.Executable fall back to os.Executable.
+func scheduleExe(deps ScheduleDeps) string {
+	if deps.Executable == nil {
+		return ""
 	}
-	goos := deps.OS
-	if goos == "" {
-		goos = runtime.GOOS
-	}
-	homeFn := deps.HomeDir
-	if homeFn == nil {
-		homeFn = os.UserHomeDir
-	}
-	home, err := homeFn()
+	exe, err := deps.Executable()
 	if err != nil {
-		return schedulePaths{}, fmt.Errorf("locate home dir: %w", err)
+		return ""
 	}
-	switch goos {
-	case "darwin":
-		return schedulePaths{
-			OS:    goos,
-			Home:  home,
-			Files: []string{filepath.Join(home, "Library", "LaunchAgents", "com.sentra."+name+".plist")},
-		}, nil
-	case "linux":
-		dir := filepath.Join(home, ".config", "systemd", "user")
-		return schedulePaths{
-			OS:   goos,
-			Home: home,
-			Files: []string{
-				filepath.Join(dir, "sentra-"+name+".service"),
-				filepath.Join(dir, "sentra-"+name+".timer"),
-			},
-		}, nil
-	default:
-		return schedulePaths{}, fmt.Errorf("unsupported scheduler OS %q; supported: darwin, linux", goos)
-	}
-}
-
-func scheduleExecutable(deps ScheduleDeps) (string, error) {
-	exeFn := deps.Executable
-	if exeFn == nil {
-		exeFn = os.Executable
-	}
-	exe, err := exeFn()
-	if err != nil {
-		return "", fmt.Errorf("locate sentra executable: %w", err)
-	}
-	if !filepath.IsAbs(exe) {
-		exe, err = filepath.Abs(exe)
-		if err != nil {
-			return "", fmt.Errorf("resolve sentra executable: %w", err)
-		}
-	}
-	return filepath.Clean(exe), nil
+	return exe
 }
 
 func scheduleStdout(cmd *cobra.Command, deps ScheduleDeps) io.Writer {
