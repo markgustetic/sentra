@@ -383,3 +383,115 @@ func TestAgentApply_EndToEndThroughApp(t *testing.T) {
 		t.Errorf("agent view should show tally:\n%s", av.View())
 	}
 }
+
+// pullStartOp extracts the startOpMsg from the batch a startApply-driven
+// command produces, failing the test if none is present.
+func pullStartOp(t *testing.T, cmd tea.Cmd) startOpMsg {
+	t.Helper()
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok {
+			return s
+		}
+	}
+	t.Fatal("no startOpMsg produced")
+	return startOpMsg{}
+}
+
+// TestAgentApply_WipeRailRefusesUnconfirmedEmptyingPrune is the safety
+// regression for the apply-time wipe rail. A single-snapshot repo with a
+// prune of that snapshot would empty the repo. When the typed "wipe" gate
+// was NOT satisfied (wipeConfirmed == false), startApply's run closure
+// MUST refuse the prune — the last snapshot has to survive. Before the
+// fix the rail was dead code (wipeAllowed hardcoded true) and the prune
+// went through, deleting the last snapshot.
+func TestAgentApply_WipeRailRefusesUnconfirmedEmptyingPrune(t *testing.T) {
+	r := newFlowRepo(t)
+	snapID, _ := seedSnapshotReal(t, r) // exactly ONE snapshot
+	recs := []agent.Recommendation{
+		{ID: "rec-prune", Action: "prune_snapshot", Target: snapID, Severity: "warn", Rationale: "stale"},
+	}
+	deps := Deps{Repo: r, Actions: action.NewDefaultRegistry()}
+	m0, _ := NewAgentViewWithRunner(deps, nil).Update(agentDoneMsg{recs: recs})
+	v := m0.(AgentView)
+
+	// Set up the confirmed set as if review + per-rec confirm passed, but
+	// WITHOUT satisfying the typed wipe gate.
+	v.confirmQueue = []int{0}
+	v.wipeConfirmed = false
+
+	m, cmd := v.startApply()
+	v = m.(AgentView)
+	start := pullStartOp(t, cmd)
+	done := start.run(context.Background())
+	dm, ok := done.(agentApplyDoneMsg)
+	if !ok {
+		t.Fatalf("run returned %T, want agentApplyDoneMsg", done)
+	}
+	// The prune must have been refused, not applied.
+	if dm.applied != 0 {
+		t.Errorf("applied = %d, want 0 (prune refused)", dm.applied)
+	}
+	if dm.errs != 1 {
+		t.Errorf("errs = %d, want 1 (prune refused)", dm.errs)
+	}
+	joined := strings.Join(dm.lines, "\n")
+	if !strings.Contains(joined, "refused") {
+		t.Errorf("expected a refusal line in the tally, got:\n%s", joined)
+	}
+	// Critical: the last snapshot must survive.
+	after, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	var survived bool
+	for _, s := range after {
+		if s.ID == snapID {
+			survived = true
+		}
+	}
+	if !survived {
+		t.Fatalf("last snapshot %s was deleted despite the unconfirmed wipe rail", snapID)
+	}
+}
+
+// TestAgentApply_WipeRailAllowsConfirmedEmptyingPrune is the companion:
+// once the typed "wipe" gate is satisfied (wipeConfirmed == true), the
+// repo-emptying prune is allowed to proceed and the snapshot is deleted.
+func TestAgentApply_WipeRailAllowsConfirmedEmptyingPrune(t *testing.T) {
+	r := newFlowRepo(t)
+	snapID, _ := seedSnapshotReal(t, r) // exactly ONE snapshot
+	recs := []agent.Recommendation{
+		{ID: "rec-prune", Action: "prune_snapshot", Target: snapID, Severity: "warn", Rationale: "stale"},
+	}
+	deps := Deps{Repo: r, Actions: action.NewDefaultRegistry()}
+	m0, _ := NewAgentViewWithRunner(deps, nil).Update(agentDoneMsg{recs: recs})
+	v := m0.(AgentView)
+
+	v.confirmQueue = []int{0}
+	v.wipeConfirmed = true // user typed "wipe"
+
+	m, cmd := v.startApply()
+	v = m.(AgentView)
+	start := pullStartOp(t, cmd)
+	done := start.run(context.Background())
+	dm, ok := done.(agentApplyDoneMsg)
+	if !ok {
+		t.Fatalf("run returned %T, want agentApplyDoneMsg", done)
+	}
+	if dm.applied != 1 {
+		t.Errorf("applied = %d, want 1 (prune proceeds when wipe confirmed)", dm.applied)
+	}
+	if dm.errs != 0 {
+		t.Errorf("errs = %d, want 0", dm.errs)
+	}
+	// The snapshot is gone.
+	after, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range after {
+		if s.ID == snapID {
+			t.Fatalf("snapshot %s still present after confirmed wipe", snapID)
+		}
+	}
+}

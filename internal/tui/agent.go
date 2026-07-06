@@ -128,6 +128,14 @@ type AgentView struct {
 	// satisfied.
 	wipePending bool
 
+	// wipeConfirmed records that the operator actually typed "wipe" in the
+	// destructive-repo gate. Unlike wipePending (which is cleared the
+	// instant the modal is satisfied, so it can't survive to apply time),
+	// this stays true through startApply and is what the apply-time wipe
+	// rail reads: a repo-emptying prune is refused unless this is set. It
+	// is the durable signal that authorizes emptying the repo.
+	wipeConfirmed bool
+
 	// confirmCursor walks confirmQueue during agentConfirming: each
 	// per-rec confirmedMsg advances it; when it reaches len(confirmQueue)
 	// the last confirm has cleared and the flow moves to applying.
@@ -289,6 +297,10 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The typed wipe gate clears first, then the per-rec walk begins.
 		if msg.id == agentWipeConfirmID && a.wipePending {
 			a.wipePending = false
+			// Durable authorization: the operator typed "wipe". This
+			// survives to apply time where the wipe rail reads it, unlike
+			// wipePending which we just cleared.
+			a.wipeConfirmed = true
 			return a, a.pushNextConfirm()
 		}
 		if msg.id == agentConfirmID && len(a.confirmQueue) > 0 {
@@ -330,6 +342,7 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.confirmQueue = nil
 			a.confirmCursor = 0
 			a.wipePending = false
+			a.wipeConfirmed = false
 			return a, nil
 		}
 
@@ -460,6 +473,9 @@ func (a AgentView) beginConfirm() (tea.Model, tea.Cmd) {
 		}
 	}
 	a.wipePending = false
+	// Fresh confirmation each pass: a prior aborted attempt must not leave
+	// wipeConfirmed set and silently authorize this batch's emptying prune.
+	a.wipeConfirmed = false
 	if prunes > 0 && a.deps.Repo != nil {
 		ctx, cancel := context.WithTimeout(ctxOrBackground(a.deps.Ctx), hydrateTimeout)
 		snaps, err := a.deps.Repo.ListSnapshots(ctx)
@@ -528,9 +544,17 @@ func (a AgentView) startApply() (tea.Model, tea.Cmd) {
 	}
 	registry := a.deps.Actions
 	r := a.deps.Repo
-	// The confirm-time typed gate already cleared the wipe: reaching apply
-	// means either no prune empties the repo or the operator typed "wipe".
-	wipeAllowed := true
+	// wipeAllowed authorizes a repo-emptying prune at apply time. It is
+	// true ONLY when the operator actually typed "wipe" in the destructive
+	// gate. wipePending can't be used here — it's cleared the instant the
+	// modal is satisfied (before startApply runs) — so we read the durable
+	// wipeConfirmed signal instead. Capturing it into the run closure keeps
+	// the in-loop rail (remaining-1 <= 0 && !wipeAllowed) live: since that
+	// rail only trips on the prune that removes the last snapshot, this
+	// refuses precisely an unauthorized repo-emptying batch, and because
+	// the closure re-reads ListSnapshots for `remaining` it also catches a
+	// concurrent deletion the confirm-time count missed.
+	wipeAllowed := a.wipeConfirmed
 	// declined counts recs the operator turned off during review.
 	declined := a.declinedCount()
 
