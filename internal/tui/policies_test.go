@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"context"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -88,8 +90,7 @@ func TestPoliciesView_RemoveRequiresConfirm(t *testing.T) {
 	deps, path := policiesDeps(t, nil)
 	v := NewPoliciesView(deps)
 	// Pressing 'd' pushes a simple ConfirmModal and does NOT touch the file.
-	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
-	v = m.(PoliciesView)
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
 	if cmd == nil {
 		t.Fatal("d must request a confirmation modal")
 	}
@@ -212,4 +213,133 @@ func typeIntoPolicies(t *testing.T, v PoliciesView, s string) PoliciesView {
 		v = m.(PoliciesView)
 	}
 	return v
+}
+
+// policiesRunDeps builds a repo-backed Deps whose config has one policy
+// pointing at a real seeded directory, with the given prune mode.
+func policiesRunDeps(t *testing.T, prune string) (Deps, string, string) {
+	t.Helper()
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Retention.KeepLast = 1
+	cfg.Retention.KeepDaily = 0
+	cfg.Retention.KeepWeekly = 0
+	cfg.Retention.KeepMonthly = 0
+	cfg.Policies["alpha"] = config.PolicyConfig{
+		Paths:       []string{src},
+		Schedule:    config.PolicySchedule{Cadence: "manual"},
+		AfterBackup: config.PolicyAfterBackup{Check: true, Prune: prune},
+	}
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	// deps.Config must reflect the same file so retention limits are read.
+	deps := Deps{Repo: r, Config: &cfg, ConfigPath: path}
+	return deps, path, src
+}
+
+// TestPoliciesView_RunOffModeUsesSimpleConfirm: a policy with prune=off
+// must gate RUN behind the SIMPLE confirm, then start the op guard.
+func TestPoliciesView_RunOffModeUsesSimpleConfirm(t *testing.T) {
+	deps, _, _ := policiesRunDeps(t, "off")
+	v := NewPoliciesView(deps)
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("r must push a confirm modal, got %#v", cmd())
+	}
+	if _, ok := push.modal.(ConfirmModal); !ok {
+		t.Fatalf("prune=off must use the SIMPLE ConfirmModal, got %T", push.modal)
+	}
+}
+
+// TestPoliciesView_RunApplyModeUsesTypedConfirm: prune=apply is
+// destructive, so RUN must use the TYPED confirm.
+func TestPoliciesView_RunApplyModeUsesTypedConfirm(t *testing.T) {
+	deps, _, _ := policiesRunDeps(t, "apply")
+	v := NewPoliciesView(deps)
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("r must push a confirm modal, got %#v", cmd())
+	}
+	if _, ok := push.modal.(TypedConfirmModal); !ok {
+		t.Fatalf("prune=apply must use the TYPED confirm, got %T", push.modal)
+	}
+}
+
+// TestPoliciesView_RunConfirmedTakesOpGuardAndSnapshots: confirming RUN
+// emits a startOpMsg (the op guard) whose run creates a real snapshot.
+func TestPoliciesView_RunConfirmedTakesOpGuardAndSnapshots(t *testing.T) {
+	deps, _, _ := policiesRunDeps(t, "off")
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	v = m.(PoliciesView)
+	m, cmd := v.Update(confirmedMsg{id: policyRunConfirmID})
+	v = m.(PoliciesView)
+	if v.stage != policiesRunning {
+		t.Fatalf("stage = %v, want policiesRunning", v.stage)
+	}
+	msgs := execCmds(t, cmd)
+	var start startOpMsg
+	var foundStart bool
+	for _, msg := range msgs {
+		if s, ok := msg.(startOpMsg); ok {
+			start, foundStart = s, true
+		}
+	}
+	if !foundStart {
+		t.Fatalf("confirmed run must emit a startOpMsg, got %#v", msgs)
+	}
+	if start.name != "policy-run" {
+		t.Fatalf("op name = %q, want policy-run", start.name)
+	}
+	// Run the op synchronously; it must create a snapshot and report done.
+	res := start.run(context.Background())
+	done, ok := res.(policyRunDoneMsg)
+	if !ok {
+		t.Fatalf("expected policyRunDoneMsg, got %#v", res)
+	}
+	if done.err != nil {
+		t.Fatalf("run failed: %v", done.err)
+	}
+	if done.snapshots != 1 {
+		t.Fatalf("snapshots = %d, want 1", done.snapshots)
+	}
+	snaps, err := deps.Repo.ListSnapshots(context.Background())
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("ListSnapshots = %v, %v", snaps, err)
+	}
+	// Delivering the result moves to the done stage.
+	m, _ = v.Update(res)
+	v = m.(PoliciesView)
+	if v.stage != policiesRunDone {
+		t.Fatalf("stage after result = %v, want policiesRunDone", v.stage)
+	}
+}
+
+// TestPoliciesView_RunRejectedResetsToList: if the op guard rejects the
+// start (another op running), the view must leave the running stage.
+func TestPoliciesView_RunRejectedResetsToList(t *testing.T) {
+	deps, _, _ := policiesRunDeps(t, "off")
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	v = m.(PoliciesView)
+	m, _ = v.Update(confirmedMsg{id: policyRunConfirmID})
+	v = m.(PoliciesView)
+	m, _ = v.Update(opRejectedMsg{name: "policy-run"})
+	v = m.(PoliciesView)
+	if v.stage != policiesList {
+		t.Fatalf("stage after rejection = %v, want policiesList", v.stage)
+	}
+	if v.notice == "" {
+		t.Fatal("rejection must set a notice banner")
+	}
 }

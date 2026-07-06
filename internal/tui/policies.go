@@ -2,17 +2,22 @@ package tui
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"sort"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // policiesStage tracks the Policies view's position. The read-only skeleton
@@ -151,9 +156,22 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 						modal := NewConfirmModal("Confirm remove", body, policyRemoveConfirmID, 80, 24)
 						return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 					}
+				case 'r':
+					if len(v.names) > 0 {
+						return v.armRun()
+					}
 				}
 				return v, nil
 			}
+			return v, nil
+		case policiesRunDone:
+			if msg.Type == tea.KeyEnter {
+				v.stage = policiesList
+				v.notice = ""
+				return v, nil
+			}
+			return v, nil
+		case policiesRunning:
 			return v, nil
 		default:
 			return v, nil
@@ -165,6 +183,28 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.removeSelected()
 		case policyAddConfirmID:
 			return v.addFromForm()
+		case policyRunConfirmID:
+			return v.startRun()
+		}
+		return v, nil
+
+	case policyRunDoneMsg:
+		v.stage = policiesRunDone
+		v.result = msg
+		v.reload() // retention prune may have changed nothing on disk, but
+		// keeps the view consistent if a future action mutates config.
+		return v, nil
+
+	case opRejectedMsg:
+		if v.stage == policiesRunning && msg.name == "policy-run" {
+			v.stage = policiesList
+			v.notice = "another operation is in progress — try again when it finishes"
+		}
+		return v, nil
+
+	case opTickMsg:
+		if v.stage == policiesRunning {
+			return v, opTick()
 		}
 		return v, nil
 	}
@@ -243,6 +283,158 @@ func (v PoliciesView) addFromForm() (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
+// armRun pushes the RUN confirmation modal for the selected policy. A
+// prune mode of "apply" is destructive (it deletes snapshots + GCs), so it
+// gets the TYPED confirm; every other mode (off, dry-run, or check-only)
+// gets the simple confirm. The modal id is policyRunConfirmID either way,
+// so the confirmedMsg handler starts the op regardless of which was shown.
+func (v PoliciesView) armRun() (tea.Model, tea.Cmd) {
+	name := v.names[v.selected]
+	p := v.policies[name]
+	mode := policyPruneModeOrOff(p.AfterBackup.Prune)
+	var modal Modal
+	if mode == policycfg.PruneApply {
+		body := fmt.Sprintf("Run policy %q now?\nAfter backup it will DELETE snapshots outside the retention policy and reclaim their chunks.", name)
+		modal = NewTypedConfirmModal("Confirm policy run", body, "run", policyRunConfirmID, 80, 24)
+	} else {
+		body := fmt.Sprintf("Run policy %q now?\nThis creates a snapshot for each of its paths.", name)
+		modal = NewConfirmModal("Confirm policy run", body, policyRunConfirmID, 80, 24)
+	}
+	return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+}
+
+// startRun launches the selected policy under the App op guard. The run
+// closure walks the CLI's runPolicy sequence: CreateSnapshot per path,
+// optional Check, optional retention prune. It honors ctx cancellation
+// (CreateSnapshot/Check/GC all take ctx) and returns policyRunDoneMsg,
+// which implements opResult() so the guard clears.
+//
+// Retention limits come from deps.Config (the resolved config, same source
+// PruneView reads). GC's live set is still derived from the manifests
+// present under the repo lock — keepIDs only marks the deliberate-prune
+// path, exactly as the CLI and PruneView do.
+func (v PoliciesView) startRun() (tea.Model, tea.Cmd) {
+	if v.deps.Repo == nil {
+		v.notice = "no repository configured"
+		return v, nil
+	}
+	name := v.names[v.selected]
+	p := v.policies[name]
+	r := v.deps.Repo
+	reporter := newOpReporter()
+	v.run = policyRunState{reporter: reporter, name: name}
+	v.stage = policiesRunning
+
+	var wopts walker.Options
+	var retention repo.RetentionPolicy
+	if v.deps.Config != nil {
+		wopts = walker.Options{
+			IgnoreFile:    v.deps.Config.Backup.IgnoreFile,
+			ExcludeCaches: v.deps.Config.Backup.ExcludeCaches,
+		}
+		retention = repo.RetentionPolicy{
+			KeepLast:    v.deps.Config.Retention.KeepLast,
+			KeepDaily:   v.deps.Config.Retention.KeepDaily,
+			KeepWeekly:  v.deps.Config.Retention.KeepWeekly,
+			KeepMonthly: v.deps.Config.Retention.KeepMonthly,
+		}
+	}
+	paths := append([]string(nil), p.Paths...)
+	tag := policyRunTag(name, p.Tags)
+	doCheck := p.AfterBackup.Check
+	pruneMode := policyPruneModeOrOff(p.AfterBackup.Prune)
+
+	start := startOpMsg{
+		name: "policy-run",
+		run: func(ctx context.Context) tea.Msg {
+			count := 0
+			for _, path := range paths {
+				if _, err := r.CreateSnapshot(ctx, path, repo.SnapshotOptions{
+					Tag:      tag,
+					Progress: reporter,
+					Walker:   wopts,
+				}); err != nil {
+					return policyRunDoneMsg{name: name, snapshots: count, err: fmt.Errorf("snapshot %s: %w", path, err)}
+				}
+				count++
+			}
+			if doCheck {
+				report, err := r.Check(ctx, repo.CheckOptions{StaleLockAfter: 24 * time.Hour})
+				if err != nil {
+					return policyRunDoneMsg{name: name, snapshots: count, err: fmt.Errorf("check: %w", err)}
+				}
+				if !report.Healthy() {
+					return policyRunDoneMsg{name: name, snapshots: count, err: errors.New("post-backup check found integrity issues")}
+				}
+			}
+			if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
+				return policyRunDoneMsg{name: name, snapshots: count, err: err}
+			}
+			return policyRunDoneMsg{name: name, snapshots: count}
+		},
+	}
+	return v, tea.Batch(func() tea.Msg { return start }, opTick())
+}
+
+// runPolicyRetentionPrune applies the policy's post-backup prune. It
+// mirrors the CLI's runPolicyPrune (internal/cli/policy.go:331): off is a
+// no-op; dry-run computes but deletes nothing; apply deletes the dropped
+// snapshots (skipping already-gone ones) and runs GC. Apply refuses to
+// drop every snapshot — the same guard the CLI enforces.
+func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.RetentionPolicy, mode string) error {
+	if mode == policycfg.PruneOff || mode == "" {
+		return nil
+	}
+	snaps, err := r.ListSnapshots(ctx)
+	if err != nil {
+		return fmt.Errorf("list snapshots: %w", err)
+	}
+	decisions := repo.PlanRetentionExplain(snaps, policy)
+	var keep, drop []string
+	for _, d := range decisions {
+		if d.Keep {
+			keep = append(keep, d.Snapshot.ID)
+		} else {
+			drop = append(drop, d.Snapshot.ID)
+		}
+	}
+	if mode == policycfg.PruneDryRun {
+		return nil // preview only; nothing deleted
+	}
+	if len(drop) == 0 {
+		return nil
+	}
+	if len(keep) == 0 {
+		return errors.New("policy prune would drop every snapshot; refusing automatic apply")
+	}
+	for _, id := range drop {
+		if err := r.DeleteSnapshot(ctx, id); err != nil && !errors.Is(err, blobstore.ErrNotFound) {
+			return fmt.Errorf("delete snapshot %s: %w", id, err)
+		}
+	}
+	keepIDs := make(map[string]bool, len(keep))
+	for _, id := range keep {
+		keepIDs[id] = true
+	}
+	if _, err := r.GC(ctx, keepIDs); err != nil {
+		return fmt.Errorf("gc: %w", err)
+	}
+	return nil
+}
+
+// policyRunTag mirrors the CLI's policySnapshotTag: "policy:<name>" plus
+// any configured tags, space-joined.
+func policyRunTag(name string, tags []string) string {
+	parts := []string{"policy:" + name}
+	for _, tag := range tags {
+		tag = strings.TrimSpace(tag)
+		if tag != "" {
+			parts = append(parts, tag)
+		}
+	}
+	return strings.Join(parts, " ")
+}
+
 // removeSelected deletes the selected policy from sentra.yaml and reloads.
 // This is a config-only edit: it rewrites the file via config.Write and
 // never takes the repo lock or the op guard, matching `sentra policy remove`.
@@ -280,6 +472,27 @@ func (v PoliciesView) View() string {
 			b.WriteString("\n" + ui.Danger.Render(v.form.err) + "\n")
 		}
 		b.WriteString("\n" + ui.Muted.Render("⏎ save · tab field · esc cancel"))
+		return b.String()
+	}
+	if v.stage == policiesRunning {
+		var b strings.Builder
+		b.WriteString(ui.Primary.Render("Running policy " + v.run.name + "…"))
+		if v.run.reporter != nil {
+			total, done := v.run.reporter.Snapshot()
+			fmt.Fprintf(&b, "\n\n  %s / %s uploaded", ui.FormatBytes(done), ui.FormatBytes(total))
+		}
+		return b.String()
+	}
+	if v.stage == policiesRunDone {
+		var b strings.Builder
+		if v.result.err != nil {
+			b.WriteString(ui.Danger.Render("Policy run failed"))
+			b.WriteString("\n\n" + v.result.err.Error())
+		} else {
+			b.WriteString(ui.Success.Render("Policy run complete"))
+			fmt.Fprintf(&b, "\n\n  policy     %s\n  snapshots  %d", v.result.name, v.result.snapshots)
+		}
+		b.WriteString("\n\n" + ui.Muted.Render("⏎ back to policies"))
 		return b.String()
 	}
 	var b strings.Builder
@@ -416,9 +629,3 @@ type policyRunDoneMsg struct {
 }
 
 func (policyRunDoneMsg) opResult() {}
-
-// hydrateCtx is the timeout-bounded context the view uses for its
-// construction-time reads, matching PruneView/RestoreView.
-func (v PoliciesView) hydrateCtx() (context.Context, context.CancelFunc) {
-	return context.WithTimeout(ctxOrBackground(v.deps.Ctx), hydrateTimeout)
-}
