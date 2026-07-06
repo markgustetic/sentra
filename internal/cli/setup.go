@@ -15,67 +15,6 @@ import (
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
-// SetupBackend names the storage target chosen in the setup wizard.
-type SetupBackend = setup.Backend
-
-const (
-	SetupBackendAWS          = setup.BackendAWS
-	SetupBackendS3Compatible = setup.BackendS3Compatible
-)
-
-// SetupAWSAuthMethod names how setup should make AWS credentials available.
-type SetupAWSAuthMethod = setup.AWSAuthMethod
-
-const (
-	SetupAWSAuthLogin    = setup.AWSAuthLogin
-	SetupAWSAuthSSO      = setup.AWSAuthSSO
-	SetupAWSAuthExisting = setup.AWSAuthExisting
-	SetupAWSAuthSkip     = setup.AWSAuthSkip
-)
-
-// SetupPlan is the complete set of actions the setup wizard selected.
-type SetupPlan = setup.Plan
-
-// SetupPrompt collects an updated setup plan from the operator.
-// Production wires this to HuhSetupPrompt; tests inject a deterministic
-// callback.
-type SetupPrompt func(current config.Config) (SetupPlan, error)
-
-// SetupOverwriteConfirm asks whether an existing config file may be
-// overwritten. Production wires this to HuhSetupOverwriteConfirm; tests
-// inject a deterministic callback.
-type SetupOverwriteConfirm func(path string) (bool, error)
-
-// SetupReviewConfirm asks whether the final non-secret setup plan should be
-// applied.
-type SetupReviewConfirm func(cfgPath string, plan SetupPlan) (bool, error)
-
-// SetupAWSAuthRepairPrompt asks what to do after AWS authentication or bucket
-// preparation fails. It returns an updated plan and whether setup should
-// continue with that plan.
-type SetupAWSAuthRepairPrompt func(plan SetupPlan, cause error) (SetupPlan, bool, error)
-
-// AWSCLIInstallPlan is the package-manager command Sentra can run to install
-// the AWS CLI for setup's SSO flow.
-type AWSCLIInstallPlan = setup.AWSCLIInstallPlan
-
-// AWSCLIInstallConfirm asks whether Sentra may run the detected package
-// manager command. Production wires this to HuhAWSCLIInstallConfirm; tests
-// inject a deterministic callback.
-type AWSCLIInstallConfirm = setup.AWSCLIInstallConfirm
-
-// AWSCLIInstallReport summarizes the AWS CLI preflight.
-type AWSCLIInstallReport = setup.AWSCLIInstallReport
-
-// AWSPrepareOptions controls the AWS-side setup work.
-type AWSPrepareOptions = setup.AWSPrepareOptions
-
-// AWSPrepareReport summarizes the AWS setup work for the final CLI output.
-type AWSPrepareReport = setup.AWSPrepareReport
-
-// AWSAuthReport summarizes the optional AWS CLI auth preflight.
-type AWSAuthReport = setup.AWSAuthReport
-
 // SetupDeps wires the side-effecting pieces of `sentra setup`.
 type SetupDeps struct {
 	Prompt                SetupPrompt
