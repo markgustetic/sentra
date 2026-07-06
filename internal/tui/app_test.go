@@ -38,8 +38,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 8 {
-		t.Fatalf("views = %d, want 8 (5 + 3 operations)", got)
+	if got := len(app.views); got != 9 {
+		t.Fatalf("views = %d, want 9 (5 + 3 operations + policies)", got)
 	}
 }
 
@@ -764,8 +764,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 8 {
-		t.Fatalf("views = %d, want 8 (check swapped in for operations)", got)
+	if got := len(app.views); got != 9 {
+		t.Fatalf("views = %d, want 9 (check swapped in for operations, plus policies)", got)
 	}
 }
 
@@ -817,5 +817,21 @@ func TestApp_DepsCarryNewFields(t *testing.T) {
 	}
 	if !newStoreCalled || !saveKeyringCalled {
 		t.Error("carried func values are not the ones passed to Deps")
+	}
+}
+
+func TestApp_RegistersPoliciesView(t *testing.T) {
+	app := newTestApp(t)
+	var found bool
+	for _, v := range app.views {
+		if v.id == "policies" {
+			found = true
+			if _, ok := v.model.(PoliciesView); !ok {
+				t.Fatalf("policies entry is %T, want PoliciesView", v.model)
+			}
+		}
+	}
+	if !found {
+		t.Fatal("App must register the policies view")
 	}
 }

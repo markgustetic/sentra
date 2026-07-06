@@ -170,10 +170,10 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with the 5 read-only views plus the 3
-// Phase 2a operation flows (backup, restore, prune) registered. Deps
-// semantics (nil-tolerant, cancellable ctx) are unchanged from the
-// previous implementation.
+// NewApp constructs the shell with the 5 read-only views plus the
+// Phase 2a operation flows (backup, restore, prune) and the Phase 2c
+// Policies flow registered. Deps semantics (nil-tolerant, cancellable
+// ctx) are unchanged from the previous implementation.
 func NewApp(deps Deps) App {
 	parent := deps.Ctx
 	if parent == nil {
@@ -192,11 +192,13 @@ func NewApp(deps Deps) App {
 		{id: "backup", model: NewBackupView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
+		{id: "policies", model: NewPoliciesView(deps)},
 	}
-	// The three mutating flows form their own "Operations" category in
+	// The mutating flows form their own "Operations" category in
 	// the rail and palette; the read-only views default to "Views".
 	categories := map[string]string{
 		"backup": "Operations", "restore": "Operations", "prune": "Operations",
+		"policies": "Operations",
 	}
 	for _, v := range views {
 		title := v.id
