@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -13,6 +14,21 @@ import (
 	"github.com/markgustetic/sentra/internal/agent"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/ui"
+)
+
+// applyStage tracks the agent-apply state machine, which is layered on
+// top of the scan flow: a completed scan leaves recommendations in the
+// table, and pressing `a` walks them through review → confirm → apply →
+// done. It is deliberately separate from the scan's `busy` flag so the
+// two flows can't corrupt each other's state.
+type applyStage int
+
+const (
+	agentIdle       applyStage = iota // no apply in progress (scan-only view)
+	agentReviewing                    // per-row approve/decline toggling
+	agentConfirming                   // walking the per-rec confirm modals
+	agentApplying                     // op guard held; dispatching actions
+	agentApplyDone                    // per-action results + tally shown
 )
 
 // agentRunner is the hook that actually runs the orchestrator. It
@@ -59,6 +75,22 @@ type AgentView struct {
 	busy      bool
 	doneErr   error
 
+	// --- agent-apply state (layered on top of the scan flow) ---
+
+	// applyStage is the apply state machine's current stage. agentIdle
+	// means no apply is in flight; the scan view renders normally.
+	applyStage applyStage
+
+	// approved[i] records whether recommendation recs[i] is approved for
+	// apply. Populated true-for-every-actionable-rec when review starts;
+	// space toggles the row under the cursor. "none" recs are never
+	// approvable (they carry no side effect) so they're seeded false.
+	approved map[int]bool
+
+	// cursor is the highlighted row during agentReviewing. Up/down move
+	// it; space toggles approved[cursor].
+	cursor int
+
 	// run is the orchestrator hook. Real production wires it via
 	// the deps' Provider; tests inject a closure. nil run + nil
 	// Provider = "agent unavailable" placeholder.
@@ -104,10 +136,23 @@ func NewAgentView(deps Deps) AgentView {
 // Title names the view in the sidebar, palette, and title bar.
 func (AgentView) Title() string { return "Agent" }
 
-// ShortHelp lists the view-specific keys for the status bar.
-func (AgentView) ShortHelp() []key.Binding {
-	return []key.Binding{
-		key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scan")),
+// ShortHelp lists the view-specific keys for the status bar. The set
+// depends on stage: scan-only until recs land, then apply keys while
+// reviewing.
+func (a AgentView) ShortHelp() []key.Binding {
+	switch a.applyStage {
+	case agentReviewing:
+		return []key.Binding{
+			key.NewBinding(key.WithKeys(" "), key.WithHelp("space", "toggle")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "apply…")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
+		}
+	default:
+		binds := []key.Binding{key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scan"))}
+		if len(a.recs) > 0 && !a.busy {
+			binds = append(binds, key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "apply")))
+		}
+		return binds
 	}
 }
 
@@ -193,7 +238,8 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return a, nil
 
 	case tea.KeyMsg:
-		if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 's' {
+		// Scan key: only when not reviewing/applying an existing result.
+		if a.applyStage == agentIdle && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 's' {
 			if a.busy || a.run == nil {
 				return a, nil
 			}
@@ -205,6 +251,26 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			cmd := a.spawnScan()
 			return a, cmd
 		}
+
+		// Enter review on `a` when a finished scan produced recs.
+		if a.applyStage == agentIdle && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'a' {
+			if a.busy || len(a.recs) == 0 {
+				return a, nil
+			}
+			a.applyStage = agentReviewing
+			a.cursor = 0
+			a.approved = make(map[int]bool, len(a.recs))
+			for i, r := range a.recs {
+				// "none" is notify-only: it has no side effect, so it is
+				// never approvable. Every other verb defaults to approved.
+				a.approved[i] = r.Action != "none"
+			}
+			return a, nil
+		}
+
+		if a.applyStage == agentReviewing {
+			return a.updateReviewing(msg)
+		}
 	}
 	// Forward other messages to the viewport (for scroll keys); we
 	// don't forward to the table because navigation in the empty
@@ -212,6 +278,48 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	var cmd tea.Cmd
 	a.viewport, cmd = a.viewport.Update(msg)
 	return a, cmd
+}
+
+// updateReviewing handles keystrokes while the operator is toggling
+// per-row approval. Up/down move the cursor; space flips approval for
+// the current row (except "none" rows, which have no side effect and
+// stay unapprovable); esc abandons the apply and returns to the scan
+// view. Enter (→ confirming) is wired in a later task.
+func (a AgentView) updateReviewing(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		a.applyStage = agentIdle
+		return a, nil
+	case tea.KeyUp:
+		if a.cursor > 0 {
+			a.cursor--
+		}
+		return a, nil
+	case tea.KeyDown:
+		if a.cursor < len(a.recs)-1 {
+			a.cursor++
+		}
+		return a, nil
+	case tea.KeySpace:
+		if a.cursor >= 0 && a.cursor < len(a.recs) && a.recs[a.cursor].Action != "none" {
+			a.approved[a.cursor] = !a.approved[a.cursor]
+		}
+		return a, nil
+	}
+	// Also accept j/k as vim-style movement, matching other views.
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case 'k':
+			if a.cursor > 0 {
+				a.cursor--
+			}
+		case 'j':
+			if a.cursor < len(a.recs)-1 {
+				a.cursor++
+			}
+		}
+	}
+	return a, nil
 }
 
 // spawnScan kicks off the agent runner in a goroutine, stashes the
@@ -281,7 +389,16 @@ func waitForAgentEvent(stream <-chan string, doneCh <-chan agentDoneMsg) tea.Cmd
 
 // View renders both halves. When no runner is configured, the
 // streaming pane is replaced by a placeholder.
+//
+// The apply-flow stages are rendered before the no-runner placeholder:
+// applying recommendations doesn't need a Provider (the recs already
+// exist), so review/confirm/apply screens must show even when the scan
+// path is unavailable.
 func (a AgentView) View() string {
+	if a.applyStage == agentReviewing {
+		return a.viewReviewing()
+	}
+
 	if a.run == nil {
 		body := ui.Subtle.Render("agent") + "\n" +
 			ui.Muted.Render("configure ANTHROPIC_API_KEY and re-run sentra to enable the agent")
@@ -306,6 +423,35 @@ func (a AgentView) View() string {
 		bottom = ui.Panel.Render(ui.Subtle.Render("recommendations") + "\n" + hint)
 	}
 	return lipgloss.JoinVertical(lipgloss.Left, top, bottom) + "\n"
+}
+
+// viewReviewing renders the per-row approve/decline list. The cursor
+// row is marked; each row shows [x]/[ ] approval, the verb, and target.
+// "none" rows render as informational (no checkbox) so the operator
+// isn't invited to "approve" a no-op.
+func (a AgentView) viewReviewing() string {
+	var b strings.Builder
+	b.WriteString(ui.Primary.Render("Review recommendations"))
+	b.WriteString("  " + ui.Muted.Render("space approve/decline · ⏎ apply · esc cancel"))
+	b.WriteString("\n\n")
+	for i, r := range a.recs {
+		cursor := "  "
+		if i == a.cursor {
+			cursor = ui.Primary.Render("▸ ")
+		}
+		var mark string
+		switch {
+		case r.Action == "none":
+			mark = ui.Muted.Render("(fyi)")
+		case a.approved[i]:
+			mark = ui.Success.Render("[x] approve")
+		default:
+			mark = ui.Danger.Render("[ ] declined")
+		}
+		fmt.Fprintf(&b, "%s%s  %s  %s  %s\n",
+			cursor, mark, r.ID, r.Action, truncate(r.Target, 24))
+	}
+	return ui.Panel.Render(b.String()) + "\n"
 }
 
 // recsToRows formats recommendations into bubbles/table rows.
