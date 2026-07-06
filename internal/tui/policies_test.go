@@ -343,3 +343,50 @@ func TestPoliciesView_RunRejectedResetsToList(t *testing.T) {
 		t.Fatal("rejection must set a notice banner")
 	}
 }
+
+// TestPoliciesView_RunRefusesInvalidPolicy: a policy with an unrecognized
+// prune mode (a typo like "aply" or a stale hand-edit) must NOT arm the RUN
+// modal. Because policyPruneModeOrOff only lowercases/trims, "aply" would
+// slip past the apply check and get the SIMPLE confirm ("creates a snapshot"
+// — no mention of deletion), yet runPolicyRetentionPrune's fall-through
+// would then really delete. armRun must validate first (matching the CLI's
+// runPolicy, which calls policycfg.Validate) and refuse — surfacing the
+// error via notice instead of pushing a confirm.
+func TestPoliciesView_RunRefusesInvalidPolicy(t *testing.T) {
+	deps, _, _ := policiesRunDeps(t, "aply")
+	v := NewPoliciesView(deps)
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'r'}})
+	v = m.(PoliciesView)
+	if cmd != nil {
+		if push, ok := cmd().(pushModalMsg); ok {
+			t.Fatalf("invalid prune mode must not arm a RUN modal, got %T", push.modal)
+		}
+	}
+	if v.stage == policiesRunning {
+		t.Fatal("invalid policy must not enter the running stage")
+	}
+	if v.notice == "" {
+		t.Fatal("invalid policy must surface a notice explaining the refusal")
+	}
+}
+
+// TestRunPolicyRetentionPrune_UnknownModeIsFailClosed: even if an
+// unrecognized mode reaches runPolicyRetentionPrune (defense in depth), it
+// must be a no-op — never fall through to DeleteSnapshot+GC. With KeepLast=1
+// and two snapshots, an "apply" would drop one; an unknown mode must delete
+// nothing.
+func TestRunPolicyRetentionPrune_UnknownModeIsFailClosed(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	policy := repo.RetentionPolicy{KeepLast: 1}
+	if err := runPolicyRetentionPrune(context.Background(), r, policy, "aply"); err != nil {
+		t.Fatalf("unknown mode should be a no-op, got error: %v", err)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("unknown prune mode deleted snapshots: have %d, want 2 (fail-closed)", len(snaps))
+	}
+}

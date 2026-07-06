@@ -288,9 +288,22 @@ func (v PoliciesView) addFromForm() (tea.Model, tea.Cmd) {
 // gets the TYPED confirm; every other mode (off, dry-run, or check-only)
 // gets the simple confirm. The modal id is policyRunConfirmID either way,
 // so the confirmedMsg handler starts the op regardless of which was shown.
+//
+// It validates the policy first (mirroring the CLI's runPolicy, which calls
+// policycfg.Validate before doing any work). This is load-bearing for the
+// confirm gate: policyPruneModeOrOff only lowercases/trims, so a corrupted
+// prune mode (a typo like "aply", a stale hand-edit) is NOT PruneApply and
+// would otherwise get the SIMPLE confirm — which never mentions deletion —
+// while the run would still reach the delete path. Refusing an invalid
+// policy here keeps a destructive run from ever hiding behind the
+// non-destructive-looking confirm.
 func (v PoliciesView) armRun() (tea.Model, tea.Cmd) {
 	name := v.names[v.selected]
 	p := v.policies[name]
+	if err := policycfg.Validate(name, p); err != nil {
+		v.notice = "cannot run: " + err.Error()
+		return v, nil
+	}
 	mode := policyPruneModeOrOff(p.AfterBackup.Prune)
 	var modal Modal
 	if mode == policycfg.PruneApply {
@@ -381,8 +394,18 @@ func (v PoliciesView) startRun() (tea.Model, tea.Cmd) {
 // no-op; dry-run computes but deletes nothing; apply deletes the dropped
 // snapshots (skipping already-gone ones) and runs GC. Apply refuses to
 // drop every snapshot — the same guard the CLI enforces.
+//
+// The mode switch is FAIL-CLOSED: only the three known constants trigger
+// their behavior, and anything else (an unrecognized/corrupt mode) is
+// treated as off — a no-op — rather than falling through to the delete
+// path. Callers already validate the policy (policycfg.Validate rejects
+// unknown prune modes) before reaching here, so this is defense in depth:
+// even if an invalid mode slips through, it can never silently delete.
 func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.RetentionPolicy, mode string) error {
-	if mode == policycfg.PruneOff || mode == "" {
+	mode = strings.ToLower(strings.TrimSpace(mode))
+	// Only apply performs deletions. off, dry-run, and any unrecognized
+	// value are no-ops here (dry-run's preview is surfaced elsewhere).
+	if mode != policycfg.PruneApply {
 		return nil
 	}
 	snaps, err := r.ListSnapshots(ctx)
@@ -397,9 +420,6 @@ func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.Rete
 		} else {
 			drop = append(drop, d.Snapshot.ID)
 		}
-	}
-	if mode == policycfg.PruneDryRun {
-		return nil // preview only; nothing deleted
 	}
 	if len(drop) == 0 {
 		return nil
