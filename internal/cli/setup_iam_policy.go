@@ -10,16 +10,16 @@ import (
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
-// setupIAMPolicyDocument keeps its historical cli name as an alias of the
-// setup engine's exported policy type. internal/cli/setup_test.go (the
-// 1863-line behavior-preservation oracle, unchanged since before this
-// refactor) unmarshals the `setup iam-policy` command's JSON output into
-// setupIAMPolicyDocument directly, so the alias — not a cli-local struct —
+// setupIAMPolicyDocument/Statement keep their historical cli names as aliases
+// of the setup engine's exported policy types so the oracle can json.Unmarshal
+// into them. internal/cli/setup_test.go (the 1863-line behavior-preservation
+// oracle, unchanged) unmarshals the `setup iam-policy` command's JSON output
+// into setupIAMPolicyDocument directly, so the alias — not a cli-local struct —
 // keeps that assertion compiling and semantically identical while the real
-// type now lives in internal/setup. (setupIAMPolicyStatement is not aliased
-// here because nothing in cli references it yet; Part 4 of the TUI Phase 3
-// plan adds it alongside the rest of the thin-driver rewrite.)
+// type now lives in internal/setup.
 type setupIAMPolicyDocument = setup.IAMPolicyDocument
+
+type setupIAMPolicyStatement = setup.IAMPolicyStatement
 
 func newSetupIAMPolicy(out io.Writer) *cobra.Command {
 	var bucket string
@@ -42,10 +42,18 @@ func newSetupIAMPolicy(out io.Writer) *cobra.Command {
 			if err := validateSetupBucketName(bucket); err != nil {
 				return err
 			}
-			return setup.WriteIAMPolicy(out, bucket, prefix)
+			return writeSetupIAMPolicy(out, bucket, prefix)
 		},
 	}
 	cmd.Flags().StringVar(&bucket, "bucket", "", "S3 bucket name")
 	cmd.Flags().StringVar(&prefix, "prefix", "sentra/", "S3 key prefix Sentra will use")
 	return cmd
+}
+
+func writeSetupIAMPolicy(out io.Writer, bucket string, prefix string) error {
+	return setup.WriteIAMPolicy(out, bucket, prefix)
+}
+
+func buildSetupIAMPolicy(bucket string, prefix string) setupIAMPolicyDocument {
+	return setup.BuildIAMPolicy(bucket, prefix)
 }
