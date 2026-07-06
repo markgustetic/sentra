@@ -11,6 +11,8 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/agent"
+	"github.com/markgustetic/sentra/internal/agent/action"
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 )
 
@@ -764,5 +766,56 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	}
 	if got := len(app.views); got != 8 {
 		t.Fatalf("views = %d, want 8 (check swapped in for operations)", got)
+	}
+}
+
+// TestApp_DepsCarryNewFields: Unit-1 plumbing. Deps must carry the four
+// action/store/config-path/keyring fields through NewApp so the ported
+// operation flows (sync, agent-apply, password, setup) can reach them.
+// These are call-time function values and plain data — never resolved
+// secrets — so a stub that records its call is a faithful test double.
+func TestApp_DepsCarryNewFields(t *testing.T) {
+	var newStoreCalled, saveKeyringCalled bool
+
+	newStore := func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+		newStoreCalled = true
+		return blobstore.NewMemory(), nil
+	}
+	saveKeyring := func(_ *config.Config, _ []byte) error {
+		saveKeyringCalled = true
+		return nil
+	}
+	reg := action.NewDefaultRegistry()
+
+	app := NewApp(Deps{
+		ConfigPath:            "/abs/path/sentra.yaml",
+		NewStore:              newStore,
+		Actions:               reg,
+		SaveKeyringPassphrase: saveKeyring,
+	})
+
+	if app.deps.ConfigPath != "/abs/path/sentra.yaml" {
+		t.Errorf("Deps.ConfigPath not carried: got %q", app.deps.ConfigPath)
+	}
+	if app.deps.Actions != reg {
+		t.Error("Deps.Actions not carried through NewApp")
+	}
+	if app.deps.NewStore == nil {
+		t.Fatal("Deps.NewStore not carried through NewApp")
+	}
+	if app.deps.SaveKeyringPassphrase == nil {
+		t.Fatal("Deps.SaveKeyringPassphrase not carried through NewApp")
+	}
+
+	// Prove the carried func values are the ones we passed (identity via
+	// side effect): invoking them flips the sentinels.
+	if _, err := app.deps.NewStore(context.Background(), nil); err != nil {
+		t.Fatalf("carried NewStore returned error: %v", err)
+	}
+	if err := app.deps.SaveKeyringPassphrase(nil, nil); err != nil {
+		t.Fatalf("carried SaveKeyringPassphrase returned error: %v", err)
+	}
+	if !newStoreCalled || !saveKeyringCalled {
+		t.Error("carried func values are not the ones passed to Deps")
 	}
 }

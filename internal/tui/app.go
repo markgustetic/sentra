@@ -23,7 +23,9 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/llm"
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -66,6 +68,35 @@ type Deps struct {
 	// blobstore call. Nil falls back to context.Background() so tests
 	// using `Deps{}` keep working.
 	Ctx context.Context
+
+	// ConfigPath is the absolute path to the sentra.yaml the TUI was
+	// launched against. Flows that rewrite config (setup, policy edits,
+	// schedule install, recovery kit) need the on-disk location to write
+	// back to; it is plain data, never a resolved secret. Empty when the
+	// TUI runs against an in-memory/unconfigured repo (tests).
+	ConfigPath string
+
+	// NewStore builds a blobstore.Store from an arbitrary config. The
+	// sync flow uses it to open the *destination* store, which differs
+	// from the repo's own source store, so we take a factory rather than
+	// a live handle. It is a call-time function value — invoked only when
+	// a flow runs — and resolves no secrets itself. May be nil in tests.
+	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+
+	// Actions is the agent action registry (prune_snapshot, add_to_ignore,
+	// flag_secret, none). The agent-apply flow looks up and runs a handler
+	// through it after the user confirms a recommendation. Read-only by
+	// default: nothing here executes without an explicit confirm. May be
+	// nil (agent-apply then reports "no action registry configured").
+	Actions *action.Registry
+
+	// SaveKeyringPassphrase re-saves a rotated passphrase to the OS
+	// keyring after the password flow changes it, so the user isn't
+	// prompted on the next open. It is a call-time function value that
+	// receives the new passphrase bytes only at rotation time — the bytes
+	// are never retained in Deps. May be nil when no keyring is wired
+	// (the password flow then skips the keyring update).
+	SaveKeyringPassphrase func(cfg *config.Config, pass []byte) error
 }
 
 // viewEntry pairs a registered command ID with its model. Order is
