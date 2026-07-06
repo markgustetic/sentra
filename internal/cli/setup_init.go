@@ -2,17 +2,21 @@ package cli
 
 import (
 	"context"
-	"errors"
 	"fmt"
 
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
-	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
 type setupInitResult = setup.InitResult
 
+// runSetupInit resolves the passphrase via the cli's injected resolver, then
+// hands repo init (and the verify-before-keyring guard) to the setup engine
+// built from these same SetupDeps. It stays in cli so the oracle can drive it
+// with the historical SetupDeps closures. The nil-dependency guard errors
+// (missing store/passphrase/saver) are preserved here so the oracle's
+// nil-dep cases keep their exact messages before the engine is constructed.
 func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config, savePassphrase bool) (setupInitResult, error) {
 	if deps.NewStore == nil {
 		return setupInitResult{}, fmt.Errorf("initialize repo: missing store factory")
@@ -24,52 +28,15 @@ func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config, saveP
 		return setupInitResult{}, fmt.Errorf("initialize repo: missing keyring passphrase saver")
 	}
 
-	store, err := deps.NewStore(ctx, cfg)
-	if err != nil {
-		return setupInitResult{}, fmt.Errorf("open blobstore: %w", err)
-	}
-
 	pass, err := deps.Passphrase()
 	if err != nil {
 		return setupInitResult{}, fmt.Errorf("resolve passphrase: %w", err)
 	}
+	// The cli caller owns the resolver's buffer: scrub it on every return path.
+	// Engine.InitRepo does NOT zeroize pass — the caller does, per the Part 3
+	// security contract.
 	defer crypto.Zeroize(pass)
 
-	r, err := repo.Init(ctx, store, pass)
-	if err != nil {
-		if errors.Is(err, repo.ErrAlreadyInitialized) {
-			result := setupInitResult{AlreadyInitialized: true}
-			// The repo already exists, but the user still asked to save the
-			// passphrase to the OS keyring. repo.Init does not verify the
-			// passphrase against an existing repo, so open it to confirm the
-			// passphrase is correct before populating the keyring — otherwise
-			// we'd either leave use_keyring:true dangling with an empty keyring
-			// or store a wrong passphrase. Both silently break later
-			// non-interactive runs.
-			if savePassphrase {
-				existing, oerr := repo.Open(ctx, store, pass)
-				if oerr != nil {
-					return setupInitResult{}, fmt.Errorf("repository already initialized, but the provided passphrase did not open it (keyring not updated): %w", oerr)
-				}
-				result.RepoID = existing.Config().ID
-				existing.Close()
-				if serr := deps.SavePassphrase(cfg, pass); serr != nil {
-					return setupInitResult{}, fmt.Errorf("save passphrase to keyring: %w", serr)
-				}
-				result.PassphraseSavedToKeyring = true
-			}
-			return result, nil
-		}
-		return setupInitResult{}, fmt.Errorf("init repo: %w", err)
-	}
-	defer r.Close()
-
-	result := setupInitResult{RepoID: r.Config().ID}
-	if savePassphrase {
-		if err := deps.SavePassphrase(cfg, pass); err != nil {
-			return setupInitResult{}, fmt.Errorf("save passphrase to keyring: %w", err)
-		}
-		result.PassphraseSavedToKeyring = true
-	}
-	return result, nil
+	eng := setup.NewEngine(setupEffects(deps))
+	return eng.InitRepo(ctx, cfg, pass, savePassphrase)
 }
