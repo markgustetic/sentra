@@ -137,63 +137,43 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 
 	printSetupApplyHeader(out, cfgPath, &plan)
 
+	eng := setup.NewEngine(setupEffects(deps))
 	var (
 		awsAuthReport *AWSAuthReport
 		awsReport     *AWSPrepareReport
 	)
 	for plan.PrepareAWS {
-		authMethod = resolveSetupAWSAuthMethod(&plan)
-		report, err := runSetupAWSAuth(cmd.Context(), deps, authMethod, &plan.Config, out)
-		if err != nil {
-			printSetupErrorDetail(out, err, &plan.Config)
-			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, err)
+		// The engine runs AWS auth + bucket prep headlessly and classifies any
+		// failure; the cli keeps the progress spinner and the huh repair loop.
+		step := startSetupProgress(out, "Preparing AWS S3 bucket")
+		auth, prep, perr := eng.PrepareAWS(cmd.Context(), &plan)
+		if perr != nil {
+			step.Fail()
+			printSetupErrorDetail(out, perr, &plan.Config)
+			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, perr)
 			if repairErr != nil {
 				return repairErr
 			}
 			if !retry {
-				return err
+				return perr
 			}
 			if err := continueSetupAfterAWSRepair(cfgPath, out, &plan, updated); err != nil {
 				return err
 			}
 			continue
 		}
-		awsAuthReport = &report
-
-		prepareAWS := deps.PrepareAWS
-		if prepareAWS == nil {
-			prepareAWS = DefaultAWSPrepare
-		}
-		awsStep := startSetupProgress(out, "Preparing AWS S3 bucket")
-		prepareReport, err := prepareAWS(cmd.Context(), &plan.Config, AWSPrepareOptions{
-			CreateBucket:      plan.CreateBucket,
-			BlockPublicAccess: plan.BlockPublicAccess,
-			DefaultEncryption: plan.DefaultEncryption,
-		})
-		if err != nil {
-			awsStep.Fail()
-			wrappedErr := wrapAWSPrepareError(&plan.Config, authMethod, err)
-			printSetupErrorDetail(out, wrappedErr, &plan.Config)
-			updated, retry, repairErr := promptSetupAWSRepairIfNeeded(deps, plan, wrappedErr)
-			if repairErr != nil {
-				return repairErr
-			}
-			if !retry {
-				return wrappedErr
-			}
-			if err := continueSetupAfterAWSRepair(cfgPath, out, &plan, updated); err != nil {
-				return err
-			}
-			continue
-		}
-		awsReport = &prepareReport
-		awsStep.Success(setupAWSPreparedLabel(&prepareReport))
+		printSetupAuthProgress(out, auth)
+		step.Success(setupAWSPreparedLabel(&prep))
+		a := auth
+		p := prep
+		awsAuthReport = &a
+		awsReport = &p
 		break
 	}
 
 	printSetupStep(out, "Writing "+cfgPath)
-	if err := config.Write(cfgPath, &plan.Config); err != nil {
-		return fmt.Errorf("write %s: %w", cfgPath, err)
+	if err := eng.WriteConfig(cfgPath, &plan); err != nil {
+		return err
 	}
 	printSetupOK(out, "Config written")
 

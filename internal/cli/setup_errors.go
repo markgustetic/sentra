@@ -9,20 +9,17 @@ import (
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
-func wrapAWSSSOFlowError(command string, profile string, err error) error {
-	return setup.WrapAWSSSOFlowError(command, profile, err)
-}
-
+// wrapAWSPrepareError classifies an AWS bucket-prep failure with actionable
+// guidance. The AWS auth/prepare sequencing now lives in setup.Engine, which
+// does its own wrapping; this cli wrapper survives because the oracle drives it
+// directly (setup_test.go:710). Per plan correction C10 it dereferences the
+// *config.Config to the value setup.WrapAWSPrepareError expects (nil → zero).
 func wrapAWSPrepareError(cfg *config.Config, method SetupAWSAuthMethod, err error) error {
 	var c config.Config
 	if cfg != nil {
 		c = *cfg
 	}
 	return setup.WrapAWSPrepareError(c, method, err)
-}
-
-func wrapAWSLoginFlowError(profile string, err error) error {
-	return setup.WrapAWSLoginFlowError(profile, err)
 }
 
 func printSetupErrorDetail(out io.Writer, err error, cfg *config.Config) {
