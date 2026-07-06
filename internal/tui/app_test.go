@@ -38,8 +38,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 10 {
-		t.Fatalf("views = %d, want 10 (5 + check + doctor + 3 operations + policies)", got)
+	if got := len(app.views); got != 11 {
+		t.Fatalf("views = %d, want 11 (5 + check + doctor + 3 operations + policies + password)", got)
 	}
 }
 
@@ -764,8 +764,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 10 {
-		t.Fatalf("views = %d, want 10 (check swapped in for operations, plus policies, plus doctor)", got)
+	if got := len(app.views); got != 11 {
+		t.Fatalf("views = %d, want 11 (check swapped in for operations, plus policies, doctor, password)", got)
 	}
 }
 

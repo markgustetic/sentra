@@ -193,13 +193,14 @@ func NewApp(deps Deps) App {
 		{id: "backup", model: NewBackupView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
+		{id: "password", model: NewPasswordView(deps)},
 		{id: "policies", model: NewPoliciesView(deps)},
 	}
 	// The mutating flows form their own "Operations" category in
 	// the rail and palette; the read-only views default to "Views".
 	categories := map[string]string{
 		"backup": "Operations", "restore": "Operations", "prune": "Operations",
-		"policies": "Operations",
+		"password": "Operations", "policies": "Operations",
 	}
 	for _, v := range views {
 		title := v.id
