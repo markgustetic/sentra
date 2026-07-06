@@ -10,6 +10,8 @@ import (
 	"github.com/aws/aws-sdk-go-v2/service/s3"
 	"github.com/aws/aws-sdk-go-v2/service/s3/types"
 	"github.com/aws/smithy-go"
+
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
 const bucketExistsWaitTimeout = 2 * time.Minute
@@ -17,7 +19,7 @@ const bucketExistsWaitTimeout = 2 * time.Minute
 func headBucket(ctx context.Context, client *s3.Client, bucket string) error {
 	_, err := client.HeadBucket(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)})
 	if err != nil {
-		return fmt.Errorf("head bucket %q (requires s3:ListBucket on %s): %w", bucket, s3BucketARN(bucket), err)
+		return fmt.Errorf("head bucket %q (requires s3:ListBucket on %s): %w", bucket, setup.BucketARN(bucket), err)
 	}
 	return nil
 }
@@ -36,14 +38,14 @@ func createBucket(ctx context.Context, client *s3.Client, bucket, region string)
 	if isBucketAlreadyOwned(err) {
 		return false, nil
 	}
-	return false, fmt.Errorf("create bucket %q (requires s3:CreateBucket on %s): %w", bucket, s3BucketARN(bucket), err)
+	return false, fmt.Errorf("create bucket %q (requires s3:CreateBucket on %s): %w", bucket, setup.BucketARN(bucket), err)
 }
 
 func waitForBucketExists(ctx context.Context, client *s3.Client, bucket string) error {
 	waiter := s3.NewBucketExistsWaiter(client)
 	err := waiter.Wait(ctx, &s3.HeadBucketInput{Bucket: aws.String(bucket)}, bucketExistsWaitTimeout)
 	if err != nil {
-		return fmt.Errorf("wait for bucket %q to exist (requires s3:ListBucket on %s): %w", bucket, s3BucketARN(bucket), err)
+		return fmt.Errorf("wait for bucket %q to exist (requires s3:ListBucket on %s): %w", bucket, setup.BucketARN(bucket), err)
 	}
 	return nil
 }
@@ -59,7 +61,7 @@ func blockBucketPublicAccess(ctx context.Context, client *s3.Client, bucket stri
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("block public access for bucket %q (requires s3:PutBucketPublicAccessBlock on %s): %w", bucket, s3BucketARN(bucket), err)
+		return fmt.Errorf("block public access for bucket %q (requires s3:PutBucketPublicAccessBlock on %s): %w", bucket, setup.BucketARN(bucket), err)
 	}
 	return nil
 }
@@ -78,7 +80,7 @@ func enableBucketDefaultEncryption(ctx context.Context, client *s3.Client, bucke
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("enable default encryption for bucket %q (requires s3:PutBucketEncryption on %s): %w", bucket, s3BucketARN(bucket), err)
+		return fmt.Errorf("enable default encryption for bucket %q (requires s3:PutBucketEncryption on %s): %w", bucket, setup.BucketARN(bucket), err)
 	}
 	return nil
 }
@@ -99,15 +101,4 @@ func isS3BucketMissing(err error) bool {
 func isBucketAlreadyOwned(err error) bool {
 	var apiErr smithy.APIError
 	return errors.As(err, &apiErr) && apiErr.ErrorCode() == "BucketAlreadyOwnedByYou"
-}
-
-func s3BucketARN(bucket string) string {
-	return "arn:aws:s3:::" + bucket
-}
-
-func s3ObjectARN(bucket string, prefix string) string {
-	if prefix == "" {
-		return s3BucketARN(bucket) + "/*"
-	}
-	return s3BucketARN(bucket) + "/" + prefix + "*"
 }

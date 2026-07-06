@@ -12,6 +12,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
 // SetupBackend names the storage target chosen in the setup wizard.
@@ -214,7 +215,7 @@ func runSetup(cmd *cobra.Command, deps SetupDeps, cfgPath string, force bool) er
 		return err
 	}
 	if plan.PrintIAMPolicy {
-		if err := writeSetupIAMPolicy(out, plan.Config.Repo.S3.Bucket, plan.Config.Repo.S3.Prefix); err != nil {
+		if err := setup.WriteIAMPolicy(out, plan.Config.Repo.S3.Bucket, plan.Config.Repo.S3.Prefix); err != nil {
 			return err
 		}
 		return nil

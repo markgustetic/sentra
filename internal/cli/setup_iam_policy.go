@@ -1,26 +1,25 @@
 package cli
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
 
 	"github.com/spf13/cobra"
+
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
-type setupIAMPolicyDocument struct {
-	Version   string                    `json:"Version"`
-	Statement []setupIAMPolicyStatement `json:"Statement"`
-}
-
-type setupIAMPolicyStatement struct {
-	Sid       string         `json:"Sid"`
-	Effect    string         `json:"Effect"`
-	Action    []string       `json:"Action"`
-	Resource  []string       `json:"Resource"`
-	Condition map[string]any `json:"Condition,omitempty"`
-}
+// setupIAMPolicyDocument keeps its historical cli name as an alias of the
+// setup engine's exported policy type. internal/cli/setup_test.go (the
+// 1863-line behavior-preservation oracle, unchanged since before this
+// refactor) unmarshals the `setup iam-policy` command's JSON output into
+// setupIAMPolicyDocument directly, so the alias — not a cli-local struct —
+// keeps that assertion compiling and semantically identical while the real
+// type now lives in internal/setup. (setupIAMPolicyStatement is not aliased
+// here because nothing in cli references it yet; Part 4 of the TUI Phase 3
+// plan adds it alongside the rest of the thin-driver rewrite.)
+type setupIAMPolicyDocument = setup.IAMPolicyDocument
 
 func newSetupIAMPolicy(out io.Writer) *cobra.Command {
 	var bucket string
@@ -43,69 +42,10 @@ func newSetupIAMPolicy(out io.Writer) *cobra.Command {
 			if err := validateSetupBucketName(bucket); err != nil {
 				return err
 			}
-			return writeSetupIAMPolicy(out, bucket, prefix)
+			return setup.WriteIAMPolicy(out, bucket, prefix)
 		},
 	}
 	cmd.Flags().StringVar(&bucket, "bucket", "", "S3 bucket name")
 	cmd.Flags().StringVar(&prefix, "prefix", "sentra/", "S3 key prefix Sentra will use")
 	return cmd
-}
-
-func writeSetupIAMPolicy(out io.Writer, bucket string, prefix string) error {
-	policy := buildSetupIAMPolicy(bucket, prefix)
-	enc := json.NewEncoder(out)
-	enc.SetIndent("", "  ")
-	if err := enc.Encode(policy); err != nil {
-		return fmt.Errorf("encode IAM policy: %w", err)
-	}
-	return nil
-}
-
-func buildSetupIAMPolicy(bucket string, prefix string) setupIAMPolicyDocument {
-	bucketResource := s3BucketARN(bucket)
-	objectResource := s3ObjectARN(bucket, prefix)
-	listStatement := setupIAMPolicyStatement{
-		Sid:    "SentraListBucket",
-		Effect: "Allow",
-		Action: []string{
-			"s3:GetBucketLocation",
-			"s3:ListBucket",
-		},
-		Resource: []string{bucketResource},
-	}
-	if prefix != "" {
-		listStatement.Condition = map[string]any{
-			"StringLike": map[string]any{
-				"s3:prefix": []string{prefix + "*"},
-			},
-		}
-	}
-	return setupIAMPolicyDocument{
-		Version: "2012-10-17",
-		Statement: []setupIAMPolicyStatement{
-			{
-				Sid:    "SentraSetupBucketControls",
-				Effect: "Allow",
-				Action: []string{
-					"s3:CreateBucket",
-					"s3:GetBucketEncryption",
-					"s3:GetBucketPublicAccessBlock",
-					"s3:PutBucketEncryption",
-					"s3:PutBucketPublicAccessBlock",
-				},
-				Resource: []string{bucketResource},
-			},
-			listStatement,
-			{
-				Sid:    "SentraRepositoryObjects",
-				Effect: "Allow",
-				Action: []string{
-					"s3:DeleteObject",
-					"s3:GetObject",
-					"s3:PutObject",
-				},
-				Resource: []string{objectResource},
-			},
-		},
-	}
 }
