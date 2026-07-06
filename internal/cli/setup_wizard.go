@@ -449,43 +449,7 @@ func promptSetupPassphraseStorage(plan *SetupPlan) error {
 }
 
 func setupPlanReviewText(cfgPath string, plan SetupPlan) string {
-	var b strings.Builder
-	fmt.Fprintf(&b, "Config: %s\n", cfgPath)
-	fmt.Fprintf(&b, "Storage: %s\n", setupBackendLabel(plan.Backend))
-	fmt.Fprintf(&b, "Bucket: %s\n", emptyDash(plan.Config.Repo.S3.Bucket))
-	if plan.Config.Repo.S3.Prefix != "" {
-		fmt.Fprintf(&b, "Prefix: %s\n", plan.Config.Repo.S3.Prefix)
-	}
-	if plan.Config.Repo.S3.Region != "" {
-		fmt.Fprintf(&b, "Region: %s\n", plan.Config.Repo.S3.Region)
-	}
-	if plan.Config.Repo.S3.Profile != "" {
-		fmt.Fprintf(&b, "Profile: %s\n", plan.Config.Repo.S3.Profile)
-	}
-	if plan.Config.Repo.S3.EndpointURL != "" {
-		fmt.Fprintf(&b, "Endpoint: %s\n", plan.Config.Repo.S3.EndpointURL)
-	}
-	if plan.PrepareAWS {
-		fmt.Fprintf(&b, "AWS sign-in: %s\n", setupAWSAuthMethodLabel(plan.AWSAuthMethod))
-		fmt.Fprintf(&b, "Create missing bucket: %t\n", plan.CreateBucket)
-		fmt.Fprintf(&b, "Block public access: %t\n", plan.BlockPublicAccess)
-		fmt.Fprintf(&b, "Enable default encryption: %t\n", plan.DefaultEncryption)
-	} else {
-		fmt.Fprintln(&b, "AWS setup: skipped")
-	}
-	if plan.InitRepo {
-		fmt.Fprintln(&b, "Repository: initialize after config")
-		if plan.SavePassphrase {
-			fmt.Fprintln(&b, "Passphrase: save to OS keyring after repo initialization")
-		} else {
-			fmt.Fprintln(&b, "Passphrase: prompted or read from --passphrase-file or SENTRA_PASSPHRASE")
-		}
-	} else {
-		fmt.Fprintln(&b, "Repository: config only")
-	}
-	fmt.Fprintln(&b)
-	fmt.Fprintln(&b, "No passphrases, AWS credentials, salts, wrapped keys, or MAC material are written to the config.")
-	return b.String()
+	return setup.ReviewText(cfgPath, plan)
 }
 
 func normalizeSetupConfig(cfg *config.Config) {

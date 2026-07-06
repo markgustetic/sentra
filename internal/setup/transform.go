@@ -1,9 +1,11 @@
 package setup
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/diag"
 )
 
 // DefaultPlan builds the wizard's starting plan from the current config and
@@ -118,4 +120,28 @@ func DefaultAWSRepairChoice(p Plan, cause error) AWSRepairChoice {
 	default:
 		return AWSRepairLogin
 	}
+}
+
+// ValidatePlan enforces the guards runSetup applied inline before writing
+// anything: a bucket is required, its name must be valid, and AWS preparation
+// is incompatible with a custom endpoint_url. Ported from
+// internal/cli/setup.go:210-228.
+func ValidatePlan(p Plan) error {
+	if strings.TrimSpace(p.Config.Repo.S3.Bucket) == "" {
+		return fmt.Errorf("repo.s3.bucket not set - enter a bucket name")
+	}
+	if err := diag.ValidateBucketName(p.Config.Repo.S3.Bucket); err != nil {
+		return err
+	}
+	if p.PrepareAWS && p.Config.Repo.S3.EndpointURL != "" {
+		return fmt.Errorf("AWS setup does not support endpoint_url - choose S3-compatible/manual setup for MinIO or LocalStack")
+	}
+	return nil
+}
+
+// ValidateBucketName re-exports diag's bucket-name validation so both
+// ValidatePlan and the TUI wizard's inline field validation share one rule
+// set without the TUI importing internal/diag directly.
+func ValidateBucketName(bucket string) error {
+	return diag.ValidateBucketName(bucket)
 }

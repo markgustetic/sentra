@@ -5,6 +5,7 @@ import (
 	"io"
 
 	"github.com/markgustetic/sentra/internal/diag"
+	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
@@ -18,69 +19,19 @@ func printSetupSummary(
 ) {
 	fmt.Fprintln(out)
 	fmt.Fprintln(out, ui.Success.Bold(true).Render("Sentra setup complete"))
-	fmt.Fprintln(out, ui.Subtle.Render("Configuration"))
-	fmt.Fprintf(out, "  config:   %s\n", cfgPath)
-	fmt.Fprintf(out, "  storage:  %s\n", setupBackendLabel(plan.Backend))
-	fmt.Fprintf(out, "  bucket:   %s\n", plan.Config.Repo.S3.Bucket)
-	if plan.Config.Repo.S3.Prefix != "" {
-		fmt.Fprintf(out, "  prefix:   %s\n", plan.Config.Repo.S3.Prefix)
+	headers := map[string]bool{
+		"Configuration":      true,
+		"AWS authentication": true,
+		"AWS bucket":         true,
+		"Repository":         true,
+		"Next":               true,
 	}
-	if plan.Config.Repo.S3.Region != "" {
-		fmt.Fprintf(out, "  region:   %s\n", plan.Config.Repo.S3.Region)
-	}
-	if plan.Config.Repo.S3.Profile != "" {
-		fmt.Fprintf(out, "  profile:  %s\n", plan.Config.Repo.S3.Profile)
-	}
-	if plan.Config.Repo.S3.EndpointURL != "" {
-		fmt.Fprintf(out, "  endpoint: %s\n", plan.Config.Repo.S3.EndpointURL)
-	}
-	if awsAuthReport != nil {
-		fmt.Fprintln(out, ui.Subtle.Render("AWS authentication"))
-		if awsAuthReport.AWSCLIInstalled {
-			fmt.Fprintf(out, "  aws auth: aws cli installed with %s\n", awsAuthReport.AWSCLIManager)
+	for _, line := range setup.SummaryLines(cfgPath, *plan, awsAuthReport, awsReport, initResult) {
+		if headers[line] {
+			fmt.Fprintln(out, ui.Subtle.Render(line))
+			continue
 		}
-		if awsAuthReport.LoginRan {
-			fmt.Fprintln(out, "  aws auth: browser login completed")
-		}
-		if awsAuthReport.SSOConfigureRan {
-			fmt.Fprintln(out, "  aws auth: sso profile configured")
-		}
-		if awsAuthReport.SSOLoginRan {
-			fmt.Fprintln(out, "  aws auth: sso login completed")
-		} else if awsAuthReport.IdentityVerified {
-			fmt.Fprintln(out, "  aws auth: identity verified")
-		}
-	}
-	if awsReport != nil {
-		fmt.Fprintln(out, ui.Subtle.Render("AWS bucket"))
-		switch {
-		case awsReport.BucketCreated:
-			fmt.Fprintln(out, "  aws:      bucket created")
-		case awsReport.BucketExisted:
-			fmt.Fprintln(out, "  aws:      bucket verified")
-		default:
-			fmt.Fprintln(out, "  aws:      bucket checked")
-		}
-		if awsReport.PublicAccessBlocked {
-			fmt.Fprintln(out, "  aws:      public access blocked")
-		}
-		if awsReport.DefaultEncryptionEnabled {
-			fmt.Fprintln(out, "  aws:      default encryption enabled")
-		}
-	}
-	if initResult != nil {
-		fmt.Fprintln(out, ui.Subtle.Render("Repository"))
-		if initResult.AlreadyInitialized {
-			fmt.Fprintln(out, "  repo:     already initialized")
-		} else {
-			fmt.Fprintf(out, "  repo id:  %s\n", initResult.RepoID)
-		}
-		if initResult.PassphraseSavedToKeyring {
-			fmt.Fprintln(out, "  pass:     saved to OS keyring")
-		}
-	} else {
-		fmt.Fprintln(out, ui.Subtle.Render("Next"))
-		fmt.Fprintln(out, "  Run `sentra init` when you are ready to initialize the encrypted repository.")
+		fmt.Fprintln(out, line)
 	}
 }
 
@@ -118,44 +69,9 @@ func printSetupRepairContinue(out io.Writer, plan *SetupPlan) {
 	fmt.Fprintf(out, "%s Retrying AWS setup with %s\n", ui.Subtle.Render("..."), setupAWSAuthMethodLabel(plan.AWSAuthMethod))
 }
 
-func setupBackendLabel(backend SetupBackend) string {
-	switch backend {
-	case SetupBackendAWS:
-		return "AWS S3"
-	case SetupBackendS3Compatible:
-		return "S3-compatible or existing bucket"
-	default:
-		return string(backend)
-	}
-}
-
-func setupAWSAuthMethodLabel(method SetupAWSAuthMethod) string {
-	switch method {
-	case SetupAWSAuthLogin:
-		return "browser login"
-	case SetupAWSAuthSSO:
-		return "IAM Identity Center / SSO"
-	case SetupAWSAuthExisting:
-		return "existing credentials"
-	case SetupAWSAuthSkip:
-		return "config only"
-	default:
-		return string(method)
-	}
-}
-
-func setupAWSPreparedLabel(report *AWSPrepareReport) string {
-	switch {
-	case report == nil:
-		return "AWS S3 checked"
-	case report.BucketCreated:
-		return "AWS S3 bucket created"
-	case report.BucketExisted:
-		return "AWS S3 bucket verified"
-	default:
-		return "AWS S3 bucket checked"
-	}
-}
+func setupBackendLabel(backend SetupBackend) string       { return setup.BackendLabel(backend) }
+func setupAWSAuthMethodLabel(m SetupAWSAuthMethod) string { return setup.AWSAuthMethodLabel(m) }
+func setupAWSPreparedLabel(r *AWSPrepareReport) string    { return setup.AWSPreparedLabel(r) }
 
 func validateSetupBucketName(bucket string) error {
 	return diag.ValidateBucketName(bucket)

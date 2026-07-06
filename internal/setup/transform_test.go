@@ -143,3 +143,36 @@ func TestDefaultAWSRepairChoice(t *testing.T) {
 		t.Fatalf("skip plan: got %q, want config", got)
 	}
 }
+
+func TestValidatePlan(t *testing.T) {
+	base := func() Plan {
+		var p Plan
+		p.Config.Repo.S3.Bucket = "good-bucket"
+		return p
+	}
+	if err := ValidatePlan(base()); err != nil {
+		t.Fatalf("valid plan rejected: %v", err)
+	}
+
+	empty := Plan{}
+	if err := ValidatePlan(empty); err == nil || !errIsBucketNotSet(err) {
+		t.Fatalf("empty bucket: got %v, want bucket-not-set error", err)
+	}
+
+	bad := base()
+	bad.Config.Repo.S3.Bucket = "Bad_Bucket"
+	if err := ValidatePlan(bad); err == nil {
+		t.Fatal("invalid bucket name should error")
+	}
+
+	ep := base()
+	ep.PrepareAWS = true
+	ep.Config.Repo.S3.EndpointURL = "http://localhost:9000"
+	if err := ValidatePlan(ep); err == nil {
+		t.Fatal("PrepareAWS with endpoint_url should error")
+	}
+}
+
+func errIsBucketNotSet(err error) bool {
+	return err != nil && err.Error() == "repo.s3.bucket not set - enter a bucket name"
+}
