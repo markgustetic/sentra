@@ -83,3 +83,57 @@ func TestPoliciesView_InlineDetailShowsSelectedPolicy(t *testing.T) {
 		t.Errorf("detail must follow selection to beta:\n%s", out)
 	}
 }
+
+func TestPoliciesView_RemoveRequiresConfirm(t *testing.T) {
+	deps, path := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	// Pressing 'd' pushes a simple ConfirmModal and does NOT touch the file.
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	v = m.(PoliciesView)
+	if cmd == nil {
+		t.Fatal("d must request a confirmation modal")
+	}
+	msg := cmd()
+	push, ok := msg.(pushModalMsg)
+	if !ok {
+		t.Fatalf("expected pushModalMsg, got %#v", msg)
+	}
+	if _, ok := push.modal.(ConfirmModal); !ok {
+		t.Fatalf("remove must use the simple ConfirmModal, got %T", push.modal)
+	}
+	// File is untouched: alpha still present.
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.Policies["alpha"]; !ok {
+		t.Fatal("remove must not delete before confirmation")
+	}
+}
+
+func TestPoliciesView_RemoveConfirmedRewritesConfigAndReloads(t *testing.T) {
+	deps, path := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	// selected == 0 == alpha. Arm the modal, then confirm.
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'d'}})
+	v = m.(PoliciesView)
+	m, cmd := v.Update(confirmedMsg{id: policyRemoveConfirmID})
+	v = m.(PoliciesView)
+	// The write is done synchronously in a plain tea.Cmd (no op guard).
+	if cmd != nil {
+		if _, ok := cmd().(startOpMsg); ok {
+			t.Fatal("remove must NOT take the op guard (config-only edit)")
+		}
+	}
+	// alpha is gone from disk and from the reloaded view.
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := cfg.Policies["alpha"]; ok {
+		t.Fatal("confirmed remove must delete alpha from sentra.yaml")
+	}
+	if len(v.names) != 1 || v.names[0] != "beta" {
+		t.Fatalf("view names after remove = %v, want [beta]", v.names)
+	}
+}

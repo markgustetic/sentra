@@ -131,9 +131,47 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			v.notice = ""
 			return v, nil
+		case tea.KeyRunes:
+			if len(msg.Runes) == 1 && msg.Runes[0] == 'd' && len(v.names) > 0 {
+				name := v.names[v.selected]
+				body := fmt.Sprintf("Remove policy %q from sentra.yaml?\nThis edits local config only — no snapshots are touched.", name)
+				modal := NewConfirmModal("Confirm remove", body, policyRemoveConfirmID, 80, 24)
+				return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+			}
+			return v, nil
+		}
+		return v, nil
+
+	case confirmedMsg:
+		switch msg.id {
+		case policyRemoveConfirmID:
+			return v.removeSelected()
 		}
 		return v, nil
 	}
+	return v, nil
+}
+
+// removeSelected deletes the selected policy from sentra.yaml and reloads.
+// This is a config-only edit: it rewrites the file via config.Write and
+// never takes the repo lock or the op guard, matching `sentra policy remove`.
+func (v PoliciesView) removeSelected() (tea.Model, tea.Cmd) {
+	if v.selected < 0 || v.selected >= len(v.names) {
+		return v, nil
+	}
+	name := v.names[v.selected]
+	cfg, err := config.Load(v.deps.ConfigPath)
+	if err != nil {
+		v.notice = "reload failed: " + err.Error()
+		return v, nil
+	}
+	delete(cfg.Policies, name)
+	if err := config.Write(v.deps.ConfigPath, cfg); err != nil {
+		v.notice = "write failed: " + err.Error()
+		return v, nil
+	}
+	v.reload()
+	v.notice = fmt.Sprintf("removed %q", name)
 	return v, nil
 }
 
