@@ -6,7 +6,6 @@ import (
 	"fmt"
 	"io"
 	"os"
-	"path/filepath"
 
 	"github.com/spf13/cobra"
 
@@ -274,26 +273,21 @@ func continueSetupAfterAWSRepair(cfgPath string, out io.Writer, plan *SetupPlan,
 	return nil
 }
 
+// draftEngine is an effect-free engine used only for its draft persistence
+// helpers (WriteDraft/RemoveDraft/DraftPath touch neither Effects nor AWS), so
+// the cli and TUI share one draft-path derivation and one writer.
+func draftEngine() *setup.Engine { return setup.NewEngine(nil) }
+
 func writeSetupDraft(cfgPath string, cfg *config.Config) error {
-	draftPath := setupDraftPath(cfgPath)
-	if err := config.Write(draftPath, cfg); err != nil {
-		return fmt.Errorf("write setup draft %s: %w", draftPath, err)
-	}
-	return nil
+	return draftEngine().WriteDraft(cfgPath, cfg)
 }
 
 func removeSetupDraft(cfgPath string) {
-	if err := os.Remove(setupDraftPath(cfgPath)); err != nil && !errors.Is(err, os.ErrNotExist) {
-		// Best effort cleanup; leaving a non-secret draft is less harmful than
-		// turning a successful setup into a failure.
-		return
-	}
+	draftEngine().RemoveDraft(cfgPath)
 }
 
 func setupDraftPath(cfgPath string) string {
-	dir := filepath.Dir(cfgPath)
-	base := filepath.Base(cfgPath)
-	return filepath.Join(dir, "."+base+".setup-draft")
+	return draftEngine().DraftPath(cfgPath)
 }
 
 func applySetupAWSConfigOnly(plan *SetupPlan)    { setup.ApplyAWSConfigOnly(plan) }
