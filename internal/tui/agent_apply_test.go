@@ -287,3 +287,99 @@ func TestAgentApply_RejectedResetsToReviewing(t *testing.T) {
 		t.Fatalf("applyStage = %v, want agentReviewing after rejection", m.(AgentView).applyStage)
 	}
 }
+
+// agentIndexIn returns the index of the agent view in the App's view
+// slice so the test can reach into it after routing.
+func agentIndexIn(t *testing.T, app App) int {
+	t.Helper()
+	for i, v := range app.views {
+		if v.id == "agent" {
+			return i
+		}
+	}
+	t.Fatal("agent view not registered in App")
+	return -1
+}
+
+// TestAgentApply_EndToEndThroughApp routes an apply from review to done
+// through the App so the op guard + modal broadcast are exercised, then
+// asserts the repo side effect and the cleared guard.
+func TestAgentApply_EndToEndThroughApp(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	victim := snaps[0].ID
+	deps := Deps{Repo: r, Actions: action.NewDefaultRegistry(), Ctx: context.Background()}
+	app := NewApp(deps)
+	// Give the app a size so modals render.
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	app = m.(App)
+
+	idx := agentIndexIn(t, app)
+	// Seed the agent view with a prune rec via agentDoneMsg (broadcast).
+	recs := []agent.Recommendation{
+		{ID: "rec-prune", Action: "prune_snapshot", Target: victim, Severity: "warn", Rationale: "stale"},
+	}
+	m, _ = app.Update(agentDoneMsg{recs: recs})
+	app = m.(App)
+	// Focus the agent view.
+	app.active = idx
+	app.focus = focusContent
+
+	// `a` → review, `enter` → confirm walk (2 snaps so no wipe gate).
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	app = m.(App)
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = m.(App)
+	// The enter produced a pushModalMsg cmd; run it and feed the result.
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	if len(app.modals) != 1 {
+		t.Fatalf("expected a confirm modal on the stack, got %d", len(app.modals))
+	}
+	// Confirm the modal (enter). The modal emits confirmedMsg; the App
+	// pops it and broadcasts back to the view, which starts the op.
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, cmd2 := app.Update(msg)
+		app = m.(App)
+		// The confirmedMsg → view startApply → startOpMsg → op runs.
+		for _, msg2 := range execCmds(t, cmd2) {
+			m, cmd3 := app.Update(msg2)
+			app = m.(App)
+			for _, msg3 := range execCmds(t, cmd3) {
+				m, _ = app.Update(msg3)
+				app = m.(App)
+			}
+		}
+	}
+
+	// The op guard must be cleared once the done message lands.
+	if app.opRunning != "" {
+		t.Errorf("opRunning = %q, want cleared after agent-apply", app.opRunning)
+	}
+	// Side effect: victim snapshot gone.
+	after, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	for _, s := range after {
+		if s.ID == victim {
+			t.Fatalf("snapshot %s still present after end-to-end apply", victim)
+		}
+	}
+	// The agent view renders the done tally.
+	av := app.views[idx].model.(AgentView)
+	if av.applyStage != agentApplyDone {
+		t.Fatalf("agent view stage = %v, want agentApplyDone", av.applyStage)
+	}
+	if !strings.Contains(av.View(), "applied") {
+		t.Errorf("agent view should show tally:\n%s", av.View())
+	}
+}
