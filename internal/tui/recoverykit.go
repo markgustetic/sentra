@@ -46,6 +46,12 @@ type RecoveryKitView struct {
 	vp    viewport.Model
 	err   string
 
+	// markdown is the full rendered kit, retained verbatim. The viewport
+	// gets the same string via SetContent, but vp.View() returns only the
+	// visible, clipped, space-padded window — so the save path writes this
+	// raw copy, never vp.View(), to avoid persisting a truncated artifact.
+	markdown string
+
 	// save sub-action state.
 	savePath textinput.Model
 	saveErr  string
@@ -113,6 +119,7 @@ func (v RecoveryKitView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, nil
 		}
 		v.err = ""
+		v.markdown = msg.markdown
 		v.vp.SetContent(msg.markdown)
 		v.vp.GotoTop()
 		return v, nil
@@ -213,7 +220,7 @@ func (v RecoveryKitView) writeKit() (tea.Model, tea.Cmd) {
 		v.saveErr = "destination path is required"
 		return v, nil
 	}
-	if err := os.WriteFile(path, []byte(v.vp.View()), 0o600); err != nil {
+	if err := os.WriteFile(path, []byte(v.markdown), 0o600); err != nil {
 		v.saveErr = err.Error()
 		return v, nil
 	}

@@ -59,8 +59,19 @@ func TestRecoveryKitFlow_SaveWritesFile(t *testing.T) {
 	seedSnapshotReal(t, r)
 
 	v := NewRecoveryKitView(Deps{Repo: r, ConfigPath: "sentra.yaml"})
+
+	// Simulate a real terminal size the way the App does: it forwards an
+	// *inner* WindowSizeMsg to each view. On a ~100x30 terminal the inner
+	// height is small enough that the viewport can only show ~20 of the
+	// kit's ~31 lines — so the save MUST persist the raw markdown, not the
+	// clipped/space-padded viewport render, or the Recovery Commands and
+	// disclaimer get dropped from the disaster-recovery artifact.
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 98, Height: 26})
+	v = m.(RecoveryKitView)
+
 	// Drive to done.
-	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	var cmd tea.Cmd
+	m, cmd = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(RecoveryKitView)
 	for _, msg := range execCmds(t, cmd) {
 		if _, ok := msg.(recoveryKitDoneMsg); ok {
@@ -92,8 +103,28 @@ func TestRecoveryKitFlow_SaveWritesFile(t *testing.T) {
 	if err != nil {
 		t.Fatalf("read saved kit: %v", err)
 	}
-	if !strings.Contains(string(body), "# Sentra Recovery Kit") {
-		t.Fatalf("saved file is not a rendered kit:\n%s", body)
+	got := string(body)
+	if !strings.Contains(got, "# Sentra Recovery Kit") {
+		t.Fatalf("saved file is not a rendered kit:\n%s", got)
+	}
+	// The whole kit must be present — the Recovery Commands section and its
+	// concrete restore command line live near the bottom and are exactly
+	// what a clipped viewport render would drop.
+	if !strings.Contains(got, "## Recovery Commands") {
+		t.Fatalf("saved kit is truncated: missing '## Recovery Commands' section:\n%s", got)
+	}
+	if !strings.Contains(got, "sentra restore ") || !strings.Contains(got, "--verify") {
+		t.Fatalf("saved kit is truncated: missing the restore command line:\n%s", got)
+	}
+	if !strings.Contains(got, "This file intentionally excludes") {
+		t.Fatalf("saved kit is truncated: missing the trailing disclaimer:\n%s", got)
+	}
+	// A viewport render right-pads every visible line to its width; the raw
+	// markdown does not. No line may carry trailing-space padding.
+	for _, line := range strings.Split(got, "\n") {
+		if line != strings.TrimRight(line, " ") {
+			t.Fatalf("saved kit has trailing-space padding (viewport render leaked): %q", line)
+		}
 	}
 	// 0o600 — no group/other bits.
 	info, err := os.Stat(dst)
