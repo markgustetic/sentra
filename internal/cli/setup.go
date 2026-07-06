@@ -16,38 +16,25 @@ import (
 )
 
 // SetupBackend names the storage target chosen in the setup wizard.
-type SetupBackend string
+type SetupBackend = setup.Backend
 
 const (
-	SetupBackendAWS          SetupBackend = "aws"
-	SetupBackendS3Compatible SetupBackend = "s3-compatible"
+	SetupBackendAWS          = setup.BackendAWS
+	SetupBackendS3Compatible = setup.BackendS3Compatible
 )
 
-// SetupAWSAuthMethod names how setup should make AWS credentials available
-// before it prepares the bucket.
-type SetupAWSAuthMethod string
+// SetupAWSAuthMethod names how setup should make AWS credentials available.
+type SetupAWSAuthMethod = setup.AWSAuthMethod
 
 const (
-	SetupAWSAuthLogin    SetupAWSAuthMethod = "login"
-	SetupAWSAuthSSO      SetupAWSAuthMethod = "sso"
-	SetupAWSAuthExisting SetupAWSAuthMethod = "existing"
-	SetupAWSAuthSkip     SetupAWSAuthMethod = "skip"
+	SetupAWSAuthLogin    = setup.AWSAuthLogin
+	SetupAWSAuthSSO      = setup.AWSAuthSSO
+	SetupAWSAuthExisting = setup.AWSAuthExisting
+	SetupAWSAuthSkip     = setup.AWSAuthSkip
 )
 
 // SetupPlan is the complete set of actions the setup wizard selected.
-// Tests return this directly; production builds it from the huh TUI.
-type SetupPlan struct {
-	Config            config.Config
-	Backend           SetupBackend
-	PrepareAWS        bool
-	AWSAuthMethod     SetupAWSAuthMethod
-	CreateBucket      bool
-	BlockPublicAccess bool
-	DefaultEncryption bool
-	PrintIAMPolicy    bool
-	SavePassphrase    bool
-	InitRepo          bool
-}
+type SetupPlan = setup.Plan
 
 // SetupPrompt collects an updated setup plan from the operator.
 // Production wires this to HuhSetupPrompt; tests inject a deterministic
@@ -70,51 +57,24 @@ type SetupAWSAuthRepairPrompt func(plan SetupPlan, cause error) (SetupPlan, bool
 
 // AWSCLIInstallPlan is the package-manager command Sentra can run to install
 // the AWS CLI for setup's SSO flow.
-type AWSCLIInstallPlan struct {
-	Manager string
-	Command []string
-}
+type AWSCLIInstallPlan = setup.AWSCLIInstallPlan
 
 // AWSCLIInstallConfirm asks whether Sentra may run the detected package
 // manager command. Production wires this to HuhAWSCLIInstallConfirm; tests
 // inject a deterministic callback.
-type AWSCLIInstallConfirm func(plan AWSCLIInstallPlan) (bool, error)
+type AWSCLIInstallConfirm = setup.AWSCLIInstallConfirm
 
 // AWSCLIInstallReport summarizes the AWS CLI preflight.
-type AWSCLIInstallReport struct {
-	AlreadyInstalled bool
-	Installed        bool
-	Manager          string
-}
+type AWSCLIInstallReport = setup.AWSCLIInstallReport
 
-// AWSPrepareOptions controls the AWS-side setup work. Bucket existence
-// is always checked; CreateBucket decides whether a missing bucket is
-// created or reported as an error.
-type AWSPrepareOptions struct {
-	CreateBucket      bool
-	BlockPublicAccess bool
-	DefaultEncryption bool
-}
+// AWSPrepareOptions controls the AWS-side setup work.
+type AWSPrepareOptions = setup.AWSPrepareOptions
 
 // AWSPrepareReport summarizes the AWS setup work for the final CLI output.
-type AWSPrepareReport struct {
-	BucketExisted            bool
-	BucketCreated            bool
-	PublicAccessBlocked      bool
-	DefaultEncryptionEnabled bool
-}
+type AWSPrepareReport = setup.AWSPrepareReport
 
 // AWSAuthReport summarizes the optional AWS CLI auth preflight.
-type AWSAuthReport struct {
-	IdentityVerified bool
-	Method           SetupAWSAuthMethod
-	AWSCLIInstalled  bool
-	AWSCLIManager    string
-	LoginRan         bool
-	SSOConfigured    bool
-	SSOConfigureRan  bool
-	SSOLoginRan      bool
-}
+type AWSAuthReport = setup.AWSAuthReport
 
 // SetupDeps wires the side-effecting pieces of `sentra setup`.
 type SetupDeps struct {

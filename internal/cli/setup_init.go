@@ -8,13 +8,10 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
-type setupInitResult struct {
-	RepoID                   string
-	AlreadyInitialized       bool
-	PassphraseSavedToKeyring bool
-}
+type setupInitResult = setup.InitResult
 
 func runSetupInit(ctx context.Context, deps SetupDeps, cfg *config.Config, savePassphrase bool) (setupInitResult, error) {
 	if deps.NewStore == nil {

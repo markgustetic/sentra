@@ -9,6 +9,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
 const setupIntroText = "Configure storage, optional AWS automation, and repository initialization in one flow.\n\nSentra only writes non-secret settings to sentra.yaml."
@@ -73,14 +74,14 @@ func HuhSetupReviewConfirm(cfgPath string, plan SetupPlan) (bool, error) {
 	return apply, nil
 }
 
-type setupAWSRepairChoice string
+type setupAWSRepairChoice = setup.AWSRepairChoice
 
 const (
-	setupAWSRepairLogin    setupAWSRepairChoice = "login"
-	setupAWSRepairSSO      setupAWSRepairChoice = "sso"
-	setupAWSRepairExisting setupAWSRepairChoice = "existing"
-	setupAWSRepairConfig   setupAWSRepairChoice = "config"
-	setupAWSRepairCancel   setupAWSRepairChoice = "cancel"
+	setupAWSRepairLogin    = setup.AWSRepairLogin
+	setupAWSRepairSSO      = setup.AWSRepairSSO
+	setupAWSRepairExisting = setup.AWSRepairExisting
+	setupAWSRepairConfig   = setup.AWSRepairConfig
+	setupAWSRepairCancel   = setup.AWSRepairCancel
 )
 
 // HuhSetupAWSAuthRepairPrompt offers a recovery path after AWS auth or bucket

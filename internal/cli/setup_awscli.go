@@ -7,14 +7,7 @@ import (
 )
 
 func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
-	report, err := setup.DefaultEnsureAWSCLI(ctx, func(p setup.AWSCLIInstallPlan) (bool, error) {
-		return confirm(AWSCLIInstallPlan{Manager: p.Manager, Command: p.Command})
-	})
-	return AWSCLIInstallReport{
-		AlreadyInstalled: report.AlreadyInstalled,
-		Installed:        report.Installed,
-		Manager:          report.Manager,
-	}, err
+	return setup.DefaultEnsureAWSCLI(ctx, confirm)
 }
 
 func DefaultAWSLogin(ctx context.Context, profile string, region string) error {

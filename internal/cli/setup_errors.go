@@ -18,7 +18,7 @@ func wrapAWSPrepareError(cfg *config.Config, method SetupAWSAuthMethod, err erro
 	if cfg != nil {
 		c = *cfg
 	}
-	return setup.WrapAWSPrepareError(c, setup.AWSAuthMethod(method), err)
+	return setup.WrapAWSPrepareError(c, method, err)
 }
 
 func wrapAWSLoginFlowError(profile string, err error) error {
