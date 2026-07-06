@@ -78,6 +78,21 @@ func TestApp_RepoReadyRebuildsViewsWithLiveRepoAndShowsDashboard(t *testing.T) {
 	}
 }
 
+// TestApp_UnlockRegisteredAsView: the unlock gate is a registered view so the
+// InitialView routing can land on it and the sidebar/palette know about it.
+func TestApp_UnlockRegisteredAsView(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x"})
+	found := false
+	for _, v := range app.views {
+		if v.id == "unlock" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("unlock view not registered in NewApp")
+	}
+}
+
 // TestApp_DepsCarryConfig: flows need the resolved config (retention
 // policy, walker options). Deps must carry it nil-tolerantly.
 func TestApp_DepsCarryConfig(t *testing.T) {
@@ -100,8 +115,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 14 {
-		t.Fatalf("views = %d, want 14 (3 read-only + check + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password)", got)
+	if got := len(app.views); got != 15 {
+		t.Fatalf("views = %d, want 15 (3 read-only + check + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock)", got)
 	}
 }
 
@@ -826,8 +841,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 14 {
-		t.Fatalf("views = %d, want 14 (Phase 2c end-state: all 14 views registered)", got)
+	if got := len(app.views); got != 15 {
+		t.Fatalf("views = %d, want 15 (Phase 2c end-state + the unlock gate)", got)
 	}
 }
 
@@ -909,7 +924,7 @@ func TestApp_Phase2cViewsRegistered(t *testing.T) {
 	want := []string{
 		"dashboard", "snapshots", "diff", "check", "doctor", "recovery-kit",
 		"policies", "schedule", "agent", "backup", "restore", "prune",
-		"sync", "password",
+		"sync", "password", "unlock",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {

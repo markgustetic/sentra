@@ -2,8 +2,10 @@ package cli
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -49,6 +51,60 @@ func openRepoForConfig(cmd *cobra.Command, cfgPath string, deps RepoDeps) (*repo
 		return nil, nil, nil, fmt.Errorf("open repo: %w", err)
 	}
 	return r, pass, cfg, nil
+}
+
+// launchState classifies what `sentra ui` should show at startup without ever
+// prompting: whether a config file exists, and whether a passphrase can be
+// resolved non-interactively (keyring / env / file). It never opens the repo
+// and never calls an interactive resolver — the TUI's unlock/setup views own
+// the interactive path so huh never fires on the launch path.
+type launchState struct {
+	// ConfigExists reports whether cfgPath is present on disk. Absent means
+	// first run: show the setup wizard.
+	ConfigExists bool
+	// PassphraseAvailable reports whether a non-interactive source supplied
+	// the passphrase. False with ConfigExists true means show the unlock view.
+	PassphraseAvailable bool
+	// Config is the loaded (or default) config, always non-nil on nil error.
+	Config *config.Config
+}
+
+// probeLaunchState loads the config and attempts a NON-INTERACTIVE passphrase
+// resolution. deps.PassphraseWithConfig is the interactive resolver used by the
+// normal read path; the launch path must not call it (it would prompt), so this
+// helper resolves through config.Resolve with a nil Prompt and the same
+// keyring settings the read path would use, and treats ErrNoPassphraseSource as
+// "not available" rather than an error.
+func probeLaunchState(_ *cobra.Command, cfgPath string, _ RepoDeps) (launchState, error) {
+	exists := false
+	if info, err := os.Stat(cfgPath); err == nil && !info.IsDir() {
+		exists = true
+	}
+	cfg, err := config.Load(cfgPath)
+	if err != nil {
+		return launchState{}, fmt.Errorf("load config: %w", err)
+	}
+	st := launchState{ConfigExists: exists, Config: cfg}
+	if !exists {
+		return st, nil // first run: no passphrase needed, wizard handles it
+	}
+	pass, err := config.Resolve(config.ResolveOptions{
+		UseKeyring:           cfg.Passphrase.UseKeyring,
+		KeyringService:       config.KeyringService,
+		KeyringUser:          config.KeyringUserForConfig(cfg),
+		KeyringFallbackUsers: config.LegacyKeyringUsersForConfig(cfg),
+		Prompt:               nil, // launch path never prompts
+	})
+	if err != nil {
+		if errors.Is(err, config.ErrNoPassphraseSource) {
+			return st, nil // locked: unlock view will collect it
+		}
+		return launchState{}, fmt.Errorf("resolve passphrase: %w", err)
+	}
+	// A source supplied the passphrase; wipe it — the read path re-resolves it.
+	crypto.Zeroize(pass)
+	st.PassphraseAvailable = true
+	return st, nil
 }
 
 // cmdStdout returns w, or the command's default stdout when w is nil.

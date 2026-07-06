@@ -213,3 +213,91 @@ func TestRunUI_ThreadsSetupEffects(t *testing.T) {
 		t.Error("Deps.SetupEffects not threaded from runUI")
 	}
 }
+
+// TestRunUI_MissingConfigLaunchesFirstRunWizard: with no sentra.yaml present,
+// runUI must NOT try to open a repo (there is none). It launches the TUI on the
+// setup wizard with a nil Repo, so the first-run experience is the wizard.
+func TestRunUI_MissingConfigLaunchesFirstRunWizard(t *testing.T) {
+	chDir(t, t.TempDir()) // empty dir: no sentra.yaml
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				t.Fatal("NewStore must not be called on the first-run path")
+				return nil, nil
+			},
+			PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
+				t.Fatal("passphrase must not be resolved on the first-run path")
+				return nil, nil
+			},
+		},
+		Run: func(app tui.App) error { captured = app; return nil },
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	if d.InitialView != "setup" {
+		t.Errorf("InitialView = %q, want setup", d.InitialView)
+	}
+	if d.Repo != nil {
+		t.Error("first-run App must carry a nil Repo")
+	}
+}
+
+// TestRunUI_ConfigPresentButLockedLaunchesUnlockView: sentra.yaml exists but no
+// non-interactive passphrase source can supply the secret (keyring off, no env,
+// no file, and the launch path passes NO interactive prompt). runUI must land
+// on the unlock view rather than erroring or blocking on huh.
+func TestRunUI_ConfigPresentButLockedLaunchesUnlockView(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".") // config with a bucket, keyring off
+
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			// PassphraseWithConfig is the INTERACTIVE resolver (it prompts).
+			// runUI must not call it on the launch path — a huh/tty prompt
+			// there is exactly what Phase 3 forbids.
+			PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
+				t.Fatal("interactive passphrase resolver must not run on the launch path")
+				return nil, nil
+			},
+		},
+		Run: func(app tui.App) error { captured = app; return nil },
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	if d.InitialView != "unlock" {
+		t.Errorf("InitialView = %q, want unlock", d.InitialView)
+	}
+	if d.Repo != nil {
+		t.Error("locked App must carry a nil Repo until the user unlocks")
+	}
+	if d.NewStore == nil {
+		t.Error("unlock view needs NewStore threaded to open the repo")
+	}
+}

@@ -89,6 +89,48 @@ func NewUI(deps UIDeps) *cobra.Command {
 func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 	cmd.SilenceUsage = true
 
+	st, err := probeLaunchState(cmd, cfgPath, deps.RepoDeps)
+	if err != nil {
+		return err
+	}
+
+	// Resolve the config path to an absolute location so config-writing
+	// flows (setup, policy, schedule) write back to the file the user
+	// actually launched against, regardless of the process cwd. Abs only
+	// fails when the cwd is unreadable; fall back to the raw path then.
+	absCfgPath := cfgPath
+	if p, err := filepath.Abs(cfgPath); err == nil {
+		absCfgPath = p
+	}
+
+	// First run (no config) and configured-but-locked both launch the TUI
+	// WITHOUT opening a repo — the wizard / unlock view own the interactive
+	// path so huh never fires here. Repo is nil; the unlock view swaps a live
+	// repo in via repoReadyMsg once the user provides the passphrase.
+	if !st.ConfigExists || !st.PassphraseAvailable {
+		initial := "setup"
+		if st.ConfigExists {
+			initial = "unlock"
+		}
+		repoName := st.Config.Repo.S3.Bucket
+		app := tui.NewApp(tui.Deps{
+			Provider:              providerForLaunch(deps, st.Config),
+			RepoName:              repoName,
+			Config:                st.Config,
+			Ctx:                   cmd.Context(),
+			ConfigPath:            absCfgPath,
+			NewStore:              deps.NewStore,
+			Actions:               deps.Actions,
+			SaveKeyringPassphrase: deps.SavePassphrase,
+			SetupEffects:          setupEffectsForLaunch(deps),
+			InitialView:           initial,
+		})
+		if deps.Run == nil {
+			return fmt.Errorf("ui: no Run hook configured")
+		}
+		return deps.Run(app)
+	}
+
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
 		return err
@@ -110,15 +152,6 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		provider = deps.ProviderForConfig(cfg)
 	}
 
-	// Resolve the config path to an absolute location so config-writing
-	// flows (setup, policy, schedule) write back to the file the user
-	// actually launched against, regardless of the process cwd. Abs only
-	// fails when the cwd is unreadable; fall back to the raw path then.
-	absCfgPath := cfgPath
-	if p, err := filepath.Abs(cfgPath); err == nil {
-		absCfgPath = p
-	}
-
 	app := tui.NewApp(tui.Deps{
 		Repo:     r,
 		Provider: provider,
@@ -137,18 +170,32 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		NewStore:              deps.NewStore,
 		Actions:               deps.Actions,
 		SaveKeyringPassphrase: deps.SavePassphrase,
-		SetupEffects: func() setup.Effects {
-			if deps.SetupEffects != nil {
-				return deps.SetupEffects
-			}
-			return setup.DefaultEffects()
-		}(),
+		SetupEffects:          setupEffectsForLaunch(deps),
 	})
 
 	if deps.Run == nil {
 		return fmt.Errorf("ui: no Run hook configured")
 	}
 	return deps.Run(app)
+}
+
+// setupEffectsForLaunch returns the UIDeps override or the production default.
+func setupEffectsForLaunch(deps UIDeps) setup.Effects {
+	if deps.SetupEffects != nil {
+		return deps.SetupEffects
+	}
+	return setup.DefaultEffects()
+}
+
+// providerForLaunch builds the agent provider for the launch-path Apps (first
+// run / locked), where no repo is open yet. It mirrors the dashboard path's
+// provider selection: ProviderForConfig wins when set, else the static
+// Provider.
+func providerForLaunch(deps UIDeps, cfg *config.Config) llm.Provider {
+	if deps.ProviderForConfig != nil {
+		return deps.ProviderForConfig(cfg)
+	}
+	return deps.Provider
 }
 
 // DefaultUIRunner is the production launcher: wraps the App in a

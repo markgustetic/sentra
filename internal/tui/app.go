@@ -218,6 +218,7 @@ func NewApp(deps Deps) App {
 		{id: "prune", model: NewPruneView(deps)},
 		{id: "sync", model: NewSyncView(deps)},
 		{id: "password", model: NewPasswordView(deps)},
+		{id: "unlock", model: NewUnlockView(deps)},
 	}
 	// The direct data operations form the "Operations" category in the
 	// rail and palette; every read-only/management view defaults to
