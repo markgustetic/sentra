@@ -128,7 +128,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		// Unit-1 plumbing: call-time hooks + plain data the ported
 		// operation flows consume. None hold resolved secrets.
 		ConfigPath:            absCfgPath,
-		NewStore:              deps.RepoDeps.NewStore,
+		NewStore:              deps.NewStore,
 		Actions:               deps.Actions,
 		SaveKeyringPassphrase: deps.SavePassphrase,
 	})
