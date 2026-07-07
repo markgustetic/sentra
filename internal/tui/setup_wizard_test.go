@@ -414,7 +414,7 @@ func TestSetupWizard_DoneMsgErrorRendersAdvice(t *testing.T) {
 	}
 }
 
-func TestSetupWizard_OpRejectedReturnsToReview(t *testing.T) {
+func TestSetupWizard_OpRejectedReturnsToPassphrase(t *testing.T) {
 	v := setupAtReview(t)
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(SetupWizardView)
@@ -422,8 +422,11 @@ func TestSetupWizard_OpRejectedReturnsToReview(t *testing.T) {
 	v = m.(SetupWizardView) // now stageProvision
 	m, _ = v.Update(opRejectedMsg{name: "setup"})
 	v = m.(SetupWizardView)
-	if v.stage != stageReview {
-		t.Fatalf("rejection must return to review, got %v", v.stage)
+	// Reject routes to passphrase re-entry (not review): v.pass was zeroized
+	// and niled, so review's confirm would otherwise re-arm provisioning
+	// against an empty passphrase.
+	if v.stage != stagePassphrase {
+		t.Fatalf("rejection must return to passphrase re-entry, got %v", v.stage)
 	}
 	if v.notice == "" {
 		t.Fatal("rejection must set a notice")
@@ -589,4 +592,69 @@ func driveToActions(t *testing.T, deps Deps) SetupWizardView {
 		t.Fatalf("driveToActions precondition failed: stage %v", got.stage)
 	}
 	return got
+}
+
+func TestSetupWizard_OpRejectedZeroizesPassphrase(t *testing.T) {
+	v := setupAtReview(t) // v.pass holds the verified "correcthorse"
+	// Precondition: the verified passphrase is stashed.
+	if string(v.pass) != "correcthorse" {
+		t.Fatalf("precondition: v.pass should hold the passphrase, got %q", v.pass)
+	}
+	// Capture the backing array so we can observe whether it is wiped in
+	// place (v.pass is a slice; the array is shared across value copies).
+	captured := v.pass
+
+	// Confirm review → provisioning (the op is emitted but, in the App, would
+	// be rejected if another op holds the guard).
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push modal
+	v = m.(SetupWizardView)
+	m, _ = v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+	if v.stage != stageProvision {
+		t.Fatalf("precondition: confirm must reach stageProvision, got %v", v.stage)
+	}
+
+	// The App rejected the start (another op in flight): the run closure —
+	// and thus its deferred zeroize — never fires, so the view MUST wipe the
+	// stashed passphrase itself.
+	m, _ = v.Update(opRejectedMsg{name: "setup"})
+	v = m.(SetupWizardView)
+
+	// Security assertion FIRST: the stashed plaintext must be wiped.
+	for i, b := range captured {
+		if b != 0 {
+			t.Fatalf("passphrase backing array not zeroized after reject: byte %d = %d (residual plaintext)", i, b)
+		}
+	}
+	if v.pass != nil {
+		t.Fatalf("v.pass must be nil after reject-zeroize, got %v", v.pass)
+	}
+	if v.stage != stagePassphrase {
+		t.Fatalf("rejection must route back to passphrase re-entry, got %v", v.stage)
+	}
+	if v.notice == "" {
+		t.Fatal("rejection must keep the in-progress notice")
+	}
+}
+
+func TestSetupWizard_ErrorEscZeroizesPassphrase(t *testing.T) {
+	v := setupAtReview(t) // v.pass holds "correcthorse"
+	captured := v.pass
+	// Force the error stage while the passphrase is still stashed (the reset
+	// path must not rely on a completed op having wiped the shared array).
+	v.stage = stageError
+	v.result = setupDoneMsg{err: errors.New("prepare AWS S3: boom")}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	fresh := m.(SetupWizardView)
+	for i, b := range captured {
+		if b != 0 {
+			t.Fatalf("passphrase not zeroized on error-esc reset: byte %d = %d (residual plaintext)", i, b)
+		}
+	}
+	if fresh.pass != nil {
+		t.Fatalf("fresh wizard must start with nil passphrase, got %v", fresh.pass)
+	}
+	if fresh.stage != stageBackend {
+		t.Fatalf("esc must restart at the backend stage, got %v", fresh.stage)
+	}
 }

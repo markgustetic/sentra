@@ -268,7 +268,18 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case opRejectedMsg:
 		if v.stage == stageProvision && msg.name == "setup" {
-			v.stage = stageReview
+			// The App dropped our start closure without running it, so its
+			// deferred crypto.Zeroize(pass) never fired and v.pass still holds
+			// the plaintext. Wipe it here — otherwise the secret stays resident
+			// indefinitely if the user abandons the wizard. Route back to
+			// passphrase (NOT review): a nil v.pass at review would let the
+			// confirm re-arm startProvision against an empty passphrase, so we
+			// require re-entry to re-populate v.pass via commitPassphrase.
+			crypto.Zeroize(v.pass)
+			v.pass = nil
+			v.stage = stagePassphrase
+			v.newPass.Focus()
+			v.confirmPass.Blur()
 			v.notice = "another operation is in progress — try again when it finishes"
 		}
 		return v, nil
@@ -347,6 +358,12 @@ func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		v.notice = ""
 		return v, nil
 	case tea.KeyEsc:
+		// Abandon the wizard. The completed op already zeroized the shared
+		// passphrase array, so v.pass is incidentally wiped — but make it
+		// explicit so a future refactor of that aliasing can't silently
+		// resurrect a plaintext-residency leak.
+		crypto.Zeroize(v.pass)
+		v.pass = nil
 		fresh := NewSetupWizardView(v.deps)
 		fresh.width, fresh.height = v.width, v.height
 		return fresh, nil
@@ -465,6 +482,7 @@ func (v SetupWizardView) handlePassphraseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		v.newPass, cmd = v.newPass.Update(msg)
 	}
 	v.passErr = ""
+	v.notice = "" // typing clears the reject/retry banner
 	return v, cmd
 }
 
@@ -862,6 +880,9 @@ func (v SetupWizardView) View() string {
 		b.WriteString("\n" + ui.Muted.Render("⏎ next · ↑/↓ row · ←/→ method · space toggle"))
 	case stagePassphrase:
 		b.WriteString(ui.Primary.Render("Repository passphrase") + "\n\n")
+		if v.notice != "" {
+			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
+		}
 		b.WriteString(v.newPass.View() + "\n")
 		b.WriteString(v.confirmPass.View() + "\n\n")
 		box := "[ ]"
