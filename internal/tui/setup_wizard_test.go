@@ -200,3 +200,74 @@ func setupAtActions(t *testing.T) SetupWizardView {
 	}
 	return got
 }
+
+func TestSetupWizard_PassphraseMismatchBlocks(t *testing.T) {
+	v := setupAtPassphrase(t)
+	v = setupTypePass(v, "correcthorse", "batterystaple")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("mismatch must stay on passphrase, got %v", v.stage)
+	}
+	if v.passErr == "" {
+		t.Fatal("mismatch must set passErr")
+	}
+}
+
+func TestSetupWizard_PassphraseTooShortBlocks(t *testing.T) {
+	v := setupAtPassphrase(t)
+	v = setupTypePass(v, "short", "short")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase || v.passErr == "" {
+		t.Fatalf("short passphrase must block with an error, stage=%v err=%q", v.stage, v.passErr)
+	}
+}
+
+func TestSetupWizard_PassphraseMatchAdvancesToReview(t *testing.T) {
+	v := setupAtPassphrase(t)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("matching passphrase must advance to review, got %v", v.stage)
+	}
+	if string(v.pass) != "correcthorse" {
+		t.Fatal("verified passphrase must be stashed for provisioning")
+	}
+}
+
+func TestSetupWizard_PassphraseNeverRendered(t *testing.T) {
+	v := setupAtPassphrase(t)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	if strings.Contains(v.View(), "correcthorse") {
+		t.Fatal("masked passphrase must never appear in the rendered view")
+	}
+}
+
+// setupAtPassphrase drives an AWS wizard (init-repo on) to stagePassphrase.
+func setupAtPassphrase(t *testing.T) SetupWizardView {
+	t.Helper()
+	v := setupAtActions(t) // initRepo default true, login auth default
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(SetupWizardView)
+	if got.stage != stagePassphrase {
+		t.Fatalf("setup precondition: want stagePassphrase, got %v", got.stage)
+	}
+	return got
+}
+
+// setupTypePass fills the new + confirm masked fields.
+func setupTypePass(v SetupWizardView, newPass, confirm string) SetupWizardView {
+	for _, r := range newPass {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(SetupWizardView)
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(SetupWizardView)
+	for _, r := range confirm {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(SetupWizardView)
+	}
+	return v
+}

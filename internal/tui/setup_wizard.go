@@ -1,6 +1,8 @@
 package tui
 
 import (
+	"crypto/subtle"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -9,6 +11,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -71,10 +74,16 @@ type SetupWizardView struct {
 	defaultEnc   bool
 	initRepo     bool
 
-	// passphrase-stage masked inputs (new + confirm) and the keyring toggle.
+	// passphrase-stage masked inputs (new + confirm), focus flag, keyring
+	// toggle, and last validation error.
 	newPass     textinput.Model
 	confirmPass textinput.Model
+	focusConf   bool
 	savePass    bool
+	passErr     string
+	// pass holds the verified passphrase between stagePassphrase and the
+	// provisioning op; zeroized after the op consumes it.
+	pass []byte
 
 	// iamText is the rendered IAM policy for the stageIAMPreview short-circuit,
 	// shown in a scrollable viewport.
@@ -222,7 +231,71 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v.handleIAMKey(msg)
 	case stageActions:
 		return v.handleActionsKey(msg)
+	case stagePassphrase:
+		return v.handlePassphraseKey(msg)
 	}
+	return v, nil
+}
+
+func (v SetupWizardView) handlePassphraseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	isSpace := msg.Type == tea.KeySpace ||
+		(msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ')
+	switch {
+	case msg.Type == tea.KeyTab:
+		// Cycle new → confirm → back to new; the keyring toggle uses its
+		// own key (space) so a lone space isn't typed into a masked field.
+		v.focusConf = !v.focusConf
+		if v.focusConf {
+			v.newPass.Blur()
+			v.confirmPass.Focus()
+		} else {
+			v.confirmPass.Blur()
+			v.newPass.Focus()
+		}
+		return v, nil
+	case isSpace:
+		// space toggles keyring storage without typing into the fields
+		// (both fields mask; a lone space toggle mirrors sync.go's guard).
+		v.savePass = !v.savePass
+		return v, nil
+	case msg.Type == tea.KeyEnter:
+		return v.commitPassphrase()
+	}
+	var cmd tea.Cmd
+	if v.focusConf {
+		v.confirmPass, cmd = v.confirmPass.Update(msg)
+	} else {
+		v.newPass, cmd = v.newPass.Update(msg)
+	}
+	v.passErr = ""
+	return v, cmd
+}
+
+// commitPassphrase validates length and constant-time equality (mirroring
+// password.go:187-205), stashes the verified secret on v.pass for the
+// provisioning op, and records the keyring choice into the plan via
+// setup.ApplyPassphraseConfig (mirrors promptSetupPassphraseStorage,
+// internal/cli/setup_wizard.go:515-538). The two throwaway compare copies
+// are zeroized on return.
+func (v SetupWizardView) commitPassphrase() (tea.Model, tea.Cmd) {
+	newVal := []byte(v.newPass.Value())
+	confVal := []byte(v.confirmPass.Value())
+	defer crypto.Zeroize(newVal)
+	defer crypto.Zeroize(confVal)
+	if len(newVal) < minPasswordLen {
+		v.passErr = fmt.Sprintf("passphrase must be at least %d characters", minPasswordLen)
+		return v, nil
+	}
+	if subtle.ConstantTimeCompare(newVal, confVal) != 1 {
+		v.passErr = "passphrases do not match"
+		return v, nil
+	}
+	// Stash the ONLY long-lived copy; the provisioning op zeroizes it.
+	v.pass = append([]byte(nil), newVal...)
+	v.plan.SavePassphrase = v.savePass
+	setup.ApplyPassphraseConfig(&v.plan)
+	v.passErr = ""
+	v.stage = stageReview
 	return v, nil
 }
 
@@ -521,6 +594,19 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.actionToggle(actionRowEncrypt, "default encryption (AES-256)", v.defaultEnc))
 		b.WriteString(v.actionToggle(actionRowInit, "initialize repository", v.initRepo))
 		b.WriteString("\n" + ui.Muted.Render("⏎ next · ↑/↓ row · ←/→ method · space toggle"))
+	case stagePassphrase:
+		b.WriteString(ui.Primary.Render("Repository passphrase") + "\n\n")
+		b.WriteString(v.newPass.View() + "\n")
+		b.WriteString(v.confirmPass.View() + "\n\n")
+		box := "[ ]"
+		if v.savePass {
+			box = "[x]"
+		}
+		b.WriteString(box + " save passphrase in OS keyring (space toggles)\n")
+		if v.passErr != "" {
+			b.WriteString("\n" + ui.Danger.Render(v.passErr))
+		}
+		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space keyring"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
