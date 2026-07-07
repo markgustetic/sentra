@@ -486,6 +486,120 @@ func TestSetupWizard_ProvisionOpRunsEngineEndToEnd(t *testing.T) {
 	}
 }
 
+// TestSetupWizard_FirstRunProvisionEmitsRepoReady drives a first-run wizard
+// (Deps.Repo == nil) to a successful provision and asserts the flow hands the
+// App a live repo so it lands on the dashboard instead of dead-ending with a
+// nil repo. The provisioning op must open the repo and carry it in setupDoneMsg,
+// and the wizard's Update must forward a repoReadyMsg{repo,...} on the success
+// path — mirroring the unlock flow. The passphrase must still be zeroized.
+func TestSetupWizard_FirstRunProvisionEmitsRepoReady(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sentra.yaml")
+	// A single shared in-memory store so the repo the op initializes is the
+	// same one it re-opens for the handoff.
+	store := blobstore.NewMemory()
+	deps := Deps{
+		Config:     &config.Config{}, // first run: no live repo yet
+		ConfigPath: cfgPath,
+		// Deps.Repo is nil — this is the first-run path.
+		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+			return store, nil
+		},
+		SetupEffects: sharedStoreEffects{store: store},
+	}
+	if deps.Repo != nil {
+		t.Fatal("precondition: first-run wizard must start with a nil Repo")
+	}
+
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	// Drive to review: AWS backend, valid bucket, initRepo default on.
+	v.backendCursor = 0
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // details
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // actions
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // passphrase
+	v = m.(SetupWizardView)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // review
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push modal
+	v = m.(SetupWizardView)
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+
+	// Capture the stashed passphrase backing array so we can assert it is wiped
+	// after the op runs (the closure's deferred zeroize).
+	captured := append([]byte(nil), v.pass...)
+	if string(captured) != "correcthorse" {
+		t.Fatalf("precondition: v.pass should hold the passphrase, got %q", captured)
+	}
+
+	var op startOpMsg
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok {
+			op = s
+		}
+	}
+	if op.run == nil {
+		t.Fatal("no startOpMsg with a run closure")
+	}
+	res := op.run(context.Background())
+	done, ok := res.(setupDoneMsg)
+	if !ok {
+		t.Fatalf("op must return setupDoneMsg, got %T", res)
+	}
+	if done.err != nil {
+		t.Fatalf("first-run provision failed: %v", done.err)
+	}
+	// The op must carry a live repo for the handoff.
+	if done.repo == nil {
+		t.Fatal("first-run provision must open the repo and carry it in setupDoneMsg for the dashboard handoff")
+	}
+	t.Cleanup(func() { done.repo.Close() })
+
+	// Feeding the setupDoneMsg back into the wizard must forward a repoReadyMsg
+	// carrying the live repo, exactly like the unlock flow, so app.go's handler
+	// rebuilds the shell to the dashboard.
+	m2, cmd2 := v.Update(done)
+	v = m2.(SetupWizardView)
+	if v.stage != stageDone {
+		t.Fatalf("success setupDoneMsg must move to stageDone, got %v", v.stage)
+	}
+	if cmd2 == nil {
+		t.Fatal("first-run success must forward a repoReadyMsg command")
+	}
+	ready, ok := cmd2().(repoReadyMsg)
+	if !ok {
+		t.Fatalf("expected repoReadyMsg, got %T", cmd2())
+	}
+	if ready.repo == nil {
+		t.Fatal("repoReadyMsg carried a nil repo")
+	}
+
+	// Security: the stashed passphrase must have been zeroized by the op.
+	for i, b := range v.pass {
+		if b != 0 {
+			t.Fatalf("passphrase backing array not zeroized after provision: byte %d = %d", i, b)
+		}
+	}
+}
+
+// sharedStoreEffects is a stubEffects whose NewStore always returns the SAME
+// in-memory store, so a repo initialized during provisioning can be re-opened
+// for the first-run dashboard handoff.
+type sharedStoreEffects struct {
+	stubEffects
+	store blobstore.Store
+}
+
+func (s sharedStoreEffects) NewStore(context.Context, *config.Config) (blobstore.Store, error) {
+	return s.store, nil
+}
+
 // execProbe is a stubEffects whose EnsureAWSCLI and CheckAWSSDKIdentity are
 // configurable so the auth-routing decision can be exercised.
 type execProbe struct {

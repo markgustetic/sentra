@@ -15,6 +15,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -56,12 +57,20 @@ type setupProgress struct {
 // provisioning + config write + repo init, all under the repo advisory
 // lock (repo.Init), so it is a mutating op: implementing opResult() clears
 // the App's one-op guard.
+//
+// On a FIRST-RUN provision (the wizard launched with no live repo), the op
+// re-opens the just-initialized repository and carries it here so the wizard
+// can hand it to the App via repoReadyMsg — mirroring the unlock flow — instead
+// of dead-ending on a shell whose views still hold a nil repo. repo/config are
+// nil on a Settings re-entry (a repo is already live) and on any failure path.
 type setupDoneMsg struct {
-	steps setupProgress
-	auth  *setup.AWSAuthReport
-	prep  *setup.AWSPrepareReport
-	init  *setup.InitResult
-	err   error
+	steps  setupProgress
+	auth   *setup.AWSAuthReport
+	prep   *setup.AWSPrepareReport
+	init   *setup.InitResult
+	repo   *repo.Repo
+	config *config.Config
+	err    error
 }
 
 func (setupDoneMsg) opResult() {}
@@ -259,11 +268,21 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case setupDoneMsg:
 		if msg.err != nil {
 			v.stage = stageError
-		} else {
-			v.stage = stageDone
-			v.steps = msg.steps
+			v.result = msg
+			return v, nil
 		}
+		v.stage = stageDone
+		v.steps = msg.steps
 		v.result = msg
+		// First-run success carries a live repo: forward repoReadyMsg so the
+		// App rebuilds the shell against the now-open repo and lands on the
+		// dashboard (mirrors unlock.go). Without a repo (Settings re-entry, or a
+		// handoff open-miss), keep today's stageDone-only behavior — the app.go
+		// generic opResultMsg handler still clears the one-op guard.
+		if msg.repo != nil {
+			ready := repoReadyMsg{repo: msg.repo, config: msg.config}
+			return v, func() tea.Msg { return ready }
+		}
 		return v, nil
 
 	case opRejectedMsg:
@@ -408,6 +427,13 @@ func (v SetupWizardView) buildSetupOp() startOpMsg {
 	plan := v.plan // value copy: config + flags
 	cfgPath := v.deps.ConfigPath
 	pass := v.pass
+	// firstRun captures whether the wizard launched WITHOUT a live repo (the
+	// no-sentra.yaml landing). Only then does a successful init hand a live repo
+	// to the App; a Settings re-entry (repo already open) keeps today's
+	// stageDone-only behavior. newStore opens the just-initialized repo for that
+	// handoff — nil in tests that don't exercise the first-run dashboard path.
+	firstRun := v.deps.Repo == nil
+	newStore := v.deps.NewStore
 	return startOpMsg{
 		name: "setup",
 		run: func(ctx context.Context) tea.Msg {
@@ -446,7 +472,27 @@ func (v SetupWizardView) buildSetupOp() startOpMsg {
 				steps.repoInited = true
 			}
 			eng.RemoveDraft(cfgPath)
-			return setupDoneMsg{steps: steps, auth: auth, prep: prep, init: initRes}
+			done := setupDoneMsg{steps: steps, auth: auth, prep: prep, init: initRes}
+
+			// First-run handoff: Engine.InitRepo opened+verified+CLOSED the repo
+			// and returned only a report, so every view still holds a nil repo.
+			// Re-open it here — while pass is still valid, BEFORE the deferred
+			// zeroize fires on return (repo.Open derives its own key, so wiping
+			// pass afterward is fine) — and carry the live repo so the wizard can
+			// emit repoReadyMsg, exactly like unlock. We do NOT fail the setup on
+			// an open error: provisioning already succeeded, so a handoff miss
+			// just leaves the user on stageDone (they can relaunch), which is
+			// strictly better than reporting a spurious setup failure.
+			if firstRun && initRes != nil && newStore != nil {
+				cfg := plan.Config // local copy: address is stable, not aliased to the closure's plan field
+				if store, err := newStore(ctx, &cfg); err == nil {
+					if r, err := repo.Open(ctx, store, pass); err == nil {
+						done.repo = r
+						done.config = &cfg
+					}
+				}
+			}
+			return done
 		},
 	}
 }
