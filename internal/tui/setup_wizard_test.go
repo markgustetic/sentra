@@ -1,11 +1,16 @@
 package tui
 
 import (
+	"context"
+	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/setup"
 )
@@ -346,4 +351,134 @@ func setupAtReview(t *testing.T) SetupWizardView {
 		t.Fatalf("setup precondition: want stageReview, got %v", got.stage)
 	}
 	return got
+}
+
+// stubEffects is a fully in-memory setup.Effects: no AWS, no keyring, an
+// in-memory store, so the provisioning op can run end-to-end in a test.
+type stubEffects struct {
+	prepareErr error
+	prepared   setup.AWSPrepareReport
+}
+
+func (s stubEffects) EnsureAWSCLI(ctx context.Context, confirm setup.AWSCLIInstallConfirm) (setup.AWSCLIInstallReport, error) {
+	return setup.AWSCLIInstallReport{AlreadyInstalled: true}, nil
+}
+func (s stubEffects) AWSLogin(ctx context.Context, profile, region string) error { return nil }
+func (s stubEffects) CheckAWSSSOConfigured(ctx context.Context, profile string) (bool, error) {
+	return true, nil
+}
+func (s stubEffects) AWSConfigureSSO(ctx context.Context, profile string) error { return nil }
+func (s stubEffects) AWSSSOLogin(ctx context.Context, profile string) error     { return nil }
+func (s stubEffects) CheckAWSSDKIdentity(ctx context.Context, cfg *config.Config) error {
+	return nil
+}
+func (s stubEffects) PrepareAWS(ctx context.Context, cfg *config.Config, opts setup.AWSPrepareOptions) (setup.AWSPrepareReport, error) {
+	return s.prepared, s.prepareErr
+}
+func (s stubEffects) NewStore(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {
+	return blobstore.NewMemory(), nil
+}
+func (s stubEffects) SavePassphrase(cfg *config.Config, pass []byte) error { return nil }
+
+func TestSetupWizard_DoneMsgRendersChecklist(t *testing.T) {
+	v := NewSetupWizardView(Deps{})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(setupDoneMsg{
+		steps: setupProgress{bucketCreated: true, publicBlocked: true, encryptionOn: true, repoInited: true},
+	})
+	v = m.(SetupWizardView)
+	if v.stage != stageDone {
+		t.Fatalf("setupDoneMsg (no err) must move to stageDone, got %v", v.stage)
+	}
+	out := v.View()
+	for _, want := range []string{"bucket created", "public access blocked", "default encryption", "repository initialized"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("done checklist missing %q, got:\n%s", want, out)
+		}
+	}
+}
+
+func TestSetupWizard_DoneMsgErrorRendersAdvice(t *testing.T) {
+	v := NewSetupWizardView(Deps{Config: &config.Config{}})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(setupDoneMsg{err: errors.New("BucketAlreadyExists: taken")})
+	v = m.(SetupWizardView)
+	if v.stage != stageError {
+		t.Fatalf("setupDoneMsg with err must move to stageError, got %v", v.stage)
+	}
+	out := v.View()
+	if !strings.Contains(out, "already owned") {
+		t.Fatalf("error stage must render ErrorAdvice for the failure, got:\n%s", out)
+	}
+}
+
+func TestSetupWizard_OpRejectedReturnsToReview(t *testing.T) {
+	v := setupAtReview(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView) // now stageProvision
+	m, _ = v.Update(opRejectedMsg{name: "setup"})
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("rejection must return to review, got %v", v.stage)
+	}
+	if v.notice == "" {
+		t.Fatal("rejection must set a notice")
+	}
+}
+
+func TestSetupWizard_ProvisionOpRunsEngineEndToEnd(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sentra.yaml")
+	deps := Deps{
+		Config:       &config.Config{},
+		ConfigPath:   cfgPath,
+		SetupEffects: stubEffects{prepared: setup.AWSPrepareReport{BucketCreated: true, PublicAccessBlocked: true, DefaultEncryptionEnabled: true}},
+	}
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	// Drive to review via the field/stage helpers.
+	v.backendCursor = 0
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // details
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // actions
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // passphrase (initRepo default on)
+	v = m.(SetupWizardView)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // review
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push modal
+	v = m.(SetupWizardView)
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+	// Run the op closure directly (as the App's guard would).
+	var op startOpMsg
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok {
+			op = s
+		}
+	}
+	if op.run == nil {
+		t.Fatal("no startOpMsg with a run closure")
+	}
+	res := op.run(context.Background())
+	done, ok := res.(setupDoneMsg)
+	if !ok {
+		t.Fatalf("op must return setupDoneMsg, got %T", res)
+	}
+	if done.err != nil {
+		t.Fatalf("engine end-to-end run failed: %v", done.err)
+	}
+	if !done.steps.repoInited {
+		t.Fatal("repo should have been initialized")
+	}
+	if _, err := os.Stat(cfgPath); err != nil {
+		t.Fatalf("config should have been written to %s: %v", cfgPath, err)
+	}
 }

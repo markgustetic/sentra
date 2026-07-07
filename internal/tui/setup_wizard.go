@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"crypto/subtle"
+	"errors"
 	"fmt"
 	"strings"
 
@@ -41,12 +42,26 @@ const (
 // wizard emit its startOpMsg. Mirrors HuhSetupReviewConfirm.
 const setupReviewConfirmID = "setup-apply"
 
+// setupProgress tracks which provisioning checklist items completed, for
+// the checklist rendered during stageProvision and stageDone.
+type setupProgress struct {
+	bucketCreated bool
+	publicBlocked bool
+	encryptionOn  bool
+	repoInited    bool
+}
+
 // setupDoneMsg is the wizard's terminal op result. Setup PERFORMS AWS
 // provisioning + config write + repo init, all under the repo advisory
 // lock (repo.Init), so it is a mutating op: implementing opResult() clears
-// the App's one-op guard. The provisioning task adds the report/error
-// fields it carries; here it only needs to exist as the op's result type.
-type setupDoneMsg struct{}
+// the App's one-op guard.
+type setupDoneMsg struct {
+	steps setupProgress
+	auth  *setup.AWSAuthReport
+	prep  *setup.AWSPrepareReport
+	init  *setup.InitResult
+	err   error
+}
 
 func (setupDoneMsg) opResult() {}
 
@@ -106,9 +121,10 @@ type SetupWizardView struct {
 	iamText     string
 	iamViewport viewport.Model
 
-	// reporter is the provisioning op's progress sink; the checklist state
-	// and terminal result fields land with the provisioning task.
+	// provisioning progress + terminal result.
 	reporter *opReporter
+	steps    setupProgress
+	result   setupDoneMsg
 	notice   string
 
 	width  int
@@ -232,6 +248,29 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		return v, nil
+	case setupDoneMsg:
+		if msg.err != nil {
+			v.stage = stageError
+		} else {
+			v.stage = stageDone
+			v.steps = msg.steps
+		}
+		v.result = msg
+		return v, nil
+
+	case opRejectedMsg:
+		if v.stage == stageProvision && msg.name == "setup" {
+			v.stage = stageReview
+			v.notice = "another operation is in progress — try again when it finishes"
+		}
+		return v, nil
+
+	case opTickMsg:
+		if v.stage == stageProvision {
+			return v, opTick()
+		}
+		return v, nil
+
 	case confirmedMsg:
 		if msg.id != setupReviewConfirmID || v.stage != stageReview {
 			return v, nil
@@ -265,8 +304,41 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return v.pushReviewConfirm()
 		}
 		return v, nil
+	case stageDone:
+		if msg.Type == tea.KeyEnter {
+			fresh := NewSetupWizardView(v.deps)
+			fresh.width, fresh.height = v.width, v.height
+			return fresh, nil
+		}
+		return v, nil
+	case stageError:
+		return v.handleErrorKey(msg)
 	}
 	return v, nil
+}
+
+func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEnter:
+		// Retry: return to review so the operator can re-confirm after
+		// fixing credentials or the bucket name.
+		v.stage = stageReview
+		v.notice = ""
+		return v, nil
+	case tea.KeyEsc:
+		fresh := NewSetupWizardView(v.deps)
+		fresh.width, fresh.height = v.width, v.height
+		return fresh, nil
+	}
+	return v, nil
+}
+
+func (v SetupWizardView) checklistLine(done bool, label string) string {
+	mark := ui.Muted.Render("○")
+	if done {
+		mark = ui.Success.Render("●")
+	}
+	return "  " + mark + " " + label + "\n"
 }
 
 func (v SetupWizardView) pushReviewConfirm() (tea.Model, tea.Cmd) {
@@ -286,13 +358,57 @@ func (v SetupWizardView) startProvision() (tea.Model, tea.Cmd) {
 	return v, tea.Batch(func() tea.Msg { return start }, opTick())
 }
 
-// buildSetupOp is finalized in the provisioning task; this placeholder
-// establishes the startOpMsg name and the setupDoneMsg result contract.
+// buildSetupOp is the single provisioning op. It sequences the engine:
+// WriteDraft → (PrepareAWS) → WriteConfig → (InitRepo) → RemoveDraft, all
+// off the UI goroutine. Interactive AWS auth (login/sso) is NOT run here —
+// it needs the terminal and is issued via tea.ExecProcess before this op;
+// by the time this runs, credentials are expected to be present so
+// engine.PrepareAWS only touches S3. The stashed passphrase is the only
+// long-lived secret copy and is zeroized on return.
 func (v SetupWizardView) buildSetupOp() startOpMsg {
+	eng := v.engine
+	plan := v.plan // value copy: config + flags
+	cfgPath := v.deps.ConfigPath
+	pass := v.pass
 	return startOpMsg{
 		name: "setup",
 		run: func(ctx context.Context) tea.Msg {
-			return setupDoneMsg{}
+			defer crypto.Zeroize(pass)
+			if eng == nil {
+				return setupDoneMsg{err: errors.New("setup engine unavailable (no effects wired)")}
+			}
+			var (
+				steps setupProgress
+				auth  *setup.AWSAuthReport
+				prep  *setup.AWSPrepareReport
+			)
+			if err := eng.WriteDraft(cfgPath, &plan.Config); err != nil {
+				return setupDoneMsg{err: err}
+			}
+			if plan.PrepareAWS {
+				a, p, err := eng.PrepareAWS(ctx, &plan)
+				if err != nil {
+					return setupDoneMsg{err: err}
+				}
+				auth, prep = &a, &p
+				steps.bucketCreated = p.BucketCreated || p.BucketExisted
+				steps.publicBlocked = p.PublicAccessBlocked
+				steps.encryptionOn = p.DefaultEncryptionEnabled
+			}
+			if err := eng.WriteConfig(cfgPath, &plan); err != nil {
+				return setupDoneMsg{err: err}
+			}
+			var initRes *setup.InitResult
+			if plan.InitRepo {
+				res, err := eng.InitRepo(ctx, &plan.Config, pass, plan.SavePassphrase)
+				if err != nil {
+					return setupDoneMsg{err: err}
+				}
+				initRes = &res
+				steps.repoInited = true
+			}
+			eng.RemoveDraft(cfgPath)
+			return setupDoneMsg{steps: steps, auth: auth, prep: prep, init: initRes}
 		},
 	}
 }
@@ -669,7 +785,33 @@ func (v SetupWizardView) View() string {
 		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space keyring"))
 	case stageReview:
 		b.WriteString(setup.ReviewText(v.deps.ConfigPath, v.plan))
+		if v.notice != "" {
+			b.WriteString(ui.Warn.Render(v.notice) + "\n")
+		}
 		b.WriteString("\n" + ui.Muted.Render("⏎ review & apply"))
+	case stageProvision:
+		b.WriteString(ui.Primary.Render("Applying setup…") + "\n\n")
+		b.WriteString(v.checklistLine(v.steps.bucketCreated, "bucket created"))
+		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
+		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
+		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
+		b.WriteString("\n" + ui.Muted.Render("working under the repo lock…"))
+	case stageDone:
+		b.WriteString(ui.Success.Render("Setup complete") + "\n\n")
+		b.WriteString(v.checklistLine(v.steps.bucketCreated, "bucket created"))
+		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
+		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
+		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
+		b.WriteString("\n" + ui.Muted.Render("⏎ restart setup"))
+	case stageError:
+		b.WriteString(ui.Danger.Render("Setup failed") + "\n\n")
+		if v.result.err != nil {
+			b.WriteString(v.result.err.Error() + "\n")
+			for _, line := range setup.ErrorAdvice(v.result.err, v.plan.Config) {
+				b.WriteString("\n" + ui.Subtle.Render(line))
+			}
+		}
+		b.WriteString("\n\n" + ui.Muted.Render("⏎ back to review · esc restart"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
