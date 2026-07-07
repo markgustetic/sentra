@@ -948,3 +948,77 @@ func TestApp_Phase2cViewsRegistered(t *testing.T) {
 		}
 	}
 }
+
+// TestApp_Phase3ViewsRegistered: after Phase 3 the shell has 17 view models
+// (14 Phase 2c + unlock + setup + settings). setup and settings are
+// navigable (rail/palette) under the "Settings" category; unlock is a
+// startup gate reached only via Deps.InitialView, so it is NOT in the
+// command registry.
+func TestApp_Phase3ViewsRegistered(t *testing.T) {
+	app := newTestApp(t)
+
+	want := []string{
+		"dashboard", "snapshots", "diff", "check", "doctor", "recovery-kit",
+		"policies", "schedule", "agent", "backup", "restore", "prune",
+		"sync", "password", "setup", "settings", "unlock",
+	}
+	got := make(map[string]bool, len(app.views))
+	for _, v := range app.views {
+		got[v.id] = true
+	}
+	for _, id := range want {
+		if !got[id] {
+			t.Errorf("view %q not registered", id)
+		}
+	}
+	if len(app.views) != len(want) {
+		t.Fatalf("views = %d, want %d", len(app.views), len(want))
+	}
+
+	// setup + settings are navigable; unlock is a hidden startup gate.
+	cmds := app.registry.Commands()
+	ids := make(map[string]bool, len(cmds))
+	for _, c := range cmds {
+		ids[c.ID] = true
+	}
+	if !ids["setup"] || !ids["settings"] {
+		t.Error("setup and settings must be in the command registry (rail/palette)")
+	}
+	if ids["unlock"] {
+		t.Error("unlock is a startup gate and must NOT be in the command registry")
+	}
+
+	out := app.View()
+	for _, label := range []string{"Setup", "Settings"} {
+		if !strings.Contains(out, label) {
+			t.Errorf("sidebar/palette should list %q:\n%s", label, out)
+		}
+	}
+}
+
+// TestApp_InitialViewUnlockLandsContentFocusedAndHidden: the unlock gate is
+// reachable only via Deps.InitialView (never the sidebar/palette per
+// TestApp_Phase3ViewsRegistered). Landing on it must still focus content
+// immediately, exactly like any other non-dashboard InitialView.
+func TestApp_InitialViewUnlockLandsContentFocusedAndHidden(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", InitialView: "unlock"})
+	if got := app.views[app.active].id; got != "unlock" {
+		t.Fatalf("active view = %q, want unlock", got)
+	}
+	if app.focus != focusContent {
+		t.Fatalf("focus = %v, want focusContent", app.focus)
+	}
+}
+
+// TestApp_InitialViewSetupLandsContentFocused: the first-run wizard is the
+// other InitialView-only landing case exercised by C8; assert it alongside
+// unlock so both startup-gate routes are pinned.
+func TestApp_InitialViewSetupLandsContentFocused(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", InitialView: "setup"})
+	if got := app.views[app.active].id; got != "setup" {
+		t.Fatalf("active view = %q, want setup", got)
+	}
+	if app.focus != focusContent {
+		t.Fatalf("focus = %v, want focusContent", app.focus)
+	}
+}

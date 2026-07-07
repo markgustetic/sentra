@@ -186,13 +186,17 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with the Phase 2c views registered:
+// NewApp constructs the shell with all 17 Phase 3 views registered:
 // the original read-only views (dashboard, snapshots, diff), the
 // async-check views (check, doctor), the management views
 // (recovery-kit, policies, schedule), the agent view (which now also
 // hosts agent-apply in place, so it gets no separate id), the direct
 // data operations (backup, restore, prune, sync, password), the
-// unlock gate, and the Part 7 "Settings" category (settings, setup).
+// "Settings" category (setup, settings), and the unlock gate.
+//
+// unlock is a startup gate, not a navigable operation: it is present
+// in the views slice (so InitialView can land on it) but excluded from
+// the command registry, so it never appears in the sidebar or palette.
 // Deps semantics (nil-tolerant, cancellable ctx) are unchanged from
 // the previous implementation.
 func NewApp(deps Deps) App {
@@ -233,7 +237,15 @@ func NewApp(deps Deps) App {
 		"sync": "Operations", "password": "Operations", "policies": "Operations",
 		"settings": "Settings", "setup": "Settings",
 	}
+	// hiddenFromRail lists view ids that are reachable only via InitialView
+	// routing (startup gates), never from the sidebar/palette. unlock is a
+	// login screen, not a navigable operation, so it must not clutter the
+	// rail or the command palette.
+	hiddenFromRail := map[string]bool{"unlock": true}
 	for _, v := range views {
+		if hiddenFromRail[v.id] {
+			continue // startup gate — renderable via InitialView, not navigable
+		}
 		title := v.id
 		if t, ok := v.model.(interface{ Title() string }); ok {
 			title = t.Title()
@@ -267,7 +279,9 @@ func NewApp(deps Deps) App {
 		focus = focusContent
 	}
 	sidebar := NewSidebar(registry, sidebarWidth, minHeight)
-	sidebar.Select(views[active].id)
+	if !hiddenFromRail[views[active].id] {
+		sidebar.Select(views[active].id) // don't select a hidden startup gate
+	}
 
 	return App{
 		deps:     deps,
