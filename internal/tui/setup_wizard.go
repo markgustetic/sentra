@@ -51,8 +51,12 @@ type SetupWizardView struct {
 	// backend-stage cursor over the two backends.
 	backendCursor int
 
-	// details-stage text inputs (bucket/prefix/region/profile/endpoint).
-	fields []textinput.Model
+	// details-stage text inputs (bucket/prefix/region/profile/endpoint),
+	// a cursor over them plus the "print IAM policy" toggle, and the last
+	// validation error.
+	fields      []textinput.Model
+	fieldCursor int
+	detailErr   string
 
 	// printIAM toggles the "print IAM policy and stop" details control.
 	printIAM bool
@@ -67,6 +71,9 @@ type SetupWizardView struct {
 	newPass     textinput.Model
 	confirmPass textinput.Model
 	savePass    bool
+
+	// iamText is the rendered IAM policy for the stageIAMPreview short-circuit.
+	iamText string
 
 	width  int
 	height int
@@ -178,11 +185,16 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
-// handleKey is filled in per-stage by later tasks. The skeleton only
-// routes the backend stage so the view is hostable from the start.
+// handleKey dispatches per-stage. Later tasks add the remaining cases.
 func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if v.stage == stageBackend {
+	switch v.stage {
+	case stageBackend:
+		if msg.Type == tea.KeyEnter {
+			return v.advanceFromBackend()
+		}
 		return v.handleBackendKey(msg)
+	case stageDetails:
+		return v.handleDetailsKey(msg)
 	}
 	return v, nil
 }
@@ -201,6 +213,134 @@ func (v SetupWizardView) handleBackendKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
+// advanceFromBackend records the chosen backend into the plan and seeds
+// details defaults, mirroring the cli wizard's runHuhAWSSetup /
+// runHuhCompatibleSetup entry (internal/cli/setup_wizard.go:202-206).
+func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
+	if v.backendCursor == 0 {
+		v.plan.Backend = setup.BackendAWS
+		// AWS defaults: sentra/ prefix, us-east-1 region if unset
+		// (internal/cli/setup_wizard.go:296-304).
+		if strings.TrimSpace(v.fields[setupFieldRegion].Value()) == "" {
+			v.fields[setupFieldRegion].SetValue("us-east-1")
+		}
+		if strings.TrimSpace(v.fields[setupFieldPrefix].Value()) == "" {
+			v.fields[setupFieldPrefix].SetValue("sentra/")
+		}
+		v.fields[setupFieldEndpoint].SetValue("") // AWS backend forbids endpoint_url
+	} else {
+		v.plan.Backend = setup.BackendS3Compatible
+	}
+	v.stage = stageDetails
+	v.fieldCursor = setupFieldBucket
+	v.focusOnlyField(setupFieldBucket)
+	return v, nil
+}
+
+// detailFieldCount is 5 for S3-compatible (endpoint shown) and 4 for AWS
+// (endpoint suppressed — AWS setup rejects endpoint_url,
+// internal/cli/setup.go:227-229).
+func (v SetupWizardView) detailFieldCount() int {
+	if v.plan.Backend == setup.BackendAWS {
+		return setupFieldEndpoint // 4: bucket..profile
+	}
+	return setupFieldCount // 5: adds endpoint
+}
+
+func (v SetupWizardView) focusOnlyField(idx int) {
+	for i := range v.fields {
+		if i == idx {
+			v.fields[i].Focus()
+		} else {
+			v.fields[i].Blur()
+		}
+	}
+}
+
+func (v SetupWizardView) handleDetailsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// space toggles the "print IAM policy" control when it owns the cursor
+	// (AWS backend only). fieldCursor == detailFieldCount() addresses that
+	// pseudo-field just past the text inputs.
+	isSpace := msg.Type == tea.KeySpace ||
+		(msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ')
+	iamCursor := v.detailFieldCount()
+	switch {
+	case msg.Type == tea.KeyTab:
+		limit := v.detailFieldCount()
+		if v.plan.Backend == setup.BackendAWS {
+			limit++ // include the IAM toggle pseudo-field
+		}
+		v.fieldCursor = (v.fieldCursor + 1) % limit
+		if v.fieldCursor < v.detailFieldCount() {
+			v.focusOnlyField(v.fieldCursor)
+		} else {
+			for i := range v.fields {
+				v.fields[i].Blur()
+			}
+		}
+		return v, nil
+	case msg.Type == tea.KeyEnter:
+		return v.commitDetails()
+	case isSpace && v.plan.Backend == setup.BackendAWS && v.fieldCursor == iamCursor:
+		v.printIAM = !v.printIAM
+		return v, nil
+	}
+	if v.fieldCursor < v.detailFieldCount() {
+		var cmd tea.Cmd
+		v.fields[v.fieldCursor], cmd = v.fields[v.fieldCursor].Update(msg)
+		v.detailErr = ""
+		return v, cmd
+	}
+	return v, nil
+}
+
+// commitDetails validates the bucket, writes the S3 fields into the plan
+// config, and routes to the next stage. It mirrors the cli wizard's
+// bucket-required + validateSetupBucketName gate
+// (internal/cli/setup_wizard.go:319-324) via setup.ValidateBucketName.
+func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
+	bucket := strings.TrimSpace(v.fields[setupFieldBucket].Value())
+	if bucket == "" {
+		v.detailErr = "bucket is required"
+		return v, nil
+	}
+	if err := setup.ValidateBucketName(bucket); err != nil {
+		v.detailErr = err.Error()
+		return v, nil
+	}
+	v.plan.Config.Repo.S3.Bucket = bucket
+	v.plan.Config.Repo.S3.Prefix = strings.TrimSpace(v.fields[setupFieldPrefix].Value())
+	v.plan.Config.Repo.S3.Region = strings.TrimSpace(v.fields[setupFieldRegion].Value())
+	v.plan.Config.Repo.S3.Profile = strings.TrimSpace(v.fields[setupFieldProfile].Value())
+	if v.plan.Backend == setup.BackendAWS {
+		v.plan.Config.Repo.S3.EndpointURL = ""
+	} else {
+		v.plan.Config.Repo.S3.EndpointURL = strings.TrimSpace(v.fields[setupFieldEndpoint].Value())
+	}
+	setup.NormalizeConfig(&v.plan.Config)
+
+	if v.plan.Backend == setup.BackendAWS && v.printIAM {
+		v.iamText = renderIAMPolicy(bucket, v.plan.Config.Repo.S3.Prefix)
+		v.stage = stageIAMPreview
+		return v, nil
+	}
+	if v.plan.Backend == setup.BackendS3Compatible {
+		// S3-compatible never touches AWS: config-only + no actions stage
+		// (internal/cli/setup_wizard.go:502-507).
+		v.plan.PrepareAWS = false
+		v.plan.AWSAuthMethod = setup.AWSAuthSkip
+		v.plan.CreateBucket = false
+		v.plan.BlockPublicAccess = false
+		v.plan.DefaultEncryption = false
+		v.stage = stagePassphrase
+		v.newPass.Focus()
+		v.confirmPass.Blur()
+		return v, nil
+	}
+	v.stage = stageActions
+	return v, nil
+}
+
 func (v SetupWizardView) View() string {
 	var b strings.Builder
 	switch v.stage {
@@ -213,6 +353,32 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
 			"MinIO, LocalStack, or a bucket you manage yourself."))
 		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ choose · ⏎ next"))
+	case stageDetails:
+		b.WriteString(ui.Primary.Render("Storage details") + "\n\n")
+		labels := []string{"S3 bucket", "S3 key prefix", "AWS region", "AWS profile", "S3 endpoint URL"}
+		for i := 0; i < v.detailFieldCount(); i++ {
+			cursor := "  "
+			if v.fieldCursor == i {
+				cursor = "> "
+			}
+			b.WriteString(cursor + ui.Muted.Render(labels[i]) + "\n")
+			b.WriteString("  " + v.fields[i].View() + "\n")
+		}
+		if v.plan.Backend == setup.BackendAWS {
+			box := "[ ]"
+			if v.printIAM {
+				box = "[x]"
+			}
+			cursor := "  "
+			if v.fieldCursor == v.detailFieldCount() {
+				cursor = "> "
+			}
+			b.WriteString(cursor + box + " print IAM policy and stop before any changes\n")
+		}
+		if v.detailErr != "" {
+			b.WriteString("\n" + ui.Danger.Render(v.detailErr))
+		}
+		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space toggle"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
@@ -229,4 +395,15 @@ func (v SetupWizardView) backendLine(idx int, label, help string) string {
 		return ui.Primary.Render(line)
 	}
 	return line
+}
+
+// renderIAMPolicy formats the least-privilege policy for the bucket/prefix
+// using the engine's writer, so the TUI preview and the cli/`setup
+// iam-policy` output are byte-identical.
+func renderIAMPolicy(bucket, prefix string) string {
+	var sb strings.Builder
+	if err := setup.WriteIAMPolicy(&sb, bucket, prefix); err != nil {
+		return "failed to render IAM policy: " + err.Error()
+	}
+	return sb.String()
 }
