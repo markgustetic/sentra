@@ -482,3 +482,111 @@ func TestSetupWizard_ProvisionOpRunsEngineEndToEnd(t *testing.T) {
 		t.Fatalf("config should have been written to %s: %v", cfgPath, err)
 	}
 }
+
+// execProbe is a stubEffects whose EnsureAWSCLI and CheckAWSSDKIdentity are
+// configurable so the auth-routing decision can be exercised.
+type execProbe struct {
+	stubEffects
+	cliErr      error // EnsureAWSCLI failure (missing aws)
+	identityErr error // CheckAWSSDKIdentity failure (creds absent → need auth)
+}
+
+func (e execProbe) EnsureAWSCLI(ctx context.Context, confirm setup.AWSCLIInstallConfirm) (setup.AWSCLIInstallReport, error) {
+	if e.cliErr != nil {
+		return setup.AWSCLIInstallReport{}, e.cliErr
+	}
+	return setup.AWSCLIInstallReport{AlreadyInstalled: true}, nil
+}
+func (e execProbe) CheckAWSSDKIdentity(ctx context.Context, cfg *config.Config) error {
+	return e.identityErr
+}
+
+func TestSetupWizard_LoginMissingCredsIssuesExecAuth(t *testing.T) {
+	deps := Deps{
+		Config:       &config.Config{},
+		SetupEffects: execProbe{identityErr: errors.New("no valid credential")},
+	}
+	v := driveToActions(t, deps)
+	v.authCursor = 0 // login
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage == stagePassphrase {
+		t.Fatal("login with absent creds must run interactive auth, not skip to passphrase")
+	}
+	if v.stage != stageActions {
+		t.Fatalf("wizard should stay on actions while auth runs, got %v", v.stage)
+	}
+	if cmd == nil {
+		t.Fatal("login with absent creds must emit an ExecProcess auth command")
+	}
+}
+
+func TestSetupWizard_LoginWithCredsSkipsExecAuth(t *testing.T) {
+	deps := Deps{
+		Config:       &config.Config{},
+		SetupEffects: execProbe{}, // identity ok
+	}
+	v := driveToActions(t, deps)
+	v.authCursor = 0 // login
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("login with present creds should proceed to passphrase, got %v", v.stage)
+	}
+}
+
+func TestSetupWizard_MissingAWSCLIPushesErrorModal(t *testing.T) {
+	deps := Deps{
+		Config:       &config.Config{},
+		SetupEffects: execProbe{cliErr: errors.New("AWS CLI is required")},
+	}
+	v := driveToActions(t, deps)
+	v.authCursor = 1 // sso — needs the CLI
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	var pushedErr bool
+	for _, msg := range execCmds(t, cmd) {
+		if pm, ok := msg.(pushModalMsg); ok {
+			if _, isErr := pm.modal.(ErrorModal); isErr {
+				pushedErr = true
+			}
+		}
+	}
+	if !pushedErr {
+		t.Fatalf("missing aws CLI must push an ErrorModal, stage=%v", v.stage)
+	}
+}
+
+func TestSetupWizard_AuthDoneReentersAtReview(t *testing.T) {
+	deps := Deps{Config: &config.Config{}, SetupEffects: execProbe{identityErr: errors.New("no valid credential")}}
+	v := driveToActions(t, deps)
+	v.authCursor = 0
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	// Simulate the child process completing successfully.
+	m, _ = v.Update(awsAuthDoneMsg{err: nil})
+	v = m.(SetupWizardView)
+	// initRepo default on → auth success continues to passphrase.
+	if v.stage != stagePassphrase {
+		t.Fatalf("auth completion must resume the flow (passphrase), got %v", v.stage)
+	}
+}
+
+// driveToActions builds a wizard with the given deps and advances to
+// stageActions with a valid bucket.
+func driveToActions(t *testing.T, deps Deps) SetupWizardView {
+	t.Helper()
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	v.backendCursor = 0
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(SetupWizardView)
+	if got.stage != stageActions {
+		t.Fatalf("driveToActions precondition failed: stage %v", got.stage)
+	}
+	return got
+}

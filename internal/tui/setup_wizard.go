@@ -5,6 +5,7 @@ import (
 	"crypto/subtle"
 	"errors"
 	"fmt"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -64,6 +65,13 @@ type setupDoneMsg struct {
 }
 
 func (setupDoneMsg) opResult() {}
+
+// awsAuthDoneMsg reports that the interactive `aws` child process launched
+// via tea.ExecProcess has exited. tea.ExecProcess suspends the program,
+// gives the child the terminal, and resumes on exit, delivering the
+// process's error through the callback wrapped in this message. On success
+// the wizard resumes the pre-auth flow (→ passphrase or review).
+type awsAuthDoneMsg struct{ err error }
 
 // SetupWizardView drives the in-TUI setup wizard. It is the TUI-native
 // re-expression of the huh cli wizard (internal/cli/setup_wizard.go):
@@ -277,6 +285,19 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		v.notice = ""
 		return v.startProvision()
+
+	case awsAuthDoneMsg:
+		if v.stage != stageActions {
+			return v, nil
+		}
+		if msg.err != nil {
+			// Interactive auth failed: show advice and stay on actions so the
+			// operator can pick another method.
+			v.notice = "AWS sign-in did not complete — pick another method or fix credentials"
+			return v, nil
+		}
+		return v.afterAuth()
+
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -699,17 +720,83 @@ func (v SetupWizardView) advanceFromActions() (tea.Model, tea.Cmd) {
 		return v, nil
 	}
 	setup.NormalizeConfig(&v.plan.Config)
+	// login/sso may need an interactive browser flow. Existing-credential
+	// methods never do. Probe identity first; if creds are already present,
+	// skip straight ahead.
+	if method == setup.AWSAuthLogin || method == setup.AWSAuthSSO {
+		if cmd, needAuth := v.maybeStartInteractiveAuth(method); needAuth {
+			return v, cmd // stay on stageActions; awsAuthDoneMsg resumes us
+		}
+	}
+	return v.afterAuth()
+}
+
+// maybeStartInteractiveAuth checks the AWS CLI is present and whether
+// credentials already resolve. If the CLI is missing it pushes an
+// ErrorModal built from setup.ErrorAdvice (NO brew auto-install in the
+// TUI). If credentials are absent it returns a tea.ExecProcess command
+// that suspends the program to run `aws` login/sso interactively; the
+// returned bool is true when the flow must wait for awsAuthDoneMsg.
+func (v SetupWizardView) maybeStartInteractiveAuth(method setup.AWSAuthMethod) (tea.Cmd, bool) {
+	eff := v.deps.SetupEffects
+	if eff == nil {
+		return nil, false // no effects: fall through, provisioning op guards nil
+	}
+	ctx := ctxOrBackground(v.deps.Ctx)
+	// C2: the TUI never brew-installs; pass a nil confirm and surface a
+	// missing binary as an ErrorAdvice modal rather than attempting a fix.
+	if _, err := eff.EnsureAWSCLI(ctx, nil); err != nil {
+		advice := strings.Join(setup.ErrorAdvice(err, v.plan.Config), "\n")
+		modal := NewErrorModal(err, advice, v.width, v.height)
+		return func() tea.Msg { return pushModalMsg{modal: modal} }, true
+	}
+	// Credentials already available? Then no interactive step is needed.
+	if err := eff.CheckAWSSDKIdentity(ctx, &v.plan.Config); err == nil {
+		return nil, false
+	}
+	profile := v.plan.Config.Repo.S3.Profile
+	region := v.plan.Config.Repo.S3.Region
+	// Build the interactive child. tea.ExecProcess runs it with the
+	// terminal, then delivers the exit error via awsAuthDoneMsg.
+	c := interactiveAWSAuthCommand(ctx, eff, method, profile, region)
+	return tea.ExecProcess(c, func(err error) tea.Msg { return awsAuthDoneMsg{err: err} }), true
+}
+
+// afterAuth continues the post-actions flow once credentials are settled:
+// init-repo on → passphrase, off → review.
+func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 	if v.plan.InitRepo {
 		v.stage = stagePassphrase
 		v.newPass.Focus()
 		v.confirmPass.Blur()
 		return v, nil
 	}
-	// init-repo off: no passphrase to collect.
 	v.plan.SavePassphrase = false
 	setup.ApplyPassphraseConfig(&v.plan)
 	v.stage = stageReview
 	return v, nil
+}
+
+// interactiveAWSAuthCommand builds the `aws` subprocess for browser login
+// or SSO login. It mirrors the effect layer's argument construction
+// (internal/cli/setup_awscli.go DefaultAWSLogin / DefaultAWSSSOLogin) so
+// tea.ExecProcess can own the terminal for the child directly — the effect
+// funcs run the child themselves and cannot be suspended by the program.
+func interactiveAWSAuthCommand(ctx context.Context, _ setup.Effects, method setup.AWSAuthMethod, profile, region string) *exec.Cmd {
+	var args []string
+	switch method {
+	case setup.AWSAuthSSO:
+		args = []string{"sso", "login"}
+	default: // login
+		args = []string{"login"}
+		if r := strings.TrimSpace(region); r != "" {
+			args = append(args, "--region", r)
+		}
+	}
+	if p := strings.TrimSpace(profile); p != "" {
+		args = append(args, "--profile", p)
+	}
+	return exec.CommandContext(ctx, "aws", args...) //nolint:gosec // fixed binary; profile/region are user-selected AWS values.
 }
 
 func (v SetupWizardView) View() string {
@@ -756,6 +843,9 @@ func (v SetupWizardView) View() string {
 		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ scroll · ⏎/esc restart setup"))
 	case stageActions:
 		b.WriteString(ui.Primary.Render("Setup actions") + "\n\n")
+		if v.notice != "" {
+			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
+		}
 		authCursor := "  "
 		if v.actionCursor == actionRowAuth {
 			authCursor = "> "
