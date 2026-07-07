@@ -271,3 +271,79 @@ func setupTypePass(v SetupWizardView, newPass, confirm string) SetupWizardView {
 	}
 	return v
 }
+
+func TestSetupWizard_ReviewRendersPlanAndPushesConfirm(t *testing.T) {
+	v := setupAtReview(t)
+	if !strings.Contains(v.View(), "my-sentra-bucket") {
+		t.Fatalf("review must render the plan (bucket), got:\n%s", v.View())
+	}
+	// Enter on review pushes the confirm modal — it does NOT start the op.
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	msgs := execCmds(t, cmd)
+	var pushed bool
+	for _, msg := range msgs {
+		if pm, ok := msg.(pushModalMsg); ok {
+			pushed = true
+			_ = pm
+		}
+		if _, ok := msg.(startOpMsg); ok {
+			t.Fatal("review enter must NOT start provisioning before confirm")
+		}
+	}
+	if !pushed {
+		t.Fatalf("review enter must push a confirm modal, got %#v", msgs)
+	}
+	if v.stage != stageReview {
+		t.Fatalf("review stage must persist until confirmed, got %v", v.stage)
+	}
+}
+
+func TestSetupWizard_ReviewConfirmStartsProvisioning(t *testing.T) {
+	v := setupAtReview(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push modal
+	v = m.(SetupWizardView)
+	// The App broadcasts confirmedMsg back; that is what starts the op.
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+	if v.stage != stageProvision {
+		t.Fatalf("confirm must move to stageProvision, got %v", v.stage)
+	}
+	msgs := execCmds(t, cmd)
+	var foundStart bool
+	for _, msg := range msgs {
+		if s, ok := msg.(startOpMsg); ok && s.name == "setup" {
+			foundStart = true
+		}
+	}
+	if !foundStart {
+		t.Fatalf("confirm must emit startOpMsg{name:setup}, got %#v", msgs)
+	}
+}
+
+func TestSetupWizard_ReviewConfirmWrongIDIgnored(t *testing.T) {
+	v := setupAtReview(t)
+	m, cmd := v.Update(confirmedMsg{id: "some-other-flow"})
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("a foreign confirmedMsg must not start setup, got %v", v.stage)
+	}
+	if cmd != nil {
+		if msgs := execCmds(t, cmd); len(msgs) > 0 {
+			t.Fatalf("foreign confirm should be a no-op, got %#v", msgs)
+		}
+	}
+}
+
+// setupAtReview drives an AWS wizard through actions + passphrase to review.
+func setupAtReview(t *testing.T) SetupWizardView {
+	t.Helper()
+	v := setupAtPassphrase(t)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(SetupWizardView)
+	if got.stage != stageReview {
+		t.Fatalf("setup precondition: want stageReview, got %v", got.stage)
+	}
+	return got
+}

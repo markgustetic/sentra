@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"crypto/subtle"
 	"fmt"
 	"strings"
@@ -33,6 +34,21 @@ const (
 	stageDone
 	stageError
 )
+
+// setupReviewConfirmID ties the review ConfirmModal result back to this
+// flow. Provisioning is gated behind it: the App broadcasts
+// confirmedMsg{setupReviewConfirmID} on enter, and only then does the
+// wizard emit its startOpMsg. Mirrors HuhSetupReviewConfirm.
+const setupReviewConfirmID = "setup-apply"
+
+// setupDoneMsg is the wizard's terminal op result. Setup PERFORMS AWS
+// provisioning + config write + repo init, all under the repo advisory
+// lock (repo.Init), so it is a mutating op: implementing opResult() clears
+// the App's one-op guard. The provisioning task adds the report/error
+// fields it carries; here it only needs to exist as the op's result type.
+type setupDoneMsg struct{}
+
+func (setupDoneMsg) opResult() {}
 
 // SetupWizardView drives the in-TUI setup wizard. It is the TUI-native
 // re-expression of the huh cli wizard (internal/cli/setup_wizard.go):
@@ -89,6 +105,11 @@ type SetupWizardView struct {
 	// shown in a scrollable viewport.
 	iamText     string
 	iamViewport viewport.Model
+
+	// reporter is the provisioning op's progress sink; the checklist state
+	// and terminal result fields land with the provisioning task.
+	reporter *opReporter
+	notice   string
 
 	width  int
 	height int
@@ -211,6 +232,12 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		return v, nil
+	case confirmedMsg:
+		if msg.id != setupReviewConfirmID || v.stage != stageReview {
+			return v, nil
+		}
+		v.notice = ""
+		return v.startProvision()
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -233,8 +260,41 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v.handleActionsKey(msg)
 	case stagePassphrase:
 		return v.handlePassphraseKey(msg)
+	case stageReview:
+		if msg.Type == tea.KeyEnter {
+			return v.pushReviewConfirm()
+		}
+		return v, nil
 	}
 	return v, nil
+}
+
+func (v SetupWizardView) pushReviewConfirm() (tea.Model, tea.Cmd) {
+	body := "Apply this setup: prepare AWS (if selected), write the config, and initialize the repository.\n" +
+		"No secrets are written to sentra.yaml, logs, or the setup draft."
+	modal := NewConfirmModal("Review setup", body, setupReviewConfirmID, v.width, v.height)
+	return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+}
+
+// startProvision moves into the provisioning stage and emits the single
+// setup op. The op closure is finalized in the provisioning task; this
+// establishes the stage transition and the startOpMsg name contract.
+func (v SetupWizardView) startProvision() (tea.Model, tea.Cmd) {
+	v.reporter = newOpReporter()
+	v.stage = stageProvision
+	start := v.buildSetupOp()
+	return v, tea.Batch(func() tea.Msg { return start }, opTick())
+}
+
+// buildSetupOp is finalized in the provisioning task; this placeholder
+// establishes the startOpMsg name and the setupDoneMsg result contract.
+func (v SetupWizardView) buildSetupOp() startOpMsg {
+	return startOpMsg{
+		name: "setup",
+		run: func(ctx context.Context) tea.Msg {
+			return setupDoneMsg{}
+		},
+	}
 }
 
 func (v SetupWizardView) handlePassphraseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -607,6 +667,9 @@ func (v SetupWizardView) View() string {
 			b.WriteString("\n" + ui.Danger.Render(v.passErr))
 		}
 		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space keyring"))
+	case stageReview:
+		b.WriteString(setup.ReviewText(v.deps.ConfigPath, v.plan))
+		b.WriteString("\n" + ui.Muted.Render("⏎ review & apply"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
