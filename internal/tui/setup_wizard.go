@@ -5,6 +5,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
+	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -72,8 +73,10 @@ type SetupWizardView struct {
 	confirmPass textinput.Model
 	savePass    bool
 
-	// iamText is the rendered IAM policy for the stageIAMPreview short-circuit.
-	iamText string
+	// iamText is the rendered IAM policy for the stageIAMPreview short-circuit,
+	// shown in a scrollable viewport.
+	iamText     string
+	iamViewport viewport.Model
 
 	width  int
 	height int
@@ -195,8 +198,23 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v.handleBackendKey(msg)
 	case stageDetails:
 		return v.handleDetailsKey(msg)
+	case stageIAMPreview:
+		return v.handleIAMKey(msg)
 	}
 	return v, nil
+}
+
+func (v SetupWizardView) handleIAMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEnter || msg.Type == tea.KeyEsc {
+		// Restart the wizard: printing the policy is a terminal action, same
+		// as the cli wizard returning after writeSetupIAMPolicy.
+		fresh := NewSetupWizardView(v.deps)
+		fresh.width, fresh.height = v.width, v.height
+		return fresh, nil
+	}
+	var cmd tea.Cmd
+	v.iamViewport, cmd = v.iamViewport.Update(msg)
+	return v, cmd
 }
 
 func (v SetupWizardView) handleBackendKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -321,6 +339,18 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 
 	if v.plan.Backend == setup.BackendAWS && v.printIAM {
 		v.iamText = renderIAMPolicy(bucket, v.plan.Config.Repo.S3.Prefix)
+		// Size the viewport to the policy's own height so the whole
+		// least-privilege document is visible without scrolling when the
+		// terminal has the room; a shorter terminal still scrolls. The
+		// operator must be able to read the entire policy before copying it.
+		contentLines := strings.Count(v.iamText, "\n") + 1
+		height := max(v.height-8, 6)
+		if contentLines > height {
+			height = contentLines
+		}
+		vp := viewport.New(max(v.width-8, 20), height)
+		vp.SetContent(v.iamText)
+		v.iamViewport = vp
 		v.stage = stageIAMPreview
 		return v, nil
 	}
@@ -379,6 +409,10 @@ func (v SetupWizardView) View() string {
 			b.WriteString("\n" + ui.Danger.Render(v.detailErr))
 		}
 		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space toggle"))
+	case stageIAMPreview:
+		b.WriteString(ui.Primary.Render("IAM policy (no changes were made)") + "\n\n")
+		b.WriteString(v.iamViewport.View())
+		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ scroll · ⏎/esc restart setup"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}

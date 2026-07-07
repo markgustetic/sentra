@@ -112,3 +112,35 @@ func setupTypeField(v SetupWizardView, s string) SetupWizardView {
 	}
 	return v
 }
+
+func TestSetupWizard_PrintIAMShortCircuitsToPreview(t *testing.T) {
+	v := setupAtDetails(t, 0) // AWS
+	v = setupTypeField(v, "my-sentra-bucket")
+	// Move cursor onto the IAM toggle (past the 4 AWS fields) and toggle it.
+	v.fieldCursor = v.detailFieldCount()
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeySpace})
+	v = m.(SetupWizardView)
+	if !v.printIAM {
+		t.Fatal("space must toggle printIAM on")
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageIAMPreview {
+		t.Fatalf("printIAM enter must go to stageIAMPreview, got %v", v.stage)
+	}
+	out := v.View()
+	if !strings.Contains(out, "my-sentra-bucket") || !strings.Contains(out, "s3:PutObject") {
+		t.Fatalf("IAM preview must render the policy for the bucket, got:\n%s", out)
+	}
+}
+
+func TestSetupWizard_IAMPreviewMatchesEngine(t *testing.T) {
+	var want strings.Builder
+	if err := setup.WriteIAMPolicy(&want, "my-sentra-bucket", "sentra/"); err != nil {
+		t.Fatal(err)
+	}
+	got := renderIAMPolicy("my-sentra-bucket", "sentra/")
+	if got != want.String() {
+		t.Fatalf("renderIAMPolicy diverged from setup.WriteIAMPolicy:\n got=%q\nwant=%q", got, want.String())
+	}
+}
