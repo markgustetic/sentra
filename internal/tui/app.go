@@ -186,12 +186,13 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with all 14 Phase 2c views registered:
+// NewApp constructs the shell with the Phase 2c views registered:
 // the original read-only views (dashboard, snapshots, diff), the
 // async-check views (check, doctor), the management views
 // (recovery-kit, policies, schedule), the agent view (which now also
-// hosts agent-apply in place, so it gets no separate id), and the
-// direct data operations (backup, restore, prune, sync, password).
+// hosts agent-apply in place, so it gets no separate id), the direct
+// data operations (backup, restore, prune, sync, password), the
+// unlock gate, and the Part 7 "Settings" category (settings, setup).
 // Deps semantics (nil-tolerant, cancellable ctx) are unchanged from
 // the previous implementation.
 func NewApp(deps Deps) App {
@@ -219,6 +220,8 @@ func NewApp(deps Deps) App {
 		{id: "sync", model: NewSyncView(deps)},
 		{id: "password", model: NewPasswordView(deps)},
 		{id: "unlock", model: NewUnlockView(deps)},
+		{id: "settings", model: NewSettingsView(deps)},
+		{id: "setup", model: NewSetupWizardView(deps)},
 	}
 	// The direct data operations form the "Operations" category in the
 	// rail and palette; every read-only/management view defaults to
@@ -228,6 +231,7 @@ func NewApp(deps Deps) App {
 	categories := map[string]string{
 		"backup": "Operations", "restore": "Operations", "prune": "Operations",
 		"sync": "Operations", "password": "Operations", "policies": "Operations",
+		"settings": "Settings", "setup": "Settings",
 	}
 	for _, v := range views {
 		title := v.id

@@ -115,8 +115,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 15 {
-		t.Fatalf("views = %d, want 15 (3 read-only + check + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock)", got)
+	if got := len(app.views); got != 17 {
+		t.Fatalf("views = %d, want 17 (3 read-only + check + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock + settings + setup)", got)
 	}
 }
 
@@ -841,8 +841,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 15 {
-		t.Fatalf("views = %d, want 15 (Phase 2c end-state + the unlock gate)", got)
+	if got := len(app.views); got != 17 {
+		t.Fatalf("views = %d, want 17 (Phase 2c end-state + the unlock gate + settings + setup)", got)
 	}
 }
 
@@ -915,16 +915,17 @@ func TestApp_RegistersPoliciesView(t *testing.T) {
 
 // TestApp_Phase2cViewsRegistered: after Phase 2c, all six new standalone
 // views are present (doctor, recovery-kit, policies, schedule, sync,
-// password) alongside the eight pre-existing ones, for a total of 14.
-// agent-apply is NOT a new view — it extends the existing "agent" view in
-// place — so it adds no id.
+// password) alongside the eight pre-existing ones, plus the unlock gate
+// and the Part 7 settings/setup views, for a total of 17. agent-apply is
+// NOT a new view — it extends the existing "agent" view in place — so it
+// adds no id.
 func TestApp_Phase2cViewsRegistered(t *testing.T) {
 	app := newTestApp(t)
 
 	want := []string{
 		"dashboard", "snapshots", "diff", "check", "doctor", "recovery-kit",
 		"policies", "schedule", "agent", "backup", "restore", "prune",
-		"sync", "password", "unlock",
+		"sync", "password", "unlock", "settings", "setup",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {

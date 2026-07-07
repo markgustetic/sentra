@@ -108,3 +108,24 @@ func ptrDefaults() *config.Config {
 	c := config.Defaults()
 	return &c
 }
+
+// TestApp_SetupAndSettingsRegistered: both new views are registered in the
+// shell (sidebar + palette are registry-driven off the same slice). This
+// task only inserts the two views into the existing slice — it does not
+// touch active/focus/sidebar selection (that block is owned by the final
+// registration task) — so this asserts presence plus the resulting count.
+func TestApp_SetupAndSettingsRegistered(t *testing.T) {
+	app := NewApp(Deps{RepoName: "test-repo"})
+	have := map[string]bool{}
+	for _, v := range app.views {
+		have[v.id] = true
+	}
+	for _, id := range []string{"setup", "settings"} {
+		if !have[id] {
+			t.Errorf("view %q not registered", id)
+		}
+	}
+	if got := len(app.views); got != 17 {
+		t.Fatalf("views = %d, want 17 (15 Phase 2c+unlock + setup + settings)", got)
+	}
+}
