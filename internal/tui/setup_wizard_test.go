@@ -144,3 +144,59 @@ func TestSetupWizard_IAMPreviewMatchesEngine(t *testing.T) {
 		t.Fatalf("renderIAMPolicy diverged from setup.WriteIAMPolicy:\n got=%q\nwant=%q", got, want.String())
 	}
 }
+
+func TestSetupWizard_ActionsToPassphraseWhenInitRepo(t *testing.T) {
+	v := setupAtActions(t) // AWS, valid bucket, initRepo default true
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("init-repo on must go to stagePassphrase, got %v", v.stage)
+	}
+	if !v.plan.PrepareAWS {
+		t.Fatal("default AWS actions must set PrepareAWS")
+	}
+}
+
+func TestSetupWizard_ActionsSkipAppliesConfigOnly(t *testing.T) {
+	v := setupAtActions(t)
+	// Move the auth cursor to "skip" (index 3) and toggle init-repo off is
+	// implied by ApplyAWSConfigOnly.
+	v.authCursor = 3 // login=0, sso=1, existing=2, skip=3
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("skip must go straight to review, got %v", v.stage)
+	}
+	if v.plan.PrepareAWS || v.plan.InitRepo {
+		t.Fatalf("skip must be config-only: PrepareAWS=%v InitRepo=%v", v.plan.PrepareAWS, v.plan.InitRepo)
+	}
+	if v.plan.AWSAuthMethod != setup.AWSAuthSkip {
+		t.Fatalf("skip must set AWSAuthSkip, got %v", v.plan.AWSAuthMethod)
+	}
+}
+
+func TestSetupWizard_ActionsInitOffGoesToReview(t *testing.T) {
+	v := setupAtActions(t)
+	v.initRepo = false // toggled off
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("init-repo off (auth != skip) must go to review, got %v", v.stage)
+	}
+	if !v.plan.PrepareAWS {
+		t.Fatal("a non-skip auth still prepares AWS even when init-repo is off")
+	}
+}
+
+// setupAtActions drives an AWS wizard to stageActions with a valid bucket.
+func setupAtActions(t *testing.T) SetupWizardView {
+	t.Helper()
+	v := setupAtDetails(t, 0)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(SetupWizardView)
+	if got.stage != stageActions {
+		t.Fatalf("setup precondition: want stageActions, got %v", got.stage)
+	}
+	return got
+}

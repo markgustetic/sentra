@@ -62,7 +62,10 @@ type SetupWizardView struct {
 	// printIAM toggles the "print IAM policy and stop" details control.
 	printIAM bool
 
-	// actions-stage toggle state, seeded from the plan's smart defaults.
+	// actions-stage cursor over the auth-method select and the four toggles,
+	// with toggle state seeded from the plan's smart defaults.
+	authCursor   int
+	actionCursor int
 	createBucket bool
 	blockPublic  bool
 	defaultEnc   bool
@@ -90,6 +93,23 @@ const (
 	setupFieldProfile
 	setupFieldEndpoint
 	setupFieldCount
+)
+
+// setupAuthOrder lists the auth methods in stageActions cursor order,
+// matching the cli wizard's option order
+// (internal/cli/setup_wizard.go:386-393).
+var setupAuthOrder = []setup.AWSAuthMethod{
+	setup.AWSAuthLogin, setup.AWSAuthSSO, setup.AWSAuthExisting, setup.AWSAuthSkip,
+}
+
+// action-stage cursor rows: the auth select, then the four toggles.
+const (
+	actionRowAuth = iota
+	actionRowCreate
+	actionRowBlock
+	actionRowEncrypt
+	actionRowInit
+	actionRowCount
 )
 
 func NewSetupWizardView(deps Deps) SetupWizardView {
@@ -200,6 +220,8 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v.handleDetailsKey(msg)
 	case stageIAMPreview:
 		return v.handleIAMKey(msg)
+	case stageActions:
+		return v.handleActionsKey(msg)
 	}
 	return v, nil
 }
@@ -371,6 +393,76 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
+func (v SetupWizardView) handleActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	isSpace := msg.Type == tea.KeySpace ||
+		(msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ')
+	switch {
+	case msg.Type == tea.KeyTab || msg.Type == tea.KeyDown:
+		v.actionCursor = (v.actionCursor + 1) % actionRowCount
+		return v, nil
+	case msg.Type == tea.KeyUp:
+		v.actionCursor = (v.actionCursor - 1 + actionRowCount) % actionRowCount
+		return v, nil
+	case msg.Type == tea.KeyLeft && v.actionCursor == actionRowAuth:
+		if v.authCursor > 0 {
+			v.authCursor--
+		}
+		return v, nil
+	case msg.Type == tea.KeyRight && v.actionCursor == actionRowAuth:
+		if v.authCursor < len(setupAuthOrder)-1 {
+			v.authCursor++
+		}
+		return v, nil
+	case isSpace:
+		switch v.actionCursor {
+		case actionRowCreate:
+			v.createBucket = !v.createBucket
+		case actionRowBlock:
+			v.blockPublic = !v.blockPublic
+		case actionRowEncrypt:
+			v.defaultEnc = !v.defaultEnc
+		case actionRowInit:
+			v.initRepo = !v.initRepo
+		}
+		return v, nil
+	case msg.Type == tea.KeyEnter:
+		return v.advanceFromActions()
+	}
+	return v, nil
+}
+
+// advanceFromActions records the selected auth method and toggles into the
+// plan and routes onward. It mirrors runHuhAWSSetup's tail
+// (internal/cli/setup_wizard.go:423-434): skip → config-only, otherwise
+// PrepareAWS with the chosen actions.
+func (v SetupWizardView) advanceFromActions() (tea.Model, tea.Cmd) {
+	method := setupAuthOrder[v.authCursor]
+	v.plan.AWSAuthMethod = method
+	v.plan.CreateBucket = v.createBucket
+	v.plan.BlockPublicAccess = v.blockPublic
+	v.plan.DefaultEncryption = v.defaultEnc
+	v.plan.InitRepo = v.initRepo
+	v.plan.PrepareAWS = true
+	if method == setup.AWSAuthSkip {
+		setup.ApplyAWSConfigOnly(&v.plan)
+		setup.NormalizeConfig(&v.plan.Config)
+		v.stage = stageReview
+		return v, nil
+	}
+	setup.NormalizeConfig(&v.plan.Config)
+	if v.plan.InitRepo {
+		v.stage = stagePassphrase
+		v.newPass.Focus()
+		v.confirmPass.Blur()
+		return v, nil
+	}
+	// init-repo off: no passphrase to collect.
+	v.plan.SavePassphrase = false
+	setup.ApplyPassphraseConfig(&v.plan)
+	v.stage = stageReview
+	return v, nil
+}
+
 func (v SetupWizardView) View() string {
 	var b strings.Builder
 	switch v.stage {
@@ -413,6 +505,22 @@ func (v SetupWizardView) View() string {
 		b.WriteString(ui.Primary.Render("IAM policy (no changes were made)") + "\n\n")
 		b.WriteString(v.iamViewport.View())
 		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ scroll · ⏎/esc restart setup"))
+	case stageActions:
+		b.WriteString(ui.Primary.Render("Setup actions") + "\n\n")
+		authCursor := "  "
+		if v.actionCursor == actionRowAuth {
+			authCursor = "> "
+		}
+		b.WriteString(authCursor + ui.Muted.Render("AWS sign-in: ") +
+			setupAuthMethodLabel(setupAuthOrder[v.authCursor]) + "\n")
+		if v.actionCursor == actionRowAuth {
+			b.WriteString("  " + ui.Muted.Render("←/→ change method") + "\n")
+		}
+		b.WriteString(v.actionToggle(actionRowCreate, "create missing bucket", v.createBucket))
+		b.WriteString(v.actionToggle(actionRowBlock, "block public access", v.blockPublic))
+		b.WriteString(v.actionToggle(actionRowEncrypt, "default encryption (AES-256)", v.defaultEnc))
+		b.WriteString(v.actionToggle(actionRowInit, "initialize repository", v.initRepo))
+		b.WriteString("\n" + ui.Muted.Render("⏎ next · ↑/↓ row · ←/→ method · space toggle"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
@@ -429,6 +537,39 @@ func (v SetupWizardView) backendLine(idx int, label, help string) string {
 		return ui.Primary.Render(line)
 	}
 	return line
+}
+
+func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
+	box := "[ ]"
+	if on {
+		box = "[x]"
+	}
+	cursor := "  "
+	if v.actionCursor == row {
+		cursor = "> "
+	}
+	line := cursor + box + " " + label + "\n"
+	if v.actionCursor == row {
+		return ui.Primary.Render(line)
+	}
+	return line
+}
+
+// setupAuthMethodLabel mirrors setupAWSAuthMethodLabel
+// (internal/cli/setup_summary.go:132) for the TUI select row.
+func setupAuthMethodLabel(m setup.AWSAuthMethod) string {
+	switch m {
+	case setup.AWSAuthLogin:
+		return "browser login"
+	case setup.AWSAuthSSO:
+		return "IAM Identity Center / SSO"
+	case setup.AWSAuthExisting:
+		return "existing credentials"
+	case setup.AWSAuthSkip:
+		return "config only"
+	default:
+		return string(m)
+	}
 }
 
 // renderIAMPolicy formats the least-privilege policy for the bucket/prefix
