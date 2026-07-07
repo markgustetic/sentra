@@ -132,6 +132,11 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Actions:           action.NewDefaultRegistry(),
 		SavePassphrase:    saveRepoPassphraseToKeyring,
 		Run:               cli.DefaultUIRunner,
+		// The launch probe must honor --passphrase-file the same way the read
+		// path does. RootFlags is populated by cobra as it parses argv, which
+		// happens AFTER this wiring runs, so we hand the probe a func that reads
+		// the live flag at run time rather than a pre-parse (empty) snapshot.
+		PassphraseFile: func() string { return rootFlags.PassphraseFile },
 	}
 	root.AddCommand(cli.NewUI(uiDeps))
 	cli.SetUIAsDefault(root, uiDeps)

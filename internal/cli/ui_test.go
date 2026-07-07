@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"io"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -250,6 +251,64 @@ func TestRunUI_MissingConfigLaunchesFirstRunWizard(t *testing.T) {
 	}
 	if d.Repo != nil {
 		t.Error("first-run App must carry a nil Repo")
+	}
+}
+
+// TestRunUI_PassphraseFileRoutesToDashboard: sentra.yaml exists with keyring
+// off and no SENTRA_PASSPHRASE, but a --passphrase-file supplies a valid
+// non-interactive passphrase source. The launch probe must honor that file
+// (exactly as every other command's read path does) and route to the DASHBOARD
+// with a live repo — NOT dead-end on the unlock gate, which can't read the file.
+func TestRunUI_PassphraseFileRoutesToDashboard(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".") // keyring off, no env source
+
+	const passphrase = "hunter2"
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte(passphrase))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	if err := r.Close(); err != nil {
+		t.Fatalf("close: %v", err)
+	}
+
+	passFile := filepath.Join(dir, "pass.txt")
+	if err := os.WriteFile(passFile, []byte(passphrase+"\n"), 0o600); err != nil {
+		t.Fatalf("write passphrase file: %v", err)
+	}
+
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			// The read path (openRepoForConfig) uses PassphraseWithConfig, and
+			// production wires it to config.Resolve with the --passphrase-file
+			// path. Model that here so the dashboard branch can open the repo.
+			PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
+				return config.Resolve(config.ResolveOptions{PassphraseFile: passFile})
+			},
+		},
+		// The launch probe must read the SAME file source the read path uses.
+		PassphraseFile: func() string { return passFile },
+		Run:            func(app tui.App) error { captured = app; return nil },
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	if d.InitialView != "" {
+		t.Errorf("InitialView = %q, want \"\" (dashboard) — --passphrase-file should route past the unlock gate", d.InitialView)
+	}
+	if d.Repo == nil {
+		t.Error("dashboard App must carry a live Repo when --passphrase-file supplies the passphrase")
 	}
 }
 

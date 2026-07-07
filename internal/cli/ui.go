@@ -54,6 +54,18 @@ type UIDeps struct {
 	// means runUI constructs the production setup.DefaultEffects(); tests
 	// inject a fake to keep AWS/keyring calls out of the process.
 	SetupEffects setup.Effects
+
+	// PassphraseFile resolves the --passphrase-file path (the root persistent
+	// flag) at run time. The launch-routing probe (probeLaunchState) must
+	// honor it so a non-interactive file source resolves the same way it does
+	// on every command's read path — otherwise `sentra ui --passphrase-file X`
+	// against a keyring-off repo misroutes to the unlock gate, which cannot
+	// read the file. It is a func, not a plain string, because production wires
+	// the command deps BEFORE cobra parses argv: a value snapshot would always
+	// be empty, so the probe must read the live cli.RootFlags.PassphraseFile at
+	// run time. Nil (or a func returning "") means "no file source". Returns a
+	// path, never a secret.
+	PassphraseFile func() string
 }
 
 // NewUI returns the cobra command for `sentra ui`. The command
@@ -89,7 +101,11 @@ func NewUI(deps UIDeps) *cobra.Command {
 func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 	cmd.SilenceUsage = true
 
-	st, err := probeLaunchState(cmd, cfgPath, deps.RepoDeps)
+	passphraseFile := ""
+	if deps.PassphraseFile != nil {
+		passphraseFile = deps.PassphraseFile()
+	}
+	st, err := probeLaunchState(cmd, cfgPath, passphraseFile)
 	if err != nil {
 		return err
 	}

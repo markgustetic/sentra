@@ -70,12 +70,15 @@ type launchState struct {
 }
 
 // probeLaunchState loads the config and attempts a NON-INTERACTIVE passphrase
-// resolution. deps.PassphraseWithConfig is the interactive resolver used by the
-// normal read path; the launch path must not call it (it would prompt), so this
-// helper resolves through config.Resolve with a nil Prompt and the same
-// keyring settings the read path would use, and treats ErrNoPassphraseSource as
-// "not available" rather than an error.
-func probeLaunchState(_ *cobra.Command, cfgPath string, _ RepoDeps) (launchState, error) {
+// resolution. passphraseFile is the --passphrase-file path (empty when unset);
+// it MUST be honored here so a file source routes the launch identically to the
+// normal read path — otherwise `sentra ui --passphrase-file X` against a
+// keyring-off repo misroutes to the unlock gate, which cannot read the file.
+// The launch path must not run an interactive resolver (it would prompt), so
+// this helper resolves through config.Resolve with a nil Prompt and the same
+// file + keyring settings the read path would use, and treats
+// ErrNoPassphraseSource as "not available" rather than an error.
+func probeLaunchState(_ *cobra.Command, cfgPath, passphraseFile string) (launchState, error) {
 	exists := false
 	if info, err := os.Stat(cfgPath); err == nil && !info.IsDir() {
 		exists = true
@@ -89,6 +92,7 @@ func probeLaunchState(_ *cobra.Command, cfgPath string, _ RepoDeps) (launchState
 		return st, nil // first run: no passphrase needed, wizard handles it
 	}
 	pass, err := config.Resolve(config.ResolveOptions{
+		PassphraseFile:       passphraseFile, // --passphrase-file: highest priority, same as the read path
 		UseKeyring:           cfg.Passphrase.UseKeyring,
 		KeyringService:       config.KeyringService,
 		KeyringUser:          config.KeyringUserForConfig(cfg),
