@@ -1334,3 +1334,87 @@ func TestApp_DepsCarrySplashFields(t *testing.T) {
 		t.Error("Deps{} must default ShowSplash to false")
 	}
 }
+
+// splashApp builds a sized App with the splash armed.
+func splashApp(t *testing.T) App {
+	t.Helper()
+	app := NewApp(Deps{RepoName: "x", ShowSplash: true, Version: "v1.2.0", Commit: "a1b2c3d4ef"})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return sized.(App)
+}
+
+func TestApp_SplashRendersThenAutoDismisses(t *testing.T) {
+	app := splashApp(t)
+	if !strings.Contains(app.View(), "s  e  n  t  r  a") {
+		t.Fatalf("splash wordmark not rendered:\n%s", app.View())
+	}
+	m, _ := app.Update(splashDoneMsg{})
+	app = m.(App)
+	if strings.Contains(app.View(), "s  e  n  t  r  a") {
+		t.Error("splashDoneMsg must retire the splash")
+	}
+	if !strings.Contains(app.View(), "Dashboard") {
+		t.Errorf("normal frame should render after the splash:\n%s", app.View())
+	}
+}
+
+// The dismissing key is CONSUMED: it must not reach the active view.
+func TestApp_SplashDismissedByAnyKeyAndConsumed(t *testing.T) {
+	app := splashApp(t)
+	before := app.active
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	app = m.(App)
+	if strings.Contains(app.View(), "s  e  n  t  r  a") {
+		t.Error("any key must dismiss the splash")
+	}
+	if app.active != before {
+		t.Errorf("the dismissing key must be consumed, not routed (active %d -> %d)", before, app.active)
+	}
+}
+
+func TestApp_CtrlCQuitsDuringSplash(t *testing.T) {
+	app := splashApp(t)
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("ctrl+c must quit even while the splash is up")
+	}
+}
+
+func TestApp_NoSplashByDefault(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x"})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if strings.Contains(sized.(App).View(), "s  e  n  t  r  a") {
+		t.Error("Deps{} must not show the splash")
+	}
+}
+
+func TestApp_TooSmallBeatsSplash(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", ShowSplash: true})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 20, Height: 5})
+	out := sized.(App).View()
+	if !strings.Contains(out, "terminal too small") {
+		t.Errorf("the too-small guard must outrank the splash:\n%s", out)
+	}
+}
+
+func TestApp_VersionLine(t *testing.T) {
+	tests := []struct {
+		name    string
+		version string
+		commit  string
+		want    string
+	}{
+		{name: "version and short commit", version: "v1.2.0", commit: "a1b2c3d4ef", want: "v1.2.0 · a1b2c3d"},
+		{name: "commit none is omitted", version: "dev", commit: "none", want: "dev"},
+		{name: "empty commit is omitted", version: "dev", commit: "", want: "dev"},
+		{name: "no version renders nothing", version: "", commit: "abc", want: ""},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			app := NewApp(Deps{Version: tt.version, Commit: tt.commit})
+			if got := app.versionLine(); got != tt.want {
+				t.Errorf("versionLine() = %q, want %q", got, tt.want)
+			}
+		})
+	}
+}
