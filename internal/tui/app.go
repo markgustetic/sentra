@@ -411,6 +411,11 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			nd.Config = msg.config
 		}
 		nd.InitialView = ""
+		// The splash is a launch moment, and the launch already had it. NewApp
+		// re-seeds splashActive from ShowSplash and Init() re-arms the tick, so
+		// leaving it set would cover the freshly unlocked dashboard a second
+		// time and eat the user's next keystroke dismissing it.
+		nd.ShowSplash = false
 		rebuilt := NewApp(nd)
 		if m.width > 0 {
 			sized, _ := rebuilt.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})

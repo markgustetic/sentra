@@ -1418,3 +1418,36 @@ func TestApp_VersionLine(t *testing.T) {
 		})
 	}
 }
+
+// TestApp_RepoReadyDoesNotReplaySplash: the splash is a launch moment, not a
+// per-App-construction one. repoReadyMsg rebuilds the whole shell via NewApp,
+// which re-seeds splashActive from Deps.ShowSplash — so unless the rebuild
+// clears it, unlocking (or finishing first-run setup) covers the fresh
+// dashboard with the splash a second time and swallows the user's next
+// keystroke dismissing it.
+func TestApp_RepoReadyDoesNotReplaySplash(t *testing.T) {
+	r := newFlowRepo(t)
+	cfg := config.Defaults()
+	app := NewApp(Deps{RepoName: "x", InitialView: "unlock", ShowSplash: true})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = sized.(App)
+
+	// The launch splash had its moment and the user dismissed it.
+	dismissed, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = dismissed.(App)
+	if app.splashActive {
+		t.Fatal("precondition: a key must dismiss the launch splash")
+	}
+
+	m, _ := app.Update(repoReadyMsg{repo: r, config: &cfg})
+	next := m.(App)
+	if next.splashActive {
+		t.Error("the splash must not replay over the dashboard after unlock")
+	}
+	if strings.Contains(next.View(), "s  e  n  t  r  a") {
+		t.Error("post-unlock dashboard is covered by the splash wordmark")
+	}
+	if next.deps.ShowSplash {
+		t.Error("rebuilt Deps must not carry ShowSplash, or Init() re-arms the tick")
+	}
+}
