@@ -68,6 +68,53 @@ func TestDefaultPlanRegionFallbackKey(t *testing.T) {
 	}
 }
 
+func TestDefaultPlanInfersS3CompatibleFromEndpointWithEnvCredentials(t *testing.T) {
+	// A config that already carries a custom endpoint_url AND ambient
+	// credentials is a ready-to-use S3-compatible target (the canonical case:
+	// `sentra local` points at MinIO with minioadmin creds exported into the
+	// environment). It needs no AWS account provisioning, so DefaultPlan must
+	// switch the backend and clear every AWS-side step.
+	var cfg config.Config
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+	probe := fakeProbe{env: map[string]string{}, envCredentials: true}
+
+	p := DefaultPlan(cfg, probe)
+	if p.Backend != BackendS3Compatible {
+		t.Fatalf("backend: got %q, want s3-compatible", p.Backend)
+	}
+	if p.PrepareAWS {
+		t.Fatal("PrepareAWS should be off for an S3-compatible endpoint")
+	}
+	if p.CreateBucket || p.BlockPublicAccess || p.DefaultEncryption {
+		t.Fatalf("AWS provisioning steps should be off: %+v", p)
+	}
+	if p.AWSAuthMethod != AWSAuthSkip {
+		t.Fatalf("auth method: got %q, want skip", p.AWSAuthMethod)
+	}
+	if p.Config.Repo.S3.EndpointURL != "http://localhost:9000" {
+		t.Fatalf("endpoint_url should be preserved, got %q", p.Config.Repo.S3.EndpointURL)
+	}
+}
+
+func TestDefaultPlanEndpointWithoutCredentialsKeepsAWSBackend(t *testing.T) {
+	// A bare endpoint_url with NO ambient credentials stays on the AWS backend:
+	// the CLI wizard seeds the endpoint field but the interactive backend select
+	// still defaults to AWS S3. This guards the internal/cli oracle
+	// (TestDefaultSetupPlanKeepsAWSBackendForEndpointConfig), which delegates to
+	// DefaultPlan, from the endpoint→S3-compatible inference.
+	var cfg config.Config
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+	probe := fakeProbe{env: map[string]string{}}
+
+	p := DefaultPlan(cfg, probe)
+	if p.Backend != BackendAWS {
+		t.Fatalf("backend: got %q, want aws", p.Backend)
+	}
+	if p.Config.Repo.S3.EndpointURL != "http://localhost:9000" {
+		t.Fatalf("endpoint_url should be preserved, got %q", p.Config.Repo.S3.EndpointURL)
+	}
+}
+
 func TestNormalizeConfigTrimsS3Fields(t *testing.T) {
 	var cfg config.Config
 	cfg.Repo.S3.Bucket = "  b  "

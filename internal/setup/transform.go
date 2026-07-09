@@ -42,6 +42,31 @@ func applySmartDefaults(p *Plan, probe EnvProbe) {
 	if probe.HasEnvCredentials() || p.Config.Repo.S3.Profile != "" {
 		p.AWSAuthMethod = AWSAuthExisting
 	}
+	inferS3CompatibleFromEndpoint(p, probe)
+}
+
+// inferS3CompatibleFromEndpoint switches the plan to the S3-compatible backend
+// when the config already carries a custom endpoint_url AND ambient credentials
+// are present. A config with an endpoint_url is inherently S3-compatible and
+// needs none of the AWS account provisioning; the canonical trigger is
+// `sentra local`, which points at MinIO and exports minioadmin credentials into
+// the environment before the wizard builds its plan.
+//
+// The credential guard is deliberate: a bare endpoint_url with no credentials
+// (e.g. the CLI wizard's seeded-but-unchosen endpoint field) stays on the AWS
+// backend so the interactive backend select still defaults to AWS S3. Without
+// it, the internal/cli oracle — which delegates to DefaultPlan and expects a
+// bare-endpoint config to keep the AWS backend — would regress.
+func inferS3CompatibleFromEndpoint(p *Plan, probe EnvProbe) {
+	if strings.TrimSpace(p.Config.Repo.S3.EndpointURL) == "" || !probe.HasEnvCredentials() {
+		return
+	}
+	p.Backend = BackendS3Compatible
+	p.PrepareAWS = false
+	p.CreateBucket = false
+	p.BlockPublicAccess = false
+	p.DefaultEncryption = false
+	p.AWSAuthMethod = AWSAuthSkip
 }
 
 func firstNonEmpty(probe EnvProbe, keys ...string) string {
