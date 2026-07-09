@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -81,8 +82,10 @@ func TestSettingsView_EnterOnPasswordActivatesPassword(t *testing.T) {
 	}
 }
 
-// TestSettingsView_TitleAndCursorClamp: Title is stable and the cursor
-// never leaves the [0,1] range regardless of key spam.
+// TestSettingsView_TitleAndCursorClamp: Title is stable and the cursor never
+// leaves the [0,len(entries)-1] range regardless of key spam. The Settings
+// view now has three entries (Task 5 added the splash toggle), so the
+// down-spam clamp is 2, not the original two-entry view's 1.
 func TestSettingsView_TitleAndCursorClamp(t *testing.T) {
 	v := NewSettingsView(Deps{Config: ptrDefaults()})
 	if v.Title() != "Settings" {
@@ -99,8 +102,8 @@ func TestSettingsView_TitleAndCursorClamp(t *testing.T) {
 		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
 		v = m.(SettingsView)
 	}
-	if v.cursor != 1 {
-		t.Fatalf("cursor after down-spam = %d, want 1", v.cursor)
+	if v.cursor != len(v.entries)-1 {
+		t.Fatalf("cursor after down-spam = %d, want %d", v.cursor, len(v.entries)-1)
 	}
 }
 
@@ -127,5 +130,88 @@ func TestApp_SetupAndSettingsRegistered(t *testing.T) {
 	}
 	if got := len(app.views); got != 17 {
 		t.Fatalf("views = %d, want 17 (15 Phase 2c+unlock + setup + settings)", got)
+	}
+}
+
+// settingsWithConfig writes a real config file and returns a view bound to it.
+func settingsWithConfig(t *testing.T) (SettingsView, string, *config.Config) {
+	t.Helper()
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	cfg := &config.Config{}
+	cfg.Repo.S3.Bucket = "b"
+	if err := config.Write(path, cfg); err != nil {
+		t.Fatal(err)
+	}
+	return NewSettingsView(Deps{Config: cfg, ConfigPath: path}), path, cfg
+}
+
+// cursorTo moves the settings cursor onto the splash toggle row.
+func cursorTo(v SettingsView, kind settingsEntryKind) SettingsView {
+	for i, e := range v.entries {
+		if e.kind == kind {
+			v.cursor = i
+		}
+	}
+	return v
+}
+
+func TestSettings_ToggleSplashPersists(t *testing.T) {
+	v, path, cfg := settingsWithConfig(t)
+	v = cursorTo(v, entryToggleSplash)
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SettingsView)
+
+	if !cfg.UI.HideSplash {
+		t.Error("toggling must flip the in-memory config after a successful write")
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !got.UI.HideSplash {
+		t.Error("toggling must persist hide_splash to disk")
+	}
+	if !strings.Contains(v.View(), "[off]") {
+		t.Errorf("view should show the splash as off:\n%s", v.View())
+	}
+}
+
+func TestSettings_ToggleSplashDisabledWithoutConfig(t *testing.T) {
+	v := cursorTo(NewSettingsView(Deps{}), entryToggleSplash)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SettingsView)
+	if !strings.Contains(v.View(), "available after setup") {
+		t.Errorf("no config: the toggle must render a disabled hint:\n%s", v.View())
+	}
+}
+
+// A failed write must not desync the in-memory config from disk.
+func TestSettings_ToggleSplashWriteErrorKeepsMemory(t *testing.T) {
+	cfg := &config.Config{}
+	// A path inside a non-existent directory makes config.Write fail.
+	bad := filepath.Join(t.TempDir(), "missing-dir", "sentra.yaml")
+	v := cursorTo(NewSettingsView(Deps{Config: cfg, ConfigPath: bad}), entryToggleSplash)
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SettingsView)
+
+	if cfg.UI.HideSplash {
+		t.Error("a failed write must leave the in-memory config unchanged")
+	}
+	if !strings.Contains(v.View(), "could not save") {
+		t.Errorf("a write error should surface inline:\n%s", v.View())
+	}
+}
+
+// Navigation entries still work.
+func TestSettings_NavigateEntryStillEmitsActivate(t *testing.T) {
+	v := cursorTo(NewSettingsView(Deps{}), entryNavigate)
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("a navigate entry must emit a command")
+	}
+	if _, ok := cmd().(activateMsg); !ok {
+		t.Error("a navigate entry must emit activateMsg")
 	}
 }
