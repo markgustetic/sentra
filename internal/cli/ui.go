@@ -55,6 +55,17 @@ type UIDeps struct {
 	// inject a fake to keep AWS/keyring calls out of the process.
 	SetupEffects setup.Effects
 
+	// SetupSeedConfig pre-fills the first-run setup wizard. When non-nil AND the
+	// launch lands on the first-run path (no config file present), runUI hands
+	// this config to the wizard as its starting point so the S3 detail fields
+	// (bucket/prefix/region/endpoint) come up populated — the wizard reads them
+	// via deps.Config → config0 → setup.DefaultPlan. It is NOT written to disk:
+	// the launch stays first-run and the wizard persists the config only on
+	// completion. `sentra local` sets this to MinIO coordinates; every other
+	// caller (NewUI) leaves it nil for a blank wizard. Non-secret S3 coordinates
+	// only — never a passphrase or credentials.
+	SetupSeedConfig *config.Config
+
 	// PassphraseFile resolves the --passphrase-file path (the root persistent
 	// flag) at run time. The launch-routing probe (probeLaunchState) must
 	// honor it so a non-interactive file source resolves the same way it does
@@ -128,11 +139,20 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		if st.ConfigExists {
 			initial = "unlock"
 		}
-		repoName := st.Config.Repo.S3.Bucket
+		// On the true first-run path (no config file), an optional seed config
+		// pre-fills the wizard's S3 fields. We only apply it when the wizard is
+		// what we're launching (initial == "setup"); a configured-but-locked
+		// launch keeps the real config so the unlock view names the right repo.
+		// Nothing is written to disk here — the wizard persists on completion.
+		launchCfg := st.Config
+		if initial == "setup" && deps.SetupSeedConfig != nil {
+			launchCfg = deps.SetupSeedConfig
+		}
+		repoName := launchCfg.Repo.S3.Bucket
 		app := tui.NewApp(tui.Deps{
-			Provider:              providerForLaunch(deps, st.Config),
+			Provider:              providerForLaunch(deps, launchCfg),
 			RepoName:              repoName,
-			Config:                st.Config,
+			Config:                launchCfg,
 			Ctx:                   cmd.Context(),
 			ConfigPath:            absCfgPath,
 			NewStore:              deps.NewStore,

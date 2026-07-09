@@ -254,6 +254,57 @@ func TestRunUI_MissingConfigLaunchesFirstRunWizard(t *testing.T) {
 	}
 }
 
+// TestRunUI_SeedsWizardConfigOnFirstRun: on the first-run path (no sentra.yaml),
+// a non-nil UIDeps.SetupSeedConfig must reach the wizard as tui.Deps.Config so
+// the setup wizard pre-fills its S3 fields — WITHOUT writing any config file
+// (it stays first-run; the wizard writes on completion). The canonical caller
+// is `sentra local`, which seeds MinIO coordinates.
+func TestRunUI_SeedsWizardConfigOnFirstRun(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir) // empty dir: no sentra.yaml → first run
+
+	seed := &config.Config{}
+	seed.Repo.S3.EndpointURL = "http://localhost:9000"
+	seed.Repo.S3.Bucket = "sentra-test"
+	seed.Repo.S3.Region = "us-east-1"
+
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				t.Fatal("NewStore must not be called on the first-run path")
+				return nil, nil
+			},
+		},
+		SetupSeedConfig: seed,
+		Run:             func(app tui.App) error { captured = app; return nil },
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	d := captured.Deps()
+	if d.InitialView != "setup" {
+		t.Errorf("InitialView = %q, want setup", d.InitialView)
+	}
+	if d.Config == nil {
+		t.Fatal("wizard Deps.Config is nil; seed did not reach the wizard")
+	}
+	if d.Config.Repo.S3.EndpointURL != "http://localhost:9000" {
+		t.Errorf("seed endpoint: got %q, want http://localhost:9000", d.Config.Repo.S3.EndpointURL)
+	}
+	if d.Config.Repo.S3.Bucket != "sentra-test" {
+		t.Errorf("seed bucket: got %q, want sentra-test", d.Config.Repo.S3.Bucket)
+	}
+	if _, statErr := os.Stat(filepath.Join(dir, "sentra.yaml")); !os.IsNotExist(statErr) {
+		t.Fatalf("first-run seed must NOT write sentra.yaml, stat err=%v", statErr)
+	}
+}
+
 // TestRunUI_PassphraseFileRoutesToDashboard: sentra.yaml exists with keyring
 // off and no SENTRA_PASSPHRASE, but a --passphrase-file supplies a valid
 // non-interactive passphrase source. The launch probe must honor that file
