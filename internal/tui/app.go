@@ -475,6 +475,16 @@ func (m App) tooSmall() bool {
 	return m.width > 0 && (m.width < minWidth || m.height < minHeight)
 }
 
+// inStartupGate reports whether the App is sitting on a first-run/unlock
+// gate: a setup or unlock view with no repo behind it. In that state every
+// other view is dead (they all read from a repo that doesn't exist yet), so
+// the shell hides its navigation chrome — the rail, the palette, and the
+// number/tab jumps — and devotes the whole frame to the gate view.
+func (m App) inStartupGate() bool {
+	id := m.views[m.active].id
+	return m.deps.Repo == nil && (id == "setup" || id == "unlock")
+}
+
 // routeKey implements the focus rules: modals first, palette second,
 // then global bindings, then the focused region.
 func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -504,6 +514,23 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if n := len(m.modals); n > 0 {
 		var cmd tea.Cmd
 		m.modals[n-1], cmd = m.modals[n-1].Update(msg)
+		return m, cmd
+	}
+
+	// Startup gate: no repo behind the setup/unlock view, so every other view
+	// is dead. Suppress all nav chrome — don't open the palette on ctrl+p,
+	// don't jump views on number keys, don't tab to the (hidden) sidebar — and
+	// route the keystroke straight to the gate view so a character its
+	// textinput needs is never swallowed by a nav binding. ctrl+c (handled at
+	// the top) still quits; the quit keys stay bound (unchanged scope); the
+	// modal stack (above) still gets first look.
+	if m.inStartupGate() {
+		if key.Matches(msg, m.keys.Quit) {
+			m.cleanup()
+			return m, tea.Quit
+		}
+		var cmd tea.Cmd
+		m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
 		return m, cmd
 	}
 
@@ -624,7 +651,13 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	// the width budget (e.g. -3 → -1) and the panel block grows to 82,
 	// overflowing, and the test fails.
 	contentW := msg.Width - sidebarWidth - 3 // gap(1) + panel border(2); padding is inside Width
-	contentH := msg.Height - 4               // title(1) + status(1) + panel border(2)
+	if m.inStartupGate() {
+		// A startup gate hides the rail (see View()), so the content fills the
+		// full width and the only horizontal chrome is the panel border(2).
+		// Drop the rail(sidebarWidth) + gap(1) from the budget.
+		contentW = msg.Width - 2
+	}
+	contentH := msg.Height - 4 // title(1) + status(1) + panel border(2)
 	if contentW < 1 {
 		contentW = 1
 	}
@@ -669,15 +702,6 @@ func (m App) View() string {
 	title := ui.TitleBar.Render("✦ sentra") + "  " +
 		ui.Muted.Render(m.deps.RepoName)
 
-	// Pin the rail to sidebarWidth. bubbles/list renders each row at its
-	// natural content width, so m.sidebar.View() comes back only as wide
-	// as its longest label — leaving the layout width non-deterministic
-	// and, worse, giving the content row so much slack that the resize
-	// budget stops being the binding constraint (the whole point of the
-	// budget). Forcing the rail to sidebarWidth makes the content row
-	// exactly sidebarWidth + gap(1) + (contentW+2), so the budget is what
-	// determines overflow — see resize() and TestApp_NoOverflowAtMinSize.
-	rail := lipgloss.NewStyle().Width(sidebarWidth).Render(m.sidebar.View())
 	body := m.views[m.active].model.View()
 	contentStyle := ui.Panel
 	if m.focus == focusContent {
@@ -698,13 +722,33 @@ func (m App) View() string {
 	content := contentStyle.
 		Width(m.contentW).Height(m.contentH).
 		Render(body)
-	row := lipgloss.JoinHorizontal(lipgloss.Top, rail, " ", content)
+
+	// The row is the rail + gap + content, EXCEPT in a startup gate, where the
+	// rail is hidden and the gate view owns the full width (see inStartupGate).
+	// Pin the rail to sidebarWidth: bubbles/list renders each row at its
+	// natural content width, so m.sidebar.View() comes back only as wide as its
+	// longest label — leaving the layout width non-deterministic and, worse,
+	// giving the content row so much slack that the resize budget stops being
+	// the binding constraint (the whole point of the budget). Forcing the rail
+	// to sidebarWidth makes the content row exactly sidebarWidth + gap(1) +
+	// (contentW+2), so the budget is what determines overflow — see resize()
+	// and TestApp_NoOverflowAtMinSize.
+	row := content
+	if !m.inStartupGate() {
+		rail := lipgloss.NewStyle().Width(sidebarWidth).Render(m.sidebar.View())
+		row = lipgloss.JoinHorizontal(lipgloss.Top, rail, " ", content)
+	}
 
 	var viewKeys []key.Binding
 	if vh, ok := m.views[m.active].model.(viewShortHelper); ok {
 		viewKeys = vh.ShortHelp()
 	}
 	bottom := m.status.View(m.deps.RepoName, viewKeys, m.opRunning)
+	if m.inStartupGate() {
+		// Suppressed nav keys (palette, focus) must not be advertised; the gate
+		// bar shows only quit alongside the view's own keys.
+		bottom = m.status.ViewGated(m.deps.RepoName, viewKeys, m.opRunning)
+	}
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, row, bottom)
 }

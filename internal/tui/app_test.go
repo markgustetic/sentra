@@ -1022,3 +1022,97 @@ func TestApp_InitialViewSetupLandsContentFocused(t *testing.T) {
 		t.Fatalf("focus = %v, want focusContent", app.focus)
 	}
 }
+
+// TestApp_StartupGateHidesNavChrome: on a first-run/unlock gate (setup or
+// unlock with a nil repo) there is no repo behind any other view, so the shell
+// hides its navigation chrome. The rail's other view titles must not render,
+// ctrl+p must not open the palette, and a number key must not jump views —
+// every non-quit key belongs to the gate view.
+func TestApp_StartupGateHidesNavChrome(t *testing.T) {
+	for _, gate := range []string{"setup", "unlock"} {
+		t.Run(gate, func(t *testing.T) {
+			app := NewApp(Deps{RepoName: "x", InitialView: gate}) // Repo nil
+			sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+			app = sized.(App)
+			if !app.inStartupGate() {
+				t.Fatalf("%s with a nil repo must be a startup gate", gate)
+			}
+			// No rail: the sidebar's other view titles must not render.
+			out := app.View()
+			for _, title := range []string{"Snapshots", "Backup", "Dashboard"} {
+				if strings.Contains(out, title) {
+					t.Errorf("gate view must hide the rail, but found %q:\n%s", title, out)
+				}
+			}
+			// ctrl+p must not open the palette.
+			m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+			if m.(App).paletteOpen {
+				t.Error("ctrl+p must not open the palette in a startup gate")
+			}
+			// A number key must not jump views.
+			m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+			if got := m.(App).active; got != app.active {
+				t.Errorf("number key jumped active %d→%d in a gate; nav must be suppressed", app.active, got)
+			}
+		})
+	}
+}
+
+// TestApp_LiveRepoShowsRailAndNav is the regression guard: with a live repo
+// (the normal dashboard) the shell is NOT a startup gate, so the rail renders
+// and ctrl+p / number-key navigation still work exactly as before.
+func TestApp_LiveRepoShowsRailAndNav(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = sized.(App)
+	if app.inStartupGate() {
+		t.Fatal("a live-repo dashboard must not be a startup gate")
+	}
+	if out := app.View(); !strings.Contains(out, "Snapshots") {
+		t.Fatalf("live-repo shell must render the rail (Snapshots):\n%s", out)
+	}
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if !m.(App).paletteOpen {
+		t.Fatal("ctrl+p must open the palette with a live repo")
+	}
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	if got := m.(App).active; got != 1 {
+		t.Fatalf("number key must jump to view 1 (snapshots), got %d", got)
+	}
+}
+
+// TestApp_NoOverflowAtGateMinSize is the gate-layout twin of
+// TestApp_NoOverflowAtMinSize: with the rail dropped, the content panel fills
+// the full width, so at 80x20 the frame is still exactly 20 lines, no line
+// exceeds 80, and the panel's border rows sit at exactly 80.
+func TestApp_NoOverflowAtGateMinSize(t *testing.T) {
+	app := NewApp(Deps{RepoName: "test-repo", InitialView: "setup"}) // Repo nil → gate
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 80, Height: 20})
+	a := m.(App)
+	if !a.inStartupGate() {
+		t.Fatal("precondition: setup with a nil repo must be a startup gate")
+	}
+	out := a.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) != 20 {
+		t.Fatalf("gate view is %d lines, want exactly 20:\n%s", len(lines), out)
+	}
+	for i, line := range lines {
+		if w := lipgloss.Width(line); w > 80 {
+			t.Errorf("gate line %d overflows: width %d > 80: %q", i, w, line)
+		}
+	}
+	borderRows := 0
+	for i, line := range lines {
+		if strings.ContainsAny(line, "╭╮╰╯│") {
+			if w := lipgloss.Width(line); w != 80 {
+				t.Errorf("gate panel border row %d width %d, want exactly 80: %q", i, w, line)
+			}
+			borderRows++
+		}
+	}
+	if borderRows == 0 {
+		t.Fatal("found no content-panel border rows to check; gate layout changed?")
+	}
+}
