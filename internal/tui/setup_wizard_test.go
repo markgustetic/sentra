@@ -132,6 +132,101 @@ func TestSetupWizard_SeededEndpointStartsOnS3Compatible(t *testing.T) {
 	}
 }
 
+// TestSetupWizard_EndpointLocksBackendToS3Compatible: a config carrying an
+// endpoint_url is S3-compatible by definition (AWS setup rejects endpoint_url),
+// so the wizard locks the backend and never offers AWS — even when no ambient
+// credentials are present, so DefaultPlan's inference did NOT fire and left
+// Backend=AWS. The backend stage renders only the S3-compatible option, pins
+// the cursor, and Enter can only preserve the endpoint.
+func TestSetupWizard_EndpointLocksBackendToS3Compatible(t *testing.T) {
+	// Defeat both env-credential paths so DefaultPlan's inference does NOT fire;
+	// the lock must come from the endpoint alone.
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_ROLE_ARN", "")
+	cfg := &config.Config{}
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+
+	v := NewSetupWizardView(Deps{Config: cfg})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+
+	if !v.backendLocked {
+		t.Fatal("a seeded endpoint_url must lock the backend to S3-compatible")
+	}
+	if v.plan.Backend != setup.BackendS3Compatible {
+		t.Fatalf("locked plan.Backend = %v, want S3-compatible", v.plan.Backend)
+	}
+	if v.backendCursor != 1 {
+		t.Fatalf("locked backendCursor = %d, want 1", v.backendCursor)
+	}
+
+	// The backend view offers ONLY the S3-compatible option.
+	out := v.View()
+	if strings.Contains(out, "AWS S3") {
+		t.Fatalf("locked backend view must not offer the AWS option, got:\n%s", out)
+	}
+	if !strings.Contains(out, "S3-compatible") {
+		t.Fatalf("locked backend view must still show the S3-compatible option, got:\n%s", out)
+	}
+
+	// up/down are no-ops when locked (there is only one row).
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyUp})
+	v = m.(SetupWizardView)
+	if v.backendCursor != 1 {
+		t.Fatalf("locked cursor moved to %d; up/down must be no-ops", v.backendCursor)
+	}
+
+	// Enter can only take the S3-compatible branch, preserving the endpoint.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.plan.Backend != setup.BackendS3Compatible {
+		t.Fatalf("locked Enter set Backend=%v, want S3-compatible", v.plan.Backend)
+	}
+	if got := v.fields[setupFieldEndpoint].Value(); got != "http://localhost:9000" {
+		t.Fatalf("locked Enter wiped the endpoint: got %q", got)
+	}
+}
+
+// TestSetupWizard_UnlockedBackendOffersBothAndAWSBranchWorks is the regression
+// guard for the endpoint-lock: a wizard with no endpoint_url is unlocked, so it
+// renders BOTH backend options, up/down move the cursor, and the AWS branch
+// (cursor 0, Enter) still selects AWS and clears the endpoint — exactly as
+// before the lock was added.
+func TestSetupWizard_UnlockedBackendOffersBothAndAWSBranchWorks(t *testing.T) {
+	v := NewSetupWizardView(Deps{Config: &config.Config{}})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	if v.backendLocked {
+		t.Fatal("an empty-endpoint config must NOT lock the backend")
+	}
+	out := v.View()
+	if !strings.Contains(out, "AWS S3") || !strings.Contains(out, "S3-compatible") {
+		t.Fatalf("unlocked backend view must offer both options, got:\n%s", out)
+	}
+	// up/down still move the cursor when unlocked.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	v = m.(SetupWizardView)
+	if v.backendCursor != 1 {
+		t.Fatalf("unlocked down must move the cursor to 1, got %d", v.backendCursor)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyUp})
+	v = m.(SetupWizardView)
+	if v.backendCursor != 0 {
+		t.Fatalf("unlocked up must move the cursor back to 0, got %d", v.backendCursor)
+	}
+	// The AWS branch: cursor 0 + Enter selects AWS and forbids an endpoint.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.plan.Backend != setup.BackendAWS {
+		t.Fatalf("unlocked cursor-0 Enter must select AWS, got %v", v.plan.Backend)
+	}
+	if got := v.fields[setupFieldEndpoint].Value(); got != "" {
+		t.Fatalf("AWS branch must clear the endpoint field, got %q", got)
+	}
+}
+
 // setupAtDetails drives the wizard to stageDetails on the given backend
 // cursor (0=AWS, 1=S3-compatible).
 func setupAtDetails(t *testing.T, backendCursor int) SetupWizardView {

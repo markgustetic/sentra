@@ -103,6 +103,13 @@ type SetupWizardView struct {
 	// backend-stage cursor over the two backends.
 	backendCursor int
 
+	// backendLocked pins the backend to S3-compatible: set when the wizard is
+	// seeded with an endpoint_url (e.g. `sentra local`), which is S3-compatible
+	// by definition since AWS setup rejects endpoint_url. When locked the
+	// backend stage offers only the S3-compatible option and cannot take the
+	// AWS branch, so the seeded endpoint is never cleared.
+	backendLocked bool
+
 	// details-stage text inputs (bucket/prefix/region/profile/endpoint),
 	// a cursor over them plus the "print IAM policy" toggle, and the last
 	// validation error.
@@ -183,7 +190,18 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	}
 	plan := setup.DefaultPlan(cfg, setup.DefaultEnvProbe())
 
-	// Seed the backend cursor from the (possibly inferred) backend so the
+	// A seeded endpoint_url means the target is S3-compatible by definition
+	// (MinIO/LocalStack/self-managed): AWS setup rejects endpoint_url outright,
+	// so there is no AWS option to offer. Lock the backend here — this also
+	// covers the case where DefaultPlan's inference did NOT fire because the
+	// env-credential half was absent (endpoint present, no ambient creds), so
+	// the endpoint alone is authoritative.
+	backendLocked := strings.TrimSpace(plan.Config.Repo.S3.EndpointURL) != ""
+	if backendLocked {
+		plan.Backend = setup.BackendS3Compatible
+	}
+
+	// Seed the backend cursor from the (possibly inferred/locked) backend so the
 	// selector opens on the right row. DefaultPlan infers BackendS3Compatible
 	// for a `sentra local` seed (endpoint_url + minioadmin env creds); without
 	// this the cursor stays 0 (AWS) and advanceFromBackend's cursor==0 branch
@@ -230,6 +248,7 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 		engine:        eng,
 		plan:          plan,
 		backendCursor: backendCursor,
+		backendLocked: backendLocked,
 		fields:        fields,
 		printIAM:      plan.PrintIAMPolicy,
 		createBucket:  plan.CreateBucket,
@@ -586,6 +605,10 @@ func (v SetupWizardView) handleIAMKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 func (v SetupWizardView) handleBackendKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if v.backendLocked {
+		// Only the S3-compatible row exists; there is nothing to move to.
+		return v, nil
+	}
 	switch msg.Type {
 	case tea.KeyUp:
 		if v.backendCursor > 0 {
@@ -603,7 +626,7 @@ func (v SetupWizardView) handleBackendKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // details defaults, mirroring the cli wizard's runHuhAWSSetup /
 // runHuhCompatibleSetup entry (internal/cli/setup_wizard.go:202-206).
 func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
-	if v.backendCursor == 0 {
+	if !v.backendLocked && v.backendCursor == 0 {
 		v.plan.Backend = setup.BackendAWS
 		// AWS defaults: sentra/ prefix, us-east-1 region if unset
 		// (internal/cli/setup_wizard.go:296-304).
@@ -881,12 +904,21 @@ func (v SetupWizardView) View() string {
 	case stageBackend:
 		b.WriteString(ui.Primary.Render("Sentra setup") + "\n\n")
 		b.WriteString(ui.Muted.Render("Storage backend") + "\n\n")
-		b.WriteString(v.backendLine(0, "AWS S3",
-			"Sentra provisions and prepares the bucket for you."))
-		b.WriteString("\n")
-		b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
-			"MinIO, LocalStack, or a bucket you manage yourself."))
-		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ choose · ⏎ next"))
+		if v.backendLocked {
+			// Endpoint seeded: only S3-compatible is valid, so offer just that
+			// row (no AWS option) with a hint explaining why it's fixed.
+			b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
+				"MinIO, LocalStack, or a bucket you manage yourself."))
+			b.WriteString("\n" + ui.Muted.Render("endpoint detected — S3-compatible"))
+			b.WriteString("\n\n" + ui.Muted.Render("⏎ next"))
+		} else {
+			b.WriteString(v.backendLine(0, "AWS S3",
+				"Sentra provisions and prepares the bucket for you."))
+			b.WriteString("\n")
+			b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
+				"MinIO, LocalStack, or a bucket you manage yourself."))
+			b.WriteString("\n\n" + ui.Muted.Render("↑/↓ choose · ⏎ next"))
+		}
 	case stageDetails:
 		b.WriteString(ui.Primary.Render("Storage details") + "\n\n")
 		labels := []string{"S3 bucket", "S3 key prefix", "AWS region", "AWS profile", "S3 endpoint URL"}
