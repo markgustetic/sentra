@@ -183,6 +183,17 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	}
 	plan := setup.DefaultPlan(cfg, setup.DefaultEnvProbe())
 
+	// Seed the backend cursor from the (possibly inferred) backend so the
+	// selector opens on the right row. DefaultPlan infers BackendS3Compatible
+	// for a `sentra local` seed (endpoint_url + minioadmin env creds); without
+	// this the cursor stays 0 (AWS) and advanceFromBackend's cursor==0 branch
+	// overwrites the inferred plan with AWS defaults AND wipes the seeded
+	// endpoint field.
+	backendCursor := 0
+	if plan.Backend == setup.BackendS3Compatible {
+		backendCursor = 1
+	}
+
 	fields := make([]textinput.Model, setupFieldCount)
 	prompts := []string{"bucket>   ", "prefix>   ", "region>   ", "profile>  ", "endpoint> "}
 	placeholders := []string{
@@ -215,18 +226,19 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	confirmPass.EchoCharacter = '•'
 
 	return SetupWizardView{
-		deps:         deps,
-		engine:       eng,
-		plan:         plan,
-		fields:       fields,
-		printIAM:     plan.PrintIAMPolicy,
-		createBucket: plan.CreateBucket,
-		blockPublic:  plan.BlockPublicAccess,
-		defaultEnc:   plan.DefaultEncryption,
-		initRepo:     plan.InitRepo,
-		newPass:      newPass,
-		confirmPass:  confirmPass,
-		savePass:     plan.SavePassphrase,
+		deps:          deps,
+		engine:        eng,
+		plan:          plan,
+		backendCursor: backendCursor,
+		fields:        fields,
+		printIAM:      plan.PrintIAMPolicy,
+		createBucket:  plan.CreateBucket,
+		blockPublic:   plan.BlockPublicAccess,
+		defaultEnc:    plan.DefaultEncryption,
+		initRepo:      plan.InitRepo,
+		newPass:       newPass,
+		confirmPass:   confirmPass,
+		savePass:      plan.SavePassphrase,
 	}
 }
 

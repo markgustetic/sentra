@@ -97,6 +97,41 @@ func TestSetupWizard_CompatibleDetailsAdvancesToPassphrase(t *testing.T) {
 	}
 }
 
+// TestSetupWizard_SeededEndpointStartsOnS3Compatible pins the MinIO-seeding
+// bug: `sentra local` hands the wizard a config with an endpoint_url plus
+// minioadmin env credentials, so DefaultPlan infers BackendS3Compatible. The
+// wizard must open the backend selector on that row (cursor 1) and, on Enter,
+// keep the inferred backend AND the seeded endpoint — the AWS branch (cursor 0)
+// would overwrite the backend and wipe the endpoint field.
+func TestSetupWizard_SeededEndpointStartsOnS3Compatible(t *testing.T) {
+	t.Setenv("AWS_ACCESS_KEY_ID", "minioadmin")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "minioadmin")
+	cfg := &config.Config{}
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+	cfg.Repo.S3.Bucket = "sentra-test"
+
+	v := NewSetupWizardView(Deps{Config: cfg})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+
+	// (a) the backend cursor must start on S3-compatible (index 1), matching
+	// the inferred plan.Backend — not the default AWS (index 0).
+	if v.backendCursor != 1 {
+		t.Fatalf("backendCursor = %d, want 1 (S3-compatible) for an endpoint+creds seed", v.backendCursor)
+	}
+
+	// (b) Enter on the backend stage must keep the inferred S3-compatible
+	// backend and preserve the seeded endpoint (the AWS branch would wipe it).
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.plan.Backend != setup.BackendS3Compatible {
+		t.Fatalf("plan.Backend = %v, want S3-compatible after Enter on the backend stage", v.plan.Backend)
+	}
+	if got := v.fields[setupFieldEndpoint].Value(); got != "http://localhost:9000" {
+		t.Fatalf("endpoint field = %q, want http://localhost:9000 preserved", got)
+	}
+}
+
 // setupAtDetails drives the wizard to stageDetails on the given backend
 // cursor (0=AWS, 1=S3-compatible).
 func setupAtDetails(t *testing.T, backendCursor int) SetupWizardView {
