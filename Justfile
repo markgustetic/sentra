@@ -41,6 +41,11 @@ default:
 build:
 	{{GO}} build -o {{BIN}} ./cmd/sentra
 
+# Install `sentra` to your Go bin (go env GOBIN, else GOPATH/bin) so it runs by name.
+install:
+	{{GO}} install ./cmd/sentra
+	@bindir="$({{GO}} env GOBIN)"; [ -n "$bindir" ] || bindir="$({{GO}} env GOPATH)/bin"; echo "Installed sentra -> $bindir/sentra (ensure $bindir is on your PATH)"
+
 # Run the standard local quality gate (mirrors CI).
 check: build test vet lint vuln _tidy-check _fmt-check _diff-check
 
@@ -109,8 +114,8 @@ local-logs:
 local-down:
 	docker compose down
 
-# Completely reset the local test env (MinIO volume, sentra-local config + keyring, demo data) so the next run starts fresh at the first-run wizard.
-local-reset:
+# Reinstall `sentra`, then completely reset the local test env (MinIO volume, sentra-local config + keyring, demo data) so the next run starts fresh at the first-run wizard.
+local-reset: install
 	docker compose down -v
 	rm -rf "{{DEMO_DIR}}" "{{RESTORE_DIR}}" sentra-recovery-kit.md first-plan.json
 	rm -rf .sentra-local.yaml .sentra-local
