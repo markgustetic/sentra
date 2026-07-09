@@ -1319,3 +1319,18 @@ func TestApp_GateRoutesQuitRuneToView(t *testing.T) {
 		t.Fatalf("expected tea.QuitMsg from ctrl+c, got %T", cmd())
 	}
 }
+
+// TestApp_DepsCarrySplashFields: the splash is opt-in via Deps so the whole
+// existing suite (which constructs Deps{}) keeps rendering the normal frame.
+func TestApp_DepsCarrySplashFields(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", ShowSplash: true, Version: "v1.2.0", Commit: "a1b2c3d4"})
+	if !app.deps.ShowSplash {
+		t.Error("Deps.ShowSplash not carried through NewApp")
+	}
+	if app.deps.Version != "v1.2.0" || app.deps.Commit != "a1b2c3d4" {
+		t.Errorf("version/commit not carried: %q %q", app.deps.Version, app.deps.Commit)
+	}
+	if NewApp(Deps{RepoName: "x"}).deps.ShowSplash {
+		t.Error("Deps{} must default ShowSplash to false")
+	}
+}

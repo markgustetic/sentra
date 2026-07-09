@@ -113,6 +113,17 @@ type Deps struct {
 	// repo. Empty (or an unknown id) starts on the dashboard. Plain routing
 	// data, never a secret.
 	InitialView string
+
+	// ShowSplash gates the launch splash. runUI sets it from the config's
+	// ui.hide_splash; the zero value (false) keeps it off, so tests that build
+	// a bare Deps{} render the normal frame.
+	ShowSplash bool
+
+	// Version and Commit identify the build on the splash. They are plain
+	// display data, threaded from cmd/sentra. Commit may be the goreleaser
+	// placeholder "none", in which case it is omitted from the rendered line.
+	Version string
+	Commit  string
 }
 
 // viewEntry pairs a registered command ID with its model. Order is
