@@ -61,6 +61,17 @@ type Config struct {
 	Passphrase struct {
 		UseKeyring bool `koanf:"use_keyring"`
 	} `koanf:"passphrase"`
+
+	// UI contains optional presentation settings for the TUI. Stored under
+	// "ui" in the YAML; carries no secrets.
+	//
+	// HideSplash is negated deliberately. Go's zero value for bool is false,
+	// so a sentra.yaml written before this field existed loads as "don't
+	// hide" — the welcome splash shows by default, with no migration and no
+	// pointer field.
+	UI struct {
+		HideSplash bool `koanf:"hide_splash"`
+	} `koanf:"ui"`
 }
 
 // PolicyConfig is the typed view of one entry under sentra.yaml's

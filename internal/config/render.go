@@ -68,6 +68,9 @@ retention:
 
 passphrase:
   use_keyring: %t
+
+ui:
+  hide_splash: %t         # true skips the welcome splash at launch
 %s`,
 		cfg.Repo.S3.Bucket,
 		cfg.Repo.S3.Prefix,
@@ -84,6 +87,7 @@ passphrase:
 		cfg.Retention.KeepWeekly,
 		cfg.Retention.KeepMonthly,
 		cfg.Passphrase.UseKeyring,
+		cfg.UI.HideSplash,
 		renderPoliciesYAML(cfg.Policies),
 	))
 }
