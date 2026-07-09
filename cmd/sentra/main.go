@@ -20,7 +20,7 @@ func main() {
 	root := cli.NewRootWithFlags(version, commit, date, rootFlags)
 
 	configureRootLogging(root, rootFlags)
-	addProductionCommands(root, rootFlags)
+	addProductionCommands(root, rootFlags, version, commit)
 
 	if err := root.Execute(); err != nil {
 		// cobra prints the error itself when SilenceErrors is false; we

@@ -64,7 +64,12 @@ func TestUI_LaunchesApp(t *testing.T) {
 	if err := cmd.Execute(); err != nil {
 		t.Fatalf("execute: %v", err)
 	}
-	view := captured.View()
+	// runUI now launches with the welcome splash on by default (no
+	// ui.hide_splash in this fixture's config), so the very first View()
+	// is the splash overlay rather than the frame. Dismiss it with a
+	// keystroke — same as any real launch — before inspecting the frame.
+	m, _ := captured.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	view := m.(tui.App).View()
 	if !strings.Contains(view, "sentra") {
 		t.Errorf("captured app's view did not contain brand: %s", view)
 	}
@@ -413,5 +418,87 @@ func TestRunUI_ConfigPresentButLockedLaunchesUnlockView(t *testing.T) {
 	}
 	if d.NewStore == nil {
 		t.Error("unlock view needs NewStore threaded to open the repo")
+	}
+}
+
+// TestRunUI_SplashFollowsConfig proves runUI reads ui.hide_splash and threads
+// the build identity, on the dashboard path.
+func TestRunUI_SplashFollowsConfig(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".")
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+
+	deps, captured := uiFixture(t, "hunter2")
+	deps.Version = "v1.2.0"
+	deps.Commit = "a1b2c3d4"
+
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	if !d.ShowSplash {
+		t.Error("a config without ui.hide_splash must launch with the splash on")
+	}
+	if d.Version != "v1.2.0" || d.Commit != "a1b2c3d4" {
+		t.Errorf("build identity not threaded: %q %q", d.Version, d.Commit)
+	}
+}
+
+// TestRunUI_HideSplashDisablesSplash: the persisted opt-out wins.
+func TestRunUI_HideSplashDisablesSplash(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".")
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+
+	// Rewrite the config with the splash suppressed.
+	cfg, err := config.Load("sentra.yaml")
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	cfg.UI.HideSplash = true
+	if err := config.Write("sentra.yaml", cfg); err != nil {
+		t.Fatalf("write: %v", err)
+	}
+
+	deps, captured := uiFixture(t, "hunter2")
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if captured.Deps().ShowSplash {
+		t.Error("ui.hide_splash: true must disable the splash")
+	}
+}
+
+// TestRunUI_FirstRunShowsSplash: no config on disk, so the default applies.
+func TestRunUI_FirstRunShowsSplash(t *testing.T) {
+	chDir(t, t.TempDir()) // empty dir: no sentra.yaml
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return blobstore.NewMemory(), nil
+			},
+		},
+		Run: func(app tui.App) error { captured = app; return nil },
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !captured.Deps().ShowSplash {
+		t.Error("first run (no config) must show the splash")
 	}
 }

@@ -39,6 +39,12 @@ type UIDeps struct {
 	// a stub that captures the constructed App and returns nil.
 	Run func(app tui.App) error
 
+	// Version and Commit identify the build; they reach the TUI's welcome
+	// splash. Plain display data, threaded from cmd/sentra. Commit may be the
+	// goreleaser placeholder "none".
+	Version string
+	Commit  string
+
 	// Actions is the agent action registry the TUI's agent-apply flow
 	// executes confirmed recommendations through. Same registry the
 	// `agent` command builds. May be nil (agent-apply then reports no
@@ -130,6 +136,14 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		absCfgPath = p
 	}
 
+	// The welcome splash is on unless the operator persisted the opt-out.
+	// probeLaunchState already loaded the config on both paths, and
+	// launchState.Config is non-nil on a nil error, so no extra load is needed.
+	showSplash := true
+	if st.ConfigExists {
+		showSplash = !st.Config.UI.HideSplash
+	}
+
 	// First run (no config) and configured-but-locked both launch the TUI
 	// WITHOUT opening a repo — the wizard / unlock view own the interactive
 	// path so huh never fires here. Repo is nil; the unlock view swaps a live
@@ -160,6 +174,9 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 			SaveKeyringPassphrase: deps.SavePassphrase,
 			SetupEffects:          setupEffectsForLaunch(deps),
 			InitialView:           initial,
+			ShowSplash:            showSplash,
+			Version:               deps.Version,
+			Commit:                deps.Commit,
 		})
 		if deps.Run == nil {
 			return fmt.Errorf("ui: no Run hook configured")
@@ -207,6 +224,9 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		Actions:               deps.Actions,
 		SaveKeyringPassphrase: deps.SavePassphrase,
 		SetupEffects:          setupEffectsForLaunch(deps),
+		ShowSplash:            showSplash,
+		Version:               deps.Version,
+		Commit:                deps.Commit,
 	})
 
 	if deps.Run == nil {
