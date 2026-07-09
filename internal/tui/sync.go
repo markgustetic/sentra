@@ -101,6 +101,12 @@ func (SyncView) Init() tea.Cmd { return nil }
 
 func (v SyncView) Title() string { return "Sync" }
 
+// CapturesText is true on the configure stage: it hosts the dest-config path
+// input plus tab-navigated toggles, so every rune (path characters) and tab
+// (field navigation) must reach the view. The running/done stages take only
+// single-key commands.
+func (v SyncView) CapturesText() bool { return v.stage == syncConfigure }
+
 func (v SyncView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case syncRunning:

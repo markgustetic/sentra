@@ -84,6 +84,12 @@ func (RecoveryKitView) Init() tea.Cmd { return nil }
 
 func (v RecoveryKitView) Title() string { return "Recovery Kit" }
 
+// CapturesText is true only on the saving stage, where the save-path text input
+// is focused — a file path may contain digits or 'q'. The idle/running/done
+// stages take single-key commands (enter to build, s to save, scroll keys), so
+// they keep the shell globals.
+func (v RecoveryKitView) CapturesText() bool { return v.stage == rkSaving }
+
 func (v RecoveryKitView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case rkRunning:

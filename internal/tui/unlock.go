@@ -75,6 +75,11 @@ func (UnlockView) Init() tea.Cmd { return nil }
 
 func (v UnlockView) Title() string { return "Unlock" }
 
+// CapturesText is always true: the unlock gate is a single masked passphrase
+// field, so every rune belongs to it (a passphrase may contain 'q', digits, or
+// 'A'). Only ctrl+c, handled ahead of view routing, still quits.
+func (v UnlockView) CapturesText() bool { return true }
+
 func (v UnlockView) ShortHelp() []key.Binding {
 	if v.stage == unlockOpening {
 		return nil

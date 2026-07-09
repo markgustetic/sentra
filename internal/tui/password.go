@@ -94,6 +94,12 @@ func (PasswordView) Init() tea.Cmd { return nil }
 
 func (v PasswordView) Title() string { return "Password" }
 
+// CapturesText is true only on the input stage, where the masked new/confirm
+// passphrase fields are focused — a rotated passphrase may contain 'q', digits,
+// or 'A', so those runes must reach the field, not the shell's globals. The
+// running/done stages have no input.
+func (v PasswordView) CapturesText() bool { return v.stage == passwordInput }
+
 func (v PasswordView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case passwordRunning:

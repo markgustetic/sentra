@@ -92,6 +92,12 @@ func (RestoreView) Init() tea.Cmd { return nil }
 
 func (v RestoreView) Title() string { return "Restore" }
 
+// CapturesText is true only on the destination stage, where the dest-path text
+// input is focused — a path may contain digits or 'q', so those runes must
+// reach the field. The pick stage drives a table (arrow keys, no free text) and
+// the confirm/running/done stages take single-key commands, so none capture.
+func (v RestoreView) CapturesText() bool { return v.stage == restoreDest }
+
 func (v RestoreView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case restorePick:

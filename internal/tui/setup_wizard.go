@@ -275,6 +275,15 @@ func (SetupWizardView) Init() tea.Cmd { return nil }
 
 func (v SetupWizardView) Title() string { return "Setup" }
 
+// CapturesText reports the stages that focus a text input: the details stage
+// (the S3 bucket/prefix/region/… fields) and the passphrase stage (the masked
+// new/confirm fields). On those stages the shell must route every rune here so
+// a bucket name digit or a passphrase 'q' isn't stolen by a global binding.
+// The backend/actions/IAM/review/provision/done/error stages carry no input.
+func (v SetupWizardView) CapturesText() bool {
+	return v.stage == stageDetails || v.stage == stagePassphrase
+}
+
 func (v SetupWizardView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case stageProvision:

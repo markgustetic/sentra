@@ -73,6 +73,11 @@ func (BackupView) Init() tea.Cmd { return nil }
 
 func (v BackupView) Title() string { return "Backup" }
 
+// CapturesText is true only on the configure stage, where the path/tag text
+// inputs are focused and tab switches between them — a path or tag may contain
+// digits or 'q'. The running/done stages take only single-key commands.
+func (v BackupView) CapturesText() bool { return v.stage == backupConfigure }
+
 func (v BackupView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case backupRunning:

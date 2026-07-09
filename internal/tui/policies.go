@@ -103,6 +103,12 @@ func (PoliciesView) Init() tea.Cmd { return nil }
 
 func (v PoliciesView) Title() string { return "Policies" }
 
+// CapturesText is true only on the add-form stage, where the name/path/schedule
+// text inputs are focused and tab moves between them. The list stage uses
+// single-key commands (a/d/r, arrows) and must keep the globals, so it does not
+// capture; the running/done stages have no input.
+func (v PoliciesView) CapturesText() bool { return v.stage == policiesForm }
+
 func (v PoliciesView) ShortHelp() []key.Binding {
 	if v.stage != policiesList || len(v.names) == 0 {
 		return nil

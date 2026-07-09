@@ -142,6 +142,13 @@ const (
 // without extra keys return nil.
 type viewShortHelper interface{ ShortHelp() []key.Binding }
 
+// textCapturer is implemented by views whose current stage routes raw runes
+// into a text input. While such a view holds content focus, the shell must not
+// apply its single-rune global bindings (quit 'q', help '?', the number-key
+// view jump) or 'tab' — those characters belong to the input. Only ctrl+c
+// (handled before anything else) and the modal stack outrank it.
+type textCapturer interface{ CapturesText() bool }
+
 // App is the root model: layout (title bar, sidebar, content, status
 // bar), focus, overlays (palette, modal stack), and the command
 // registry that drives navigation.
@@ -485,6 +492,19 @@ func (m App) inStartupGate() bool {
 	return m.deps.Repo == nil && (id == "setup" || id == "unlock")
 }
 
+// contentCapturesText reports whether the content pane is focused on a view
+// whose current stage is routing raw runes into a text input (see
+// textCapturer). When true, the shell hands the keystroke to that view instead
+// of applying its single-rune globals or the number-key view jump — otherwise
+// no text field in the TUI could accept 'q', a digit, '?', or tab.
+func (m App) contentCapturesText() bool {
+	if m.focus != focusContent {
+		return false
+	}
+	tc, ok := m.views[m.active].model.(textCapturer)
+	return ok && tc.CapturesText()
+}
+
 // routeKey implements the focus rules: modals first, palette second,
 // then global bindings, then the focused region.
 func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -517,18 +537,14 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// Startup gate: no repo behind the setup/unlock view, so every other view
-	// is dead. Suppress all nav chrome — don't open the palette on ctrl+p,
-	// don't jump views on number keys, don't tab to the (hidden) sidebar — and
-	// route the keystroke straight to the gate view so a character its
-	// textinput needs is never swallowed by a nav binding. ctrl+c (handled at
-	// the top) still quits; the quit keys stay bound (unchanged scope); the
-	// modal stack (above) still gets first look.
-	if m.inStartupGate() {
-		if key.Matches(msg, m.keys.Quit) {
-			m.cleanup()
-			return m, tea.Quit
-		}
+	// A startup gate, or a content-focused view capturing text, owns the
+	// keyboard. Route every key (ctrl+c and the modal stack already had their
+	// look above) straight to the active view so a character its textinput
+	// needs — a digit, 'q' or 'A' in a passphrase, '?', tab between fields — is
+	// never swallowed by a nav binding or the single-rune quit. In a gate this
+	// also suppresses all nav chrome (palette, number/tab jumps) since every
+	// other view is dead behind a nil repo.
+	if m.inStartupGate() || m.contentCapturesText() {
 		var cmd tea.Cmd
 		m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
 		return m, cmd

@@ -1116,3 +1116,206 @@ func TestApp_NoOverflowAtGateMinSize(t *testing.T) {
 		t.Fatal("found no content-panel border rows to check; gate layout changed?")
 	}
 }
+
+// liveRepoApp builds a shell over a real in-memory repo, sized so nav chrome
+// is live (not a startup gate). Used by the keyboard-ownership tests below.
+func liveRepoApp(t *testing.T) App {
+	t.Helper()
+	app := NewApp(Deps{RepoName: "x", Repo: newFlowRepo(t)})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return sized.(App)
+}
+
+// TestApp_ContentTextInputOwnsKeyboard is the exact empirical repro: with a
+// live repo (NOT a startup gate) the password view holds content focus on its
+// masked-input stage, so the passphrase field must own every rune. Before the
+// fix, routeKey applied its single-rune globals and the number-key view jump
+// first: '1' jumped to the dashboard, 'q' quit the app, and 'A' (rune 16 past
+// '1', with 17 views) jumped to setup — none reached the input.
+func TestApp_ContentTextInputOwnsKeyboard(t *testing.T) {
+	app := liveRepoApp(t)
+
+	m, _ := app.Update(activateMsg{id: "password"})
+	app = m.(App)
+	if got := app.views[app.active].id; got != "password" {
+		t.Fatalf("active view = %q, want password", got)
+	}
+	if app.focus != focusContent {
+		t.Fatalf("focus = %v, want focusContent", app.focus)
+	}
+	passwordIdx := app.active
+
+	// Feed the three runes the globals used to steal. Each must reach the
+	// passphrase field: never quit, never change the active view.
+	for _, r := range []rune{'1', 'q', 'A'} {
+		var cmd tea.Cmd
+		m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = m.(App)
+		assertNoQuit(t, cmd)
+		if got := app.active; got != passwordIdx {
+			t.Fatalf("rune %q changed active %d→%d; the input must own it", r, passwordIdx, got)
+		}
+	}
+	if got := app.views[app.active].model.(PasswordView).newPass.Value(); got != "1qA" {
+		t.Fatalf("passphrase field = %q, want %q — runes did not reach the input", got, "1qA")
+	}
+}
+
+// TestApp_SetupWizardDetailsStageOwnsKeyboard: the wizard's details stage
+// focuses a text input (the bucket field), so while it holds content focus the
+// globals/number-jump must not fire — the bucket field owns '1', 'q', and 'A'.
+func TestApp_SetupWizardDetailsStageOwnsKeyboard(t *testing.T) {
+	app := liveRepoApp(t)
+
+	// Advance a wizard from the backend stage to the details stage (enter),
+	// then install it so the setup slot sits on a text-input stage.
+	wiz, _ := NewSetupWizardView(app.deps).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	installView(t, &app, "setup", wiz.(SetupWizardView))
+
+	m, _ := app.Update(activateMsg{id: "setup"})
+	app = m.(App)
+	if got := app.views[app.active].model.(SetupWizardView).stage; got != stageDetails {
+		t.Fatalf("precondition: wizard stage = %v, want stageDetails", got)
+	}
+	setupIdx := app.active
+
+	for _, r := range []rune{'1', 'q', 'A'} {
+		var cmd tea.Cmd
+		m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = m.(App)
+		assertNoQuit(t, cmd)
+		if got := app.active; got != setupIdx {
+			t.Fatalf("rune %q changed active in the details stage", r)
+		}
+	}
+	if got := app.views[app.active].model.(SetupWizardView).fields[setupFieldBucket].Value(); got != "1qA" {
+		t.Fatalf("bucket field = %q, want %q — runes did not reach the input", got, "1qA")
+	}
+}
+
+// TestApp_SetupWizardPassphraseStageOwnsKeyboard: the passphrase stage focuses
+// a masked input, so a passphrase containing 'q' / digits must land in it.
+func TestApp_SetupWizardPassphraseStageOwnsKeyboard(t *testing.T) {
+	app := liveRepoApp(t)
+
+	wiz := NewSetupWizardView(app.deps)
+	wiz.stage = stagePassphrase
+	wiz.newPass.Focus()
+	wiz.confirmPass.Blur()
+	installView(t, &app, "setup", wiz)
+
+	m, _ := app.Update(activateMsg{id: "setup"})
+	app = m.(App)
+	setupIdx := app.active
+
+	for _, r := range []rune{'1', 'q', 'A'} {
+		var cmd tea.Cmd
+		m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = m.(App)
+		assertNoQuit(t, cmd)
+		if got := app.active; got != setupIdx {
+			t.Fatalf("rune %q changed active in the passphrase stage", r)
+		}
+	}
+	if got := app.views[app.active].model.(SetupWizardView).newPass.Value(); got != "1qA" {
+		t.Fatalf("passphrase field = %q, want %q — runes did not reach the input", got, "1qA")
+	}
+}
+
+// TestApp_UnlockViewOwnsKeyboard: the unlock gate is a single masked input, so
+// it captures text whenever it holds content focus (here forced with a live
+// repo so the startup-gate path is not what's being exercised).
+func TestApp_UnlockViewOwnsKeyboard(t *testing.T) {
+	app := liveRepoApp(t)
+
+	m, _ := app.Update(activateMsg{id: "unlock"})
+	app = m.(App)
+	if got := app.views[app.active].id; got != "unlock" {
+		t.Fatalf("active view = %q, want unlock", got)
+	}
+	unlockIdx := app.active
+
+	for _, r := range []rune{'1', 'q', 'A'} {
+		var cmd tea.Cmd
+		m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		app = m.(App)
+		assertNoQuit(t, cmd)
+		if got := app.active; got != unlockIdx {
+			t.Fatalf("rune %q changed active in the unlock view", r)
+		}
+	}
+	if got := app.views[app.active].model.(UnlockView).input.Value(); got != "1qA" {
+		t.Fatalf("unlock input = %q, want %q — runes did not reach the input", got, "1qA")
+	}
+}
+
+// TestApp_NonInputViewKeepsGlobals is the regression guard: a content-focused
+// view that does NOT capture text (snapshots) must still honor the globals —
+// 'q' quits, '1' jumps to view 0, ctrl+p opens the palette.
+func TestApp_NonInputViewKeepsGlobals(t *testing.T) {
+	app := liveRepoApp(t)
+
+	m, _ := app.Update(activateMsg{id: "snapshots"})
+	app = m.(App)
+	if app.focus != focusContent {
+		t.Fatalf("focus = %v, want focusContent", app.focus)
+	}
+
+	// 'q' still quits.
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("expected a quit cmd from 'q' on a non-input view")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg, got %T", cmd())
+	}
+
+	// '1' still jumps to view 0 (dashboard).
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
+	if got := m.(App).active; got != 0 {
+		t.Fatalf("'1' did not jump to dashboard: active = %d", got)
+	}
+
+	// ctrl+p still opens the palette.
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if !m.(App).paletteOpen {
+		t.Fatal("ctrl+p must still open the palette on a non-input view")
+	}
+}
+
+// TestApp_GateRoutesQuitRuneToView is the gate regression: on a first-run
+// wizard gate every key except ctrl+c belongs to the view, so 'q' (a valid
+// passphrase character) must reach the wizard's input, not quit — while ctrl+c
+// remains the escape hatch.
+func TestApp_GateRoutesQuitRuneToView(t *testing.T) {
+	app := NewApp(Deps{InitialView: "setup"}) // Repo nil → startup gate
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = sized.(App)
+	if !app.inStartupGate() {
+		t.Fatal("precondition: setup with a nil repo must be a startup gate")
+	}
+
+	// enter advances backend → details (routes to the view in a gate).
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = m.(App)
+	if got := app.views[app.active].model.(SetupWizardView).stage; got != stageDetails {
+		t.Fatalf("precondition: wizard stage = %v, want stageDetails", got)
+	}
+
+	// 'q' must reach the bucket field, not quit.
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	assertNoQuit(t, cmd)
+	app = m.(App)
+	if got := app.views[app.active].model.(SetupWizardView).fields[setupFieldBucket].Value(); got != "q" {
+		t.Fatalf("'q' did not reach the wizard bucket field in a gate: %q", got)
+	}
+
+	// ctrl+c is still the always-quit escape hatch, even in a gate.
+	_, cmd = app.Update(tea.KeyMsg{Type: tea.KeyCtrlC})
+	if cmd == nil {
+		t.Fatal("expected a quit cmd from ctrl+c in a gate")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("expected tea.QuitMsg from ctrl+c, got %T", cmd())
+	}
+}
