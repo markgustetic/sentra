@@ -12,7 +12,7 @@ import (
 // addProductionCommands wires every real command dependency. Tests build
 // commands with stubs in internal/cli; this package is the production edge
 // that touches S3, huh, the OS keyring, and the real LLM provider.
-func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
+func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, version, commit string) {
 	initPassphrase := promptInitPassphrase(rootFlags)
 	setupPassphrase := promptSetupPassphrase(rootFlags)
 	openPassphrase := promptOpenPassphraseWithConfig(rootFlags)
@@ -132,6 +132,8 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 		Actions:           action.NewDefaultRegistry(),
 		SavePassphrase:    saveRepoPassphraseToKeyring,
 		Run:               cli.DefaultUIRunner,
+		Version:           version,
+		Commit:            commit,
 		// The launch probe must honor --passphrase-file the same way the read
 		// path does. RootFlags is populated by cobra as it parses argv, which
 		// happens AFTER this wiring runs, so we hand the probe a func that reads

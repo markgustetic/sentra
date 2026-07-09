@@ -6,17 +6,27 @@ import (
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
-// settingsEntry is one actionable row in the Settings view. Activating it
-// emits an activateMsg for targetID, which App routes to view navigation
-// (app.go's activateMsg case). Settings itself performs no I/O and holds
-// no secrets — it is a read-only launcher over the config summary.
+// settingsEntryKind distinguishes a row that navigates elsewhere from a row
+// that mutates a setting in place.
+type settingsEntryKind int
+
+const (
+	entryNavigate settingsEntryKind = iota
+	entryToggleSplash
+)
+
+// settingsEntry is one actionable row in the Settings view. A navigate entry
+// emits an activateMsg for targetID; a toggle entry mutates the config and
+// persists it. Settings holds no secrets.
 type settingsEntry struct {
+	kind     settingsEntryKind
 	label    string
 	desc     string
-	targetID string
+	targetID string // navigate entries only
 }
 
 // SettingsView is the Settings hub: a non-secret summary of the resolved
@@ -35,14 +45,16 @@ type SettingsView struct {
 	entries []settingsEntry
 	cursor  int
 	width   int
+	err     string // inline failure text, e.g. a failed config write
 }
 
 func NewSettingsView(deps Deps) SettingsView {
 	return SettingsView{
 		deps: deps,
 		entries: []settingsEntry{
-			{label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
-			{label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
+			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
+			{kind: entryNavigate, label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
+			{kind: entryToggleSplash, label: "Welcome splash", desc: "show the logo screen at launch (applies next launch)"},
 		},
 	}
 }
@@ -77,8 +89,11 @@ func (v SettingsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return v, nil
 		case tea.KeyEnter:
-			id := v.entries[v.cursor].targetID
-			return v, func() tea.Msg { return activateMsg{id: id} }
+			e := v.entries[v.cursor]
+			if e.kind == entryToggleSplash {
+				return v.toggleSplash()
+			}
+			return v, func() tea.Msg { return activateMsg{id: e.targetID} }
 		}
 		return v, nil
 	}
@@ -91,6 +106,9 @@ func (v SettingsView) View() string {
 	b.WriteString(v.renderSummary() + "\n")
 	for i, e := range v.entries {
 		line := e.label
+		if e.kind == entryToggleSplash {
+			line = e.label + "   [" + v.splashState() + "]"
+		}
 		if i == v.cursor {
 			b.WriteString(ui.SidebarActive.Render(line) + "\n")
 		} else {
@@ -98,8 +116,41 @@ func (v SettingsView) View() string {
 		}
 		b.WriteString("    " + ui.Muted.Render(e.desc) + "\n")
 	}
-	b.WriteString("\n" + ui.Muted.Render("↑↓ move   ⏎ open"))
+	if v.err != "" {
+		b.WriteString("\n" + ui.Danger.Render(v.err))
+	}
+	b.WriteString("\n" + ui.Muted.Render("↑↓ move   ⏎ open / toggle"))
 	return b.String()
+}
+
+// toggleSplash flips ui.hide_splash and persists it. It mutates a COPY, writes
+// that, and only adopts the value in memory once the file is on disk — a failed
+// write must never leave the process disagreeing with sentra.yaml.
+func (v SettingsView) toggleSplash() (tea.Model, tea.Cmd) {
+	if v.deps.Config == nil || v.deps.ConfigPath == "" {
+		v.err = "available after setup"
+		return v, nil
+	}
+	next := *v.deps.Config
+	next.UI.HideSplash = !next.UI.HideSplash
+	if err := config.Write(v.deps.ConfigPath, &next); err != nil {
+		v.err = "could not save: " + err.Error()
+		return v, nil
+	}
+	*v.deps.Config = next
+	v.err = ""
+	return v, nil
+}
+
+// splashState renders the toggle's current value for the row label.
+func (v SettingsView) splashState() string {
+	if v.deps.Config == nil {
+		return "—"
+	}
+	if v.deps.Config.UI.HideSplash {
+		return "off"
+	}
+	return "on"
 }
 
 // renderSummary shows the non-secret configuration identity. With a nil

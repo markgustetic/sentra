@@ -107,3 +107,52 @@ func TestWrite_RoundTripsThroughLoad(t *testing.T) {
 		t.Fatalf("round-trip policy mismatch: %+v", got.Policies)
 	}
 }
+
+// TestRender_EmitsUIHideSplash pins the new ui: section into the rendered file
+// so a config rewrite (setup, policy edit) round-trips the operator's choice.
+func TestRender_EmitsUIHideSplash(t *testing.T) {
+	var cfg Config
+	cfg.UI.HideSplash = true
+	body := string(Render(&cfg))
+	for _, want := range []string{"ui:", "hide_splash: true"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered config missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestLoad_MissingUISectionDefaultsToSplashOn is the reason the field is named
+// HideSplash rather than ShowSplash: bool's zero value is false, so a config
+// written before this field existed must load as "don't hide" — splash on.
+func TestLoad_MissingUISectionDefaultsToSplashOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	legacy := "repo:\n  s3:\n    bucket: \"b\"\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if cfg.UI.HideSplash {
+		t.Error("a config with no ui: section must load HideSplash=false (splash shows)")
+	}
+}
+
+// TestWrite_RoundTripsHideSplash proves the toggle survives Write -> Load.
+func TestWrite_RoundTripsHideSplash(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	var cfg Config
+	cfg.Repo.S3.Bucket = "b"
+	cfg.UI.HideSplash = true
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if !got.UI.HideSplash {
+		t.Error("HideSplash did not round-trip through Write -> Load")
+	}
+}

@@ -18,6 +18,7 @@ import (
 	"context"
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
@@ -113,6 +114,17 @@ type Deps struct {
 	// repo. Empty (or an unknown id) starts on the dashboard. Plain routing
 	// data, never a secret.
 	InitialView string
+
+	// ShowSplash gates the launch splash. runUI sets it from the config's
+	// ui.hide_splash; the zero value (false) keeps it off, so tests that build
+	// a bare Deps{} render the normal frame.
+	ShowSplash bool
+
+	// Version and Commit identify the build on the splash. They are plain
+	// display data, threaded from cmd/sentra. Commit may be the goreleaser
+	// placeholder "none", in which case it is omitted from the rendered line.
+	Version string
+	Commit  string
 }
 
 // viewEntry pairs a registered command ID with its model. Order is
@@ -167,6 +179,10 @@ type App struct {
 
 	paletteOpen bool
 	modals      []Modal
+
+	// splashActive is true while the launch splash covers the frame. It is
+	// seeded from Deps.ShowSplash and cleared by the tick or any keystroke.
+	splashActive bool
 
 	width  int
 	height int
@@ -291,17 +307,18 @@ func NewApp(deps Deps) App {
 	}
 
 	return App{
-		deps:     deps,
-		registry: registry,
-		keys:     keys,
-		views:    views,
-		active:   active,
-		focus:    focus,
-		sidebar:  sidebar,
-		palette:  NewPalette(registry, minWidth, minHeight),
-		status:   NewStatusBar(keys, minWidth),
-		ctx:      ctx,
-		cancel:   cancel,
+		deps:         deps,
+		registry:     registry,
+		keys:         keys,
+		views:        views,
+		active:       active,
+		focus:        focus,
+		sidebar:      sidebar,
+		palette:      NewPalette(registry, minWidth, minHeight),
+		status:       NewStatusBar(keys, minWidth),
+		ctx:          ctx,
+		cancel:       cancel,
+		splashActive: deps.ShowSplash,
 	}
 }
 
@@ -330,9 +347,14 @@ func (m App) appCtx() context.Context {
 // hydration onto async, non-blocking tea.Cmds is a future item; when it
 // lands, this batching starts carrying real background loads.
 func (m App) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0, len(m.views))
+	cmds := make([]tea.Cmd, 0, len(m.views)+1)
 	for _, v := range m.views {
 		cmds = append(cmds, v.model.Init())
+	}
+	if m.splashActive {
+		cmds = append(cmds, tea.Tick(splashDuration, func(time.Time) tea.Msg {
+			return splashDoneMsg{}
+		}))
 	}
 	return tea.Batch(cmds...)
 }
@@ -346,6 +368,13 @@ type repoReadyMsg struct {
 	repo   *repo.Repo
 	config *config.Config
 }
+
+// splashDuration is how long the launch splash lingers before it retires
+// itself. Any keystroke dismisses it sooner, so this is a ceiling, not a wait.
+const splashDuration = time.Second
+
+// splashDoneMsg retires the launch splash when the tick fires.
+type splashDoneMsg struct{}
 
 // Update handles shell-owned messages (size, navigation, modal
 // results) here and splits the rest by kind: key messages go through
@@ -365,6 +394,10 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case splashDoneMsg:
+		m.splashActive = false
+		return m, nil
+
 	case repoReadyMsg:
 		// Rebuild the whole shell against the unlocked repo. Reusing NewApp
 		// keeps view registration in one place (it changes as views are
@@ -378,6 +411,11 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			nd.Config = msg.config
 		}
 		nd.InitialView = ""
+		// The splash is a launch moment, and the launch already had it. NewApp
+		// re-seeds splashActive from ShowSplash and Init() re-arms the tick, so
+		// leaving it set would cover the freshly unlocked dashboard a second
+		// time and eat the user's next keystroke dismissing it.
+		nd.ShowSplash = false
 		rebuilt := NewApp(nd)
 		if m.width > 0 {
 			sized, _ := rebuilt.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
@@ -528,6 +566,14 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			m.cleanup()
 			return m, tea.Quit
 		}
+		return m, nil
+	}
+
+	// The launch splash owns the first keystroke: any key dismisses it and the
+	// key is consumed, so it never falls through to a view, modal, or nav
+	// binding. ctrl+c (checked above) still quits.
+	if m.splashActive {
+		m.splashActive = false
 		return m, nil
 	}
 
@@ -708,6 +754,9 @@ func (m App) View() string {
 		return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center,
 			ui.Subtle.Render(hint))
 	}
+	if m.splashActive {
+		return m.renderSplash()
+	}
 	if n := len(m.modals); n > 0 {
 		return m.modals[n-1].View()
 	}
@@ -781,4 +830,41 @@ func (m App) cleanup() {
 			c.Cleanup()
 		}
 	}
+}
+
+// renderSplash draws the centered launch lockup: the brand glyph, a
+// letter-spaced wordmark, the tagline, and the build identity. It is drawn
+// into the full terminal rectangle; before the first WindowSizeMsg the
+// dimensions are zero, so we fall back to the unplaced body.
+func (m App) renderSplash() string {
+	brand := lipgloss.NewStyle().Foreground(ui.AccentPink).Bold(true)
+	body := brand.Render("✦") + "\n\n" +
+		brand.Render("s  e  n  t  r  a") + "\n\n" +
+		ui.Muted.Render("Encrypted, deduplicated, agent-aware backups") + "\n" +
+		ui.Muted.Render("for S3-compatible storage")
+	if v := m.versionLine(); v != "" {
+		body += "\n\n" + ui.Muted.Render(v)
+	}
+	if m.width == 0 || m.height == 0 {
+		return body
+	}
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, body)
+}
+
+// versionLine renders "version · shortcommit". The commit is dropped when it
+// is empty or the goreleaser placeholder "none" (a plain `go build`), and it
+// is truncated to the conventional 7 characters.
+func (m App) versionLine() string {
+	v := strings.TrimSpace(m.deps.Version)
+	c := strings.TrimSpace(m.deps.Commit)
+	if v == "" {
+		return ""
+	}
+	if c == "" || c == "none" {
+		return v
+	}
+	if len(c) > 7 {
+		c = c[:7]
+	}
+	return v + " · " + c
 }
