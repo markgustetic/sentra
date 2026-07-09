@@ -140,4 +140,12 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags) {
 	}
 	root.AddCommand(cli.NewUI(uiDeps))
 	cli.SetUIAsDefault(root, uiDeps)
+
+	// `sentra local` reuses the very same uiDeps (SetupSeedConfig stays nil here
+	// — the local command sets its own MinIO seed at run time) and wires the
+	// production docker/health probe.
+	root.AddCommand(cli.NewLocal(cli.LocalDeps{
+		UI:          uiDeps,
+		EnsureMinIO: ensureLocalMinIO,
+	}))
 }

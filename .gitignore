@@ -15,5 +15,9 @@ sentra.yaml
 *.setup-draft
 .sentraignore
 
+# `sentra local` dev config (never the real sentra.yaml)
+.sentra-local.yaml
+.sentra-local/
+
 # Visual brainstorming mockups (superpowers)
 .superpowers/
