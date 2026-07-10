@@ -90,6 +90,12 @@ func NewRestoreView(deps Deps) RestoreView {
 
 func (RestoreView) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: only the snapshot picker has a cursor. The dest stage is a
+// text field, and confirm/running/done take single keys.
+func (v RestoreView) ConsumesArrows() bool {
+	return v.stage == restorePick && len(v.snaps) > 0
+}
+
 func (v RestoreView) Title() string { return "Restore" }
 
 // CapturesText is true only on the destination stage, where the dest-path text

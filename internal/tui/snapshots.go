@@ -166,6 +166,11 @@ func (s Snapshots) SetSnapshots(snaps []repo.SnapshotInfo) Snapshots {
 // cursor returns the table's current cursor index. Exposed for
 // tests so they can assert on navigation without poking the
 // embedded table directly.
+// ConsumesArrows: only when the table has rows and the detail page is closed.
+// The detail page handles nothing but esc, and an empty table has no cursor to
+// move — in both states the arrows belong to the nav rail.
+func (s Snapshots) ConsumesArrows() bool { return !s.detailOpen && len(s.snaps) > 0 }
+
 func (s Snapshots) cursor() int { return s.tbl.Cursor() }
 
 // Init is a no-op.

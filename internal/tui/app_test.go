@@ -1618,3 +1618,87 @@ func TestApp_ActivatingADifferentViewFocusesContent(t *testing.T) {
 		t.Error("activating a different view must move focus to content")
 	}
 }
+
+// TestApp_ArrowsNeverDead is the rule behind two "the UI froze" reports.
+//
+// Activating a view moves focus to the content pane, and ↑/↓ then go only to
+// that view. Eight views never use arrows (dashboard, check, doctor, backup,
+// prune, sync, password, unlock) and six more use them only when they have rows.
+// In those states the arrows were silently dropped AND the rail stopped
+// navigating, so the only way out was `tab` — a status-bar hint nobody reads.
+//
+// The rule: an arrow key must never do nothing. If the focused view cannot use
+// it, the rail takes it, and focus follows so that enter stays coherent.
+func TestApp_ArrowsNeverDead(t *testing.T) {
+	r := newFlowRepo(t)
+
+	// Dashboard: a static readout that never uses arrows.
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	app.focus = focusContent // as if the user had activated it
+
+	before := app.sidebar.list.Index()
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = m.(App)
+	if app.sidebar.list.Index() != before+1 {
+		t.Errorf("down on an inert view must move the rail: index %d -> %d",
+			before, app.sidebar.list.Index())
+	}
+	if app.focus != focusSidebar {
+		t.Error("focus must follow the arrow back to the rail, or enter targets the wrong pane")
+	}
+}
+
+// A view that CAN use the arrows still gets them, and the rail stays put.
+func TestApp_ArrowsReachAViewThatUsesThem(t *testing.T) {
+	r := newFlowRepo(t)
+	seedSnapshotReal(t, r)
+	seedSnapshotReal(t, r)
+
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	for i, v := range app.views {
+		if v.id == "snapshots" {
+			app.active = i
+		}
+	}
+	app.focus = focusContent
+	railBefore := app.sidebar.list.Index()
+
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = m.(App)
+
+	if app.focus != focusContent {
+		t.Error("a view that consumes arrows must keep focus")
+	}
+	if app.sidebar.list.Index() != railBefore {
+		t.Error("the rail must not move when the view consumed the arrow")
+	}
+	snaps := app.views[app.active].model.(Snapshots)
+	if snaps.tbl.Cursor() != 1 {
+		t.Errorf("snapshots table cursor = %d, want 1", snaps.tbl.Cursor())
+	}
+}
+
+// The same view with NO rows cannot use the arrow, so the rail takes it.
+func TestApp_ArrowsFallBackWhenAViewHasNoRows(t *testing.T) {
+	r := newFlowRepo(t) // zero snapshots, exactly the reported repo state
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	for i, v := range app.views {
+		if v.id == "snapshots" {
+			app.active = i
+		}
+	}
+	app.focus = focusContent
+	before := app.sidebar.list.Index()
+
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = m.(App)
+	if app.sidebar.list.Index() == before {
+		t.Error("an empty snapshots table cannot use the arrow; the rail must take it")
+	}
+}
