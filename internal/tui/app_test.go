@@ -597,8 +597,16 @@ func TestApp_SidebarHighlightTracksActive(t *testing.T) {
 	}
 	m, _ = m.(App).Update(cmd()) // deliver activateMsg
 	a = m.(App)
-	if got := a.sidebar.list.Index(); got != 2 {
-		t.Fatalf("after activating diff, sidebar index = %d, want 2", got)
+	// Look the index up rather than hardcode it: the rail's order is a product
+	// decision that moves (backup was promoted to sit under snapshots).
+	want := -1
+	for i, v := range a.views {
+		if v.id == "diff" {
+			want = i
+		}
+	}
+	if got := a.sidebar.list.Index(); got != want {
+		t.Fatalf("after activating diff, sidebar index = %d, want %d", got, want)
 	}
 }
 
@@ -1700,5 +1708,45 @@ func TestApp_ArrowsFallBackWhenAViewHasNoRows(t *testing.T) {
 	app = m.(App)
 	if app.sidebar.list.Index() == before {
 		t.Error("an empty snapshots table cannot use the arrow; the rail must take it")
+	}
+}
+
+// Backup sits directly under Snapshots in the rail: taking a backup is the thing
+// an operator reaches for most, and registration order IS rail order.
+func TestApp_BackupSitsUnderSnapshots(t *testing.T) {
+	app := newTestApp(t)
+	want := []string{"dashboard", "snapshots", "backup"}
+	for i, id := range want {
+		if app.views[i].id != id {
+			t.Fatalf("rail position %d = %q, want %q", i, app.views[i].id, id)
+		}
+	}
+}
+
+// The picker is reached through the shell, so the arrow routing added for the
+// frozen-rail bug must hand ↑/↓ to it rather than to the nav rail.
+func TestApp_ArrowsReachTheBackupFolderPicker(t *testing.T) {
+	app := newTestApp(t)
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	for i, v := range app.views {
+		if v.id == "backup" {
+			app.active = i
+		}
+	}
+	app.focus = focusContent
+	railBefore := app.sidebar.list.Index()
+
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = m.(App)
+
+	if app.sidebar.list.Index() != railBefore {
+		t.Error("the picker consumes arrows; the rail must not move")
+	}
+	if app.focus != focusContent {
+		t.Error("focus must stay on the picker")
+	}
+	if got := app.views[app.active].model.(BackupView).picker.cursor; got != 1 {
+		t.Errorf("picker cursor = %d, want 1 — the arrow never arrived", got)
 	}
 }

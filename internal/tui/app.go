@@ -239,6 +239,11 @@ func NewApp(deps Deps) App {
 	views := []viewEntry{
 		{id: "dashboard", model: NewDashboard(deps)},
 		{id: "snapshots", model: NewSnapshots(deps)},
+		// Backup sits directly under Snapshots: taking one is the thing an
+		// operator reaches for most, and the rail's order is its priority order.
+		// The Category field still files it under "Operations" in the palette;
+		// the rail renders registration order, not category groups.
+		{id: "backup", model: NewBackupView(deps)},
 		{id: "diff", model: NewDiff(deps)},
 		{id: "check", model: NewCheckView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
@@ -246,7 +251,6 @@ func NewApp(deps Deps) App {
 		{id: "policies", model: NewPoliciesView(deps)},
 		{id: "schedule", model: NewScheduleView(deps)},
 		{id: "agent", model: NewAgentView(deps)},
-		{id: "backup", model: NewBackupView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
 		{id: "sync", model: NewSyncView(deps)},

@@ -24,27 +24,32 @@ func newFlowRepo(t *testing.T) *repo.Repo {
 	return r
 }
 
-func typeInto(v BackupView, s string) BackupView {
-	for _, r := range s {
-		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
-		v = m.(BackupView)
+// chooseFolder points the picker at dir, activates its "use this folder" row and
+// tabs to the tag field — the exact sequence an operator performs.
+func chooseFolder(t *testing.T, v BackupView, dir string) BackupView {
+	t.Helper()
+	v.picker = newDirPicker(dir)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // row 0 = "use this folder"
+	v = m.(BackupView)
+	if v.source == "" {
+		t.Fatalf("precondition: enter on row 0 must choose %s", dir)
 	}
-	return v
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // focus the tag field
+	return m.(BackupView)
 }
 
-func TestBackupFlow_EnterEmitsStartOpWithTypedPath(t *testing.T) {
+func TestBackupFlow_EnterEmitsStartOpForChosenFolder(t *testing.T) {
 	r := newFlowRepo(t)
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	v := NewBackupView(Deps{Repo: r})
-	v = typeInto(v, src)
+	v := chooseFolder(t, NewBackupView(Deps{Repo: r}), src)
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
 	if cmd == nil {
-		t.Fatal("enter on a valid path must emit a command")
+		t.Fatal("enter with a chosen folder must emit a command")
 	}
 	// The command batches the startOpMsg with the seeded first opTickMsg.
 	// Both must be present: the startOpMsg launches the op, and the
@@ -105,19 +110,25 @@ func TestBackupFlow_EnterEmitsStartOpWithTypedPath(t *testing.T) {
 	}
 }
 
-func TestBackupFlow_MissingPathRefusesToStart(t *testing.T) {
-	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
-	v = typeInto(v, "/definitely/not/a/real/path")
+// The picker only ever offers real directories, so startBackup's stat guard
+// exists for one case: the folder disappears between choosing it and pressing
+// enter. That is the case this pins.
+func TestBackupFlow_VanishedFolderRefusesToStart(t *testing.T) {
+	dir := t.TempDir()
+	v := chooseFolder(t, NewBackupView(Deps{Repo: newFlowRepo(t)}), dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
 	if cmd != nil {
-		t.Fatal("nonexistent path must not start an op")
+		t.Fatal("a folder that no longer exists must not start an op")
 	}
 	if v.stage != backupConfigure {
-		t.Fatal("flow must stay in configure on invalid path")
+		t.Fatal("flow must stay in configure when the folder is gone")
 	}
 	if !strings.Contains(v.View(), "not found") {
-		t.Errorf("view should surface the path error:\n%s", v.View())
+		t.Errorf("view should surface the error:\n%s", v.View())
 	}
 }
 
@@ -127,8 +138,7 @@ func TestBackupFlow_EscDuringRunEmitsCancel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v := NewBackupView(Deps{Repo: r})
-	v = typeInto(v, src)
+	v := chooseFolder(t, NewBackupView(Deps{Repo: r}), src)
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
 	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
@@ -153,5 +163,124 @@ func TestBackupFlow_RunAnotherKeepsSizing(t *testing.T) {
 	fresh := m.(BackupView)
 	if got, want := fresh.bar.Width, min(100-8, 60); got != want {
 		t.Errorf("bar width after 'run another' = %d, want %d (sizing lost on reset)", got, want)
+	}
+}
+
+// backupAt returns a configure-stage BackupView rooted at a temp tree.
+func backupAt(t *testing.T, root string) BackupView {
+	t.Helper()
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	v.picker = newDirPicker(root)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return m.(BackupView)
+}
+
+// While the picker has focus the arrows belong to it and NOT to the shell, and
+// no text field is capturing — so 'q' still quits and ctrl+p still opens the
+// palette. Once tab moves to the tag field, that inverts.
+func TestBackupFocusSeamsFollowTheFocusedControl(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+
+	if !v.ConsumesArrows() {
+		t.Error("with the picker focused, the view must consume arrows")
+	}
+	if v.CapturesText() {
+		t.Error("the picker is not a text field; it must not capture text")
+	}
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+	if v.ConsumesArrows() {
+		t.Error("with the tag field focused, arrows belong to the shell")
+	}
+	if !v.CapturesText() {
+		t.Error("the tag field must capture text")
+	}
+}
+
+// Down moves the highlight; enter on a child descends; enter on row 0 chooses.
+func TestBackupPickerNavigatesAndChooses(t *testing.T) {
+	root := tempTree(t)
+	v := backupAt(t, root)
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyDown}) // row 2 = alpha
+	v = m.(BackupView)
+	if v.picker.rows[v.picker.cursor].label != "alpha" {
+		t.Fatalf("cursor on %q, want alpha", v.picker.rows[v.picker.cursor].label)
+	}
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // descend
+	v = m.(BackupView)
+	if filepath.Base(v.picker.cwd) != "alpha" {
+		t.Fatalf("enter on a child must descend, cwd = %q", v.picker.cwd)
+	}
+	if v.source != "" {
+		t.Error("descending must not choose a source")
+	}
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // row 0: use this folder
+	v = m.(BackupView)
+	if filepath.Base(v.source) != "alpha" {
+		t.Fatalf("source = %q, want .../alpha", v.source)
+	}
+}
+
+// Backspace climbs out of a directory.
+func TestBackupPickerBackspaceGoesUp(t *testing.T) {
+	root := tempTree(t)
+	v := backupAt(t, filepath.Join(root, "beta"))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyBackspace})
+	v = m.(BackupView)
+	if v.picker.cwd != root {
+		t.Fatalf("cwd after backspace = %q, want %q", v.picker.cwd, root)
+	}
+}
+
+// Enter in the tag field starts the backup, but only once a folder is chosen.
+func TestBackupStartsOnlyWithAChosenFolder(t *testing.T) {
+	root := tempTree(t)
+	v := backupAt(t, root)
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // focus the tag field
+	v = m.(BackupView)
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(BackupView)
+	if cmd != nil {
+		t.Error("enter with no chosen folder must not start a backup")
+	}
+	if v.pathErr == "" {
+		t.Error("enter with no chosen folder must explain why")
+	}
+
+	// Choose the folder, then start.
+	v = backupAt(t, root)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // row 0 chooses
+	v = m.(BackupView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+	_, cmd = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter with a chosen folder must emit the start op")
+	}
+	// startBackup batches the startOpMsg with the seeded first opTickMsg. Both
+	// must survive the picker rework, or the progress bar never repaints.
+	var foundStart, foundTick bool
+	for _, msg := range execCmds(t, cmd) {
+		switch mm := msg.(type) {
+		case startOpMsg:
+			foundStart = true
+			if mm.name != "backup" {
+				t.Errorf("op name = %q, want backup", mm.name)
+			}
+		case opTickMsg:
+			foundTick = true
+		}
+	}
+	if !foundStart {
+		t.Error("backup must start through the App's one-op guard")
+	}
+	if !foundTick {
+		t.Error("the first opTickMsg must still be seeded, or progress never repaints")
 	}
 }
