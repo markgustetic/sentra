@@ -12,6 +12,7 @@ import (
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
@@ -213,10 +214,9 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	}
 
 	fields := make([]textinput.Model, setupFieldCount)
-	prompts := []string{"bucket>   ", "prefix>   ", "region>   ", "profile>  ", "endpoint> "}
 	placeholders := []string{
 		"globally-unique bucket name", "sentra/", "us-east-1",
-		"default", "http://localhost:9000 (S3-compatible only)",
+		"default", "http://localhost:9000",
 	}
 	values := []string{
 		plan.Config.Repo.S3.Bucket, plan.Config.Repo.S3.Prefix,
@@ -225,7 +225,11 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	}
 	for i := range fields {
 		ti := textinput.New()
-		ti.Prompt = prompts[i]
+		// No prompt: the row's label IS the prompt, so the selection marker
+		// lands on the line being typed into rather than one line above it.
+		// Width is bounded so a long bucket name cannot shove the layout.
+		ti.Prompt = ""
+		ti.Width = 40
 		ti.Placeholder = placeholders[i]
 		ti.SetValue(values[i])
 		fields[i] = ti
@@ -911,29 +915,27 @@ func (v SetupWizardView) View() string {
 	var b strings.Builder
 	switch v.stage {
 	case stageBackend:
-		b.WriteString(ui.Primary.Render("Sentra setup") + "\n\n")
-		b.WriteString(ui.Muted.Render("Storage backend") + "\n\n")
+		b.WriteString(v.wizardHeader())
 		if v.backendLocked {
 			// Endpoint seeded: only S3-compatible is valid, so offer just that
 			// row (no AWS option) with a hint explaining why it's fixed.
 			b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
 				"MinIO, LocalStack, or a bucket you manage yourself."))
 			b.WriteString("\n" + ui.Muted.Render("endpoint detected — S3-compatible"))
-			b.WriteString("\n\n" + ui.Muted.Render("⏎ next"))
+			b.WriteString("\n" + v.actionLine(""))
 		} else {
 			b.WriteString(v.backendLine(0, "AWS S3",
 				"Sentra provisions and prepares the bucket for you."))
 			b.WriteString("\n")
 			b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
 				"MinIO, LocalStack, or a bucket you manage yourself."))
-			b.WriteString("\n\n" + ui.Muted.Render("↑/↓ choose · ⏎ next"))
+			b.WriteString("\n" + v.actionLine("↑/↓ choose"))
 		}
 	case stageDetails:
-		b.WriteString(ui.Primary.Render("Storage details") + "\n\n")
+		b.WriteString(v.wizardHeader())
 		labels := []string{"S3 bucket", "S3 key prefix", "AWS region", "AWS profile", "S3 endpoint URL"}
 		for i := 0; i < v.detailFieldCount(); i++ {
-			b.WriteString(ui.SelectRow(v.fieldCursor == i, labels[i]) + "\n")
-			b.WriteString("  " + v.fields[i].View() + "\n")
+			b.WriteString(v.detailRow(i, labels[i]) + "\n")
 		}
 		if v.plan.Backend == setup.BackendAWS {
 			box := "[ ]"
@@ -941,18 +943,18 @@ func (v SetupWizardView) View() string {
 				box = "[x]"
 			}
 			selected := v.fieldCursor == v.detailFieldCount()
-			b.WriteString(ui.SelectRow(selected, box+" print IAM policy and stop before any changes") + "\n")
+			b.WriteString("\n" + ui.SelectRow(selected, box+" print IAM policy and stop before any changes") + "\n")
 		}
 		if v.detailErr != "" {
 			b.WriteString("\n" + ui.Danger.Render(v.detailErr))
 		}
-		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space toggle"))
+		b.WriteString(v.actionLine("tab field · space toggle"))
 	case stageIAMPreview:
 		b.WriteString(ui.Primary.Render("IAM policy (no changes were made)") + "\n\n")
 		b.WriteString(v.iamViewport.View())
 		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ scroll · ⏎/esc restart setup"))
 	case stageActions:
-		b.WriteString(ui.Primary.Render("Setup actions") + "\n\n")
+		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
 			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
 		}
@@ -965,9 +967,9 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.actionToggle(actionRowBlock, "block public access", v.blockPublic))
 		b.WriteString(v.actionToggle(actionRowEncrypt, "default encryption (AES-256)", v.defaultEnc))
 		b.WriteString(v.actionToggle(actionRowInit, "initialize repository", v.initRepo))
-		b.WriteString("\n" + ui.Muted.Render("⏎ next · ↑/↓ row · ←/→ method · space toggle"))
+		b.WriteString(v.actionLine("↑/↓ row · ←/→ method · space toggle"))
 	case stagePassphrase:
-		b.WriteString(ui.Primary.Render("Repository passphrase") + "\n\n")
+		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
 			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
 		}
@@ -981,13 +983,14 @@ func (v SetupWizardView) View() string {
 		if v.passErr != "" {
 			b.WriteString("\n" + ui.Danger.Render(v.passErr))
 		}
-		b.WriteString("\n" + ui.Muted.Render("⏎ next · tab field · space keyring"))
+		b.WriteString(v.actionLine("tab field · space keyring"))
 	case stageReview:
+		b.WriteString(v.wizardHeader())
 		b.WriteString(setup.ReviewText(v.deps.ConfigPath, v.plan))
 		if v.notice != "" {
 			b.WriteString(ui.Warn.Render(v.notice) + "\n")
 		}
-		b.WriteString("\n" + ui.Muted.Render("⏎ review & apply"))
+		b.WriteString(v.actionLine(""))
 	case stageProvision:
 		b.WriteString(ui.Primary.Render("Applying setup…") + "\n\n")
 		b.WriteString(v.checklistLine(v.steps.bucketCreated, "bucket created"))
@@ -1030,6 +1033,128 @@ func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
 		box = "[x]"
 	}
 	return ui.SelectRow(v.actionCursor == row, box+" "+label) + "\n"
+}
+
+// setupLabelCol is the column the details-stage values start in. Every label is
+// padded to it so the inputs line up regardless of label length; "S3 endpoint
+// URL" is the longest at 15 cells.
+const setupLabelCol = 18
+
+// wizardStages lists the numbered stages for a plan, in order. The AWS backend
+// provisions a bucket and so gets stageActions; an S3-compatible target
+// provisions nothing and skips it. Deriving the list from the plan is what keeps
+// `sentra local` from reading "Step 4 of 5" and never reaching 5.
+//
+// Stages outside this list (IAM preview, provisioning, done, error) are not part
+// of the numbered flow and carry no counter.
+func wizardStages(p setup.Plan) []setupStage {
+	stages := []setupStage{stageBackend, stageDetails}
+	if p.Backend == setup.BackendAWS {
+		stages = append(stages, stageActions)
+	}
+	return append(stages, stagePassphrase, stageReview)
+}
+
+// stageTitle names a stage for the header and for the action line's
+// "Continue to …" — one source of truth, so the two can never disagree.
+func stageTitle(s setupStage) string {
+	switch s {
+	case stageBackend:
+		return "Storage backend"
+	case stageDetails:
+		return "Storage details"
+	case stageActions:
+		return "Setup actions"
+	case stagePassphrase:
+		return "Repository passphrase"
+	case stageReview:
+		return "Review"
+	default:
+		return ""
+	}
+}
+
+// stepIndex is the current stage's position in the numbered flow, or -1 when the
+// stage sits outside it.
+func (v SetupWizardView) stepIndex() int {
+	for i, s := range wizardStages(v.plan) {
+		if s == v.stage {
+			return i
+		}
+	}
+	return -1
+}
+
+// wizardHeader renders the brand line with a right-aligned step counter, then
+// the stage title. Empty for stages outside the numbered flow.
+func (v SetupWizardView) wizardHeader() string {
+	idx := v.stepIndex()
+	if idx < 0 {
+		return ""
+	}
+	left := ui.Muted.Render("Sentra setup")
+	right := ui.Muted.Render(fmt.Sprintf("Step %d of %d", idx+1, len(wizardStages(v.plan))))
+	gap := v.width - lipgloss.Width(left) - lipgloss.Width(right)
+	if gap < 1 {
+		gap = 1
+	}
+	return left + strings.Repeat(" ", gap) + right + "\n\n" +
+		ui.Primary.Render(stageTitle(v.stage)) + "\n\n"
+}
+
+// nextAction names where enter actually goes. It reads the destination out of
+// wizardStages, so a newly inserted stage cannot leave it stale, and handles the
+// two places the state machine diverges from "the next numbered stage":
+// stageDetails short-circuits to the IAM preview when printIAM is armed, and
+// stageReview applies rather than continuing.
+func (v SetupWizardView) nextAction() string {
+	switch v.stage {
+	case stageDetails:
+		if v.printIAM {
+			return "Show IAM policy and stop"
+		}
+	case stageReview:
+		// The ellipsis marks a confirmation step, matching the password flow.
+		return "Apply setup…"
+	}
+	stages := wizardStages(v.plan)
+	idx := v.stepIndex()
+	if idx < 0 || idx+1 >= len(stages) {
+		return ""
+	}
+	return "Continue to " + stageTitle(stages[idx+1])
+}
+
+// actionLine renders the primary action in the accent style with the secondary
+// keys demoted beneath it, so "what enter does" never carries the same weight as
+// "space toggles". secondary may be empty.
+func (v SetupWizardView) actionLine(secondary string) string {
+	primary := v.nextAction()
+	if primary == "" {
+		if secondary == "" {
+			return ""
+		}
+		return "\n" + ui.Muted.Render(secondary)
+	}
+	out := "\n" + ui.Primary.Render("⏎  "+primary)
+	if secondary != "" {
+		out += "\n" + ui.Muted.Render("   "+secondary)
+	}
+	return out
+}
+
+// detailRow renders one details-stage field as a single row: the selection
+// marker, the label padded to the value column, then the input itself. The
+// marker therefore lands on the line the operator types into, rather than one
+// line above it. The input is appended OUTSIDE the styled label so its ANSI
+// reset cannot terminate the row's style, and a blurred field dims so the
+// focused one stands out.
+func (v SetupWizardView) detailRow(i int, label string) string {
+	f := v.fields[i]
+	if v.fieldCursor != i {
+		f.TextStyle = ui.Subtle
+	}
+	return ui.SelectRow(v.fieldCursor == i, fmt.Sprintf("%-*s", setupLabelCol, label)) + f.View()
 }
 
 // setupAuthMethodLabel mirrors setupAWSAuthMethodLabel

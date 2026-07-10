@@ -3,10 +3,12 @@ package tui
 import (
 	"context"
 	"errors"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -928,5 +930,110 @@ func TestSetupWizardDetailsRowShowsSelection(t *testing.T) {
 	}
 	if !strings.Contains(second, "▍ S3 key prefix") {
 		t.Errorf("cursor move did not move the marker:\n%s", second)
+	}
+}
+
+// wizardLine returns the first rendered line containing needle.
+func wizardLine(t *testing.T, view, needle string) string {
+	t.Helper()
+	for _, l := range strings.Split(view, "\n") {
+		if strings.Contains(l, needle) {
+			return l
+		}
+	}
+	t.Fatalf("no line containing %q in:\n%s", needle, view)
+	return ""
+}
+
+// The step counter must be derived from the plan, not hardcoded: the AWS path
+// runs five stages, but an S3-compatible target skips "Setup actions" entirely.
+// A fixed "of 5" would leave `sentra local` stuck at "Step 4 of 5".
+func TestSetupWizardStepCounterDependsOnBackend(t *testing.T) {
+	aws := setupAtDetails(t, 0)
+	if got := len(wizardStages(aws.plan)); got != 5 {
+		t.Errorf("aws stages = %d, want 5", got)
+	}
+	if !strings.Contains(aws.View(), "Step 2 of 5") {
+		t.Errorf("aws details should be step 2 of 5:\n%s", aws.View())
+	}
+
+	compat := setupAtDetails(t, 1)
+	if got := len(wizardStages(compat.plan)); got != 4 {
+		t.Errorf("s3-compatible stages = %d, want 4", got)
+	}
+	if !strings.Contains(compat.View(), "Step 2 of 4") {
+		t.Errorf("s3-compatible details should be step 2 of 4:\n%s", compat.View())
+	}
+}
+
+// The action line must name where Enter actually goes, including the two places
+// the state machine diverges from "the next numbered stage".
+func TestSetupWizardNextActionNamesTheDestination(t *testing.T) {
+	awsDetails := setupAtDetails(t, 0)
+	compatDetails := setupAtDetails(t, 1)
+
+	iam := setupAtDetails(t, 0)
+	iam.printIAM = true
+
+	actions := setupAtDetails(t, 0)
+	actions.stage = stageActions
+
+	pass := setupAtDetails(t, 0)
+	pass.stage = stagePassphrase
+
+	review := setupAtDetails(t, 0)
+	review.stage = stageReview
+
+	for _, tc := range []struct {
+		name string
+		v    SetupWizardView
+		want string
+	}{
+		{"aws details", awsDetails, "Continue to Setup actions"},
+		{"s3-compatible details skips actions", compatDetails, "Continue to Repository passphrase"},
+		{"print-IAM short-circuits", iam, "Show IAM policy and stop"},
+		{"actions", actions, "Continue to Repository passphrase"},
+		{"passphrase", pass, "Continue to Review"},
+		{"review applies", review, "Apply setup…"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			if got := tc.v.nextAction(); got != tc.want {
+				t.Errorf("nextAction() = %q, want %q", got, tc.want)
+			}
+			if !strings.Contains(tc.v.View(), tc.want) {
+				t.Errorf("view does not show the action %q:\n%s", tc.want, tc.v.View())
+			}
+		})
+	}
+}
+
+// The whole point: the marker must land on the row you type into, not a line
+// above it.
+func TestSetupWizardDetailsRowCarriesItsInput(t *testing.T) {
+	v := setupAtDetails(t, 0)
+	v.fieldCursor = 2
+	v.fields[2].SetValue("us-west-2")
+
+	line := wizardLine(t, v.View(), "▍ AWS region")
+	if !strings.Contains(line, "us-west-2") {
+		t.Errorf("marker and its input are on different rows; row was:\n%q", line)
+	}
+}
+
+// Values line up in one column regardless of label length.
+func TestSetupWizardDetailsValueColumnAligns(t *testing.T) {
+	v := setupAtDetails(t, 1) // s3-compatible: all five fields visible
+	labels := []string{"S3 bucket", "S3 key prefix", "AWS region", "AWS profile", "S3 endpoint URL"}
+	for i := range labels {
+		v.fields[i].SetValue(fmt.Sprintf("VAL%d", i))
+	}
+	view := v.View()
+	for i, label := range labels {
+		line := wizardLine(t, view, label)
+		want := fmt.Sprintf("VAL%d", i)
+		col := utf8.RuneCountInString(line[:strings.Index(line, want)])
+		if col != 2+setupLabelCol {
+			t.Errorf("%s: value starts at column %d, want %d", label, col, 2+setupLabelCol)
+		}
 	}
 }
