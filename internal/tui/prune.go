@@ -191,7 +191,7 @@ func (v PruneView) View() string {
 				v.result.deleted, v.result.stats.DeletedBlobs,
 				ui.FormatBytes(v.result.stats.DeletedBytes), v.result.stats.LiveBlobs)
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ recompute"))
+		b.WriteString("\n\n" + ui.ActionLine("recompute the retention preview", ""))
 	default:
 		b.WriteString(ui.Primary.Render("Retention preview"))
 		if v.notice != "" {
@@ -224,7 +224,7 @@ func (v PruneView) View() string {
 			fmt.Fprintf(&b, "  %s  %s  %s\n", d.Snapshot.ID, verdict, ui.Muted.Render(reason))
 		}
 		if len(v.drop) > 0 {
-			b.WriteString("\n" + ui.Muted.Render("⏎ prune (typed confirmation required)"))
+			b.WriteString("\n" + ui.ActionLine("prune the flagged snapshots", "typed confirmation required"))
 		} else {
 			b.WriteString("\n" + ui.Muted.Render("nothing to prune"))
 		}

@@ -233,7 +233,7 @@ func (s Snapshots) View() string {
 			ui.Subtle.Render("snapshots")+"\n"+ui.Muted.Render("no snapshots in this repo"),
 		) + "\n"
 	}
-	return s.tbl.View() + "\n" + ui.Subtle.Render("⏎ open  esc back  ↑/↓ navigate") + "\n"
+	return s.tbl.View() + "\n" + ui.ActionLine("view this snapshot", "↑↓ move · esc back") + "\n"
 }
 
 // viewDetail renders the manifest file tree as a vertical list with

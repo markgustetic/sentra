@@ -313,7 +313,7 @@ func (v BackupView) View() string {
 				info.ID, info.Stats.Files,
 				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes))
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ run another backup"))
+		b.WriteString("\n\n" + ui.ActionLine("run another backup", ""))
 
 	default:
 		b.WriteString(ui.Primary.Render("New backup"))
@@ -337,11 +337,9 @@ func (v BackupView) View() string {
 		// In the picker that is one of three different things depending on the
 		// highlighted row, so it is read from the picker rather than hardcoded.
 		if v.focus == focusPicker {
-			b.WriteString("\n\n" + ui.Primary.Render("⏎  "+v.picker.enterVerb()))
-			b.WriteString("\n" + ui.Muted.Render("   ↑↓ move · backspace up a level · tab to the tag field"))
+			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · backspace up a level · tab to the tag field"))
 		} else {
-			b.WriteString("\n\n" + ui.Primary.Render("⏎  Start the backup"))
-			b.WriteString("\n" + ui.Muted.Render("   tab back to the folder picker"))
+			b.WriteString("\n\n" + ui.ActionLine("start the backup", "tab back to the folder picker"))
 		}
 	}
 	return b.String()

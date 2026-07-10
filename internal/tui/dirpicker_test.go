@@ -122,15 +122,15 @@ func TestDirPickerEnterVerbNamesWhatEnterActuallyDoes(t *testing.T) {
 	p := newDirPicker(tempTree(t))
 
 	p.cursor = 0
-	if got := p.enterVerb(); got != "Back up this folder" {
+	if got := p.enterVerb(); got != "back up this folder" {
 		t.Errorf("on the use-this-folder row, verb = %q", got)
 	}
 	p.cursor = 1
-	if got := p.enterVerb(); !strings.HasPrefix(got, "Go up to ") {
+	if got := p.enterVerb(); !strings.HasPrefix(got, "go up to ") {
 		t.Errorf("on the parent row, verb = %q", got)
 	}
 	p.cursor = 2
-	if got := p.enterVerb(); got != "Open alpha" {
+	if got := p.enterVerb(); got != "open alpha" {
 		t.Errorf("on a child row, verb = %q", got)
 	}
 }

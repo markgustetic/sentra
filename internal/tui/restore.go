@@ -310,7 +310,7 @@ func (v RestoreView) View() string {
 			mark = "on"
 		}
 		b.WriteString("\n  verify    " + mark)
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ restore · v toggle verify · esc back"))
+		b.WriteString("\n\n" + ui.ActionLine("start the restore", "v toggle verify · esc back"))
 	case restoreRunning:
 		total, done := v.reporter.Snapshot()
 		pct := 0.0
@@ -335,7 +335,7 @@ func (v RestoreView) View() string {
 				}
 			}
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ restore another"))
+		b.WriteString("\n\n" + ui.ActionLine("restore another snapshot", ""))
 	}
 	return b.String()
 }

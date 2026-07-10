@@ -223,7 +223,7 @@ func (v DoctorView) View() string {
 		return v.renderReport()
 	default:
 		return ui.Primary.Render("Environment diagnostics") + "\n\n" +
-			ui.Muted.Render("⏎ run doctor")
+			ui.ActionLine("run diagnostics", "")
 	}
 }
 
@@ -247,6 +247,6 @@ func (v DoctorView) renderReport() string {
 			b.WriteString("        " + ui.Muted.Render(row.detail) + "\n")
 		}
 	}
-	b.WriteString("\n" + ui.Muted.Render("⏎ re-run"))
+	b.WriteString("\n" + ui.ActionLine("run diagnostics again", ""))
 	return b.String()
 }

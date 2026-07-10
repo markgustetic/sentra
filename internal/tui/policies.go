@@ -508,7 +508,7 @@ func (v PoliciesView) View() string {
 		if v.form.err != "" {
 			b.WriteString("\n" + ui.Danger.Render(v.form.err) + "\n")
 		}
-		b.WriteString("\n" + ui.Muted.Render("⏎ save · tab field · esc cancel"))
+		b.WriteString("\n" + ui.ActionLine("save the policy", "tab field · esc cancel"))
 		return b.String()
 	}
 	if v.stage == policiesRunning {
@@ -529,7 +529,7 @@ func (v PoliciesView) View() string {
 			b.WriteString(ui.Success.Render("Policy run complete"))
 			fmt.Fprintf(&b, "\n\n  policy     %s\n  snapshots  %d", v.result.name, v.result.snapshots)
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ back to policies"))
+		b.WriteString("\n\n" + ui.ActionLine("return to the policy list", ""))
 		return b.String()
 	}
 	var b strings.Builder

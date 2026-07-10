@@ -186,11 +186,11 @@ func (p dirPicker) enterVerb() string {
 	}
 	switch r := p.rows[p.cursor]; r.kind {
 	case rowUseCurrent:
-		return "Back up this folder"
+		return "back up this folder"
 	case rowParent:
-		return "Go up to " + filepath.Base(r.path)
+		return "go up to " + filepath.Base(r.path)
 	default:
-		return "Open " + r.label
+		return "open " + r.label
 	}
 }
 

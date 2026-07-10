@@ -989,12 +989,12 @@ func TestSetupWizardNextActionNamesTheDestination(t *testing.T) {
 		v    SetupWizardView
 		want string
 	}{
-		{"aws details", awsDetails, "Continue to Setup actions"},
-		{"s3-compatible details skips actions", compatDetails, "Continue to Repository passphrase"},
-		{"print-IAM short-circuits", iam, "Show IAM policy and stop"},
-		{"actions", actions, "Continue to Repository passphrase"},
-		{"passphrase", pass, "Continue to Review"},
-		{"review applies", review, "Apply setup…"},
+		{"aws details", awsDetails, "continue to Setup actions"},
+		{"s3-compatible details skips actions", compatDetails, "continue to Repository passphrase"},
+		{"print-IAM short-circuits", iam, "show the IAM policy and stop"},
+		{"actions", actions, "continue to Repository passphrase"},
+		{"passphrase", pass, "continue to Review"},
+		{"review applies", review, "apply setup…"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			if got := tc.v.nextAction(); got != tc.want {

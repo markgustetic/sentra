@@ -275,7 +275,7 @@ func (v PasswordView) View() string {
 				b.WriteString("\n  OS keyring updated with the new passphrase")
 			}
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ rotate again"))
+		b.WriteString("\n\n" + ui.ActionLine("rotate the passphrase again", ""))
 
 	default: // passwordInput
 		b.WriteString(ui.Primary.Render("Rotate repository passphrase"))
@@ -287,7 +287,7 @@ func (v PasswordView) View() string {
 		if v.inputErr != "" {
 			b.WriteString("\n\n" + ui.Danger.Render(v.inputErr))
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ rotate (typed confirmation required) · tab switch field"))
+		b.WriteString("\n\n" + ui.ActionLine("rotate the passphrase", "typed confirmation required · tab switch field"))
 	}
 	return b.String()
 }

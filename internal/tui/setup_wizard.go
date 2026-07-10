@@ -1046,7 +1046,7 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
 		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
 		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
-		b.WriteString("\n" + ui.Muted.Render("⏎ restart setup"))
+		b.WriteString("\n" + ui.ActionLine("restart setup", ""))
 	case stageError:
 		b.WriteString(ui.Danger.Render("Setup failed") + "\n\n")
 		if v.result.err != nil {
@@ -1153,36 +1153,29 @@ func (v SetupWizardView) nextAction() string {
 	switch v.stage {
 	case stageDetails:
 		if v.printIAM {
-			return "Show IAM policy and stop"
+			return "show the IAM policy and stop"
 		}
 	case stageReview:
 		// The ellipsis marks a confirmation step, matching the password flow.
-		return "Apply setup…"
+		return "apply setup…"
 	}
 	stages := wizardStages(v.plan)
 	idx := v.stepIndex()
 	if idx < 0 || idx+1 >= len(stages) {
 		return ""
 	}
-	return "Continue to " + stageTitle(stages[idx+1])
+	return "continue to " + stageTitle(stages[idx+1])
 }
 
 // actionLine renders the primary action in the accent style with the secondary
 // keys demoted beneath it, so "what enter does" never carries the same weight as
 // "space toggles". secondary may be empty.
 func (v SetupWizardView) actionLine(secondary string) string {
-	primary := v.nextAction()
-	if primary == "" {
-		if secondary == "" {
-			return ""
-		}
-		return "\n" + ui.Muted.Render(secondary)
+	line := ui.ActionLine(v.nextAction(), secondary)
+	if line == "" {
+		return ""
 	}
-	out := "\n" + ui.Primary.Render("⏎  "+primary)
-	if secondary != "" {
-		out += "\n" + ui.Muted.Render("   "+secondary)
-	}
-	return out
+	return "\n" + line
 }
 
 // detailRow renders one details-stage field as a single row: the selection

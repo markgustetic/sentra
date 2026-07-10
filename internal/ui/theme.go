@@ -104,3 +104,27 @@ func SelectRow(selected bool, label string) string {
 	}
 	return rowPlain.Render("  " + label)
 }
+
+// ActionLine renders a view's footer: the primary action in the accent style,
+// then the secondary keys demoted to muted on the line below. It is the one
+// place the "Press enter to …" convention lives, so every view reads the same.
+//
+// primary is a verb phrase without the ⏎ glyph — "start the backup", "run the
+// integrity check" — which ActionLine renders as "⏎  Press enter to start the
+// backup". An empty primary drops the accent line (a view with no enter action,
+// only secondary keys). secondary may be empty.
+//
+// It returns the two lines with NO leading newline; the caller places it.
+func ActionLine(primary, secondary string) string {
+	var out string
+	if primary != "" {
+		out = Primary.Render("⏎  Press enter to " + primary)
+	}
+	if secondary != "" {
+		if out != "" {
+			out += "\n"
+		}
+		out += Muted.Render("   " + secondary)
+	}
+	return out
+}

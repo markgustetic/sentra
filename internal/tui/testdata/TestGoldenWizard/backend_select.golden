@@ -5,5 +5,5 @@ Storage backend
 ▍ AWS S3  Sentra provisions and prepares the bucket for you.
   S3-compatible or existing bucket  MinIO, LocalStack, or a bucket you manage yourself.
 
-⏎  Continue to Storage details
+⏎  Press enter to continue to Storage details
    ↑/↓ choose
