@@ -393,11 +393,6 @@ const (
 	splashRevealDone   = 1400 * time.Millisecond // version line; repainting stops
 )
 
-// splashWord is the wordmark, one rune per revealed letter. Rendered joined by
-// two spaces, so an unrevealed letter becomes a single space and the line keeps
-// its width.
-var splashWord = []rune{'s', 'e', 'n', 't', 'r', 'a'}
-
 // splashFrameMsg advances the reveal by one frame.
 type splashFrameMsg struct{}
 
@@ -1057,12 +1052,14 @@ func (m App) renderSplash() string {
 		tagline2 = "for S3-compatible storage"
 	)
 
-	lines := []string{
-		brand.Render(splashGlyphAt(elapsed)),
-		"",
-		brand.Render(splashWordmarkAt(elapsed)),
-		"",
-	}
+	// The block wordmark is 56 cells wide and the shell never renders below
+	// minWidth (80) — the too-small guard catches narrower terminals first — so
+	// it always fits. renderSplash is reached with m.width == 0 only before the
+	// first WindowSizeMsg (and in the geometry test), where the big form is still
+	// the right thing to measure.
+	lines := []string{brand.Render(splashGlyphAt(elapsed)), ""}
+	lines = append(lines, splashBigWordmarkLines(elapsed, brand)...)
+	lines = append(lines, "")
 	if elapsed >= splashTaglineAt {
 		lines = append(lines, ui.Muted.Render(tagline1), ui.Muted.Render(tagline2))
 	} else {
@@ -1096,19 +1093,6 @@ func splashGlyphAt(elapsed time.Duration) string {
 	default:
 		return "✦"
 	}
-}
-
-// splashWordmarkAt reveals the wordmark one letter at a time, left to right. An
-// unrevealed letter renders as a space so the line holds its final width.
-func splashWordmarkAt(elapsed time.Duration) string {
-	out := make([]string, len(splashWord))
-	for i, r := range splashWord {
-		out[i] = " "
-		if elapsed >= splashLettersAt+time.Duration(i)*splashLetterStep {
-			out[i] = string(r)
-		}
-	}
-	return strings.Join(out, "  ")
 }
 
 // splashBlank reserves exactly the cells a line will occupy once it appears.

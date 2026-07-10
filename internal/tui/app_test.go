@@ -1359,7 +1359,7 @@ func TestApp_SplashRendersThenAutoDismisses(t *testing.T) {
 		t.Fatalf("the splash must cover the frame at frame 0:\n%s", app.View())
 	}
 	app = advanceSplash(app, splashFramesTo(splashRevealDone))
-	if !strings.Contains(app.View(), "s  e  n  t  r  a") {
+	if splashBlocks(app.View()) == 0 {
 		t.Fatalf("splash wordmark not rendered once revealed:\n%s", app.View())
 	}
 	m, _ := app.Update(splashDoneMsg{})
@@ -1502,31 +1502,34 @@ func advanceSplash(app App, n int) App {
 	return app
 }
 
-// TestSplashRevealIsProgressive: the wordmark cascades in letter by letter, so
-// frame 0 shows none of it and the final frame shows all six.
-func TestSplashRevealIsProgressive(t *testing.T) {
-	app := splashApp(t)
+// splashBlocks counts the block-glyph cells (█) in a rendered frame — the reveal
+// signal for the big wordmark, which cascades one letter at a time so the count
+// grows monotonically from zero to its full value.
+func splashBlocks(view string) int { return strings.Count(view, "█") }
 
-	if got := strings.Count(app.View(), "s"); got != 0 {
-		t.Errorf("frame 0 must show no wordmark letters, view:\n%s", app.View())
+// TestSplashRevealIsProgressive: the block wordmark cascades in letter by letter,
+// so frame 0 shows none of it, a mid frame shows some, and the final frame shows
+// strictly more than the mid frame.
+func TestSplashRevealIsProgressive(t *testing.T) {
+	app := splashApp(t) // width 100 → the big block wordmark
+
+	if got := splashBlocks(app.View()); got != 0 {
+		t.Errorf("frame 0 must show no wordmark blocks, got %d:\n%s", got, app.View())
 	}
 
 	// Four letters in: lettersAt + 3 steps has revealed s, e, n, t.
-	app4 := advanceSplash(app, splashFramesTo(splashLettersAt+3*splashLetterStep))
-	body := app4.View()
-	if !strings.Contains(body, "s  e  n  t") {
-		t.Errorf("expected four revealed letters:\n%s", body)
-	}
-	if strings.Contains(body, "s  e  n  t  r  a") {
-		t.Errorf("the wordmark completed too early:\n%s", body)
+	mid := splashBlocks(advanceSplash(app, splashFramesTo(splashLettersAt+3*splashLetterStep)).View())
+	if mid == 0 {
+		t.Error("a mid-reveal frame must show some blocks")
 	}
 
-	full := advanceSplash(app, splashFramesTo(splashRevealDone)).View()
-	if !strings.Contains(full, "s  e  n  t  r  a") {
-		t.Errorf("final frame must show the full wordmark:\n%s", full)
+	full := advanceSplash(app, splashFramesTo(splashRevealDone))
+	fullBlocks := splashBlocks(full.View())
+	if fullBlocks <= mid {
+		t.Errorf("the reveal must be progressive: mid=%d full=%d", mid, fullBlocks)
 	}
-	if !strings.Contains(full, "Encrypted, deduplicated") {
-		t.Errorf("final frame must show the tagline:\n%s", full)
+	if !strings.Contains(full.View(), "Encrypted, deduplicated") {
+		t.Errorf("final frame must show the tagline:\n%s", full.View())
 	}
 }
 
