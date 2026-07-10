@@ -67,6 +67,10 @@ func NewSnapshots(deps Deps) Snapshots {
 func (Snapshots) Title() string { return "Snapshots" }
 
 // ShortHelp lists the view-specific keys for the status bar.
+// ConsumesEscape: esc closes the detail page. With the list showing, a second
+// esc leaves the view — which is what an operator expects.
+func (s Snapshots) ConsumesEscape() bool { return s.detailOpen }
+
 func (Snapshots) ShortHelp() []key.Binding {
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "row")),

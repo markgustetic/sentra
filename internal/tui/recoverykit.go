@@ -94,6 +94,9 @@ func (v RecoveryKitView) Title() string { return "Recovery Kit" }
 // they keep the shell globals.
 func (v RecoveryKitView) CapturesText() bool { return v.stage == rkSaving }
 
+// ConsumesEscape: esc abandons the save-path prompt.
+func (v RecoveryKitView) ConsumesEscape() bool { return v.stage == rkSaving }
+
 func (v RecoveryKitView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case rkRunning:

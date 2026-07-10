@@ -107,6 +107,9 @@ func (v SyncView) Title() string { return "Sync" }
 // single-key commands.
 func (v SyncView) CapturesText() bool { return v.stage == syncConfigure }
 
+// ConsumesEscape: only while the copy is running, where esc cancels it.
+func (v SyncView) ConsumesEscape() bool { return v.stage == syncRunning }
+
 func (v SyncView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case syncRunning:

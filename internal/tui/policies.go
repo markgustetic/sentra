@@ -115,6 +115,10 @@ func (v PoliciesView) Title() string { return "Policies" }
 // capture; the running/done stages have no input.
 func (v PoliciesView) CapturesText() bool { return v.stage == policiesForm }
 
+// ConsumesEscape: esc abandons the add/edit form. The list stage leaves it to
+// the shell.
+func (v PoliciesView) ConsumesEscape() bool { return v.stage == policiesForm }
+
 func (v PoliciesView) ShortHelp() []key.Binding {
 	if v.stage != policiesList || len(v.names) == 0 {
 		return nil

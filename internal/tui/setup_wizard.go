@@ -314,6 +314,13 @@ func (v SetupWizardView) CapturesText() bool {
 	return v.stage == stageDetails || v.stage == stagePassphrase
 }
 
+// ConsumesEscape: the IAM preview and the error screen both restart the wizard
+// on esc. On first run the wizard is a startup gate, so routeKey hands it every
+// key before this is consulted; from Settings it is an ordinary view.
+func (v SetupWizardView) ConsumesEscape() bool {
+	return v.stage == stageIAMPreview || v.stage == stageError
+}
+
 func (v SetupWizardView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case stageProvision:

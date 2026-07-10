@@ -102,6 +102,16 @@ func (BackupView) Init() tea.Cmd { return nil }
 
 func (v BackupView) Title() string { return "Backup" }
 
+// ConsumesTab: on the configure stage tab moves between the folder picker and
+// the tag field, so the shell must not steal it for its own focus toggle. esc is
+// how the operator leaves the view.
+func (v BackupView) ConsumesTab() bool { return v.stage == backupConfigure }
+
+// ConsumesEscape: only while an op is running, where esc cancels it. On the
+// configure stage esc belongs to the shell — that is the escape hatch out of the
+// tag field.
+func (v BackupView) ConsumesEscape() bool { return v.stage == backupRunning }
+
 func (v BackupView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case backupRunning:

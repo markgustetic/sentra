@@ -68,6 +68,10 @@ func (d Diff) ConsumesArrows() bool {
 
 func (d Diff) Title() string { return "Diff" }
 
+// ConsumesEscape: esc backs out of the second picker and out of the rendered
+// diff. On the first picker there is nothing to back out of.
+func (d Diff) ConsumesEscape() bool { return d.stage == diffPickB || d.stage == diffShow }
+
 func (d Diff) ShortHelp() []key.Binding {
 	switch d.stage {
 	case diffShow:

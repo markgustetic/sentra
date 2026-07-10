@@ -13,7 +13,7 @@ func TestStatusBar_ShowsGlobalAndViewKeys(t *testing.T) {
 	viewKeys := []key.Binding{
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "open")),
 	}
-	out := sb.View("s3://bucket", viewKeys, "")
+	out := sb.ViewWith("s3://bucket", viewKeys, newGlobalKeymap().shortHelp(), "")
 	for _, want := range []string{"ctrl+p", "palette", "⏎", "open", "s3://bucket"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("status bar missing %q:\n%s", want, out)
@@ -23,7 +23,7 @@ func TestStatusBar_ShowsGlobalAndViewKeys(t *testing.T) {
 
 func TestStatusBar_ShowsRunningIndicator(t *testing.T) {
 	sb := NewStatusBar(newGlobalKeymap(), 100)
-	out := sb.View("repo", nil, "backup running")
+	out := sb.ViewWith("repo", nil, newGlobalKeymap().shortHelp(), "backup running")
 	if !strings.Contains(out, "backup running") {
 		t.Errorf("running indicator missing:\n%s", out)
 	}
@@ -44,7 +44,7 @@ func TestStatusBar_ClampsToWidth(t *testing.T) {
 		key.NewBinding(key.WithKeys("f"), key.WithHelp("f", "foxtrot action")),
 	}
 	sb := NewStatusBar(newGlobalKeymap(), 80)
-	out := sb.View("s3://a-fairly-long-bucket-name", viewKeys, "an-operation-running")
+	out := sb.ViewWith("s3://a-fairly-long-bucket-name", viewKeys, newGlobalKeymap().shortHelp(), "an-operation-running")
 	if w := lipgloss.Width(out); w > 80 {
 		t.Errorf("status bar overflows: width %d > 80:\n%q", w, out)
 	}

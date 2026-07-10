@@ -61,6 +61,11 @@ func FuzzAppKeyRouting(f *testing.F) {
 	// fires.
 	f.Add([]byte{fkDown, fkEnter, fkDown})
 	f.Add([]byte{fkDown, fkDown, fkEnter, fkDown, fkDown})
+	// The keyboard-trap bug: walk to Backup (rail row 2), activate it, then tab
+	// into the tag field, where the view captures text. Invariant 6 must find esc
+	// still works there. Without this seed the corpus never reaches a
+	// text-capturing view at all, and the trap goes unnoticed.
+	f.Add([]byte{fkDown, fkDown, fkEnter, fkTab})
 
 	f.Fuzz(func(t *testing.T, seq []byte) {
 		if len(seq) > 64 {
@@ -139,13 +144,22 @@ func FuzzAppKeyRouting(f *testing.F) {
 			}
 		}
 
-		// Invariant 6: the shell is never a dead end. With no overlay owning the
-		// keyboard, tab must always be able to put focus back on the rail.
-		if len(app.modals) == 0 && !app.paletteOpen && !app.inStartupGate() && !app.contentCapturesText() {
-			m3, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})
-			after := m3.(App)
-			if after.focus == app.focus {
-				t.Fatalf("tab did not move focus (stuck on %v) — the shell is a dead end", app.focus)
+		// Invariant 6: the shell is never a dead end — esc always gets you back to
+		// the rail unless the focused view means something by it.
+		//
+		// The earlier version of this invariant asserted "tab always moves focus"
+		// and EXCLUDED text-capturing views. That exclusion was the bug: on
+		// Backup's tag field and on Password, esc, tab and ctrl+p were all
+		// swallowed and only ctrl+c escaped, which quits the app. An invariant
+		// that carves out the broken case cannot catch it.
+		overlay := len(app.modals) > 0 || app.paletteOpen || app.inStartupGate() ||
+			app.splashActive || app.tooSmall()
+		viewOwnsEscape := app.focus == focusContent && app.contentConsumesEscape()
+		if !overlay && !viewOwnsEscape {
+			m3, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			if after := m3.(App); after.focus != focusSidebar {
+				t.Fatalf("esc did not return focus to the rail from view %q — the shell is a dead end",
+					app.views[app.active].id)
 			}
 		}
 	})
