@@ -33,6 +33,24 @@ func applySmartDefaults(p *Plan, probe EnvProbe) {
 	if p.Config.Repo.S3.Region == "" {
 		p.Config.Repo.S3.Region = firstNonEmpty(probe, "AWS_REGION", "AWS_DEFAULT_REGION")
 	}
+
+	// Settle the backend BEFORE inferring an AWS profile. An S3-compatible
+	// endpoint authenticates with whatever credentials the environment already
+	// carries, and a profile it never asked for is not inert: blobstore.NewS3
+	// passes a non-empty Profile to awsconfig.WithSharedConfigProfile, and
+	// aws-sdk-go-v2's resolveCredentialChain tests `sharedProfileSet` BEFORE
+	// `envConfig.Credentials.HasKeys()`. The profile's credentials therefore win
+	// and the endpoint's are never consulted. Since DefaultProfileFromConfig
+	// prefers a profile literally named "sentra", a user with an SSO profile of
+	// that name had `sentra local` silently redirected at their AWS account.
+	//
+	// Only inference is skipped. A profile the user wrote into their config
+	// survives — MinIO, R2 and Wasabi credentials all legitimately live in one.
+	inferS3CompatibleFromEndpoint(p, probe)
+	if p.Backend == BackendS3Compatible {
+		return
+	}
+
 	if p.Config.Repo.S3.Profile == "" {
 		p.Config.Repo.S3.Profile = firstNonEmpty(probe, "AWS_PROFILE", "AWS_DEFAULT_PROFILE")
 	}
@@ -42,7 +60,6 @@ func applySmartDefaults(p *Plan, probe EnvProbe) {
 	if probe.HasEnvCredentials() || p.Config.Repo.S3.Profile != "" {
 		p.AWSAuthMethod = AWSAuthExisting
 	}
-	inferS3CompatibleFromEndpoint(p, probe)
 }
 
 // inferS3CompatibleFromEndpoint switches the plan to the S3-compatible backend

@@ -223,3 +223,61 @@ func TestValidatePlan(t *testing.T) {
 func errIsBucketNotSet(err error) bool {
 	return err != nil && err.Error() == "repo.s3.bucket not set - enter a bucket name"
 }
+
+// TestDefaultPlanS3CompatibleDoesNotInheritDiscoveredProfile pins the bug that
+// broke `sentra local`: an S3-compatible endpoint must never inherit an AWS
+// shared-config profile the user did not choose.
+//
+// aws-sdk-go-v2's resolveCredentialChain checks `sharedProfileSet` BEFORE
+// `envConfig.Credentials.HasKeys()`, so passing a profile to
+// WithSharedConfigProfile makes the SDK resolve that profile's credentials and
+// ignore the static keys entirely. DefaultProfileFromConfig prefers a profile
+// literally named "sentra", so a user with an SSO profile of that name had
+// their MinIO run silently redirected to expired SSO credentials.
+func TestDefaultPlanS3CompatibleDoesNotInheritDiscoveredProfile(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+	probe := fakeProbe{env: map[string]string{}, profile: "sentra", envCredentials: true}
+
+	p := DefaultPlan(cfg, probe)
+	if p.Backend != BackendS3Compatible {
+		t.Fatalf("backend: got %q, want s3-compatible", p.Backend)
+	}
+	if got := p.Config.Repo.S3.Profile; got != "" {
+		t.Errorf("s3-compatible plan inherited AWS profile %q; it must stay empty so the "+
+			"ambient endpoint credentials resolve", got)
+	}
+	if p.AWSAuthMethod != AWSAuthSkip {
+		t.Errorf("auth method: got %q, want skip", p.AWSAuthMethod)
+	}
+}
+
+// TestDefaultPlanS3CompatibleKeepsExplicitProfile: only *inference* is skipped.
+// A profile the user actually wrote into sentra.yaml is theirs to keep — MinIO,
+// R2 and Wasabi credentials all legitimately live in a named profile.
+func TestDefaultPlanS3CompatibleKeepsExplicitProfile(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+	cfg.Repo.S3.Profile = "wasabi"
+	probe := fakeProbe{env: map[string]string{}, profile: "sentra", envCredentials: true}
+
+	p := DefaultPlan(cfg, probe)
+	if got := p.Config.Repo.S3.Profile; got != "wasabi" {
+		t.Errorf("explicit profile: got %q, want wasabi", got)
+	}
+}
+
+// TestDefaultPlanS3CompatibleIgnoresAWSProfileEnv: AWS_PROFILE must not leak in
+// either. Unlike a programmatic profile it does not outrank static env keys in
+// the SDK chain, but writing it into sentra.yaml would make the next run pass it
+// to WithSharedConfigProfile, where it would.
+func TestDefaultPlanS3CompatibleIgnoresAWSProfileEnv(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
+	probe := fakeProbe{env: map[string]string{"AWS_PROFILE": "work"}, envCredentials: true}
+
+	p := DefaultPlan(cfg, probe)
+	if got := p.Config.Repo.S3.Profile; got != "" {
+		t.Errorf("s3-compatible plan inherited AWS_PROFILE %q, want empty", got)
+	}
+}
