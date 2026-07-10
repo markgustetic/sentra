@@ -367,20 +367,16 @@ func (v SyncView) View() string {
 
 // toggleLine renders one boolean toggle, marking the focused one and its
 // on/off state.
+// toggleLine renders one checkbox row. The help text is appended OUTSIDE the
+// styled row: nesting it would embed an ANSI reset that terminates the row's own
+// style partway along the line.
 func (v SyncView) toggleLine(f syncField, label string, on bool, help string) string {
 	box := "[ ]"
 	if on {
 		box = "[x]"
 	}
-	cursor := "  "
-	if v.field == f {
-		cursor = "> "
-	}
-	line := fmt.Sprintf("%s%s %-10s %s", cursor, box, label, ui.Muted.Render(help))
-	if v.field == f {
-		return ui.Primary.Render(line)
-	}
-	return line
+	row := fmt.Sprintf("%s %-10s", box, label)
+	return ui.SelectRow(v.field == f, row) + " " + ui.Muted.Render(help)
 }
 
 // syncSameLocation mirrors internal/cli/sync.go's sameS3Location: two

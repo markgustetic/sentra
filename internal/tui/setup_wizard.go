@@ -932,11 +932,7 @@ func (v SetupWizardView) View() string {
 		b.WriteString(ui.Primary.Render("Storage details") + "\n\n")
 		labels := []string{"S3 bucket", "S3 key prefix", "AWS region", "AWS profile", "S3 endpoint URL"}
 		for i := 0; i < v.detailFieldCount(); i++ {
-			cursor := "  "
-			if v.fieldCursor == i {
-				cursor = "> "
-			}
-			b.WriteString(cursor + ui.Muted.Render(labels[i]) + "\n")
+			b.WriteString(ui.SelectRow(v.fieldCursor == i, labels[i]) + "\n")
 			b.WriteString("  " + v.fields[i].View() + "\n")
 		}
 		if v.plan.Backend == setup.BackendAWS {
@@ -944,11 +940,8 @@ func (v SetupWizardView) View() string {
 			if v.printIAM {
 				box = "[x]"
 			}
-			cursor := "  "
-			if v.fieldCursor == v.detailFieldCount() {
-				cursor = "> "
-			}
-			b.WriteString(cursor + box + " print IAM policy and stop before any changes\n")
+			selected := v.fieldCursor == v.detailFieldCount()
+			b.WriteString(ui.SelectRow(selected, box+" print IAM policy and stop before any changes") + "\n")
 		}
 		if v.detailErr != "" {
 			b.WriteString("\n" + ui.Danger.Render(v.detailErr))
@@ -963,12 +956,8 @@ func (v SetupWizardView) View() string {
 		if v.notice != "" {
 			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
 		}
-		authCursor := "  "
-		if v.actionCursor == actionRowAuth {
-			authCursor = "> "
-		}
-		b.WriteString(authCursor + ui.Muted.Render("AWS sign-in: ") +
-			setupAuthMethodLabel(setupAuthOrder[v.authCursor]) + "\n")
+		b.WriteString(ui.SelectRow(v.actionCursor == actionRowAuth,
+			"AWS sign-in: "+setupAuthMethodLabel(setupAuthOrder[v.authCursor])) + "\n")
 		if v.actionCursor == actionRowAuth {
 			b.WriteString("  " + ui.Muted.Render("←/→ change method") + "\n")
 		}
@@ -1028,16 +1017,11 @@ func (v SetupWizardView) View() string {
 	return b.String()
 }
 
+// backendLine renders one backend choice. The help text is appended OUTSIDE the
+// styled row: nesting it inside would embed an ANSI reset that terminates the
+// row's own style partway along the line.
 func (v SetupWizardView) backendLine(idx int, label, help string) string {
-	cursor := "  "
-	if v.backendCursor == idx {
-		cursor = "> "
-	}
-	line := cursor + label + "  " + ui.Muted.Render(help)
-	if v.backendCursor == idx {
-		return ui.Primary.Render(line)
-	}
-	return line
+	return ui.SelectRow(v.backendCursor == idx, label) + "  " + ui.Muted.Render(help)
 }
 
 func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
@@ -1045,15 +1029,7 @@ func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
 	if on {
 		box = "[x]"
 	}
-	cursor := "  "
-	if v.actionCursor == row {
-		cursor = "> "
-	}
-	line := cursor + box + " " + label + "\n"
-	if v.actionCursor == row {
-		return ui.Primary.Render(line)
-	}
-	return line
+	return ui.SelectRow(v.actionCursor == row, box+" "+label) + "\n"
 }
 
 // setupAuthMethodLabel mirrors setupAWSAuthMethodLabel

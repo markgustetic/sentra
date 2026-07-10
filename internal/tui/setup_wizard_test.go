@@ -902,3 +902,31 @@ func TestSetupWizard_ErrorEscZeroizesPassphrase(t *testing.T) {
 		t.Fatalf("esc must restart at the backend stage, got %v", fresh.stage)
 	}
 }
+
+// TestSetupWizardDetailsRowShowsSelection guards the regression that made the
+// wizard hard to read: the details stage rendered every field label in the same
+// muted style, so the ONLY difference between the selected row and the rest was
+// a two-character "> " prefix. Unit tests run under lipgloss's Ascii profile,
+// where no ANSI is emitted at all — so the "▍" marker is the only thing that can
+// carry selection here, which is exactly why the marker is the contract.
+func TestSetupWizardDetailsRowShowsSelection(t *testing.T) {
+	v := setupAtDetails(t, 0)
+
+	v.fieldCursor = 0
+	first := v.View()
+	v.fieldCursor = 1
+	second := v.View()
+
+	if first == second {
+		t.Fatal("moving the field cursor did not change the rendered view")
+	}
+	if !strings.Contains(first, "▍ S3 bucket") {
+		t.Errorf("selected row must carry the marker:\n%s", first)
+	}
+	if strings.Contains(first, "▍ S3 key prefix") {
+		t.Errorf("unselected row must not carry the marker:\n%s", first)
+	}
+	if !strings.Contains(second, "▍ S3 key prefix") {
+		t.Errorf("cursor move did not move the marker:\n%s", second)
+	}
+}

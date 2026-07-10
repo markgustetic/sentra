@@ -111,3 +111,48 @@ func TestTheme_AdaptiveColorsDeclared(t *testing.T) {
 		}
 	}
 }
+
+// TestSelectRowMarkerAndAlignment pins the selection contract: a selected row
+// carries the "▍" marker so the selection survives when colors are stripped
+// (NO_COLOR, a pipe, a 2-color terminal), and both states occupy the same
+// number of cells so the label column never shifts as the cursor moves.
+func TestSelectRowMarkerAndAlignment(t *testing.T) {
+	selected := SelectRow(true, "S3 bucket")
+	plain := SelectRow(false, "S3 bucket")
+
+	if !strings.Contains(selected, "▍") {
+		t.Errorf("selected row lost its marker: %q", selected)
+	}
+	if strings.Contains(plain, "▍") {
+		t.Errorf("unselected row must not carry the marker: %q", plain)
+	}
+	if got, want := lipgloss.Width(selected), lipgloss.Width(plain); got != want {
+		t.Errorf("row width shifts with selection: selected=%d unselected=%d", got, want)
+	}
+}
+
+// TestSelectRowDoesNotNestStyles guards the bug this replaced: callers used to
+// wrap an already-styled string, whose inner ANSI reset terminated the outer
+// style mid-line. SelectRow takes a plain label; help text is appended by the
+// caller outside the styled span.
+func TestSelectRowDoesNotNestStyles(t *testing.T) {
+	if got := SelectRow(true, "label"); !strings.HasSuffix(stripANSI(got), "label") {
+		t.Errorf("SelectRow should end with the bare label, got %q", stripANSI(got))
+	}
+}
+
+func stripANSI(s string) string {
+	var b strings.Builder
+	inEsc := false
+	for _, r := range s {
+		switch {
+		case r == 0x1b:
+			inEsc = true
+		case inEsc && r == 'm':
+			inEsc = false
+		case !inEsc:
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}

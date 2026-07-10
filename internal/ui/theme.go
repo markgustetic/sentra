@@ -77,3 +77,30 @@ func Severity(level string) lipgloss.Style {
 		return Muted
 	}
 }
+
+// rowSelected / rowPlain back SelectRow. They mirror the sidebar's contract so
+// a selectable row inside a content view reads the same as a nav-rail entry.
+var (
+	rowSelected = lipgloss.NewStyle().Foreground(AccentPink).Bold(true)
+	rowPlain    = lipgloss.NewStyle().Foreground(FgSubtle)
+)
+
+// SelectRow renders one row of a selectable list: the "▍" marker plus the
+// accent color when selected, two spaces and the subtle color when not. Both
+// states are two cells wide before the label, so the column never shifts as the
+// cursor moves.
+//
+// The marker is load-bearing, not decoration. Colors vanish under NO_COLOR, a
+// pipe, or a 2-color terminal — and lipgloss renders no ANSI at all under the
+// Ascii profile every unit test runs in. The marker is what keeps the selection
+// legible, and testable, in all of them.
+//
+// label must be UNSTYLED. Wrapping an already-styled string embeds an ANSI reset
+// that terminates the outer style mid-line, silently un-coloring the tail of the
+// row. Append muted help text after the call, outside the styled span.
+func SelectRow(selected bool, label string) string {
+	if selected {
+		return rowSelected.Render("▍ " + label)
+	}
+	return rowPlain.Render("  " + label)
+}

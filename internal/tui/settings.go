@@ -109,11 +109,7 @@ func (v SettingsView) View() string {
 		if e.kind == entryToggleSplash {
 			line = e.label + "   [" + v.splashState() + "]"
 		}
-		if i == v.cursor {
-			b.WriteString(ui.SidebarActive.Render(line) + "\n")
-		} else {
-			b.WriteString(ui.SidebarItem.Render(line) + "\n")
-		}
+		b.WriteString(ui.SelectRow(i == v.cursor, line) + "\n")
 		b.WriteString("    " + ui.Muted.Render(e.desc) + "\n")
 	}
 	if v.err != "" {
