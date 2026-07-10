@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"os"
+	"path/filepath"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -48,13 +49,9 @@ const (
 )
 
 type BackupView struct {
-	deps   Deps
-	stage  backupStage
-	picker dirPicker
-	// source is the folder chosen in the picker, empty until the operator
-	// activates its "use this folder" row. startBackup refuses without one, so a
-	// backup can never run against a directory nobody pointed at.
-	source  string
+	deps    Deps
+	stage   backupStage
+	picker  dirPicker
 	tag     textinput.Model
 	focus   backupFocus
 	pathErr string
@@ -122,7 +119,7 @@ func (v BackupView) ShortHelp() []key.Binding {
 		if v.focus == focusPicker {
 			return []key.Binding{
 				key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "folder")),
-				key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "open/choose")),
+				key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "start/open")),
 				key.NewBinding(key.WithKeys("backspace"), key.WithHelp("bksp", "up a level")),
 				key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "tag")),
 			}
@@ -212,22 +209,22 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			case tea.KeyBackspace, tea.KeyLeft:
 				v.picker = v.picker.up()
 			case tea.KeyEnter, tea.KeyRight:
-				// enter has one meaning: activate the highlighted row. Only the
-				// "use this folder" row yields a source; descending and ascending
-				// choose nothing.
+				// activate returns a non-empty path only for the "use this folder"
+				// row, which commits: START the backup of that directory. Folder
+				// and parent rows navigate and return "".
 				var chosen string
 				v.picker, chosen = v.picker.activate()
 				if chosen != "" {
-					v.source = chosen
-					v.pathErr = ""
+					return v.startBackup(chosen)
 				}
 			}
 			return v, nil
 		}
 
-		// focusTagField
+		// focusTagField: enter starts the backup of whatever the picker is
+		// browsing, so a tag can be set first without hunting for a submit.
 		if msg.Type == tea.KeyEnter {
-			return v.startBackup()
+			return v.startBackup(v.picker.cwd)
 		}
 		var cmd tea.Cmd
 		v.tag, cmd = v.tag.Update(msg)
@@ -235,16 +232,12 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
-// startBackup validates the chosen folder and emits startOpMsg. Validation is
-// deliberately cheap (stat only) — the walker surfaces everything else. The
-// stat is kept even though the picker only ever offers real directories: the
-// folder can be removed between choosing it and pressing enter.
-func (v BackupView) startBackup() (tea.Model, tea.Cmd) {
-	root := strings.TrimSpace(v.source)
-	if root == "" {
-		v.pathErr = "choose a folder first — highlight “use this folder” and press enter"
-		return v, nil
-	}
+// startBackup validates root and emits startOpMsg. Validation is deliberately
+// cheap (stat only) — the walker surfaces everything else. The stat is kept even
+// though the picker only ever browses real directories: the folder can be
+// removed between browsing it and pressing enter.
+func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
+	root = strings.TrimSpace(root)
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {
 		v.pathErr = fmt.Sprintf("directory not found: %s", root)
 		return v, nil
@@ -321,25 +314,18 @@ func (v BackupView) View() string {
 			b.WriteString("\n" + ui.Warn.Render(v.notice))
 		}
 		b.WriteString("\n\n" + v.picker.View(v.focus == focusPicker))
-
-		b.WriteString("\n" + ui.Muted.Render("source  "))
-		if v.source == "" {
-			b.WriteString(ui.Subtle.Render("(none chosen)"))
-		} else {
-			b.WriteString(v.source)
-		}
 		b.WriteString("\n" + v.tag.View())
 		if v.pathErr != "" {
 			b.WriteString("\n\n" + ui.Danger.Render(v.pathErr))
 		}
 
 		// The action line names what enter does to the FOCUSED control right now.
-		// In the picker that is one of three different things depending on the
-		// highlighted row, so it is read from the picker rather than hardcoded.
+		// In the picker that is one of three things depending on the highlighted
+		// row (start / open a folder / go up), so it is read from the picker.
 		if v.focus == focusPicker {
-			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · backspace up a level · tab to the tag field"))
+			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · backspace up a level · tab to add a tag"))
 		} else {
-			b.WriteString("\n\n" + ui.ActionLine("start the backup", "tab back to the folder picker"))
+			b.WriteString("\n\n" + ui.ActionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
 		}
 	}
 	return b.String()
