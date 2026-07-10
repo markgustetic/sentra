@@ -61,6 +61,9 @@ func NewSettingsView(deps Deps) SettingsView {
 
 func (SettingsView) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: the entry cursor is always present.
+func (v SettingsView) ConsumesArrows() bool { return true }
+
 func (v SettingsView) Title() string { return "Settings" }
 
 func (v SettingsView) ShortHelp() []key.Binding {

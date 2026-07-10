@@ -101,6 +101,12 @@ func (v *PoliciesView) reload() {
 
 func (PoliciesView) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: the list stage moves a cursor over named policies. The form
+// stage is text entry (see CapturesText); the run stages take single keys.
+func (v PoliciesView) ConsumesArrows() bool {
+	return v.stage == policiesList && len(v.names) > 0
+}
+
 func (v PoliciesView) Title() string { return "Policies" }
 
 // CapturesText is true only on the add-form stage, where the name/path/schedule

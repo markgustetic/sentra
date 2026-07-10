@@ -74,6 +74,9 @@ func NewScheduleView(deps Deps) ScheduleView {
 
 func (ScheduleView) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: the policy table only has a cursor when policies exist.
+func (v ScheduleView) ConsumesArrows() bool { return len(v.rows) > 0 }
+
 func (v ScheduleView) Title() string { return "Schedule" }
 
 func (v ScheduleView) ShortHelp() []key.Binding {

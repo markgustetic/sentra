@@ -82,6 +82,10 @@ func NewRecoveryKitView(deps Deps) RecoveryKitView {
 
 func (RecoveryKitView) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: only once the kit is rendered, where up/down scroll the
+// preview viewport.
+func (v RecoveryKitView) ConsumesArrows() bool { return v.stage == rkDone }
+
 func (v RecoveryKitView) Title() string { return "Recovery Kit" }
 
 // CapturesText is true only on the saving stage, where the save-path text input

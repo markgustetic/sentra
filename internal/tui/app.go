@@ -603,6 +603,28 @@ func (m App) contentCapturesText() bool {
 	return ok && tc.CapturesText()
 }
 
+// arrowConsumer is implemented by a view that can use ↑/↓ in its CURRENT state:
+// a table with rows, a cursor over entries, a scrollable viewport. It is
+// state-dependent, not static — Snapshots consumes arrows only when it has
+// snapshots and its detail page is closed.
+//
+// Views that never implement it (dashboard, check, doctor, prune, …) never take
+// the arrows, and the shell hands those keys to the nav rail instead.
+type arrowConsumer interface{ ConsumesArrows() bool }
+
+// contentConsumesArrows reports whether the active view would do something with
+// an up/down key right now.
+func (m App) contentConsumesArrows() bool {
+	ac, ok := m.views[m.active].model.(arrowConsumer)
+	return ok && ac.ConsumesArrows()
+}
+
+// isArrowKey is up/down only. Left/right belong to the views that use them (the
+// wizard's auth-method selector) and never navigate the rail.
+func isArrowKey(msg tea.KeyMsg) bool {
+	return msg.Type == tea.KeyUp || msg.Type == tea.KeyDown
+}
+
 // routeKey implements the focus rules: modals first, palette second,
 // then global bindings, then the focused region.
 func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -700,6 +722,22 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.sidebar, cmd = m.sidebar.Update(msg)
 		return m, cmd
 	}
+
+	// An arrow key must never do nothing. Eight views never use ↑/↓ at all, and
+	// six more use them only when they have rows — and in those states the key
+	// was silently dropped while the rail, no longer focused, had also stopped
+	// responding. The app looked frozen, twice, to a real user.
+	//
+	// So: if the focused view cannot use this arrow, the rail takes it. Focus
+	// follows, because otherwise the highlight would move in a pane that enter
+	// does not target.
+	if isArrowKey(msg) && !m.contentConsumesArrows() {
+		m.focus = focusSidebar
+		var cmd tea.Cmd
+		m.sidebar, cmd = m.sidebar.Update(msg)
+		return m, cmd
+	}
+
 	var cmd tea.Cmd
 	m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
 	return m, cmd

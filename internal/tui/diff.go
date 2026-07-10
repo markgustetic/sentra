@@ -60,6 +60,12 @@ func NewDiff(deps Deps) Diff {
 
 func (Diff) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: the two picker stages drive a table; diffShow renders a
+// static report with no cursor.
+func (d Diff) ConsumesArrows() bool {
+	return (d.stage == diffPickA || d.stage == diffPickB) && len(d.snaps) > 0
+}
+
 func (d Diff) Title() string { return "Diff" }
 
 func (d Diff) ShortHelp() []key.Binding {

@@ -288,6 +288,21 @@ func config0(deps Deps) config.Config {
 
 func (SetupWizardView) Init() tea.Cmd { return nil }
 
+// ConsumesArrows: the backend selector, the actions rows, and the IAM preview's
+// viewport all use up/down. The details and passphrase stages are text entry
+// (see CapturesText) and navigate with tab; review onward take single keys.
+//
+// On first run the wizard is a startup gate and routeKey hands it every key
+// before this is consulted, so a first-run operator can never arrow away.
+func (v SetupWizardView) ConsumesArrows() bool {
+	switch v.stage {
+	case stageBackend, stageActions, stageIAMPreview:
+		return true
+	default:
+		return false
+	}
+}
+
 func (v SetupWizardView) Title() string { return "Setup" }
 
 // CapturesText reports the stages that focus a text input: the details stage

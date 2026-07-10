@@ -54,6 +54,13 @@ func FuzzAppKeyRouting(f *testing.F) {
 	f.Add([]byte{fkDown, fkEnter, fkTab, fkDown})
 	f.Add([]byte{fkTab, fkTab, fkEnter})
 	f.Add([]byte{fkEnter, fkEnter, fkEnter})
+	// The snapshots-freeze bug: walk the rail to a DIFFERENT view, activate it
+	// (focus moves to the content pane), then press Down. With Deps{} that view
+	// has no rows and cannot use the arrow, so the rail must take it. Without a
+	// seed that actually reaches a content-focused inert view, invariant 5 never
+	// fires.
+	f.Add([]byte{fkDown, fkEnter, fkDown})
+	f.Add([]byte{fkDown, fkDown, fkEnter, fkDown, fkDown})
 
 	f.Fuzz(func(t *testing.T, seq []byte) {
 		if len(seq) > 64 {
@@ -68,6 +75,13 @@ func FuzzAppKeyRouting(f *testing.F) {
 
 			railFocused := app.focus == focusSidebar
 			activeBefore := app.active
+			railIdxBefore := app.sidebar.list.Index()
+			// Captured BEFORE the update: could the focused view have used an
+			// arrow, and did an overlay own the keyboard?
+			viewCouldTakeArrow := !railFocused && app.contentConsumesArrows()
+			overlayOwnedKeys := len(app.modals) > 0 || app.paletteOpen ||
+				app.inStartupGate() || app.contentCapturesText() || app.splashActive ||
+				app.tooSmall()
 
 			next, cmd := app.Update(key)
 			app = next.(App)
@@ -103,9 +117,29 @@ func FuzzAppKeyRouting(f *testing.F) {
 				t.Fatalf("enter navigated nowhere (active stayed %d) yet moved focus off the rail",
 					activeBefore)
 			}
+
+			// Invariant 5: a Down key never does nothing. Eight views never use
+			// ↑/↓ and six more use them only when they have rows. Dropping the
+			// key in those states — while the unfocused rail had also stopped
+			// responding — is what made the app look frozen, twice, to a real
+			// user. So if the focused view could not have used it, the rail must
+			// have taken it.
+			//
+			// Down rather than Up because the rail starts at index 0, where Up is
+			// legitimately a no-op. The bound is the RAIL's item count, not the
+			// view count: `unlock` is hidden from the rail (16 items, 17 views),
+			// so at the last rail row Down is correctly a no-op. Fuzzing found
+			// this — the first version of this invariant used len(views)-1 and
+			// reported a bug that did not exist.
+			if key.Type == tea.KeyDown && !overlayOwnedKeys && !viewCouldTakeArrow &&
+				railIdxBefore < len(app.sidebar.list.Items())-1 &&
+				app.sidebar.list.Index() == railIdxBefore {
+				t.Fatalf("down did nothing: view %q could not use it and the rail stayed at %d",
+					app.views[activeBefore].id, railIdxBefore)
+			}
 		}
 
-		// Invariant 5: the shell is never a dead end. With no overlay owning the
+		// Invariant 6: the shell is never a dead end. With no overlay owning the
 		// keyboard, tab must always be able to put focus back on the rail.
 		if len(app.modals) == 0 && !app.paletteOpen && !app.inStartupGate() && !app.contentCapturesText() {
 			m3, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab})

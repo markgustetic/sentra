@@ -186,6 +186,11 @@ func NewAgentView(deps Deps) AgentView {
 	return baseAgentView(deps, runner)
 }
 
+// ConsumesArrows: up/down move the cursor over recommendations and scroll the
+// detail viewport. With no recommendations there is nothing to move, so the
+// arrows belong to the nav rail.
+func (a AgentView) ConsumesArrows() bool { return len(a.recs) > 0 }
+
 // Title names the view in the sidebar, palette, and title bar.
 func (AgentView) Title() string { return "Agent" }
 
