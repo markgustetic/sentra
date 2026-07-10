@@ -1104,3 +1104,105 @@ func TestSetupWizardAWSStillClearsEndpoint(t *testing.T) {
 		t.Errorf("aws backend must clear endpoint, got %q", got)
 	}
 }
+
+// TestSetupWizard_EscStepsBackAWS: on the AWS path (backend→details→actions→
+// passphrase) esc steps back one stage at a time, retracing the exact path, and
+// stops at backend (nothing behind it) rather than restarting.
+func TestSetupWizard_EscStepsBackAWS(t *testing.T) {
+	v := setupAtPassphrase(t)
+	for _, want := range []setupStage{stageActions, stageDetails, stageBackend} {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		v = m.(SetupWizardView)
+		if v.stage != want {
+			t.Fatalf("esc back: got %v, want %v", v.stage, want)
+		}
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // nothing behind backend
+	if got := m.(SetupWizardView).stage; got != stageBackend {
+		t.Fatalf("esc at backend must stay put, got %v", got)
+	}
+}
+
+// TestSetupWizard_EscStepsBackS3SkipsActions: S3-compatible has no actions
+// stage, so esc from passphrase steps straight back to details — the history
+// stack retraces the skip automatically.
+func TestSetupWizard_EscStepsBackS3SkipsActions(t *testing.T) {
+	v := setupAtDetails(t, 1) // S3-compatible
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("precondition: S3 details→passphrase, got %v", v.stage)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := m.(SetupWizardView).stage; got != stageDetails {
+		t.Fatalf("esc from S3 passphrase must skip actions back to details, got %v", got)
+	}
+}
+
+// TestSetupWizard_EscBackPreservesEntries: stepping back keeps what was typed.
+func TestSetupWizard_EscBackPreservesEntries(t *testing.T) {
+	v := setupAtDetails(t, 1)
+	v = setupTypeField(v, "keep-this-bucket")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → passphrase
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back → details
+	v = m.(SetupWizardView)
+	if got := v.fields[setupFieldBucket].Value(); got != "keep-this-bucket" {
+		t.Errorf("esc back lost the bucket entry: %q", got)
+	}
+}
+
+// TestSetupWizard_EscBackAfterTooShortPassphrase is the reported case: a too-
+// short passphrase is rejected, and esc still steps back instead of trapping.
+func TestSetupWizard_EscBackAfterTooShortPassphrase(t *testing.T) {
+	v := setupAtPassphrase(t)
+	v = setupTypeField(v, "short") // < minPasswordLen
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.passErr == "" || v.stage != stagePassphrase {
+		t.Fatalf("precondition: short passphrase rejected, staying put (err=%q stage=%v)", v.passErr, v.stage)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if got := m.(SetupWizardView).stage; got != stageActions {
+		t.Fatalf("esc after a too-short passphrase must step back, got %v", got)
+	}
+}
+
+// TestSetupWizard_EscBackFromReviewClearsStashedPassphrase: returning to the
+// passphrase stage zeroizes the stashed secret so it is re-entered, matching the
+// flow's plaintext-residency discipline.
+func TestSetupWizard_EscBackFromReviewClearsStashedPassphrase(t *testing.T) {
+	v := setupAtPassphrase(t)
+	v = setupTypeField(v, "correct-horse")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → confirm field
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "correct-horse")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // commit → review
+	v = m.(SetupWizardView)
+	if v.stage != stageReview || len(v.pass) == 0 {
+		t.Fatalf("precondition: at review with a stashed secret (stage=%v passLen=%d)", v.stage, len(v.pass))
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back → passphrase
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("esc from review must go back to passphrase, got %v", v.stage)
+	}
+	if v.pass != nil {
+		t.Error("going back to passphrase must clear the stashed secret")
+	}
+}
+
+// TestSetupWizard_AdvertisesBackOnPassphrase: the footer must offer esc back so
+// the way out is discoverable.
+func TestSetupWizard_AdvertisesBackOnPassphrase(t *testing.T) {
+	v := setupAtPassphrase(t)
+	for _, b := range v.ShortHelp() {
+		for _, k := range b.Keys() {
+			if k == "esc" {
+				return
+			}
+		}
+	}
+	t.Error("passphrase stage must advertise esc back in ShortHelp")
+}

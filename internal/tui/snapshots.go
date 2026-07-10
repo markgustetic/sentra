@@ -99,9 +99,16 @@ func NewSnapshotsWithLoader(deps Deps, loader detailLoader) Snapshots {
 // and an error-swallow so a slow blobstore can't block construction.
 // Failures yield a nil slice; the view then renders the empty-state.
 //
+// A nil Repo (Deps{} in tests, or a shell built before unlock) yields
+// nil rather than panicking, so callers — the constructor and the
+// op-completion reload in Update — need no guard of their own.
+//
 // The 10s timeout is per-call; the parent context comes from
 // deps.Ctx (App-scoped) so a quick quit cancels the load.
 func loadSnapshotsBestEffort(deps Deps) []repo.SnapshotInfo {
+	if deps.Repo == nil {
+		return nil
+	}
 	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 10*time.Second)
 	defer cancel()
 	snaps, err := deps.Repo.ListSnapshots(ctx)
@@ -214,6 +221,13 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.detailErr = err
 			return s, nil
 		}
+	}
+	// A completed operation (backup, prune, sync, …) is broadcast to every
+	// view as an opResultMsg. The list is hydrated once at launch, so without
+	// this reload a snapshot taken this session never appears until restart.
+	// Keying off the marker interface refreshes for any op, present or future.
+	if _, ok := msg.(opResultMsg); ok {
+		return s.SetSnapshots(loadSnapshotsBestEffort(s.deps)), nil
 	}
 	// Forward other messages (notably arrow keys) to the table.
 	var cmd tea.Cmd

@@ -25,7 +25,7 @@ func newFlowRepo(t *testing.T) *repo.Repo {
 }
 
 // backupAtRepo returns a configure-stage BackupView on repo r, its folder picker
-// browsing dir so the "use this folder" row targets dir.
+// browsing dir so the Start button commits dir.
 func backupAtRepo(t *testing.T, r *repo.Repo, dir string) BackupView {
 	t.Helper()
 	v := NewBackupView(Deps{Repo: r})
@@ -34,22 +34,30 @@ func backupAtRepo(t *testing.T, r *repo.Repo, dir string) BackupView {
 	return m.(BackupView)
 }
 
-// TestBackupFlow_EnterOnUseThisFolderStarts is the reported fix: enter on the
-// picker's top row must START the backup of the browsed directory, not just
-// re-select it. Before, the only way to start was to tab away to the tag field.
-func TestBackupFlow_EnterOnUseThisFolderStarts(t *testing.T) {
+// onStartButton moves the picker's cursor onto the pinned Start button — the
+// only position from which enter commits and starts the backup. Fresh pickers
+// land on a navigation row, so a test that wants to start must arrow down to it.
+func onStartButton(v BackupView) BackupView {
+	v.picker.cursor = len(v.picker.rows)
+	return v
+}
+
+// TestBackupFlow_EnterOnStartButtonStarts: enter on the pinned Start button must
+// START the backup of the browsed directory. Enter on the folder rows only
+// navigates, so the operator arrows down to the Start button and commits there.
+func TestBackupFlow_EnterOnStartButtonStarts(t *testing.T) {
 	r := newFlowRepo(t)
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600); err != nil {
 		t.Fatal(err)
 	}
 
-	// Picker on "use this folder" (row 0) = src. One enter must start the backup.
-	v := backupAtRepo(t, r, src)
+	// Cursor on the Start button = commit src. One enter must start the backup.
+	v := onStartButton(backupAtRepo(t, r, src))
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
 	if cmd == nil {
-		t.Fatal("enter on 'use this folder' must start the backup")
+		t.Fatal("enter on the Start button must start the backup")
 	}
 	// The command batches the startOpMsg with the seeded first opTickMsg.
 	// Both must be present: the startOpMsg launches the op, and the
@@ -114,11 +122,11 @@ func TestBackupFlow_EnterOnUseThisFolderStarts(t *testing.T) {
 // exists for one case: the browsed folder disappears before enter. Pin it.
 func TestBackupFlow_VanishedFolderRefusesToStart(t *testing.T) {
 	dir := t.TempDir()
-	v := backupAtRepo(t, newFlowRepo(t), dir)
+	v := onStartButton(backupAtRepo(t, newFlowRepo(t), dir))
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on "use this folder"
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on the Start button
 	v = m.(BackupView)
 	if cmd != nil {
 		t.Fatal("a folder that no longer exists must not start an op")
@@ -137,8 +145,8 @@ func TestBackupFlow_EscDuringRunEmitsCancel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v := backupAtRepo(t, r, src)
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on "use this folder" starts
+	v := onStartButton(backupAtRepo(t, r, src))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on the Start button starts
 	v = m.(BackupView)
 	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
@@ -202,8 +210,7 @@ func TestBackupPickerNavigatesWithoutStarting(t *testing.T) {
 	root := tempTree(t)
 	v := backupAt(t, root)
 
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
-	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyDown}) // row 2 = alpha
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // row 0 is "..", row 1 = alpha
 	v = m.(BackupView)
 	if v.picker.rows[v.picker.cursor].label != "alpha" {
 		t.Fatalf("cursor on %q, want alpha", v.picker.rows[v.picker.cursor].label)
@@ -267,14 +274,17 @@ func TestBackupTagFieldEnterStarts(t *testing.T) {
 	}
 }
 
-// The picker's top-row footer must promise starting the backup, not "back up
-// this folder" — the old wording read like a start but only re-selected.
-func TestBackupUseThisFolderFooterSaysStart(t *testing.T) {
-	v := backupAt(t, tempTree(t)) // cursor on row 0 = "use this folder"
-	if v.picker.enterVerb() != "start the backup" {
-		t.Errorf("top-row verb = %q, want %q", v.picker.enterVerb(), "start the backup")
+// On the Start button the footer must promise starting the backup of the
+// browsed folder — a footer that says "open" while the cursor rests on the
+// button would be lying.
+func TestBackupStartButtonFooterSaysStart(t *testing.T) {
+	root := tempTree(t)
+	v := onStartButton(backupAt(t, root))
+	want := "start the backup of " + filepath.Base(root)
+	if v.picker.enterVerb() != want {
+		t.Errorf("Start-button verb = %q, want %q", v.picker.enterVerb(), want)
 	}
-	if !strings.Contains(v.View(), "Press enter to start the backup") {
-		t.Errorf("footer must say start the backup:\n%s", v.View())
+	if !strings.Contains(v.View(), "Press enter to "+want) {
+		t.Errorf("footer must say %q:\n%s", "Press enter to "+want, v.View())
 	}
 }

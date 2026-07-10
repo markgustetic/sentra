@@ -17,9 +17,17 @@ import (
 // synchronous read keeps the model drivable straight from a test without running
 // commands. The same reasoning already governs loadSnapshotsBestEffort.
 //
-// Row 0 is always "use this folder" and row 1 the parent, so enter carries
-// exactly one meaning — activate the highlighted row — and never doubles as
-// "choose this one" depending on what the cursor happens to be over.
+// enter means exactly one thing on the rows themselves — navigate: descend into
+// a folder or climb via "..". Committing (starting the backup of the current
+// directory) is a separate affordance, the Start button, reached by arrowing
+// down PAST the last folder. Keeping navigation and commit on different keys is
+// the fix for the old model, where enter on row 0 started the backup while enter
+// on every other row navigated, so the same key did two unrelated things.
+//
+// The Start button is not a row: it is the cursor position just past the last
+// row (cursor == len(rows)). Modelling it as a sentinel rather than a list entry
+// keeps it pinned below the scrolling folder window so it never scrolls out of
+// reach, and keeps rows holding only real filesystem entries.
 type dirPicker struct {
 	cwd    string
 	rows   []dirRow
@@ -33,8 +41,7 @@ type dirPicker struct {
 type rowKind int
 
 const (
-	rowUseCurrent rowKind = iota
-	rowParent
+	rowParent rowKind = iota
 	rowChild
 )
 
@@ -48,8 +55,8 @@ type dirRow struct {
 const dirPickerHeight = 10
 
 // newDirPicker opens start. An unreadable directory is not fatal: the picker
-// still renders its "use this folder" and parent rows so the operator can climb
-// back out, with the error shown alongside.
+// still renders its parent row and Start button so the operator can climb back
+// out or commit anyway, with the error shown alongside.
 func newDirPicker(start string) dirPicker {
 	if strings.TrimSpace(start) == "" {
 		if wd, err := os.Getwd(); err == nil {
@@ -65,10 +72,12 @@ func newDirPicker(start string) dirPicker {
 	return p.reload()
 }
 
-// reload rebuilds rows for p.cwd and clamps the cursor.
+// reload rebuilds rows for p.cwd and clamps the cursor. rows hold only real
+// filesystem entries — the parent, then folders; the Start button lives past the
+// last row and is not stored here (see onStart).
 func (p dirPicker) reload() dirPicker {
 	p.err = ""
-	p.rows = []dirRow{{kind: rowUseCurrent, label: "use this folder", path: p.cwd}}
+	p.rows = nil
 	if parent := filepath.Dir(p.cwd); parent != p.cwd {
 		p.rows = append(p.rows, dirRow{kind: rowParent, label: "..", path: parent})
 	}
@@ -76,7 +85,7 @@ func (p dirPicker) reload() dirPicker {
 	entries, err := os.ReadDir(p.cwd)
 	if err != nil {
 		p.err = "cannot read " + p.cwd + ": " + errReason(err)
-		p.cursor = 0
+		p.clampCursor()
 		return p
 	}
 
@@ -101,10 +110,25 @@ func (p dirPicker) reload() dirPicker {
 	for _, n := range names {
 		p.rows = append(p.rows, dirRow{kind: rowChild, label: n, path: filepath.Join(p.cwd, n)})
 	}
-	if p.cursor >= len(p.rows) {
-		p.cursor = len(p.rows) - 1
-	}
+	p.clampCursor()
 	return p
+}
+
+// onStart reports whether the cursor rests on the Start button — the position
+// just past the last row. It is also true when there are no rows at all (an
+// empty or unreadable directory with no parent), which is what guarantees the
+// operator can always commit.
+func (p dirPicker) onStart() bool { return p.cursor >= len(p.rows) }
+
+// clampCursor keeps the cursor within [0, len(rows)] — the extra slot is the
+// Start button.
+func (p *dirPicker) clampCursor() {
+	if p.cursor > len(p.rows) {
+		p.cursor = len(p.rows)
+	}
+	if p.cursor < 0 {
+		p.cursor = 0
+	}
 }
 
 // errReason strips the os.PathError wrapper so the row reads as prose.
@@ -123,23 +147,23 @@ func (p dirPicker) moveUp() dirPicker {
 }
 
 func (p dirPicker) moveDown() dirPicker {
-	if p.cursor < len(p.rows)-1 {
+	// len(rows) is the Start button slot, so the cursor may step one past the
+	// last row.
+	if p.cursor < len(p.rows) {
 		p.cursor++
 	}
 	return p
 }
 
-// activate applies enter to the highlighted row. It returns the chosen folder
-// only for the "use this folder" row; descending and ascending choose nothing,
-// which is what keeps enter unambiguous.
+// activate applies enter to the current cursor position. On the Start button it
+// returns the current directory — the caller's signal to commit. On a folder or
+// ".." row it navigates and returns "", which is what keeps enter meaning only
+// "change the path" on the rows themselves.
 func (p dirPicker) activate() (dirPicker, string) {
-	if len(p.rows) == 0 {
-		return p, ""
+	if p.onStart() {
+		return p, p.cwd
 	}
-	row := p.rows[p.cursor]
-	switch row.kind {
-	case rowUseCurrent:
-		return p, row.path
+	switch row := p.rows[p.cursor]; row.kind {
 	case rowParent, rowChild:
 		p.cwd = row.path
 		p.cursor = 0
@@ -159,37 +183,43 @@ func (p dirPicker) up() dirPicker {
 	return p.reload()
 }
 
-// window returns the slice of rows to draw and the cursor's index within it,
-// scrolling so the cursor stays visible.
-func (p dirPicker) window() ([]dirRow, int) {
+// window returns the slice of rows to draw and the index the slice starts at,
+// scrolling so the cursor stays visible. When the cursor is on the Start button
+// (past the last row) the window pins to the tail, keeping the final folders in
+// view beneath the highlighted button.
+func (p dirPicker) window() (rows []dirRow, start int) {
 	h := p.height
 	if h <= 0 || h > len(p.rows) {
 		h = len(p.rows)
 	}
-	start := p.cursor - h/2
+	if h == 0 {
+		return nil, 0
+	}
+	ec := p.cursor
+	if ec > len(p.rows)-1 {
+		ec = len(p.rows) - 1 // clamp the button's cursor onto the last row for scrolling
+	}
+	start = ec - h/2
 	if start < 0 {
 		start = 0
 	}
 	if start+h > len(p.rows) {
 		start = len(p.rows) - h
 	}
-	return p.rows[start : start+h], p.cursor - start
+	return p.rows[start : start+h], start
 }
 
-// enterVerb names what enter will do to the HIGHLIGHTED row. The action line
-// renders this rather than a fixed string, because enter means three different
-// things here and a footer that says "open" while the cursor rests on "use this
-// folder" is simply lying.
+// enterVerb names what enter will do at the current cursor position. The action
+// line renders this rather than a fixed string, because enter means three
+// different things here and a footer that says "open" while the cursor rests on
+// the Start button is simply lying.
 func (p dirPicker) enterVerb() string {
-	if len(p.rows) == 0 {
-		return ""
+	if p.onStart() {
+		// The Start button commits — for the sole caller (backup) that means
+		// starting the run against the current directory.
+		return "start the backup of " + filepath.Base(p.cwd)
 	}
 	switch r := p.rows[p.cursor]; r.kind {
-	case rowUseCurrent:
-		// Activating this row commits — for the sole caller (backup) that means
-		// starting the run, so the verb says "start the backup", not the old
-		// "back up this folder" which read like a start but only re-selected.
-		return "start the backup"
 	case rowParent:
 		return "go up to " + filepath.Base(r.path)
 	default:
@@ -200,22 +230,26 @@ func (p dirPicker) enterVerb() string {
 // View renders the picker. focused controls whether the highlighted row carries
 // the ▍ marker: an unfocused picker must not look like it still owns the
 // keyboard while the tag field does.
+//
+// The Start button is drawn last, below the folder window (and its "…" overflow
+// indicator), so it stays pinned in view no matter how far the list scrolls.
 func (p dirPicker) View(focused bool) string {
 	var b strings.Builder
 	b.WriteString(ui.Muted.Render(p.cwd) + "\n")
 	if p.err != "" {
 		b.WriteString(ui.Danger.Render(p.err) + "\n")
 	}
-	rows, cur := p.window()
+	rows, start := p.window()
 	for i, r := range rows {
 		label := r.label
 		if r.kind == rowChild {
 			label += string(filepath.Separator)
 		}
-		b.WriteString(ui.SelectRow(focused && i == cur, label) + "\n")
+		b.WriteString(ui.SelectRow(focused && start+i == p.cursor, label) + "\n")
 	}
 	if len(p.rows) > len(rows) {
 		b.WriteString(ui.Subtle.Render("  …") + "\n")
 	}
+	b.WriteString(ui.SelectRow(focused && p.onStart(), "▸ start backup of "+filepath.Base(p.cwd)) + "\n")
 	return b.String()
 }

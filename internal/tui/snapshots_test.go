@@ -127,3 +127,37 @@ func TestSnapshots_EmptyRepo(t *testing.T) {
 		t.Errorf("empty snapshots did not render placeholder: %s", view)
 	}
 }
+
+// TestSnapshots_ReloadsAfterOpCompletes: the list is hydrated once at launch,
+// so a backup taken in this session must reload it — before, the list stayed
+// frozen at launch-time contents and a fresh snapshot never appeared until the
+// operator restarted sentra. Any completed op (marked by opResultMsg) triggers
+// the reload.
+func TestSnapshots_ReloadsAfterOpCompletes(t *testing.T) {
+	r := newFlowRepo(t)
+	s := NewSnapshots(Deps{Repo: r}) // empty repo → no rows
+	if len(s.snaps) != 0 {
+		t.Fatalf("precondition: want 0 snapshots, got %d", len(s.snaps))
+	}
+
+	seedTaggedSnaps(t, r, "nightly") // a backup lands in the repo
+
+	m, _ := s.Update(backupDoneMsg{})
+	s = m.(Snapshots)
+	if len(s.snaps) != 1 {
+		t.Fatalf("snapshots must reload after an op completes: want 1, got %d", len(s.snaps))
+	}
+}
+
+// TestSnapshots_ReloadWithNoRepoDoesNotPanic pins the nil-safety of the
+// op-completion reload: a shell built before unlock (or any Deps{} view) still
+// receives the broadcast opResultMsg, and reloading must yield an empty list
+// rather than dereferencing a nil repo. This panicked before loadSnapshotsBestEffort
+// grew its nil guard.
+func TestSnapshots_ReloadWithNoRepoDoesNotPanic(t *testing.T) {
+	s := NewSnapshots(Deps{}) // no repo
+	m, _ := s.Update(backupDoneMsg{})
+	if got := len(m.(Snapshots).snaps); got != 0 {
+		t.Errorf("no-repo reload must be empty, got %d", got)
+	}
+}

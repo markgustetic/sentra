@@ -80,3 +80,30 @@ func TestDashboard_RendersAgentBadge(t *testing.T) {
 		t.Errorf("dashboard view did not include rec count: %s", view)
 	}
 }
+
+// TestDashboard_RefreshesAfterOpCompletes: the dashboard is hydrated once at
+// launch, so a backup taken in-session must still update its counts. It must
+// also preserve the agent recommendation count (which comes from a scan, not
+// ListSnapshots) rather than zeroing it on refresh.
+func TestDashboard_RefreshesAfterOpCompletes(t *testing.T) {
+	r := newFlowRepo(t)
+	d := NewDashboard(Deps{Repo: r}) // empty repo
+	if d.data.SnapshotCount != 0 {
+		t.Fatalf("precondition: want 0 snapshots, got %d", d.data.SnapshotCount)
+	}
+	d = d.SetData(DashboardData{RecCount: 3}) // a prior scan populated recs
+
+	seedTaggedSnaps(t, r, "nightly")
+
+	m, _ := d.Update(backupDoneMsg{})
+	d = m.(Dashboard)
+	if d.data.SnapshotCount != 1 {
+		t.Fatalf("dashboard must refresh its snapshot count after an op: want 1, got %d", d.data.SnapshotCount)
+	}
+	if d.data.LastSnap == nil {
+		t.Error("dashboard must show the last snapshot after refresh")
+	}
+	if d.data.RecCount != 3 {
+		t.Errorf("refresh must preserve the agent rec count: want 3, got %d", d.data.RecCount)
+	}
+}

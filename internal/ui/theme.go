@@ -9,26 +9,31 @@ package ui
 
 import "github.com/charmbracelet/lipgloss"
 
-// Palette. Dark variants are the Charm-expressive rose-pine-adjacent
-// tones approved in the design; Light variants are their saturated
-// counterparts for white terminals.
+// Palette — synthwave / outrun. Dark variants are saturated neons that glow
+// against a dark terminal (electric purple, hot magenta, laser cyan, a sunset
+// gold); Light variants stay legible on white terminals. lipgloss picks per
+// background and strips to nothing under Ascii/NO_COLOR, so the neons are a
+// dark-terminal flourish, never a legibility risk elsewhere.
 var (
-	AccentViolet = lipgloss.AdaptiveColor{Dark: "#C4A7E7", Light: "#7C3AED"}
-	AccentPink   = lipgloss.AdaptiveColor{Dark: "#F6A8D8", Light: "#DB2777"}
-	AccentAqua   = lipgloss.AdaptiveColor{Dark: "#9CCFD8", Light: "#0E7490"}
-	GoodGreen    = lipgloss.AdaptiveColor{Dark: "#95E6B8", Light: "#059669"}
-	WarnAmber    = lipgloss.AdaptiveColor{Dark: "#F6C177", Light: "#D97706"}
-	BadRed       = lipgloss.AdaptiveColor{Dark: "#EB6F92", Light: "#DC2626"}
-	FgMuted      = lipgloss.AdaptiveColor{Dark: "#6E6A86", Light: "#6B7280"}
-	FgSubtle     = lipgloss.AdaptiveColor{Dark: "#908CAA", Light: "#9CA3AF"}
+	AccentViolet = lipgloss.AdaptiveColor{Dark: "#CB8CFF", Light: "#7C3AED"} // electric purple
+	AccentPink   = lipgloss.AdaptiveColor{Dark: "#FF6BDD", Light: "#DB2777"} // hot magenta
+	AccentAqua   = lipgloss.AdaptiveColor{Dark: "#5CEBFF", Light: "#0E7490"} // laser cyan
+	GoodGreen    = lipgloss.AdaptiveColor{Dark: "#5CFFB4", Light: "#059669"} // neon mint
+	WarnAmber    = lipgloss.AdaptiveColor{Dark: "#FFD84D", Light: "#D97706"} // sunset gold
+	BadRed       = lipgloss.AdaptiveColor{Dark: "#FF6B86", Light: "#DC2626"} // neon red
+	FgMuted      = lipgloss.AdaptiveColor{Dark: "#8E7DC8", Light: "#6B7280"} // dim indigo
+	FgSubtle     = lipgloss.AdaptiveColor{Dark: "#CBB8FF", Light: "#9CA3AF"} // soft lilac
 )
 
-// Semantic styles (pre-existing names; CLI callers depend on them).
+// Semantic styles (pre-existing names; CLI callers depend on them). The status
+// accents are bold so a neon foreground reads like lit signage rather than a
+// thin stroke — the "glow" of the synthwave theme. Muted/Subtle stay unweighted;
+// secondary text should recede, not glow.
 var (
 	Primary = lipgloss.NewStyle().Foreground(AccentViolet).Bold(true)
-	Success = lipgloss.NewStyle().Foreground(GoodGreen)
-	Warn    = lipgloss.NewStyle().Foreground(WarnAmber)
-	Danger  = lipgloss.NewStyle().Foreground(BadRed)
+	Success = lipgloss.NewStyle().Foreground(GoodGreen).Bold(true)
+	Warn    = lipgloss.NewStyle().Foreground(WarnAmber).Bold(true)
+	Danger  = lipgloss.NewStyle().Foreground(BadRed).Bold(true)
 	Muted   = lipgloss.NewStyle().Foreground(FgMuted)
 	Subtle  = lipgloss.NewStyle().Foreground(FgSubtle)
 	Panel   = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).

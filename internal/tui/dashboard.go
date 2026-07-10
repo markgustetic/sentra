@@ -109,10 +109,22 @@ func hydrateDashboardData(deps Deps) DashboardData {
 // iteration could refresh on a timer here.
 func (Dashboard) Init() tea.Cmd { return nil }
 
-// Update accepts any message and returns the model unchanged. The
-// dashboard has no input bindings — App handles tab switching;
-// future versions may add `r` for refresh or `enter` for drill-in.
-func (d Dashboard) Update(_ tea.Msg) (tea.Model, tea.Cmd) {
+// Update refreshes the dashboard when an operation completes and is
+// otherwise a no-op (the dashboard has no input bindings — App handles
+// tab switching).
+//
+// A completed op (backup, prune, sync, …) is broadcast to every view as
+// an opResultMsg; the dashboard re-hydrates so its counts reflect the
+// new repo state instead of what was true at launch. Reacting to the
+// marker interface rather than each concrete done-message keeps a new
+// operation type refreshing the dashboard for free. RecCount comes from
+// an agent scan, not ListSnapshots, so it is carried across the refresh.
+func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(opResultMsg); ok {
+		recs := d.data.RecCount
+		d.data = hydrateDashboardData(d.deps)
+		d.data.RecCount = recs
+	}
 	return d, nil
 }
 

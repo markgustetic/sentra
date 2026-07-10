@@ -99,6 +99,12 @@ type SetupWizardView struct {
 	engine *setup.Engine
 	stage  setupStage
 
+	// history is the stack of stages the operator advanced through, so esc can
+	// step back one at a time and retrace the exact path — skips included (AWS
+	// vs S3-compatible). Update pushes the departed stage on every forward move;
+	// goBack pops it. A restart (fresh wizard) starts with an empty history.
+	history []setupStage
+
 	plan setup.Plan
 
 	// backend-stage cursor over the two backends.
@@ -314,24 +320,15 @@ func (v SetupWizardView) CapturesText() bool {
 	return v.stage == stageDetails || v.stage == stagePassphrase
 }
 
-// ConsumesEscape: the IAM preview and the error screen both restart the wizard
-// on esc. On first run the wizard is a startup gate, so routeKey hands it every
-// key before this is consulted; from Settings it is an ordinary view.
+// ConsumesEscape: esc means something to the wizard on most stages — stepping
+// back a stage where it can (canGoBack), and restarting on the IAM preview and
+// error screens — so the shell must not treat it as "leave to the rail". On
+// first run the wizard is a startup gate, so routeKey hands it every key before
+// this is consulted; from Settings it is an ordinary view, and this is what
+// keeps esc-to-go-back working there too. Only the backend stage (nothing
+// behind it) lets esc fall through to leave the view.
 func (v SetupWizardView) ConsumesEscape() bool {
-	return v.stage == stageIAMPreview || v.stage == stageError
-}
-
-// ConfirmsClose: every entry stage collects input. The IAM preview and error
-// stages own esc themselves (ConsumesEscape), and provision/done are terminal,
-// so they are excluded. On first run the wizard is a startup gate and esc never
-// reaches this check.
-func (v SetupWizardView) ConfirmsClose() bool {
-	switch v.stage {
-	case stageBackend, stageDetails, stageActions, stagePassphrase, stageReview:
-		return true
-	default:
-		return false
-	}
+	return v.canGoBack() || v.stage == stageIAMPreview || v.stage == stageError
 }
 
 func (v SetupWizardView) ShortHelp() []key.Binding {
@@ -341,15 +338,35 @@ func (v SetupWizardView) ShortHelp() []key.Binding {
 	case stageDone, stageError:
 		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "restart"))}
 	default:
-		return []key.Binding{
+		keys := []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "next")),
 			key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "field")),
 			key.NewBinding(key.WithKeys("space"), key.WithHelp("space", "toggle")),
 		}
+		if v.canGoBack() {
+			keys = append(keys, key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")))
+		}
+		return keys
 	}
 }
 
+// Update wraps the per-message dispatch to maintain the stage history: every
+// message flows through here (keys AND async results like awsAuthDoneMsg), so a
+// single rule — "when the stage advanced, remember the stage we left" — records
+// the operator's exact path without instrumenting each transition site. Backward
+// moves (goBack) and restarts (a fresh wizard at stage 0) never increase the
+// stage, so they never push; esc then pops this stack to retrace the path.
 func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	before := v.stage
+	model, cmd := v.updateInner(msg)
+	if nv, ok := model.(SetupWizardView); ok && nv.stage > before {
+		nv.history = append(nv.history, before)
+		return nv, cmd
+	}
+	return model, cmd
+}
+
+func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
@@ -426,6 +443,15 @@ func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // handleKey dispatches per-stage. Later tasks add the remaining cases.
 func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	// esc steps back one stage on the linear data-entry path, retracing
+	// v.history and keeping every entry, so a too-short passphrase or a mistyped
+	// bucket is a step back rather than a restart. The terminal-ish stages keep
+	// their own esc: the IAM-policy preview and the error screen restart (the
+	// error path also zeroizes the passphrase), and nothing sits behind backend.
+	if msg.Type == tea.KeyEsc && v.canGoBack() {
+		return v.goBack(), nil
+	}
+
 	switch v.stage {
 	case stageBackend:
 		if msg.Type == tea.KeyEnter {
@@ -456,6 +482,47 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v.handleErrorKey(msg)
 	}
 	return v, nil
+}
+
+// canGoBack reports whether esc should step back a stage: true on the linear
+// data-entry stages once the operator has advanced past backend. The IAM
+// preview and error stages own esc themselves, and backend has nothing behind
+// it, so they are excluded.
+func (v SetupWizardView) canGoBack() bool {
+	switch v.stage {
+	case stageDetails, stageActions, stagePassphrase, stageReview:
+		return len(v.history) > 0
+	}
+	return false
+}
+
+// goBack pops the stage history, returning to the previous stage with entries
+// intact so the operator can fix an earlier answer (a mistyped bucket, a too-
+// short passphrase) rather than restarting. It re-establishes input focus for
+// the target stage; returning to passphrase zeroizes any stashed secret so it is
+// re-entered, matching the flow's plaintext-residency discipline. With an empty
+// history (the backend stage) it is a no-op.
+func (v SetupWizardView) goBack() SetupWizardView {
+	n := len(v.history)
+	if n == 0 {
+		return v
+	}
+	v.stage = v.history[n-1]
+	v.history = v.history[:n-1]
+	v.notice = ""
+	v.detailErr = ""
+	v.passErr = ""
+	switch v.stage {
+	case stageDetails:
+		v.focusOnlyField(v.fieldCursor)
+	case stagePassphrase:
+		crypto.Zeroize(v.pass)
+		v.pass = nil
+		v.focusConf = false
+		v.newPass.Focus()
+		v.confirmPass.Blur()
+	}
+	return v
 }
 
 func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
