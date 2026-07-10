@@ -111,12 +111,11 @@ type SetupWizardView struct {
 	// AWS branch, so the seeded endpoint is never cleared.
 	backendLocked bool
 
-	// profileInferred records that the AWS profile came from DefaultPlan's
-	// smart defaults (AWS_PROFILE, or a profile named "sentra" in ~/.aws/config)
-	// rather than from the operator's own sentra.yaml. Choosing the
-	// S3-compatible backend drops an inferred profile but keeps a configured
-	// one; see advanceFromBackend.
-	profileInferred bool
+	// configuredProfile is the AWS profile the operator wrote into their own
+	// sentra.yaml, empty when they never set one. Anything else in the profile
+	// field came from DefaultPlan's smart defaults, and setup.ApplyBackendChoice
+	// drops it once the backend turns out to be S3-compatible.
+	configuredProfile string
 
 	// details-stage text inputs (bucket/prefix/region/profile/endpoint),
 	// a cursor over them plus the "print IAM policy" toggle, and the last
@@ -209,11 +208,9 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 		plan.Backend = setup.BackendS3Compatible
 	}
 
-	// Did DefaultPlan invent this profile, or did the operator write it into
-	// sentra.yaml? Only an invented one may be dropped when the backend turns
-	// out to be S3-compatible.
-	profileInferred := strings.TrimSpace(cfg.Repo.S3.Profile) == "" &&
-		strings.TrimSpace(plan.Config.Repo.S3.Profile) != ""
+	// The operator's own profile, if any. Anything else in the profile field was
+	// invented by DefaultPlan and must not follow an S3-compatible backend.
+	configuredProfile := strings.TrimSpace(cfg.Repo.S3.Profile)
 
 	// Seed the backend cursor from the (possibly inferred/locked) backend so the
 	// selector opens on the right row. DefaultPlan infers BackendS3Compatible
@@ -261,21 +258,21 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	confirmPass.EchoCharacter = '•'
 
 	return SetupWizardView{
-		deps:            deps,
-		engine:          eng,
-		plan:            plan,
-		backendCursor:   backendCursor,
-		backendLocked:   backendLocked,
-		profileInferred: profileInferred,
-		fields:          fields,
-		printIAM:        plan.PrintIAMPolicy,
-		createBucket:    plan.CreateBucket,
-		blockPublic:     plan.BlockPublicAccess,
-		defaultEnc:      plan.DefaultEncryption,
-		initRepo:        plan.InitRepo,
-		newPass:         newPass,
-		confirmPass:     confirmPass,
-		savePass:        plan.SavePassphrase,
+		deps:              deps,
+		engine:            eng,
+		plan:              plan,
+		backendCursor:     backendCursor,
+		backendLocked:     backendLocked,
+		configuredProfile: configuredProfile,
+		fields:            fields,
+		printIAM:          plan.PrintIAMPolicy,
+		createBucket:      plan.CreateBucket,
+		blockPublic:       plan.BlockPublicAccess,
+		defaultEnc:        plan.DefaultEncryption,
+		initRepo:          plan.InitRepo,
+		newPass:           newPass,
+		confirmPass:       confirmPass,
+		savePass:          plan.SavePassphrase,
 	}
 }
 
@@ -653,8 +650,16 @@ func (v SetupWizardView) handleBackendKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // details defaults, mirroring the cli wizard's runHuhAWSSetup /
 // runHuhCompatibleSetup entry (internal/cli/setup_wizard.go:202-206).
 func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
+	backend := setup.BackendS3Compatible
 	if !v.backendLocked && v.backendCursor == 0 {
-		v.plan.Backend = setup.BackendAWS
+		backend = setup.BackendAWS
+	}
+	// The backend's field hygiene — AWS forbids endpoint_url, S3-compatible
+	// forbids an inferred AWS profile — lives in one place that the CLI wizard
+	// calls too, so the two wizards cannot disagree.
+	setup.ApplyBackendChoice(&v.plan, backend, v.configuredProfile)
+
+	if backend == setup.BackendAWS {
 		// AWS defaults: sentra/ prefix, us-east-1 region if unset
 		// (internal/cli/setup_wizard.go:296-304).
 		if strings.TrimSpace(v.fields[setupFieldRegion].Value()) == "" {
@@ -663,22 +668,11 @@ func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 		if strings.TrimSpace(v.fields[setupFieldPrefix].Value()) == "" {
 			v.fields[setupFieldPrefix].SetValue("sentra/")
 		}
-		v.fields[setupFieldEndpoint].SetValue("") // AWS backend forbids endpoint_url
-	} else {
-		v.plan.Backend = setup.BackendS3Compatible
-		// Mirror of the AWS branch above. An S3-compatible endpoint must not
-		// carry an AWS shared-config profile the operator never chose:
-		// blobstore.NewS3 passes a non-empty Profile to WithSharedConfigProfile,
-		// and aws-sdk-go-v2's resolveCredentialChain tests `sharedProfileSet`
-		// BEFORE `envConfig.Credentials.HasKeys()` — so the profile's
-		// credentials win and the endpoint's are never consulted. Only the
-		// value DefaultPlan inferred is dropped; one from sentra.yaml stays,
-		// because R2 and Wasabi credentials legitimately live in a profile.
-		if v.profileInferred {
-			v.fields[setupFieldProfile].SetValue("")
-			v.plan.Config.Repo.S3.Profile = ""
-		}
 	}
+	// Mirror the settled plan back into the inputs the operator is about to see.
+	v.fields[setupFieldEndpoint].SetValue(v.plan.Config.Repo.S3.EndpointURL)
+	v.fields[setupFieldProfile].SetValue(v.plan.Config.Repo.S3.Profile)
+
 	v.stage = stageDetails
 	v.fieldCursor = setupFieldBucket
 	v.focusOnlyField(setupFieldBucket)

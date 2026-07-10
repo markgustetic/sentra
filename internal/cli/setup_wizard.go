@@ -187,6 +187,14 @@ func HuhSetupPrompt(current config.Config) (SetupPlan, error) {
 		return SetupPlan{}, err
 	}
 
+	// Settle the backend-dependent fields BEFORE the branch prompts prefill
+	// themselves from plan.Config. Without this, choosing "S3-compatible" here
+	// carried DefaultPlan's inferred AWS profile straight into the form and on
+	// into sentra.yaml — and an inferred profile outranks the endpoint's static
+	// credentials in aws-sdk-go-v2's chain. The TUI wizard calls the same
+	// function, so the two cannot drift.
+	setup.ApplyBackendChoice(&plan, plan.Backend, current.Repo.S3.Profile)
+
 	if plan.Backend == SetupBackendAWS {
 		return runHuhAWSSetup(plan.Config, plan)
 	}

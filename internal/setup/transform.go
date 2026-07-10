@@ -86,6 +86,41 @@ func inferS3CompatibleFromEndpoint(p *Plan, probe EnvProbe) {
 	p.AWSAuthMethod = AWSAuthSkip
 }
 
+// ApplyBackendChoice settles a plan once the backend is chosen — by inference,
+// by the TUI wizard's selector, or by the CLI wizard's huh form. All three call
+// it, so the field hygiene below cannot drift apart between them.
+//
+// Two invariants:
+//
+//   - AWS forbids endpoint_url.
+//   - An S3-compatible target must not carry an AWS shared-config profile the
+//     operator never chose. blobstore.NewS3 hands a non-empty Profile to
+//     awsconfig.WithSharedConfigProfile, and aws-sdk-go-v2's
+//     resolveCredentialChain tests `sharedProfileSet` BEFORE
+//     `envConfig.Credentials.HasKeys()` — so the profile's credentials win and
+//     the endpoint's are never consulted. DefaultProfileFromConfig prefers a
+//     profile literally named "sentra", which is how `sentra local` ended up
+//     authenticating against a real AWS account.
+//
+// configuredProfile is the profile from the operator's own sentra.yaml, empty
+// when they never set one. Only an inferred profile is dropped: R2 and Wasabi
+// credentials legitimately live in a named profile.
+//
+// It deliberately does NOT touch the provisioning flags (PrepareAWS,
+// CreateBucket, …). Those are settled later, once the operator has seen the
+// actions stage.
+func ApplyBackendChoice(p *Plan, backend Backend, configuredProfile string) {
+	p.Backend = backend
+	switch backend {
+	case BackendAWS:
+		p.Config.Repo.S3.EndpointURL = ""
+	case BackendS3Compatible:
+		if strings.TrimSpace(configuredProfile) == "" {
+			p.Config.Repo.S3.Profile = ""
+		}
+	}
+}
+
 func firstNonEmpty(probe EnvProbe, keys ...string) string {
 	for _, key := range keys {
 		if value := strings.TrimSpace(probe.Getenv(key)); value != "" {
