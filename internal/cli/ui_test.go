@@ -377,6 +377,13 @@ func TestRunUI_ConfigPresentButLockedLaunchesUnlockView(t *testing.T) {
 	chDir(t, dir)
 	writeBackupConfigFile(t, ".") // config with a bucket, keyring off
 
+	// Enforce the "no env" precondition rather than assuming it. config.Resolve
+	// treats an empty SENTRA_PASSPHRASE as unset, so this neutralizes an
+	// ambient one — `just` loads the repo's .env (justfile: dotenv-load), which
+	// exports SENTRA_PASSPHRASE and would otherwise make the launch path find a
+	// passphrase and open the repo instead of landing on the unlock view.
+	t.Setenv("SENTRA_PASSPHRASE", "")
+
 	store := blobstore.NewMemory()
 	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
 	if err != nil {

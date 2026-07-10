@@ -235,6 +235,44 @@ func TestLoad_IgnoresReservedEnvVarsWithFile(t *testing.T) {
 	}
 }
 
+// TestLoadOnDisk_IgnoresEnvOverlay is the load half of the rewrite-safety
+// contract: loadOnDisk reports what sentra.yaml *says*, not what the process
+// resolves. Load would return "override-bucket" here; a rewrite based on that
+// would bake a transient env var into the file forever.
+func TestLoadOnDisk_IgnoresEnvOverlay(t *testing.T) {
+	path := writeYAML(t, t.TempDir(), fixtureYAML)
+	t.Setenv("SENTRA_REPO__S3__BUCKET", "override-bucket")
+
+	cfg, err := loadOnDisk(path)
+	if err != nil {
+		t.Fatalf("loadOnDisk: %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "my-backups" {
+		t.Errorf("env overlay leaked into loadOnDisk: got %q, want my-backups", cfg.Repo.S3.Bucket)
+	}
+	// Defaults must still be seeded — a partial sentra.yaml has to render
+	// complete, so an omitted key can't come back as a zero value.
+	if cfg.Retention.KeepLast != 10 {
+		t.Errorf("KeepLast: got %d, want the seeded default 10", cfg.Retention.KeepLast)
+	}
+}
+
+// TestLoadOnDisk_Missing mirrors TestLoad_Missing: no file is the pre-init
+// path, not an error. Without env, that's exactly Defaults().
+func TestLoadOnDisk_Missing(t *testing.T) {
+	t.Setenv("SENTRA_REPO__S3__BUCKET", "override-bucket")
+	cfg, err := loadOnDisk(filepath.Join(t.TempDir(), "no-such-file.yaml"))
+	if err != nil {
+		t.Fatalf("expected no error for missing file, got %v", err)
+	}
+	if cfg.Repo.S3.Bucket != "" {
+		t.Errorf("missing file must not inherit the env bucket: got %q", cfg.Repo.S3.Bucket)
+	}
+	if cfg.Backup.IgnoreFile != Defaults().Backup.IgnoreFile {
+		t.Errorf("IgnoreFile: got %q, want the default", cfg.Backup.IgnoreFile)
+	}
+}
+
 // TestDefaults gives the documented set of defaults. Any change here is
 // a user-visible change and should be deliberate.
 func TestDefaults(t *testing.T) {

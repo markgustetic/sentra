@@ -123,21 +123,33 @@ func (v SettingsView) View() string {
 	return b.String()
 }
 
-// toggleSplash flips ui.hide_splash and persists it. It mutates a COPY, writes
-// that, and only adopts the value in memory once the file is on disk — a failed
-// write must never leave the process disagreeing with sentra.yaml.
+// toggleSplash flips ui.hide_splash and persists it. It only adopts the value
+// in memory once the file is on disk — a failed write must never leave the
+// process disagreeing with sentra.yaml.
+//
+// config.Update rewrites hide_splash against the file as it exists on disk, so
+// this display-only action can't persist the SENTRA_* overrides that
+// deps.Config carries. Writing deps.Config wholesale used to rewrite the
+// operator's bucket with whatever the environment happened to say.
+//
+// The value written negates the *resolved* state, which is what the row label
+// shows: under SENTRA_UI__HIDE_SPLASH the file and the display disagree, and
+// negating the file's value would leave the toggle visibly stuck.
 func (v SettingsView) toggleSplash() (tea.Model, tea.Cmd) {
 	if v.deps.Config == nil || v.deps.ConfigPath == "" {
 		v.err = "available after setup"
 		return v, nil
 	}
-	next := *v.deps.Config
-	next.UI.HideSplash = !next.UI.HideSplash
-	if err := config.Write(v.deps.ConfigPath, &next); err != nil {
+	next := !v.deps.Config.UI.HideSplash
+	err := config.Update(v.deps.ConfigPath, func(c *config.Config) error {
+		c.UI.HideSplash = next
+		return nil
+	})
+	if err != nil {
 		v.err = "could not save: " + err.Error()
 		return v, nil
 	}
-	*v.deps.Config = next
+	v.deps.Config.UI.HideSplash = next
 	v.err = ""
 	return v, nil
 }

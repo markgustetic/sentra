@@ -43,7 +43,7 @@ const (
 
 // PoliciesView lists the named backup policies from sentra.yaml, shows the
 // selected one inline, and drives three actions: ADD/edit and REMOVE are
-// config-only (they rewrite sentra.yaml via config.Write and reload — NO
+// config-only (they rewrite sentra.yaml via config.Update and reload — NO
 // repo lock, NO op guard), while RUN a policy takes the mutating-op guard
 // (it calls repo.CreateSnapshot per path). The view hydrates by loading
 // deps.ConfigPath, the same way PruneView hydrates from the repo.
@@ -74,7 +74,7 @@ func NewPoliciesView(deps Deps) PoliciesView {
 }
 
 // reload re-reads deps.ConfigPath and repopulates the sorted name list and
-// policy map. Called at construction and after every config.Write so the
+// policy map. Called at construction and after every config.Update so the
 // picker reflects the file on disk. A load error is surfaced as loadErr
 // (construction) or notice (post-edit) by the caller; reload itself only
 // sets loadErr because it is also the construction path.
@@ -268,18 +268,19 @@ func (v PoliciesView) addFromForm() (tea.Model, tea.Cmd) {
 		v.form.err = err.Error()
 		return v, nil
 	}
-	cfg, err := config.Load(v.deps.ConfigPath)
+	// config.Update rewrites against the on-disk sentra.yaml, so adding a
+	// policy can't persist this process's SENTRA_* overrides into repo.s3.
+	err = config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
+		if cfg.Policies == nil {
+			cfg.Policies = map[string]config.PolicyConfig{}
+		}
+		cfg.Policies[name] = p
+		return nil
+	})
 	if err != nil {
-		v.notice = "reload failed: " + err.Error()
-		v.stage = policiesList
-		return v, nil
-	}
-	if cfg.Policies == nil {
-		cfg.Policies = map[string]config.PolicyConfig{}
-	}
-	cfg.Policies[name] = p
-	if err := config.Write(v.deps.ConfigPath, cfg); err != nil {
-		v.notice = "write failed: " + err.Error()
+		// Covers both a bad on-disk base and a failed write; the wrapped
+		// error names which.
+		v.notice = "save failed: " + err.Error()
 		v.stage = policiesList
 		return v, nil
 	}
@@ -462,21 +463,21 @@ func policyRunTag(name string, tags []string) string {
 }
 
 // removeSelected deletes the selected policy from sentra.yaml and reloads.
-// This is a config-only edit: it rewrites the file via config.Write and
+// This is a config-only edit: it rewrites the file via config.Update and
 // never takes the repo lock or the op guard, matching `sentra policy remove`.
 func (v PoliciesView) removeSelected() (tea.Model, tea.Cmd) {
 	if v.selected < 0 || v.selected >= len(v.names) {
 		return v, nil
 	}
 	name := v.names[v.selected]
-	cfg, err := config.Load(v.deps.ConfigPath)
+	// On-disk base, as in addFromForm: dropping a policy must not persist
+	// this process's SENTRA_* overrides into repo.s3.
+	err := config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
+		delete(cfg.Policies, name)
+		return nil
+	})
 	if err != nil {
-		v.notice = "reload failed: " + err.Error()
-		return v, nil
-	}
-	delete(cfg.Policies, name)
-	if err := config.Write(v.deps.ConfigPath, cfg); err != nil {
-		v.notice = "write failed: " + err.Error()
+		v.notice = "save failed: " + err.Error()
 		return v, nil
 	}
 	v.reload()

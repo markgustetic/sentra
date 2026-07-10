@@ -73,6 +73,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   access/settings, and repo health, but must not create buckets, change bucket
   settings, initialize repos, or write config.
 - `sentra check` is the shared integrity surface for CLI and TUI operations.
+- Config rewrites must not persist env overrides. `config.Load` returns the
+  *resolved* config (sentra.yaml + `SENTRA_*` overlay); rendering that back to
+  disk would make a transient override permanent. To change a field of an
+  existing `sentra.yaml` (settings toggles, policy add/remove, `passwd forget`),
+  use `config.Update`, which rebases the edit on the file as it exists on disk.
+  `config.Write` authors the whole file from a resolved config and is correct
+  only for `sentra init` and `sentra setup`, which must record the bucket they
+  just provisioned against.
 - `sentra policy` manages non-secret named backup policies in `sentra.yaml`.
   Policy config may include local paths, tags, schedule metadata, and
   post-backup check/prune preferences, but must never include passphrases,

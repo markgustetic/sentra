@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -136,6 +137,103 @@ func TestLoad_MissingUISectionDefaultsToSplashOn(t *testing.T) {
 	}
 	if cfg.UI.HideSplash {
 		t.Error("a config with no ui: section must load HideSplash=false (splash shows)")
+	}
+}
+
+// TestUpdate_DoesNotPersistEnvOverrides is the regression test for the bug
+// Update exists to prevent: a field edit made while SENTRA_* is set must
+// rewrite only the field it names. Reproduced from the field report —
+// `SENTRA_REPO__S3__BUCKET=ephemeral-env-bucket sentra`, then flip the
+// cosmetic splash toggle, and sentra.yaml's bucket was silently replaced.
+func TestUpdate_DoesNotPersistEnvOverrides(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	var cfg Config
+	cfg.Repo.S3.Bucket = "real-bucket"
+	cfg.Repo.S3.Region = "us-west-2"
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+
+	t.Setenv("SENTRA_REPO__S3__BUCKET", "ephemeral-env-bucket")
+	t.Setenv("SENTRA_REPO__S3__REGION", "eu-central-1")
+
+	if err := Update(path, func(c *Config) error {
+		c.UI.HideSplash = true
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+
+	got, err := loadOnDisk(path)
+	if err != nil {
+		t.Fatalf("loadOnDisk: %v", err)
+	}
+	if got.Repo.S3.Bucket != "real-bucket" {
+		t.Errorf("Update persisted the env bucket: got %q, want real-bucket", got.Repo.S3.Bucket)
+	}
+	if got.Repo.S3.Region != "us-west-2" {
+		t.Errorf("Update persisted the env region: got %q, want us-west-2", got.Repo.S3.Region)
+	}
+	if !got.UI.HideSplash {
+		t.Error("Update did not persist the field it was asked to change")
+	}
+}
+
+// TestUpdate_MutateErrorLeavesFileUntouched keeps a rejected edit (e.g. policy
+// add hitting a duplicate name) from truncating or rewriting sentra.yaml.
+func TestUpdate_MutateErrorLeavesFileUntouched(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	var cfg Config
+	cfg.Repo.S3.Bucket = "real-bucket"
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	before, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+
+	sentinel := errors.New("policy already exists")
+	err = Update(path, func(c *Config) error {
+		c.Repo.S3.Bucket = "clobbered"
+		return sentinel
+	})
+	if !errors.Is(err, sentinel) {
+		t.Fatalf("Update error: got %v, want %v", err, sentinel)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if string(before) != string(after) {
+		t.Errorf("a failed mutate rewrote the file:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+}
+
+// TestUpdate_SeedsDefaultsForPartialFile proves a hand-written partial
+// sentra.yaml survives a field edit with its omitted keys rendered at their
+// documented defaults rather than as zero values.
+func TestUpdate_SeedsDefaultsForPartialFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	if err := os.WriteFile(path, []byte("repo:\n  s3:\n    bucket: \"b\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := Update(path, func(c *Config) error {
+		c.UI.HideSplash = true
+		return nil
+	}); err != nil {
+		t.Fatalf("Update: %v", err)
+	}
+	got, err := loadOnDisk(path)
+	if err != nil {
+		t.Fatalf("loadOnDisk: %v", err)
+	}
+	if got.Retention.KeepLast != 10 {
+		t.Errorf("KeepLast: got %d, want the default 10 (not a zero value)", got.Retention.KeepLast)
+	}
+	if got.Repo.S3.Bucket != "b" {
+		t.Errorf("Bucket: got %q, want b", got.Repo.S3.Bucket)
 	}
 }
 

@@ -264,9 +264,15 @@ func runPasswordForget(cmd *cobra.Command, deps PasswdDeps, flags *passwordForge
 		fmt.Fprintln(out, "No OS keyring passphrase was stored.")
 	}
 
+	// The guard reads the resolved config ("is keyring lookup in effect?"),
+	// but the rewrite is based on the file itself: clearing use_keyring must
+	// not also persist this process's SENTRA_* overrides into repo.s3.
 	if yamlExists && cfg.Passphrase.UseKeyring {
-		cfg.Passphrase.UseKeyring = false
-		if err := config.Write(cfgPath, cfg); err != nil {
+		err := config.Update(cfgPath, func(c *config.Config) error {
+			c.Passphrase.UseKeyring = false
+			return nil
+		})
+		if err != nil {
 			return fmt.Errorf("write %s: %w", cfgPath, err)
 		}
 		fmt.Fprintf(out, "%s updated to disable keyring lookup.\n", cfgPath)

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -174,6 +175,98 @@ func TestSettings_ToggleSplashPersists(t *testing.T) {
 	}
 	if !strings.Contains(v.View(), "[off]") {
 		t.Errorf("view should show the splash as off:\n%s", v.View())
+	}
+}
+
+// TestSettings_ToggleSplashKeepsEnvOverridesOutOfFile is the regression test
+// for the reported bug: run the TUI under SENTRA_REPO__S3__BUCKET, flip the
+// purely cosmetic splash toggle, and sentra.yaml's bucket was rewritten to the
+// ephemeral env value. A display-only action must never touch the repo config.
+func TestSettings_ToggleSplashKeepsEnvOverridesOutOfFile(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	onDisk := &config.Config{}
+	onDisk.Repo.S3.Bucket = "real-bucket"
+	onDisk.Repo.S3.Region = "us-west-2"
+	if err := config.Write(path, onDisk); err != nil {
+		t.Fatal(err)
+	}
+
+	t.Setenv("SENTRA_REPO__S3__BUCKET", "ephemeral-env-bucket")
+	t.Setenv("SENTRA_REPO__S3__REGION", "eu-central-1")
+
+	// deps.Config is the *resolved* config, exactly as internal/cli/ui.go
+	// wires it — env overlay and all.
+	resolved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if resolved.Repo.S3.Bucket != "ephemeral-env-bucket" {
+		t.Fatalf("fixture is not exercising the env overlay: bucket = %q", resolved.Repo.S3.Bucket)
+	}
+
+	v := cursorTo(NewSettingsView(Deps{Config: resolved, ConfigPath: path}), entryToggleSplash)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SettingsView)
+
+	body, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	if strings.Contains(string(body), "ephemeral-env-bucket") {
+		t.Errorf("toggling the splash persisted the env bucket into sentra.yaml:\n%s", body)
+	}
+	if strings.Contains(string(body), "eu-central-1") {
+		t.Errorf("toggling the splash persisted the env region into sentra.yaml:\n%s", body)
+	}
+	if !strings.Contains(string(body), "real-bucket") {
+		t.Errorf("toggling the splash dropped the real bucket:\n%s", body)
+	}
+	// The field the user actually asked to change still lands.
+	if !strings.Contains(string(body), "hide_splash: true") {
+		t.Errorf("toggle did not persist hide_splash:\n%s", body)
+	}
+	if !resolved.UI.HideSplash {
+		t.Error("in-memory config must reflect the toggle after a successful write")
+	}
+	if !strings.Contains(v.View(), "[off]") {
+		t.Errorf("view should show the splash as off:\n%s", v.View())
+	}
+}
+
+// TestSettings_ToggleSplashNegatesResolvedState: with SENTRA_UI__HIDE_SPLASH
+// set, the label reflects the env value, so the toggle has to negate *that*.
+// Negating the on-disk value instead would leave the toggle visibly stuck.
+func TestSettings_ToggleSplashNegatesResolvedState(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	onDisk := &config.Config{}
+	onDisk.Repo.S3.Bucket = "b"
+	onDisk.UI.HideSplash = false
+	if err := config.Write(path, onDisk); err != nil {
+		t.Fatal(err)
+	}
+	t.Setenv("SENTRA_UI__HIDE_SPLASH", "true")
+
+	resolved, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("load: %v", err)
+	}
+	if !resolved.UI.HideSplash {
+		t.Fatalf("fixture is not exercising the env overlay: HideSplash = false")
+	}
+
+	v := cursorTo(NewSettingsView(Deps{Config: resolved, ConfigPath: path}), entryToggleSplash)
+	if !strings.Contains(v.View(), "[off]") {
+		t.Fatalf("precondition: env override should render the splash as off:\n%s", v.View())
+	}
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SettingsView)
+
+	if resolved.UI.HideSplash {
+		t.Error("toggling from the env-hidden state must turn the splash back on")
+	}
+	if !strings.Contains(v.View(), "[on]") {
+		t.Errorf("the toggle must visibly move, not stick:\n%s", v.View())
 	}
 }
 

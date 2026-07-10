@@ -133,7 +133,8 @@ func Defaults() Config {
 }
 
 // Load reads a sentra.yaml document from path, overlays SENTRA_* env
-// variables, and returns the merged Config.
+// variables, and returns the merged Config. This is the *resolved* view:
+// what this process should act on right now.
 //
 // A missing path returns Defaults() and a nil error — that's the
 // "haven't run sentra init yet" path. Any other I/O or parse error
@@ -143,23 +144,43 @@ func Defaults() Config {
 // "repo.s3.bucket" maps to SENTRA_REPO__S3__BUCKET. The double-
 // underscore separator avoids ambiguity with single underscores
 // inside leaf keys (e.g. "max_findings_to_llm").
+//
+// Do NOT pair Load with Write to edit one field — the overlay would be
+// rendered back into the file, making a transient override permanent.
+// Update exists for that; see its doc comment.
 func Load(path string) (*Config, error) {
+	return load(path, true)
+}
+
+// loadOnDisk reads sentra.yaml *without* the env overlay: Defaults() plus
+// whatever the file says, and nothing else. It answers "what does the file
+// claim?" rather than Load's "what should this process do?".
+//
+// Defaults are still seeded, so a partial file rewritten from this base
+// renders its omitted keys at the documented defaults rather than as zero
+// values. This is the base every rewrite must build on; see Update.
+func loadOnDisk(path string) (*Config, error) {
+	return load(path, false)
+}
+
+// load is the shared body of Load and loadOnDisk. The only difference between
+// the two is whether the SENTRA_* overlay is applied, so keeping one
+// implementation means the default-seeding and error wrapping can't drift.
+//
+// A missing file is not an error: the koanf tree is built from defaults (plus
+// env, when requested) exactly as if an empty document had been parsed.
+func load(path string, withEnv bool) (*Config, error) {
 	out := Defaults()
 
-	// Stat the file first. If it's not there, return defaults +
-	// env overlay; that's the pre-init path.
+	fileExists := true
 	info, err := os.Stat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			if err := overlayEnv(&out); err != nil {
-				return nil, err
-			}
-			return &out, nil
-		}
-		return nil, fmt.Errorf("config: stat %s: %w", path, err)
-	}
-	if info.IsDir() {
+	switch {
+	case err == nil && info.IsDir():
 		return nil, fmt.Errorf("config: %s is a directory, not a file", path)
+	case err != nil && errors.Is(err, os.ErrNotExist):
+		fileExists = false
+	case err != nil:
+		return nil, fmt.Errorf("config: stat %s: %w", path, err)
 	}
 
 	k := koanf.New(koanfDelim)
@@ -167,35 +188,22 @@ func Load(path string) (*Config, error) {
 	if err := loadDefaults(k); err != nil {
 		return nil, err
 	}
-	if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
-		return nil, fmt.Errorf("config: load %s: %w", path, err)
+	if fileExists {
+		if err := k.Load(file.Provider(path), yaml.Parser()); err != nil {
+			return nil, fmt.Errorf("config: load %s: %w", path, err)
+		}
 	}
-	// Env overlay: read all SENTRA_* vars, lowercase, strip prefix,
-	// translate __ to . to nest into the koanf tree.
-	if err := loadEnv(k); err != nil {
-		return nil, fmt.Errorf("config: load env: %w", err)
+	if withEnv {
+		// Env overlay: read all SENTRA_* vars, lowercase, strip prefix,
+		// translate __ to . to nest into the koanf tree.
+		if err := loadEnv(k); err != nil {
+			return nil, fmt.Errorf("config: load env: %w", err)
+		}
 	}
 	if err := k.Unmarshal("", &out); err != nil {
 		return nil, fmt.Errorf("config: unmarshal: %w", err)
 	}
 	return &out, nil
-}
-
-// overlayEnv applies SENTRA_* env-var overrides directly to a Config
-// without going through a YAML file. Used by Load when the file is
-// missing — defaults stay intact unless the user has set env vars.
-func overlayEnv(out *Config) error {
-	k := koanf.New(koanfDelim)
-	if err := loadDefaults(k); err != nil {
-		return err
-	}
-	if err := loadEnv(k); err != nil {
-		return fmt.Errorf("config: load env: %w", err)
-	}
-	if err := k.Unmarshal("", out); err != nil {
-		return fmt.Errorf("config: unmarshal env: %w", err)
-	}
-	return nil
 }
 
 // loadDefaults seeds k with the documented defaults so partial YAML

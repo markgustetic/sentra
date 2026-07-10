@@ -23,6 +23,64 @@ func writePolicyConfigFile(t *testing.T, dir string, cfg *config.Config) string 
 	return path
 }
 
+// TestPolicyAddRemove_KeepEnvOverridesOutOfFile: `policy add` / `policy remove`
+// edit the policies map, so they must leave repo.s3 exactly as the file had it.
+// Rewriting the resolved config would bake a transient SENTRA_* override in.
+func TestPolicyAddRemove_KeepEnvOverridesOutOfFile(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "real-bucket"
+	cfg.Repo.S3.Region = "us-west-2"
+	path := writePolicyConfigFile(t, dir, &cfg)
+
+	t.Setenv("SENTRA_REPO__S3__BUCKET", "ephemeral-env-bucket")
+	t.Setenv("SENTRA_REPO__S3__REGION", "eu-central-1")
+
+	runPolicyCmd := func(t *testing.T, args ...string) {
+		t.Helper()
+		out := &bytes.Buffer{}
+		cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+		cmd.SetOut(out)
+		cmd.SetErr(io.Discard)
+		cmd.SetArgs(args)
+		if err := cmd.Execute(); err != nil {
+			t.Fatalf("execute %v: %v", args, err)
+		}
+	}
+	assertRepoUntouched := func(t *testing.T, step string) {
+		t.Helper()
+		body, err := os.ReadFile(path)
+		if err != nil {
+			t.Fatalf("read: %v", err)
+		}
+		if strings.Contains(string(body), "ephemeral-env-bucket") {
+			t.Errorf("%s persisted the env bucket:\n%s", step, body)
+		}
+		if strings.Contains(string(body), "eu-central-1") {
+			t.Errorf("%s persisted the env region:\n%s", step, body)
+		}
+		if !strings.Contains(string(body), "real-bucket") {
+			t.Errorf("%s dropped the real bucket:\n%s", step, body)
+		}
+	}
+
+	runPolicyCmd(t, "add", "home", "--path", "~/Documents", "--schedule", "manual")
+	assertRepoUntouched(t, "policy add")
+
+	runPolicyCmd(t, "remove", "home")
+	assertRepoUntouched(t, "policy remove")
+
+	// The edits themselves still take effect.
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := got.Policies["home"]; ok {
+		t.Error("policy remove did not delete the policy")
+	}
+}
+
 func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)

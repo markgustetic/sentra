@@ -137,17 +137,6 @@ func newPolicyRun(deps PolicyDeps, cfgPath *string) *cobra.Command {
 }
 
 func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *policyAddFlags) error {
-	cfg, err := config.Load(*flags.configPath)
-	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if cfg.Policies == nil {
-		cfg.Policies = map[string]config.PolicyConfig{}
-	}
-	if _, exists := cfg.Policies[name]; exists && !flags.replace {
-		return fmt.Errorf("policy %q already exists; pass --replace to overwrite", name)
-	}
-
 	schedule, err := policycfg.ParseScheduleSpec(flags.schedule)
 	if err != nil {
 		return fmt.Errorf("parse schedule: %w", err)
@@ -164,8 +153,22 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	if err := policycfg.Validate(name, p); err != nil {
 		return err
 	}
-	cfg.Policies[name] = p
-	if err := config.Write(*flags.configPath, cfg); err != nil {
+
+	// config.Update rewrites against sentra.yaml as it exists on disk, so
+	// editing the policies map can't persist this process's SENTRA_*
+	// overrides into repo.s3. The duplicate-name check runs inside the
+	// mutation, against the same on-disk map we're about to write back.
+	err = config.Update(*flags.configPath, func(cfg *config.Config) error {
+		if cfg.Policies == nil {
+			cfg.Policies = map[string]config.PolicyConfig{}
+		}
+		if _, exists := cfg.Policies[name]; exists && !flags.replace {
+			return fmt.Errorf("policy %q already exists; pass --replace to overwrite", name)
+		}
+		cfg.Policies[name] = p
+		return nil
+	})
+	if err != nil {
 		return err
 	}
 
@@ -229,15 +232,16 @@ func runPolicyShow(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) er
 }
 
 func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error {
-	cfg, err := config.Load(cfgPath)
+	// On-disk base, as in runPolicyAdd: dropping a policy must not rewrite
+	// repo.s3 with whatever SENTRA_* said for this invocation.
+	err := config.Update(cfgPath, func(cfg *config.Config) error {
+		if _, ok := cfg.Policies[name]; !ok {
+			return fmt.Errorf("policy %q not found", name)
+		}
+		delete(cfg.Policies, name)
+		return nil
+	})
 	if err != nil {
-		return fmt.Errorf("load config: %w", err)
-	}
-	if _, ok := cfg.Policies[name]; !ok {
-		return fmt.Errorf("policy %q not found", name)
-	}
-	delete(cfg.Policies, name)
-	if err := config.Write(cfgPath, cfg); err != nil {
 		return err
 	}
 	out := policyStdout(cmd, deps)

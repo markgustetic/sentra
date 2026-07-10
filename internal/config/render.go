@@ -138,9 +138,43 @@ func writeYAMLStringList(b *strings.Builder, key string, values []string) {
 // Write renders cfg and writes it to path with 0o600 perms. The file
 // names the bucket/region/profile but never a secret, yet 0o600 keeps it
 // out of other users' reach as a matter of policy hygiene.
+//
+// Write authors the *whole* file from the Config it is handed, so it is only
+// correct when the caller means to materialize a resolved config: `init`
+// (Defaults < yaml < env < flags, and it must record the bucket it just
+// initialized) and `setup` (the wizard prompts for these values and shows them
+// on the review screen before provisioning against them). Both would otherwise
+// write `bucket: ""` after acting on an env-supplied bucket.
+//
+// To change one field of an existing file, use Update. Passing a Config from
+// Load to Write silently persists that process's SENTRA_* overrides.
 func Write(path string, cfg *Config) error {
 	if err := os.WriteFile(path, Render(cfg), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}
 	return nil
+}
+
+// Update applies mutate to the config as it exists on disk and writes the
+// result back to path. It is the safe way to change one field of sentra.yaml.
+//
+// The base is loadOnDisk, not Load. Load overlays SENTRA_* env vars, and
+// rendering that resolved Config back out would bake a transient override into
+// the file permanently: flipping the cosmetic splash toggle under
+// `SENTRA_REPO__S3__BUCKET=scratch` used to rewrite the operator's real bucket.
+// Everything mutate does not touch round-trips back exactly as the file had it.
+//
+// mutate sees Defaults() + whatever the file said, so a partial sentra.yaml
+// still renders complete. Returning an error from mutate aborts before any
+// write — the file is left untouched — which lets callers fold validation
+// (duplicate policy names, unknown keys) into the same critical section.
+func Update(path string, mutate func(*Config) error) error {
+	cfg, err := loadOnDisk(path)
+	if err != nil {
+		return err
+	}
+	if err := mutate(cfg); err != nil {
+		return err
+	}
+	return Write(path, cfg)
 }
