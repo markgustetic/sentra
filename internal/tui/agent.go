@@ -197,6 +197,13 @@ func (AgentView) Title() string { return "Agent" }
 // ShortHelp lists the view-specific keys for the status bar. The set
 // depends on stage: scan-only until recs land, then apply keys while
 // reviewing.
+// ConsumesEscape: during the apply flow esc abandons it — from reviewing back
+// to the scan, from confirming back to reviewing. The idle scan view leaves esc
+// to the shell.
+func (a AgentView) ConsumesEscape() bool {
+	return a.applyStage == agentReviewing || a.applyStage == agentConfirming
+}
+
 func (a AgentView) ShortHelp() []key.Binding {
 	switch a.applyStage {
 	case agentReviewing:

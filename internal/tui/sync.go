@@ -107,6 +107,9 @@ func (v SyncView) Title() string { return "Sync" }
 // single-key commands.
 func (v SyncView) CapturesText() bool { return v.stage == syncConfigure }
 
+// ConsumesEscape: only while the copy is running, where esc cancels it.
+func (v SyncView) ConsumesEscape() bool { return v.stage == syncRunning }
+
 func (v SyncView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case syncRunning:
@@ -345,7 +348,7 @@ func (v SyncView) View() string {
 			fmt.Fprintf(&b, "\n\n  bootstrap   %s\n  copied      %d blobs (%s)\n  skipped     %d (already on destination)\n  elapsed     %s",
 				boot, s.CopiedBlobs, ui.FormatBytes(s.CopiedBytes), s.SkippedBlobs, s.Elapsed)
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ run another sync"))
+		b.WriteString("\n\n" + ui.ActionLine("run another sync", ""))
 
 	default:
 		b.WriteString(ui.Primary.Render("Replicate to a clone destination"))
@@ -360,7 +363,7 @@ func (v SyncView) View() string {
 		if v.pathErr != "" {
 			b.WriteString("\n\n" + ui.Danger.Render(v.pathErr))
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ sync · tab field · space toggle"))
+		b.WriteString("\n\n" + ui.ActionLine("start the sync", "tab field · space toggle"))
 	}
 	return b.String()
 }

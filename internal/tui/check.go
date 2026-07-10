@@ -105,7 +105,7 @@ func (v CheckView) View() string {
 		return v.renderReport()
 	default:
 		return ui.Primary.Render("Repository integrity check") + "\n\n" +
-			ui.Muted.Render("⏎ run check")
+			ui.ActionLine("run the integrity check", "")
 	}
 }
 
@@ -136,6 +136,6 @@ func (v CheckView) renderReport() string {
 	if rep.Lock != nil && (rep.Lock.Stale || rep.Lock.Unreadable) {
 		b.WriteString("  " + ui.Warn.Render("⚠ advisory lock is stale or unreadable") + "\n")
 	}
-	b.WriteString("\n" + ui.Muted.Render("⏎ re-run"))
+	b.WriteString("\n" + ui.ActionLine("run the check again", ""))
 	return b.String()
 }

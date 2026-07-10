@@ -1750,3 +1750,155 @@ func TestApp_ArrowsReachTheBackupFolderPicker(t *testing.T) {
 		t.Errorf("picker cursor = %d, want 1 — the arrow never arrived", got)
 	}
 }
+
+// activate puts the App on view id with the content pane focused.
+func focusView(t *testing.T, app App, id string) App {
+	t.Helper()
+	for i, v := range app.views {
+		if v.id == id {
+			app.active = i
+			app.focus = focusContent
+			return app
+		}
+	}
+	t.Fatalf("no view %q", id)
+	return app
+}
+
+// TestApp_EscapeLeavesATextField pins the trap: once a text field held focus on
+// Backup or Password, no key reached the shell — not esc, not tab, not ctrl+p.
+// Only ctrl+c, which quits the whole app. There was no way back to the rail.
+func TestApp_EscapeLeavesATextField(t *testing.T) {
+	r := newFlowRepo(t)
+
+	t.Run("backup tag field", func(t *testing.T) {
+		app := NewApp(Deps{RepoName: "x", Repo: r})
+		m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+		app = focusView(t, m.(App), "backup")
+		// tab into the tag field, where the view captures text.
+		m, _ = app.Update(tea.KeyMsg{Type: tea.KeyTab})
+		app = m.(App)
+		if !app.contentCapturesText() {
+			t.Fatal("precondition: the tag field must capture text")
+		}
+		m, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		app = m.(App)
+		if app.focus != focusSidebar {
+			t.Error("esc must return focus to the rail from a text field")
+		}
+	})
+
+	t.Run("password field", func(t *testing.T) {
+		app := NewApp(Deps{RepoName: "x", Repo: r})
+		m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+		app = focusView(t, m.(App), "password")
+		if !app.contentCapturesText() {
+			t.Fatal("precondition: the passphrase field must capture text")
+		}
+		m, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		app = m.(App)
+		if app.focus != focusSidebar {
+			t.Error("esc must return focus to the rail from the passphrase field")
+		}
+	})
+}
+
+// A view that means something by esc still gets it. Cancelling a running backup
+// must not be turned into "go back to the rail".
+func TestApp_EscapeStillReachesAViewThatConsumesIt(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = focusView(t, m.(App), "backup")
+
+	// Drive the view into its running stage, where esc cancels the op.
+	bv := app.views[app.active].model.(BackupView)
+	bv.stage = backupRunning
+	app.views[app.active].model = bv
+
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	app = m.(App)
+	if app.focus != focusContent {
+		t.Error("a view that consumes esc must keep focus")
+	}
+	if cmd == nil {
+		t.Fatal("esc during a running backup must still emit cancelOpMsg")
+	}
+	if _, ok := cmd().(cancelOpMsg); !ok {
+		t.Error("esc during a running backup must cancel the op, not leave the view")
+	}
+}
+
+// ctrl+p is a control chord no text field needs, so the palette must open even
+// while typing. The status bar advertises it; it has to be true.
+func TestApp_PaletteOpensWhileTypingInAField(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", Repo: newFlowRepo(t)})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = focusView(t, m.(App), "password")
+	if !app.contentCapturesText() {
+		t.Fatal("precondition: password captures text")
+	}
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	if !m.(App).paletteOpen {
+		t.Error("ctrl+p must open the palette even while a text field has focus")
+	}
+}
+
+// The status bar must not advertise keys the current state swallows.
+func TestApp_StatusBarTellsTheTruthWhileTyping(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", Repo: newFlowRepo(t)})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+	app = focusView(t, m.(App), "password")
+
+	out := app.View()
+	for _, promise := range []string{"esc", "ctrl+p", "ctrl+c"} {
+		if !strings.Contains(out, promise) {
+			t.Errorf("status bar must advertise %q while typing:\n%s", promise, lastLine(out))
+		}
+	}
+	for _, lie := range []string{"tab focus", "? help", "q quit"} {
+		if strings.Contains(out, lie) {
+			t.Errorf("status bar must not advertise %q — the field swallows it:\n%s", lie, lastLine(out))
+		}
+	}
+}
+
+func lastLine(s string) string {
+	lines := strings.Split(strings.TrimRight(s, "\n"), "\n")
+	return lines[len(lines)-1]
+}
+
+// The bar must not print the same hint twice: Snapshots advertises "esc back"
+// in its own ShortHelp, and the shell used to append its own on top.
+func TestApp_StatusBarDoesNotDuplicateEsc(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", Repo: newFlowRepo(t)})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 130, Height: 30})
+	app = focusView(t, m.(App), "snapshots")
+	bar := lastLine(app.View())
+	if n := strings.Count(bar, "esc back"); n != 1 {
+		t.Errorf("status bar shows %d 'esc back' hints, want 1:\n%s", n, bar)
+	}
+}
+
+// In a startup gate every key routes into the gate view, so 'q' is typed into
+// the unlock passphrase field, not a quit. Only ctrl+c quits. The gate status
+// bar must say so — it advertised "q quit", a key that does not work there.
+func TestApp_GateStatusBarAdvertisesCtrlCNotQ(t *testing.T) {
+	for _, initial := range []string{"unlock", "setup"} {
+		t.Run(initial, func(t *testing.T) {
+			app := NewApp(Deps{RepoName: "x", InitialView: initial}) // nil repo → gate
+			m, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+			app = m.(App)
+			if !app.inStartupGate() {
+				t.Fatalf("precondition: %q must be a startup gate", initial)
+			}
+			bar := lastLine(app.View())
+			if !strings.Contains(bar, "ctrl+c") {
+				t.Errorf("gate bar must advertise ctrl+c to quit:\n%s", bar)
+			}
+			if strings.Contains(bar, "q quit") {
+				t.Errorf("gate bar must not advertise 'q quit' — q is typed into the field:\n%s", bar)
+			}
+		})
+	}
+}

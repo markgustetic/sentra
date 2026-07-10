@@ -5,4 +5,4 @@ Storage backend
 ▍ S3-compatible or existing bucket  MinIO, LocalStack, or a bucket you manage yourself.
 endpoint detected — S3-compatible
 
-⏎  Continue to Storage details
+⏎  Press enter to continue to Storage details

@@ -104,6 +104,18 @@ func (v RestoreView) Title() string { return "Restore" }
 // the confirm/running/done stages take single-key commands, so none capture.
 func (v RestoreView) CapturesText() bool { return v.stage == restoreDest }
 
+// ConsumesEscape: esc steps back from the destination field, abandons the
+// confirm, and cancels a running restore. Only the picker stage leaves it to the
+// shell.
+func (v RestoreView) ConsumesEscape() bool {
+	switch v.stage {
+	case restoreDest, restoreConfirm, restoreRunning:
+		return true
+	default:
+		return false
+	}
+}
+
 func (v RestoreView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case restorePick:
@@ -298,7 +310,7 @@ func (v RestoreView) View() string {
 			mark = "on"
 		}
 		b.WriteString("\n  verify    " + mark)
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ restore · v toggle verify · esc back"))
+		b.WriteString("\n\n" + ui.ActionLine("start the restore", "v toggle verify · esc back"))
 	case restoreRunning:
 		total, done := v.reporter.Snapshot()
 		pct := 0.0
@@ -323,7 +335,7 @@ func (v RestoreView) View() string {
 				}
 			}
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ restore another"))
+		b.WriteString("\n\n" + ui.ActionLine("restore another snapshot", ""))
 	}
 	return b.String()
 }

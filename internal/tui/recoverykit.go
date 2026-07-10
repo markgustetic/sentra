@@ -94,6 +94,9 @@ func (v RecoveryKitView) Title() string { return "Recovery Kit" }
 // they keep the shell globals.
 func (v RecoveryKitView) CapturesText() bool { return v.stage == rkSaving }
 
+// ConsumesEscape: esc abandons the save-path prompt.
+func (v RecoveryKitView) ConsumesEscape() bool { return v.stage == rkSaving }
+
 func (v RecoveryKitView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case rkRunning:
@@ -252,7 +255,7 @@ func (v RecoveryKitView) View() string {
 	default:
 		return ui.Primary.Render("Recovery kit") + "\n\n" +
 			ui.Muted.Render("Build a non-secret record of this repo's identity, storage, and latest snapshot.") +
-			"\n\n" + ui.Muted.Render("⏎ build kit")
+			"\n\n" + ui.ActionLine("build the recovery kit", "")
 	}
 }
 
@@ -268,7 +271,7 @@ func (v RecoveryKitView) renderKit() string {
 		if v.saveErr != "" {
 			b.WriteString("\n" + ui.Danger.Render(v.saveErr))
 		}
-		b.WriteString("\n" + ui.Muted.Render("⏎ write · esc cancel"))
+		b.WriteString("\n" + ui.ActionLine("write the kit to disk", "esc cancel"))
 		return b.String()
 	}
 	if v.saved != "" {

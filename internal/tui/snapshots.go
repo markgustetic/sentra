@@ -67,6 +67,10 @@ func NewSnapshots(deps Deps) Snapshots {
 func (Snapshots) Title() string { return "Snapshots" }
 
 // ShortHelp lists the view-specific keys for the status bar.
+// ConsumesEscape: esc closes the detail page. With the list showing, a second
+// esc leaves the view — which is what an operator expects.
+func (s Snapshots) ConsumesEscape() bool { return s.detailOpen }
+
 func (Snapshots) ShortHelp() []key.Binding {
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "row")),
@@ -229,7 +233,7 @@ func (s Snapshots) View() string {
 			ui.Subtle.Render("snapshots")+"\n"+ui.Muted.Render("no snapshots in this repo"),
 		) + "\n"
 	}
-	return s.tbl.View() + "\n" + ui.Subtle.Render("⏎ open  esc back  ↑/↓ navigate") + "\n"
+	return s.tbl.View() + "\n" + ui.ActionLine("view this snapshot", "↑↓ move · esc back") + "\n"
 }
 
 // viewDetail renders the manifest file tree as a vertical list with

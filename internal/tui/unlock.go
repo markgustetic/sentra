@@ -178,7 +178,7 @@ func (v UnlockView) View() string {
 		if v.openErr != nil {
 			b.WriteString("\n\n" + ui.Danger.Render(unlockErrMessage(v.openErr)))
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ unlock"))
+		b.WriteString("\n\n" + ui.ActionLine("unlock the repository", ""))
 	}
 	return b.String()
 }

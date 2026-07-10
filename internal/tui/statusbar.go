@@ -22,22 +22,15 @@ func NewStatusBar(keys globalKeymap, width int) StatusBar {
 	return StatusBar{keys: keys, help: h, width: width}
 }
 
-// View renders one line. viewKeys are the active view's ShortHelp
-// bindings; running is the global operation indicator ("" when idle).
-func (s StatusBar) View(repoLabel string, viewKeys []key.Binding, running string) string {
-	return s.render(repoLabel, viewKeys, s.keys.shortHelp(), running)
+// ViewWith renders the bar with a caller-chosen set of global hints. App decides
+// which globals actually work in the current state (see App.statusGlobals): a
+// bar that offers "tab focus · ? help · q quit" while a passphrase is being typed
+// is lying — none of those reach the shell there.
+func (s StatusBar) ViewWith(repoLabel string, viewKeys, globals []key.Binding, running string) string {
+	return s.render(repoLabel, viewKeys, globals, running)
 }
 
-// ViewGated renders the bar for a startup gate, where the nav globals
-// (palette, focus) are suppressed and '?'/'q' route to the gate view or quit.
-// It advertises only quit alongside the view's own keys, so the hints never
-// point at keys the gate ignores.
-func (s StatusBar) ViewGated(repoLabel string, viewKeys []key.Binding, running string) string {
-	return s.render(repoLabel, viewKeys, []key.Binding{s.keys.Quit}, running)
-}
-
-// render composes the bar from the view keys and a caller-chosen set of
-// global hints, so View (all globals) and ViewGated (quit only) share one body.
+// render composes the bar from the view keys and the caller's global hints.
 func (s StatusBar) render(repoLabel string, viewKeys, globals []key.Binding, running string) string {
 	bindings := append(append([]key.Binding{}, viewKeys...), globals...)
 	hints := s.help.ShortHelpView(bindings)

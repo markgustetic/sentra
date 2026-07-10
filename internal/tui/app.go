@@ -629,6 +629,80 @@ func isArrowKey(msg tea.KeyMsg) bool {
 	return msg.Type == tea.KeyUp || msg.Type == tea.KeyDown
 }
 
+// escapeConsumer is implemented by a view that means something by esc in its
+// CURRENT state — cancel a running op, close the snapshot detail, step back a
+// wizard stage. When the focused view does not, the shell takes esc and returns
+// focus to the rail.
+//
+// Without this, a text field trapped the keyboard: on Backup's tag field and on
+// Password, esc, tab and ctrl+p were all swallowed and only ctrl+c escaped,
+// which quits the whole app.
+type escapeConsumer interface{ ConsumesEscape() bool }
+
+// contentConsumesEscape reports whether the active view would use esc right now.
+func (m App) contentConsumesEscape() bool {
+	ec, ok := m.views[m.active].model.(escapeConsumer)
+	return ok && ec.ConsumesEscape()
+}
+
+// advertisesKey reports whether any of the view's own hints already bind k, so
+// the shell does not print the same hint a second time.
+func advertisesKey(viewKeys []key.Binding, k string) bool {
+	for _, b := range viewKeys {
+		for _, bound := range b.Keys() {
+			if bound == k {
+				return true
+			}
+		}
+	}
+	return false
+}
+
+// tabConsumer is implemented by a view that moves focus BETWEEN its own controls
+// with tab — Backup's folder picker and tag field. Without it the shell's focus
+// toggle steals the key and the view's second control is unreachable.
+//
+// A view capturing text already receives tab (see textCapturer); this is for the
+// views that need it while NOT capturing text.
+type tabConsumer interface{ ConsumesTab() bool }
+
+// contentConsumesTab reports whether the focused view uses tab internally.
+func (m App) contentConsumesTab() bool {
+	if m.focus != focusContent {
+		return false
+	}
+	tc, ok := m.views[m.active].model.(tabConsumer)
+	return ok && tc.ConsumesTab()
+}
+
+// statusGlobals is the set of shell keys that actually reach the shell right
+// now. The bar must never promise a key the current state swallows: it used to
+// offer "tab focus · ? help · q quit" while a passphrase was being typed, and
+// not one of them worked.
+func (m App) statusGlobals(viewKeys []key.Binding) []key.Binding {
+	if m.inStartupGate() {
+		// Every key routes into the gate view, so 'q' is typed into the unlock
+		// passphrase field, not a quit. Only ctrl+c quits — advertise that.
+		return []key.Binding{m.keys.ForceQuit}
+	}
+	var g []key.Binding
+	// Offer esc only when the shell will act on it AND the view is not already
+	// advertising it — Snapshots lists "esc back" itself, and the bar rendered
+	// it twice.
+	if m.focus == focusContent && !m.contentConsumesEscape() && !advertisesKey(viewKeys, "esc") {
+		g = append(g, m.keys.Back)
+	}
+	g = append(g, m.keys.Palette)
+	if m.contentCapturesText() {
+		// 'q', '?' and tab all reach the text field instead of the shell.
+		return append(g, m.keys.ForceQuit)
+	}
+	if !m.contentConsumesTab() {
+		g = append(g, m.keys.Focus)
+	}
+	return append(g, m.keys.Help, m.keys.Quit)
+}
+
 // routeKey implements the focus rules: modals first, palette second,
 // then global bindings, then the focused region.
 func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -669,19 +743,10 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	// A startup gate, or a content-focused view capturing text, owns the
-	// keyboard. Route every key (ctrl+c and the modal stack already had their
-	// look above) straight to the active view so a character its textinput
-	// needs — a digit, 'q' or 'A' in a passphrase, '?', tab between fields — is
-	// never swallowed by a nav binding or the single-rune quit. In a gate this
-	// also suppresses all nav chrome (palette, number/tab jumps) since every
-	// other view is dead behind a nil repo.
-	if m.inStartupGate() || m.contentCapturesText() {
-		var cmd tea.Cmd
-		m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
-		return m, cmd
-	}
-
+	// The palette is an overlay: while open it owns the keyboard ahead of any
+	// view, including one capturing text. It therefore sits ABOVE the
+	// text-capture branch — below it, a palette opened over a text field could
+	// never receive a keystroke.
 	if m.paletteOpen {
 		if msg.Type == tea.KeyEsc {
 			m.paletteOpen = false
@@ -692,12 +757,50 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
-	switch {
-	case key.Matches(msg, m.keys.Palette):
+	// ctrl+p is a control chord no text field needs, so the palette opens even
+	// while typing. A startup gate still swallows it: every other view is dead
+	// behind a nil repo, so offering navigation there would strand the operator.
+	if !m.inStartupGate() && key.Matches(msg, m.keys.Palette) {
 		m.paletteOpen = true
 		m.palette.Reset()
 		return m, nil
+	}
+
+	// esc is the shell's escape hatch. A view that means something by it keeps
+	// it — cancelling a running backup, closing the snapshot detail, stepping
+	// back a wizard stage. Otherwise esc returns focus to the rail.
+	//
+	// This must sit ABOVE the text-capture branch, or a text field swallows it:
+	// Backup's tag field and Password used to trap the keyboard entirely, with
+	// ctrl+c (which quits the app) the only way out. Startup gates keep esc —
+	// the wizard uses it to restart, and there is no rail to return to.
+	viewOwnsEscape := m.focus == focusContent && m.contentConsumesEscape()
+	if msg.Type == tea.KeyEsc && !m.inStartupGate() && !viewOwnsEscape {
+		m.focus = focusSidebar
+		return m, nil
+	}
+
+	// A startup gate, or a content-focused view capturing text, owns the rest of
+	// the keyboard. Route every key straight to the active view so a character
+	// its textinput needs — a digit, 'q' or 'A' in a passphrase, '?', tab between
+	// fields — is never swallowed by a nav binding or the single-rune quit. In a
+	// gate this also suppresses the number/tab jumps, since every other view is
+	// dead behind a nil repo.
+	if m.inStartupGate() || m.contentCapturesText() {
+		var cmd tea.Cmd
+		m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
+		return m, cmd
+	}
+
+	switch {
 	case key.Matches(msg, m.keys.Focus):
+		// A view that moves focus between its OWN controls with tab keeps the
+		// key; esc is how the operator leaves such a view for the rail.
+		if m.contentConsumesTab() {
+			var cmd tea.Cmd
+			m.views[m.active].model, cmd = m.views[m.active].model.Update(msg)
+			return m, cmd
+		}
 		if m.focus == focusSidebar {
 			m.focus = focusContent
 		} else {
@@ -910,12 +1013,8 @@ func (m App) View() string {
 	if vh, ok := m.views[m.active].model.(viewShortHelper); ok {
 		viewKeys = vh.ShortHelp()
 	}
-	bottom := m.status.View(m.deps.RepoName, viewKeys, m.opRunning)
-	if m.inStartupGate() {
-		// Suppressed nav keys (palette, focus) must not be advertised; the gate
-		// bar shows only quit alongside the view's own keys.
-		bottom = m.status.ViewGated(m.deps.RepoName, viewKeys, m.opRunning)
-	}
+	// The bar only ever promises keys that reach the shell in the current state.
+	bottom := m.status.ViewWith(m.deps.RepoName, viewKeys, m.statusGlobals(viewKeys), m.opRunning)
 
 	return lipgloss.JoinVertical(lipgloss.Left, title, row, bottom)
 }
