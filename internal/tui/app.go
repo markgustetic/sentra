@@ -681,7 +681,9 @@ func (m App) contentConsumesTab() bool {
 // not one of them worked.
 func (m App) statusGlobals(viewKeys []key.Binding) []key.Binding {
 	if m.inStartupGate() {
-		return []key.Binding{m.keys.Quit}
+		// Every key routes into the gate view, so 'q' is typed into the unlock
+		// passphrase field, not a quit. Only ctrl+c quits — advertise that.
+		return []key.Binding{m.keys.ForceQuit}
 	}
 	var g []key.Binding
 	// Offer esc only when the shell will act on it AND the view is not already

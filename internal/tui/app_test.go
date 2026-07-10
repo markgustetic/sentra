@@ -1879,3 +1879,26 @@ func TestApp_StatusBarDoesNotDuplicateEsc(t *testing.T) {
 		t.Errorf("status bar shows %d 'esc back' hints, want 1:\n%s", n, bar)
 	}
 }
+
+// In a startup gate every key routes into the gate view, so 'q' is typed into
+// the unlock passphrase field, not a quit. Only ctrl+c quits. The gate status
+// bar must say so — it advertised "q quit", a key that does not work there.
+func TestApp_GateStatusBarAdvertisesCtrlCNotQ(t *testing.T) {
+	for _, initial := range []string{"unlock", "setup"} {
+		t.Run(initial, func(t *testing.T) {
+			app := NewApp(Deps{RepoName: "x", InitialView: initial}) // nil repo → gate
+			m, _ := app.Update(tea.WindowSizeMsg{Width: 120, Height: 30})
+			app = m.(App)
+			if !app.inStartupGate() {
+				t.Fatalf("precondition: %q must be a startup gate", initial)
+			}
+			bar := lastLine(app.View())
+			if !strings.Contains(bar, "ctrl+c") {
+				t.Errorf("gate bar must advertise ctrl+c to quit:\n%s", bar)
+			}
+			if strings.Contains(bar, "q quit") {
+				t.Errorf("gate bar must not advertise 'q quit' — q is typed into the field:\n%s", bar)
+			}
+		})
+	}
+}
