@@ -15,13 +15,55 @@ Settled during brainstorming; these are requirements, not options.
 
 1. **Shows on every launch** of the TUI (`sentra`, `sentra ui`, `sentra local`) —
    not first-run only.
-2. **Auto-advances after ~1 second**; **any key skips it immediately**. The
+2. **Auto-advances after 2.5 seconds**; **any key skips it immediately**. The
    dismissing keypress is consumed (it does not fall through to the view behind).
+   Consuming it is deliberate: people dismiss splashes with enter or space, and
+   forwarding that keystroke to the unlock gate would submit an empty passphrase.
+   Losing one character to a retype is the better failure.
 3. **Treatment:** the existing `✦` brand glyph over a letter-spaced `sentra`
    wordmark, the product tagline, then `version · commit`. Centered, rendered in
    the existing adaptive pink/violet palette.
 4. **Opt-out lives in the Settings view** as a persisted toggle — not a CLI flag
    and not an environment variable.
+5. **The lockup animates in as a staged cascade** (see below), rather than
+   appearing all at once.
+
+## Animation
+
+The reveal repaints once per 60 ms frame; when it completes, repainting stops and
+a single tick holds the finished lockup until `splashDuration` expires. A still
+image costs no frames.
+
+| Time | Stage |
+|---|---|
+| 0–200 ms | `✦` twinkles in: `·` → `✧` → `✦` |
+| 300–700 ms | wordmark letters appear left to right, 80 ms apart |
+| 1050 ms | tagline, both lines |
+| 1400 ms | `version · commit`; repainting stops |
+| 1400–2500 ms | hold |
+
+`App.splashFrame` is the animation's only state. `renderSplash` derives every
+stage from it and never reads the clock, so a frame is a pure function of the
+frame number and each stage is unit-testable.
+
+The glyph twinkles by changing **shape**, not color. Lipgloss emits no ANSI under
+the Ascii color profile that unit tests (and `NO_COLOR` terminals, and pipes)
+render under, so a color-based animation would be both invisible and untestable
+there.
+
+**Hidden is not absent.** `lipgloss.Place` centers each line independently, so a
+line's position depends on its own width. Drawing only the revealed letters would
+grow the wordmark from one cell to sixteen and slide it leftward on every frame.
+Unrevealed letters therefore render as spaces. The tagline and version lines are
+likewise reserved as blanks, keeping the line count and the un-placed body's
+geometry invariant. A test asserts the rendered width and height are identical
+across every frame of the reveal.
+
+Two alternatives were rejected. A **shimmer sweep** needs a per-theme highlight
+color, must tick for the whole duration, and reads as a loading indicator. A
+**color fade** cannot interpolate `lipgloss.AdaptiveColor` (a light/dark pair)
+without background detection and a hand-built hex ramp, and bands visibly below
+truecolor.
 
 ## Non-goals
 

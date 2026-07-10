@@ -1345,12 +1345,18 @@ func splashApp(t *testing.T) App {
 
 func TestApp_SplashRendersThenAutoDismisses(t *testing.T) {
 	app := splashApp(t)
+	// The splash covers the frame from the very first paint, before the reveal
+	// has drawn a single letter.
+	if strings.Contains(app.View(), "Dashboard") {
+		t.Fatalf("the splash must cover the frame at frame 0:\n%s", app.View())
+	}
+	app = advanceSplash(app, splashFramesTo(splashRevealDone))
 	if !strings.Contains(app.View(), "s  e  n  t  r  a") {
-		t.Fatalf("splash wordmark not rendered:\n%s", app.View())
+		t.Fatalf("splash wordmark not rendered once revealed:\n%s", app.View())
 	}
 	m, _ := app.Update(splashDoneMsg{})
 	app = m.(App)
-	if strings.Contains(app.View(), "s  e  n  t  r  a") {
+	if app.splashActive {
 		t.Error("splashDoneMsg must retire the splash")
 	}
 	if !strings.Contains(app.View(), "Dashboard") {
@@ -1359,13 +1365,20 @@ func TestApp_SplashRendersThenAutoDismisses(t *testing.T) {
 }
 
 // The dismissing key is CONSUMED: it must not reach the active view.
+//
+// Asserting the wordmark is absent would now pass vacuously — frame 0 has no
+// letters either, so the assertion could not tell a dismissed splash from a
+// freshly drawn one. Assert the frame behind actually renders instead.
 func TestApp_SplashDismissedByAnyKeyAndConsumed(t *testing.T) {
 	app := splashApp(t)
 	before := app.active
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'1'}})
 	app = m.(App)
-	if strings.Contains(app.View(), "s  e  n  t  r  a") {
+	if app.splashActive {
 		t.Error("any key must dismiss the splash")
+	}
+	if !strings.Contains(app.View(), "Dashboard") {
+		t.Errorf("the frame must render once the splash is dismissed:\n%s", app.View())
 	}
 	if app.active != before {
 		t.Errorf("the dismissing key must be consumed, not routed (active %d -> %d)", before, app.active)
@@ -1380,11 +1393,22 @@ func TestApp_CtrlCQuitsDuringSplash(t *testing.T) {
 	}
 }
 
+// Deps{} leaves the splash off, which is what keeps every other App test in this
+// file rendering the normal frame. Assert on splashActive and the frame itself:
+// "no wordmark" would hold vacuously even if the splash WERE on, since frame 0
+// draws none of it.
 func TestApp_NoSplashByDefault(t *testing.T) {
 	app := NewApp(Deps{RepoName: "x"})
 	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	if strings.Contains(sized.(App).View(), "s  e  n  t  r  a") {
+	app = sized.(App)
+	if app.splashActive {
 		t.Error("Deps{} must not show the splash")
+	}
+	if app.Init() != nil && app.splashFrame != 0 {
+		t.Error("Deps{} must not arm the splash frame tick")
+	}
+	if !strings.Contains(app.View(), "Dashboard") {
+		t.Errorf("Deps{} must render the normal frame:\n%s", app.View())
 	}
 }
 
@@ -1444,10 +1468,98 @@ func TestApp_RepoReadyDoesNotReplaySplash(t *testing.T) {
 	if next.splashActive {
 		t.Error("the splash must not replay over the dashboard after unlock")
 	}
-	if strings.Contains(next.View(), "s  e  n  t  r  a") {
-		t.Error("post-unlock dashboard is covered by the splash wordmark")
+	if !strings.Contains(next.View(), "Dashboard") {
+		t.Errorf("post-unlock frame must be the dashboard, not the splash:\n%s", next.View())
 	}
 	if next.deps.ShowSplash {
 		t.Error("rebuilt Deps must not carry ShowSplash, or Init() re-arms the tick")
+	}
+}
+
+// splashFramesTo returns the frame index at which elapsed >= d.
+func splashFramesTo(d time.Duration) int {
+	n := 0
+	for time.Duration(n)*splashFrameInterval < d {
+		n++
+	}
+	return n
+}
+
+// advanceSplash drives n frame ticks through the App.
+func advanceSplash(app App, n int) App {
+	for i := 0; i < n; i++ {
+		m, _ := app.Update(splashFrameMsg{})
+		app = m.(App)
+	}
+	return app
+}
+
+// TestSplashRevealIsProgressive: the wordmark cascades in letter by letter, so
+// frame 0 shows none of it and the final frame shows all six.
+func TestSplashRevealIsProgressive(t *testing.T) {
+	app := splashApp(t)
+
+	if got := strings.Count(app.View(), "s"); got != 0 {
+		t.Errorf("frame 0 must show no wordmark letters, view:\n%s", app.View())
+	}
+
+	// Four letters in: lettersAt + 3 steps has revealed s, e, n, t.
+	app4 := advanceSplash(app, splashFramesTo(splashLettersAt+3*splashLetterStep))
+	body := app4.View()
+	if !strings.Contains(body, "s  e  n  t") {
+		t.Errorf("expected four revealed letters:\n%s", body)
+	}
+	if strings.Contains(body, "s  e  n  t  r  a") {
+		t.Errorf("the wordmark completed too early:\n%s", body)
+	}
+
+	full := advanceSplash(app, splashFramesTo(splashRevealDone)).View()
+	if !strings.Contains(full, "s  e  n  t  r  a") {
+		t.Errorf("final frame must show the full wordmark:\n%s", full)
+	}
+	if !strings.Contains(full, "Encrypted, deduplicated") {
+		t.Errorf("final frame must show the tagline:\n%s", full)
+	}
+}
+
+// TestSplashGeometryIsConstant is the load-bearing one. lipgloss.Place centers
+// the lockup, so if a hidden letter or line simply were not drawn, the block
+// would grow and the wordmark would slide across the screen as it revealed.
+// Every frame must occupy exactly the box the final frame does.
+func TestSplashGeometryIsConstant(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", ShowSplash: true, Version: "v1.2.0", Commit: "a1b2c3d4"})
+	// width/height 0 => renderSplash returns the raw body, not the centered frame.
+	wantW, wantH := 0, 0
+	for f := 0; f <= splashFramesTo(splashRevealDone); f++ {
+		body := advanceSplash(app, f).renderSplash()
+		w, h := lipgloss.Width(body), lipgloss.Height(body)
+		if f == 0 {
+			wantW, wantH = w, h
+			continue
+		}
+		if w != wantW || h != wantH {
+			t.Fatalf("frame %d geometry %dx%d, want %dx%d — the lockup shifts as it reveals",
+				f, w, h, wantW, wantH)
+		}
+	}
+}
+
+// TestSplashFrameMsgIgnoredOnceDismissed: a tick already in flight when the user
+// skips must not resurrect the animation or re-arm another tick.
+func TestSplashFrameMsgIgnoredOnceDismissed(t *testing.T) {
+	app := splashApp(t)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = m.(App)
+	if app.splashActive {
+		t.Fatal("precondition: the key must dismiss the splash")
+	}
+	before := app.splashFrame
+	m2, cmd := app.Update(splashFrameMsg{})
+	app = m2.(App)
+	if cmd != nil {
+		t.Error("a stale frame tick must not re-arm another")
+	}
+	if app.splashFrame != before {
+		t.Error("a stale frame tick must not advance the frame")
 	}
 }

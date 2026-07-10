@@ -184,6 +184,11 @@ type App struct {
 	// seeded from Deps.ShowSplash and cleared by the tick or any keystroke.
 	splashActive bool
 
+	// splashFrame counts elapsed reveal frames. It is the animation's only
+	// state: renderSplash derives every stage from it, so a frame is
+	// reproducible and the view never reads the clock.
+	splashFrame int
+
 	width  int
 	height int
 
@@ -352,9 +357,7 @@ func (m App) Init() tea.Cmd {
 		cmds = append(cmds, v.model.Init())
 	}
 	if m.splashActive {
-		cmds = append(cmds, tea.Tick(splashDuration, func(time.Time) tea.Msg {
-			return splashDoneMsg{}
-		}))
+		cmds = append(cmds, splashTick())
 	}
 	return tea.Batch(cmds...)
 }
@@ -369,12 +372,44 @@ type repoReadyMsg struct {
 	config *config.Config
 }
 
-// splashDuration is how long the launch splash lingers before it retires
-// itself. Any keystroke dismisses it sooner, so this is a ceiling, not a wait.
-const splashDuration = time.Second
+// The launch splash reveals itself in stages, then holds. Any keystroke
+// dismisses it sooner, so splashDuration is a ceiling, not a wait.
+//
+// The reveal repaints once per splashFrameInterval; the hold that follows arms a
+// single tick and draws nothing, so a still image costs no frames.
+const (
+	splashDuration      = 2500 * time.Millisecond
+	splashFrameInterval = 60 * time.Millisecond
 
-// splashDoneMsg retires the launch splash when the tick fires.
+	// Reveal timeline, measured from the first frame.
+	splashGlyphSettled = 200 * time.Millisecond  // ✦ finishes twinkling in
+	splashLettersAt    = 300 * time.Millisecond  // first wordmark letter
+	splashLetterStep   = 80 * time.Millisecond   // cadence between letters
+	splashTaglineAt    = 1050 * time.Millisecond // both tagline lines
+	splashRevealDone   = 1400 * time.Millisecond // version line; repainting stops
+)
+
+// splashWord is the wordmark, one rune per revealed letter. Rendered joined by
+// two spaces, so an unrevealed letter becomes a single space and the line keeps
+// its width.
+var splashWord = []rune{'s', 'e', 'n', 't', 'r', 'a'}
+
+// splashFrameMsg advances the reveal by one frame.
+type splashFrameMsg struct{}
+
+// splashDoneMsg retires the launch splash when the hold expires.
 type splashDoneMsg struct{}
+
+// splashTick arms the next reveal frame.
+func splashTick() tea.Cmd {
+	return tea.Tick(splashFrameInterval, func(time.Time) tea.Msg { return splashFrameMsg{} })
+}
+
+// splashElapsed converts the frame counter into wall time. Rendering reads this
+// rather than the clock so every frame is a pure function of splashFrame.
+func (m App) splashElapsed() time.Duration {
+	return time.Duration(m.splashFrame) * splashFrameInterval
+}
 
 // Update handles shell-owned messages (size, navigation, modal
 // results) here and splits the rest by kind: key messages go through
@@ -394,6 +429,22 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	}
 
 	switch msg := msg.(type) {
+	case splashFrameMsg:
+		// A tick already in flight when the user skips must not resurrect the
+		// animation, advance the frame, or arm another tick.
+		if !m.splashActive {
+			return m, nil
+		}
+		m.splashFrame++
+		if m.splashElapsed() >= splashRevealDone {
+			// The lockup is fully drawn. Stop repainting and hold it still,
+			// arming one tick for the remainder of splashDuration.
+			return m, tea.Tick(splashDuration-splashRevealDone, func(time.Time) tea.Msg {
+				return splashDoneMsg{}
+			})
+		}
+		return m, splashTick()
+
 	case splashDoneMsg:
 		m.splashActive = false
 		return m, nil
@@ -832,24 +883,86 @@ func (m App) cleanup() {
 	}
 }
 
-// renderSplash draws the centered launch lockup: the brand glyph, a
-// letter-spaced wordmark, the tagline, and the build identity. It is drawn
-// into the full terminal rectangle; before the first WindowSizeMsg the
-// dimensions are zero, so we fall back to the unplaced body.
+// renderSplash draws the centered launch lockup at the current reveal frame:
+// the brand glyph twinkles in, the letter-spaced wordmark cascades left to
+// right, then the tagline and the build identity. It is drawn into the full
+// terminal rectangle; before the first WindowSizeMsg the dimensions are zero, so
+// we fall back to the unplaced body.
+//
+// Every stage that has not appeared yet still occupies its exact final cells, as
+// blanks. Hidden is not absent, and that matters in two different ways.
+//
+// lipgloss.Place centers each LINE independently, so a line's position is a
+// function of its own width. Rendering only the revealed letters would grow the
+// wordmark from one cell to sixteen and slide it leftward across the screen on
+// every frame; padding unrevealed letters to spaces pins it. The blank tagline
+// and version lines are the defensive half: they keep the line count and the
+// un-placed body's geometry (the m.width == 0 path) invariant across frames.
 func (m App) renderSplash() string {
+	elapsed := m.splashElapsed()
 	brand := lipgloss.NewStyle().Foreground(ui.AccentPink).Bold(true)
-	body := brand.Render("✦") + "\n\n" +
-		brand.Render("s  e  n  t  r  a") + "\n\n" +
-		ui.Muted.Render("Encrypted, deduplicated, agent-aware backups") + "\n" +
-		ui.Muted.Render("for S3-compatible storage")
-	if v := m.versionLine(); v != "" {
-		body += "\n\n" + ui.Muted.Render(v)
+
+	const (
+		tagline1 = "Encrypted, deduplicated, agent-aware backups"
+		tagline2 = "for S3-compatible storage"
+	)
+
+	lines := []string{
+		brand.Render(splashGlyphAt(elapsed)),
+		"",
+		brand.Render(splashWordmarkAt(elapsed)),
+		"",
 	}
+	if elapsed >= splashTaglineAt {
+		lines = append(lines, ui.Muted.Render(tagline1), ui.Muted.Render(tagline2))
+	} else {
+		lines = append(lines, splashBlank(tagline1), splashBlank(tagline2))
+	}
+	if v := m.versionLine(); v != "" {
+		lines = append(lines, "")
+		if elapsed >= splashRevealDone {
+			lines = append(lines, ui.Muted.Render(v))
+		} else {
+			lines = append(lines, splashBlank(v))
+		}
+	}
+
+	body := strings.Join(lines, "\n")
 	if m.width == 0 || m.height == 0 {
 		return body
 	}
 	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, body)
 }
+
+// splashGlyphAt twinkles the brand glyph in: a point, a spark, then the star.
+// Shape carries the animation rather than color, so it survives the Ascii color
+// profile that unit tests and NO_COLOR terminals render under.
+func splashGlyphAt(elapsed time.Duration) string {
+	switch {
+	case elapsed < splashGlyphSettled/3:
+		return "·"
+	case elapsed < 2*splashGlyphSettled/3:
+		return "✧"
+	default:
+		return "✦"
+	}
+}
+
+// splashWordmarkAt reveals the wordmark one letter at a time, left to right. An
+// unrevealed letter renders as a space so the line holds its final width.
+func splashWordmarkAt(elapsed time.Duration) string {
+	out := make([]string, len(splashWord))
+	for i, r := range splashWord {
+		out[i] = " "
+		if elapsed >= splashLettersAt+time.Duration(i)*splashLetterStep {
+			out[i] = string(r)
+		}
+	}
+	return strings.Join(out, "  ")
+}
+
+// splashBlank reserves exactly the cells a line will occupy once it appears.
+func splashBlank(s string) string { return strings.Repeat(" ", lipgloss.Width(s)) }
 
 // versionLine renders "version · shortcommit". The commit is dropped when it
 // is empty or the goreleaser placeholder "none" (a plain `go build`), and it
