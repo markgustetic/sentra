@@ -117,9 +117,12 @@ below both.
   `Repo.S3.Profile` reaches `awsconfig.WithSharedConfigProfile`, and
   aws-sdk-go-v2's `resolveCredentialChain` tests `sharedProfileSet` **before**
   `envConfig.Credentials.HasKeys()` — so a profile silently outranks static
-  credentials. `DefaultPlan` therefore settles the backend before inferring a
-  profile, and infers none for S3-compatible targets. (A profile the user wrote
-  into their own config still stands: R2 and Wasabi credentials live in one.)
+  credentials. Enforced in two places, because the backend can be settled two
+  ways: `DefaultPlan` settles it before inferring a profile and infers none for
+  S3-compatible targets, and the TUI wizard drops an inferred profile when the
+  operator picks S3-compatible by hand (mirroring the AWS branch, which clears
+  the endpoint). Both drop only the *inferred* value — a profile the user wrote
+  into their own config still stands, since R2 and Wasabi credentials live in one.
 
 ## Conventions
 
