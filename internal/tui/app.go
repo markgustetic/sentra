@@ -513,12 +513,21 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case activateMsg:
 		m.paletteOpen = false
 		for i, v := range m.views {
-			if v.id == msg.id {
+			if v.id != msg.id {
+				continue
+			}
+			// Activating the view you are already on navigates nowhere, so it
+			// must not hand the keyboard to the content pane either. The rail
+			// lands highlighting the active view, so the user's first Enter
+			// would otherwise move focus with nothing to show for it — and
+			// since a content-focused Dashboard ignores every key, ↑/↓ would
+			// stop driving the rail and the app would look frozen.
+			if i != m.active {
 				m.active = i
 				m.sidebar.Select(msg.id)
 				m.focus = focusContent
-				break
 			}
+			break
 		}
 		return m, nil
 

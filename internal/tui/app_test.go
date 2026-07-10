@@ -1563,3 +1563,58 @@ func TestSplashFrameMsgIgnoredOnceDismissed(t *testing.T) {
 		t.Error("a stale frame tick must not advance the frame")
 	}
 }
+
+// TestApp_EnterOnAlreadyActiveRailItemKeepsRailUsable pins the bug where the
+// dashboard appeared frozen. The rail lands highlighting the view that is
+// already open, so Enter activates it: m.active and Select are no-ops, but the
+// handler still moved focus to the content pane. Nothing visibly happened, and
+// because Dashboard.Update ignores every message, ↑/↓ silently stopped driving
+// the rail — the app looked dead after a single keystroke.
+//
+// Activating the view you are already on must not steal focus from the rail.
+func TestApp_EnterOnAlreadyActiveRailItemKeepsRailUsable(t *testing.T) {
+	app := newTestApp(t)
+	if app.focus != focusSidebar || app.active != 0 {
+		t.Fatalf("precondition: want rail focus on view 0, got focus=%v active=%d", app.focus, app.active)
+	}
+
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on the rail should emit an activate cmd")
+	}
+	m, _ = m.(App).Update(cmd()) // deliver activateMsg{dashboard}
+	app = m.(App)
+
+	if app.active != 0 {
+		t.Errorf("active view changed to %d; enter on the current item navigates nowhere", app.active)
+	}
+	if app.focus != focusSidebar {
+		t.Error("activating the already-active view must not move focus off the rail")
+	}
+
+	// The rail must still respond, or the UI is dead.
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	app = m.(App)
+	if got := app.sidebar.list.Index(); got != 1 {
+		t.Errorf("rail index after down = %d, want 1 — rail navigation is dead", got)
+	}
+}
+
+// Activating a DIFFERENT view still hands the keyboard to the content pane.
+func TestApp_ActivatingADifferentViewFocusesContent(t *testing.T) {
+	app := newTestApp(t)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown}) // highlight snapshots
+	app = m.(App)
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should emit an activate cmd")
+	}
+	m, _ = m.(App).Update(cmd())
+	app = m.(App)
+	if app.active != 1 {
+		t.Fatalf("active = %d, want 1 (snapshots)", app.active)
+	}
+	if app.focus != focusContent {
+		t.Error("activating a different view must move focus to content")
+	}
+}
