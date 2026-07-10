@@ -1,0 +1,16 @@
+Settings
+
+  bucket   golden-bucket
+  prefix   (unset)
+  region   us-east-1
+  keyring  off
+  config   /repo/sentra.yaml
+
+▍ Re-run setup
+    reconfigure the backend and repository
+  Change passphrase
+    rotate the repository passphrase
+  Welcome splash   [on]
+    show the logo screen at launch (applies next launch)
+
+↑↓ move   ⏎ open / toggle

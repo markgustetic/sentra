@@ -1,0 +1,13 @@
+Sentra setup                                                         Step 3 of 5
+
+Setup actions
+
+▍ AWS sign-in: browser login
+  ←/→ change method
+  [x] create missing bucket
+  [x] block public access
+  [x] default encryption (AES-256)
+  [x] initialize repository
+
+⏎  Continue to Repository passphrase
+   ↑/↓ row · ←/→ method · space toggle
