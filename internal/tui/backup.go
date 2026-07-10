@@ -109,10 +109,6 @@ func (v BackupView) ConsumesTab() bool { return v.stage == backupConfigure }
 // tag field.
 func (v BackupView) ConsumesEscape() bool { return v.stage == backupRunning }
 
-// ConfirmsClose: the configure stage collects a folder and tag, so leaving it
-// pops a "leave this screen?" confirm.
-func (v BackupView) ConfirmsClose() bool { return v.stage == backupConfigure }
-
 func (v BackupView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case backupRunning:
@@ -122,8 +118,8 @@ func (v BackupView) ShortHelp() []key.Binding {
 	default: // backupConfigure — the keys depend on which control has focus
 		if v.focus == focusPicker {
 			return []key.Binding{
-				key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "folder")),
-				key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "start/open")),
+				key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "move")),
+				key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "open/start")),
 				key.NewBinding(key.WithKeys("backspace"), key.WithHelp("bksp", "up a level")),
 				key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "tag")),
 			}
@@ -212,10 +208,16 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				v.picker = v.picker.moveDown()
 			case tea.KeyBackspace, tea.KeyLeft:
 				v.picker = v.picker.up()
-			case tea.KeyEnter, tea.KeyRight:
-				// activate returns a non-empty path only for the "use this folder"
-				// row, which commits: START the backup of that directory. Folder
-				// and parent rows navigate and return "".
+			case tea.KeyRight:
+				// Right descends without ever committing. activate navigates a
+				// folder or ".." and changes nothing on the Start button, so
+				// dropping the returned path makes right a pure navigation key —
+				// only enter on the Start button starts a backup.
+				v.picker, _ = v.picker.activate()
+			case tea.KeyEnter:
+				// enter navigates the folder rows; only the Start button, which
+				// activate signals by returning the current directory, commits and
+				// starts the backup.
 				var chosen string
 				v.picker, chosen = v.picker.activate()
 				if chosen != "" {
@@ -324,10 +326,11 @@ func (v BackupView) View() string {
 		}
 
 		// The action line names what enter does to the FOCUSED control right now.
-		// In the picker that is one of three things depending on the highlighted
-		// row (start / open a folder / go up), so it is read from the picker.
+		// In the picker that is one of three things depending on the cursor
+		// (open a folder / go up / start on the Start button), so it is read from
+		// the picker.
 		if v.focus == focusPicker {
-			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · backspace up a level · tab to add a tag"))
+			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · ↓ to the start button · backspace up a level · tab to add a tag"))
 		} else {
 			b.WriteString("\n\n" + ui.ActionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
 		}

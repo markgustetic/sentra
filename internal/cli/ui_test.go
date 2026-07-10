@@ -70,7 +70,9 @@ func TestUI_LaunchesApp(t *testing.T) {
 	// keystroke — same as any real launch — before inspecting the frame.
 	m, _ := captured.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	view := m.(tui.App).View()
-	if !strings.Contains(view, "sentra") {
+	// "S E N T R A" is the centered header logo shown on every screen (the old
+	// left-aligned "✦ sentra" became the spaced-caps wordmark).
+	if !strings.Contains(view, "S E N T R A") {
 		t.Errorf("captured app's view did not contain brand: %s", view)
 	}
 }

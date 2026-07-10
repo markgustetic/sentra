@@ -189,6 +189,13 @@ type App struct {
 	// reproducible and the view never reads the clock.
 	splashFrame int
 
+	// animFrame counts ambient chrome-animation ticks (the steady-state neon
+	// breathe). Like splashFrame it is the animation's whole state, so a frame
+	// is a pure function of it and never reads the clock. It advances from
+	// launch via uiTick; the chrome reads it in View to color the title, the
+	// focused border, and the active nav item.
+	animFrame int
+
 	width  int
 	height int
 
@@ -238,12 +245,12 @@ func NewApp(deps Deps) App {
 	registry := NewRegistry()
 	views := []viewEntry{
 		{id: "dashboard", model: NewDashboard(deps)},
-		{id: "snapshots", model: NewSnapshots(deps)},
-		// Backup sits directly under Snapshots: taking one is the thing an
-		// operator reaches for most, and the rail's order is its priority order.
-		// The Category field still files it under "Operations" in the palette;
-		// the rail renders registration order, not category groups.
+		// Backup sits directly under Dashboard, heading the rail: taking one is
+		// the thing an operator reaches for most, so it comes before the
+		// read-only views. The Category field still files it under "Operations"
+		// in the palette; the rail renders registration order, not category groups.
 		{id: "backup", model: NewBackupView(deps)},
+		{id: "snapshots", model: NewSnapshots(deps)},
 		{id: "diff", model: NewDiff(deps)},
 		{id: "check", model: NewCheckView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
@@ -356,13 +363,17 @@ func (m App) appCtx() context.Context {
 // hydration onto async, non-blocking tea.Cmds is a future item; when it
 // lands, this batching starts carrying real background loads.
 func (m App) Init() tea.Cmd {
-	cmds := make([]tea.Cmd, 0, len(m.views)+1)
+	cmds := make([]tea.Cmd, 0, len(m.views)+2)
 	for _, v := range m.views {
 		cmds = append(cmds, v.model.Init())
 	}
 	if m.splashActive {
 		cmds = append(cmds, splashTick())
 	}
+	// Kick the ambient chrome-animation clock. It re-arms itself each frame (see
+	// uiFrameMsg in Update), so this single tick keeps the shell breathing for
+	// the whole session.
+	cmds = append(cmds, uiTick())
 	return tea.Batch(cmds...)
 }
 
@@ -382,7 +393,7 @@ type repoReadyMsg struct {
 // The reveal repaints once per splashFrameInterval; the hold that follows arms a
 // single tick and draws nothing, so a still image costs no frames.
 const (
-	splashDuration      = 2500 * time.Millisecond
+	splashDuration      = 4200 * time.Millisecond
 	splashFrameInterval = 60 * time.Millisecond
 
 	// Reveal timeline, measured from the first frame.
@@ -390,7 +401,16 @@ const (
 	splashLettersAt    = 300 * time.Millisecond  // first wordmark letter
 	splashLetterStep   = 80 * time.Millisecond   // cadence between letters
 	splashTaglineAt    = 1050 * time.Millisecond // both tagline lines
-	splashRevealDone   = 1400 * time.Millisecond // version line; repainting stops
+	splashRevealDone   = 1400 * time.Millisecond // version line appears
+
+	// Animation cadence. Unlike the reveal timeline (one-shot), these drive the
+	// living neon: the gradient flows down the wordmark, each letter flashes
+	// white as it lands, and the glyph pulses. The splash keeps ticking for its
+	// whole life so the motion never freezes.
+	splashFlowStep    = 110 * time.Millisecond // gradient advances one row per step
+	splashFlashDur    = 150 * time.Millisecond // a just-revealed line stays white this long
+	splashGlyphPulse  = 130 * time.Millisecond // glyph color cadence
+	splashShimmerStep = 45 * time.Millisecond  // tagline/version shimmer crest advances one cell
 )
 
 // splashFrameMsg advances the reveal by one frame.
@@ -435,18 +455,24 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return m, nil
 		}
 		m.splashFrame++
-		if m.splashElapsed() >= splashRevealDone {
-			// The lockup is fully drawn. Stop repainting and hold it still,
-			// arming one tick for the remainder of splashDuration.
-			return m, tea.Tick(splashDuration-splashRevealDone, func(time.Time) tea.Msg {
-				return splashDoneMsg{}
-			})
+		if m.splashElapsed() >= splashDuration {
+			// Time's up — retire the splash. Unlike the old still-hold, we keep
+			// ticking right up to the end so the neon flows and pulses for the
+			// whole duration rather than freezing once the letters land.
+			return m, func() tea.Msg { return splashDoneMsg{} }
 		}
 		return m, splashTick()
 
 	case splashDoneMsg:
 		m.splashActive = false
 		return m, nil
+
+	case uiFrameMsg:
+		// Advance the ambient chrome clock and re-arm. This runs for the whole
+		// session (chrome is hidden behind the splash/overlays but the counter
+		// keeps ticking, so the breathe is already in motion when they clear).
+		m.animFrame++
+		return m, uiTick()
 
 	case repoReadyMsg:
 		// Rebuild the whole shell against the unlocked repo. Reusing NewApp
@@ -544,27 +570,12 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if n := len(m.modals); n > 0 {
 			m.modals = m.modals[:n-1]
 		}
-		// The "confirm-quit" branch is unreachable in Phase 1: nothing
-		// pushes a quit-confirm modal yet (quit is unconditional). It's
-		// kept wired because Phase 2's operation guard will push exactly
-		// this modal — "quit while a backup is running?" — and route the
-		// confirmed result back here to tear down and exit.
-		if msg.id == "confirm-quit" {
+		// Quit is the one action guarded by a confirmation: 'q' pops this modal
+		// and only a confirmed result tears down and exits. ctrl+c stays an
+		// unconditional force-quit, so a hung UI is never trapped.
+		if msg.id == quitConfirmID {
 			m.cleanup()
 			return m, tea.Quit
-		}
-		// The two esc-confirm modals are shell-owned: leaving a data-entry screen
-		// returns focus to the rail; cancelling a running op tears down its
-		// context (the same path as a direct cancelOpMsg).
-		if msg.id == escLeaveID {
-			m.focus = focusSidebar
-			return m, nil
-		}
-		if msg.id == escCancelOpID {
-			if m.opCancel != nil {
-				m.opCancel()
-			}
-			return m, nil
 		}
 		// Every other confirmation belongs to a flow (e.g. prune's typed
 		// "prune" gate): forward it to every view so the owning flow can
@@ -653,26 +664,10 @@ func (m App) contentConsumesEscape() bool {
 	return ok && ec.ConsumesEscape()
 }
 
-// escapeCloser is implemented by a data-entry view: one whose current stage
-// collects input to perform an action (backup config, passphrase, a form). While
-// such a view is focused, esc-to-rail is intercepted by a "leave this screen?"
-// confirm rather than dropping the operator on the rail silently. Read-only
-// views (lists, results) never implement it and escape instantly.
-type escapeCloser interface{ ConfirmsClose() bool }
-
-// contentConfirmsClose reports whether leaving the active view should be
-// confirmed first.
-func (m App) contentConfirmsClose() bool {
-	ec, ok := m.views[m.active].model.(escapeCloser)
-	return ok && ec.ConfirmsClose()
-}
-
-// escLeaveID / escCancelOpID tag the two esc confirmation modals so the
-// confirmedMsg handler can tell "leave the screen" from "cancel the running op".
-const (
-	escLeaveID    = "esc-leave"
-	escCancelOpID = "esc-cancel-op"
-)
+// quitConfirmID tags the quit-confirmation modal so the confirmedMsg handler
+// knows a confirmed result means "exit". It is the sole confirmation in the
+// shell: esc steps back to the rail (or cancels a running op) without one.
+const quitConfirmID = "confirm-quit"
 
 // pushConfirmModal puts a y/n ConfirmModal on the stack sized to the terminal.
 // enter emits confirmedMsg{id}; the modal's own esc dismisses it (see
@@ -814,22 +809,16 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if msg.Type == tea.KeyEsc && !m.inStartupGate() && m.focus == focusContent {
 		switch {
 		case m.opRunning != "":
-			// Escaping a running op confirms before cancelling it, so a stray
-			// esc doesn't abandon work in progress.
-			return m.pushConfirmModal(
-				"Cancel the running "+m.opRunning+"?",
-				"The operation stops where it is. Anything already written stays.",
-				escCancelOpID), nil
+			// esc cancels the running op in place — no confirm. The only guarded
+			// action is quit; everything else steps back cheaply. ctrl+c still
+			// force-quits if the operator wants out entirely.
+			if m.opCancel != nil {
+				m.opCancel()
+			}
+			return m, nil
 		case m.contentConsumesEscape():
 			// The view means something by esc itself — close a detail, step back
 			// a wizard stage. Let it handle the key (fall through below).
-		case m.contentConfirmsClose():
-			// A data-entry screen: confirm before dropping the operator on the
-			// rail, rather than losing their place silently.
-			return m.pushConfirmModal(
-				"Leave this screen?",
-				"Anything entered here has not been applied yet.",
-				escLeaveID), nil
 		default:
 			m.focus = focusSidebar
 			return m, nil
@@ -866,8 +855,12 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case key.Matches(msg, m.keys.Help):
 		return m.pushHelpModal(), nil
 	case key.Matches(msg, m.keys.Quit):
-		m.cleanup()
-		return m, tea.Quit
+		// 'q' asks before quitting; only a confirmed result exits (see the
+		// quitConfirmID branch in Update). ctrl+c remains an instant force-quit.
+		return m.pushConfirmModal(
+			"Quit sentra?",
+			"You'll return to your shell. Any unsaved work on this screen is discarded.",
+			quitConfirmID), nil
 	}
 
 	// Number keys jump straight to the nth view.
@@ -1025,13 +1018,24 @@ func (m App) View() string {
 		return m.palette.View()
 	}
 
-	title := ui.TitleBar.Render("✦ sentra") + "  " +
-		ui.Muted.Render(m.deps.RepoName)
+	// A breathing logo, centered on the top row of every screen. The repo name
+	// is NOT repeated here — the status bar's left already carries it — so the
+	// header stays pure brand. It is exactly one row tall (the ✦ flankers and
+	// spaced caps echo the splash wordmark), so resize()'s title(1) budget and
+	// the overflow test are unchanged; lipgloss.Place centers it across the full
+	// terminal width. The neon breathes with the ambient clock (animColor is
+	// pure in animFrame, so it stays reproducible and vanishes under Ascii).
+	logo := lipgloss.NewStyle().Foreground(animColor(animBrand, m.animFrame)).Bold(true).
+		Render("✦  S E N T R A  ✦")
+	title := logo
+	if m.width > 0 {
+		title = lipgloss.Place(m.width, 1, lipgloss.Center, lipgloss.Center, logo)
+	}
 
 	body := m.views[m.active].model.View()
-	contentStyle := ui.Panel
+	contentStyle := ui.Panel.BorderForeground(animColor(animIdle, m.animFrame))
 	if m.focus == focusContent {
-		contentStyle = ui.PanelFocused
+		contentStyle = ui.PanelFocused.BorderForeground(animColor(animFocus, m.animFrame))
 	}
 	// Size the panel's text region to the resize budget explicitly.
 	// Width/Height fix the box at contentW×contentH (padding inside,
@@ -1061,7 +1065,8 @@ func (m App) View() string {
 	// and TestApp_NoOverflowAtMinSize.
 	row := content
 	if !m.inStartupGate() {
-		rail := lipgloss.NewStyle().Width(sidebarWidth).Render(m.sidebar.View())
+		// withFrame breathes the active nav item's neon in step with the border.
+		rail := lipgloss.NewStyle().Width(sidebarWidth).Render(m.sidebar.withFrame(m.animFrame).View())
 		row = lipgloss.JoinHorizontal(lipgloss.Top, rail, " ", content)
 	}
 
@@ -1106,7 +1111,7 @@ func (m App) cleanup() {
 // un-placed body's geometry (the m.width == 0 path) invariant across frames.
 func (m App) renderSplash() string {
 	elapsed := m.splashElapsed()
-	brand := lipgloss.NewStyle().Foreground(ui.AccentPink).Bold(true)
+	glyph := lipgloss.NewStyle().Foreground(splashGlyphColor(elapsed)).Bold(true)
 
 	const (
 		tagline1 = "Encrypted, deduplicated, agent-aware backups"
@@ -1118,18 +1123,21 @@ func (m App) renderSplash() string {
 	// it always fits. renderSplash is reached with m.width == 0 only before the
 	// first WindowSizeMsg (and in the geometry test), where the big form is still
 	// the right thing to measure.
-	lines := []string{brand.Render(splashGlyphAt(elapsed)), ""}
-	lines = append(lines, splashBigWordmarkLines(elapsed, brand)...)
+	lines := []string{glyph.Render(splashGlyphAt(elapsed)), ""}
+	lines = append(lines, splashBigWordmarkLines(elapsed)...)
 	lines = append(lines, "")
 	if elapsed >= splashTaglineAt {
-		lines = append(lines, ui.Muted.Render(tagline1), ui.Muted.Render(tagline2))
+		since := elapsed - splashTaglineAt
+		lines = append(lines,
+			splashTextLine(tagline1, elapsed, since),
+			splashTextLine(tagline2, elapsed, since))
 	} else {
 		lines = append(lines, splashBlank(tagline1), splashBlank(tagline2))
 	}
 	if v := m.versionLine(); v != "" {
 		lines = append(lines, "")
 		if elapsed >= splashRevealDone {
-			lines = append(lines, ui.Muted.Render(v))
+			lines = append(lines, splashTextLine(v, elapsed, elapsed-splashRevealDone))
 		} else {
 			lines = append(lines, splashBlank(v))
 		}

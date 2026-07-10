@@ -6,6 +6,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/list"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -20,15 +21,19 @@ type sidebarItem struct{ cmd Command }
 
 func (i sidebarItem) FilterValue() string { return i.cmd.Title }
 
-// sidebarDelegate renders one compact row: active rows get the "▍"
-// accent via ui.SidebarActive, inactive rows ui.SidebarItem. Badges
-// render dimmed after the title.
-type sidebarDelegate struct{}
+// sidebarDelegate renders one compact row: the active row gets the "▍" accent,
+// inactive rows ui.SidebarItem; badges render dimmed after the title.
+//
+// frame carries the ambient animation clock so the active row's neon breathes in
+// step with the rest of the chrome (see App.View / anim.go). It is 0 in tests
+// that never tick — deterministic, and moot under the Ascii profile that strips
+// color anyway.
+type sidebarDelegate struct{ frame int }
 
 func (sidebarDelegate) Height() int                         { return 1 }
 func (sidebarDelegate) Spacing() int                        { return 0 }
 func (sidebarDelegate) Update(tea.Msg, *list.Model) tea.Cmd { return nil }
-func (sidebarDelegate) Render(w io.Writer, m list.Model, index int, it list.Item) {
+func (d sidebarDelegate) Render(w io.Writer, m list.Model, index int, it list.Item) {
 	si, ok := it.(sidebarItem)
 	if !ok {
 		return
@@ -38,7 +43,10 @@ func (sidebarDelegate) Render(w io.Writer, m list.Model, index int, it list.Item
 		label = fmt.Sprintf("%s %s", label, ui.Muted.Render(si.cmd.Badge))
 	}
 	if index == m.Index() {
-		fmt.Fprint(w, ui.SidebarActive.Render(label))
+		// Mirror ui.SidebarActive (bold + the "▍ " marker) but with the breathing
+		// accent so the current view's rail entry pulses.
+		active := lipgloss.NewStyle().Foreground(animColor(animActive, d.frame)).Bold(true).SetString("▍ ")
+		fmt.Fprint(w, active.Render(label))
 		return
 	}
 	fmt.Fprint(w, ui.SidebarItem.Render(label))
@@ -107,6 +115,15 @@ func (s Sidebar) Update(msg tea.Msg) (Sidebar, tea.Cmd) {
 }
 
 func (s Sidebar) View() string { return s.list.View() }
+
+// withFrame returns a copy of the sidebar whose active row is colored for the
+// given ambient animation frame. The App calls it per render; because s is a
+// value copy and SetDelegate touches only the copy's list, the stored sidebar is
+// never mutated.
+func (s Sidebar) withFrame(n int) Sidebar {
+	s.list.SetDelegate(sidebarDelegate{frame: n})
+	return s
+}
 
 // SetSize resizes the underlying list (called on WindowSizeMsg).
 func (s *Sidebar) SetSize(width, height int) {

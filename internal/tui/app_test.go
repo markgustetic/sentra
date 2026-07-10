@@ -146,7 +146,9 @@ func installView(t *testing.T, app *App, id string, model tea.Model) {
 func TestApp_RendersSidebarAndActiveView(t *testing.T) {
 	app := newTestApp(t)
 	out := app.View()
-	for _, want := range []string{"sentra", "Dashboard", "Snapshots", "Agent", "test-repo"} {
+	// "S E N T R A" is the centered header logo; "test-repo" is the repo name,
+	// which now lives on the status bar rather than the header.
+	for _, want := range []string{"S E N T R A", "Dashboard", "Snapshots", "Agent", "test-repo"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view missing %q", want)
 		}
@@ -290,18 +292,33 @@ func assertNoQuit(t *testing.T, cmd tea.Cmd) {
 	}
 }
 
-// TestApp_QuitOnQ asserts that pressing `q` (with no overlay open)
-// returns a tea.QuitMsg via the returned tea.Cmd. We invoke the cmd
-// inline to verify the resulting message type rather than running a
-// real tea.Program.
+// TestApp_QuitOnQ asserts that pressing `q` no longer quits outright: it pops a
+// "Quit sentra?" confirm, and only a confirmed result returns tea.QuitMsg.
+// ctrl+c stays an instant force-quit (TestApp_CtrlCQuitsUnderModal).
 func TestApp_QuitOnQ(t *testing.T) {
 	app := newTestApp(t)
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	if cmd == nil {
-		t.Fatal("expected non-nil cmd from `q` keypress")
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	app = m.(App)
+	assertNoQuit(t, cmd) // q alone must not quit
+	if len(app.modals) != 1 {
+		t.Fatalf("q must pop a quit-confirm modal, modals=%d", len(app.modals))
 	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Errorf("expected tea.QuitMsg, got %T", cmd())
+	if !strings.Contains(app.View(), "Quit sentra") {
+		t.Errorf("modal must ask about quitting:\n%s", app.View())
+	}
+
+	// Confirm: enter routes to the modal, which emits confirmedMsg{confirm-quit};
+	// the App then tears down and returns tea.QuitMsg.
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on the confirm modal must emit a command")
+	}
+	_, quitCmd := m.(App).Update(cmd())
+	if quitCmd == nil {
+		t.Fatal("confirming quit must emit a command")
+	}
+	if _, ok := quitCmd().(tea.QuitMsg); !ok {
+		t.Errorf("confirming quit must return tea.QuitMsg, got %T", quitCmd())
 	}
 }
 
@@ -385,7 +402,8 @@ func TestApp_QuitCancelsAgentScan(t *testing.T) {
 	updated, _ := agentView.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 
 	// Install the post-scan-started agent view back into the shell's
-	// registry slot, then send the App `q` to trigger cleanup().
+	// registry slot, then quit: `q` pops the confirm and confirming runs
+	// cleanup(), which cancels the agent ctx.
 	installed := false
 	for i := range app.views {
 		if app.views[i].id == "agent" {
@@ -396,7 +414,11 @@ func TestApp_QuitCancelsAgentScan(t *testing.T) {
 	if !installed {
 		t.Fatal("no agent view registered in the shell")
 	}
-	_, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}) // pops the quit confirm
+	m2, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})              // confirm
+	if cmd != nil {
+		_, _ = m2.(App).Update(cmd()) // confirmedMsg{confirm-quit} → cleanup() cancels the ctx
+	}
 
 	select {
 	case <-cancelled:
@@ -496,21 +518,22 @@ func TestApp_KeysRouteToFocusedContent(t *testing.T) {
 	snaps := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
 	installView(t, &app, "snapshots", snaps)
 
-	// Press '2' to jump to Snapshots; focus must move to content.
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
+	// Press '3' to jump to Snapshots (now the third rail item, after Dashboard
+	// and Backup); focus must move to content.
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
 	a := m.(App)
-	if a.active != 1 {
-		t.Fatalf("active = %d, want 1 (snapshots)", a.active)
+	if a.active != 2 {
+		t.Fatalf("active = %d, want 2 (snapshots)", a.active)
 	}
 	if a.focus != focusContent {
 		t.Fatalf("focus = %v, want focusContent", a.focus)
 	}
-	beforeCursor := a.views[1].model.(Snapshots).cursor()
+	beforeCursor := a.views[2].model.(Snapshots).cursor()
 
 	// A Down key must reach the table and advance its cursor.
 	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
 	a = m.(App)
-	if got := a.views[1].model.(Snapshots).cursor(); got == beforeCursor {
+	if got := a.views[2].model.(Snapshots).cursor(); got == beforeCursor {
 		t.Fatalf("content Down did not advance table cursor (stayed %d)", got)
 	}
 
@@ -522,14 +545,14 @@ func TestApp_KeysRouteToFocusedContent(t *testing.T) {
 	}
 
 	// Now a Down key must move the sidebar highlight, not the table.
-	tableBefore := a.views[1].model.(Snapshots).cursor()
+	tableBefore := a.views[2].model.(Snapshots).cursor()
 	sidebarBefore := a.sidebar.list.Index()
 	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
 	a = m.(App)
 	if got := a.sidebar.list.Index(); got == sidebarBefore {
 		t.Errorf("sidebar-focused Down did not move rail highlight (stayed %d)", got)
 	}
-	if got := a.views[1].model.(Snapshots).cursor(); got != tableBefore {
+	if got := a.views[2].model.(Snapshots).cursor(); got != tableBefore {
 		t.Errorf("sidebar-focused Down leaked into the table cursor (%d -> %d)", tableBefore, got)
 	}
 }
@@ -564,7 +587,7 @@ func TestApp_ResizeForwardsInnerSize(t *testing.T) {
 	m, _ := app.Update(tea.WindowSizeMsg{Width: termW, Height: termH})
 	a := m.(App)
 
-	got := a.views[1].model.(Snapshots).tbl.Height()
+	got := a.views[2].model.(Snapshots).tbl.Height() // snapshots is the 3rd view (dashboard, backup, snapshots)
 	if got == rawH {
 		t.Fatalf("table height %d matches the RAW terminal size — resize() stopped forwarding inner size", got)
 	}
@@ -1087,7 +1110,7 @@ func TestApp_LiveRepoShowsRailAndNav(t *testing.T) {
 	}
 	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'2'}})
 	if got := m.(App).active; got != 1 {
-		t.Fatalf("number key must jump to view 1 (snapshots), got %d", got)
+		t.Fatalf("number key must jump to view 1 (backup), got %d", got)
 	}
 }
 
@@ -1270,13 +1293,11 @@ func TestApp_NonInputViewKeepsGlobals(t *testing.T) {
 		t.Fatalf("focus = %v, want focusContent", app.focus)
 	}
 
-	// 'q' still quits.
-	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
-	if cmd == nil {
-		t.Fatal("expected a quit cmd from 'q' on a non-input view")
-	}
-	if _, ok := cmd().(tea.QuitMsg); !ok {
-		t.Fatalf("expected tea.QuitMsg, got %T", cmd())
+	// 'q' still reaches the shell — now as a quit-confirm modal rather than an
+	// instant quit (ctrl+c stays the instant force-quit).
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if len(m.(App).modals) != 1 {
+		t.Fatalf("expected 'q' to pop a quit-confirm modal, modals=%d", len(m.(App).modals))
 	}
 
 	// '1' still jumps to view 0 (dashboard).
@@ -1615,7 +1636,7 @@ func TestApp_EnterOnAlreadyActiveRailItemKeepsRailUsable(t *testing.T) {
 // Activating a DIFFERENT view still hands the keyboard to the content pane.
 func TestApp_ActivatingADifferentViewFocusesContent(t *testing.T) {
 	app := newTestApp(t)
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown}) // highlight snapshots
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyDown}) // highlight backup (2nd rail item)
 	app = m.(App)
 	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if cmd == nil {
@@ -1624,7 +1645,7 @@ func TestApp_ActivatingADifferentViewFocusesContent(t *testing.T) {
 	m, _ = m.(App).Update(cmd())
 	app = m.(App)
 	if app.active != 1 {
-		t.Fatalf("active = %d, want 1 (snapshots)", app.active)
+		t.Fatalf("active = %d, want 1 (backup)", app.active)
 	}
 	if app.focus != focusContent {
 		t.Error("activating a different view must move focus to content")
@@ -1715,11 +1736,12 @@ func TestApp_ArrowsFallBackWhenAViewHasNoRows(t *testing.T) {
 	}
 }
 
-// Backup sits directly under Snapshots in the rail: taking a backup is the thing
-// an operator reaches for most, and registration order IS rail order.
-func TestApp_BackupSitsUnderSnapshots(t *testing.T) {
+// Backup sits directly under Dashboard in the rail, ahead of the read-only
+// views: taking a backup is the thing an operator reaches for most, and
+// registration order IS rail order.
+func TestApp_BackupSitsUnderDashboard(t *testing.T) {
 	app := newTestApp(t)
-	want := []string{"dashboard", "snapshots", "backup"}
+	want := []string{"dashboard", "backup", "snapshots"}
 	for i, id := range want {
 		if app.views[i].id != id {
 			t.Fatalf("rail position %d = %q, want %q", i, app.views[i].id, id)
@@ -1770,9 +1792,8 @@ func focusView(t *testing.T, app App, id string) App {
 }
 
 // TestApp_EscapeLeavesATextField pins the original trap: a text field on Backup
-// or Password used to swallow every key but ctrl+c. There must be a way back to
-// the rail. These are data-entry screens, so esc now goes through a leave
-// confirm — but the way out still exists.
+// or Password used to swallow every key but ctrl+c. esc must always be a way back
+// to the rail — now directly, with no leave confirm.
 func TestApp_EscapeLeavesATextField(t *testing.T) {
 	r := newFlowRepo(t)
 
@@ -1783,12 +1804,13 @@ func TestApp_EscapeLeavesATextField(t *testing.T) {
 		if !app.contentCapturesText() {
 			t.Fatal("precondition: the tag field must capture text")
 		}
-		m, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // pops the leave confirm
+		m, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // esc leaves straight to the rail
 		app = m.(App)
-		m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirm leaving
-		app = deliverCmd(t, m.(App), cmd)
+		if len(app.modals) != 0 {
+			t.Errorf("esc must not pop a confirm, modals=%d", len(app.modals))
+		}
 		if app.focus != focusSidebar {
-			t.Error("confirming the leave must return focus to the rail")
+			t.Error("esc must return focus to the rail")
 		}
 	})
 
@@ -1799,10 +1821,11 @@ func TestApp_EscapeLeavesATextField(t *testing.T) {
 		}
 		m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 		app = m.(App)
-		m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-		app = deliverCmd(t, m.(App), cmd)
+		if len(app.modals) != 0 {
+			t.Errorf("esc must not pop a confirm, modals=%d", len(app.modals))
+		}
 		if app.focus != focusSidebar {
-			t.Error("confirming the leave must return focus to the rail")
+			t.Error("esc must return focus to the rail")
 		}
 	})
 }
@@ -1915,65 +1938,23 @@ func sizedApp(t *testing.T, r *repo.Repo) App {
 	return m.(App)
 }
 
-// deliverCmd runs cmd (if any) and feeds its message back into the app once.
-func deliverCmd(t *testing.T, app App, cmd tea.Cmd) App {
-	t.Helper()
-	if cmd == nil {
-		return app
-	}
-	msg := cmd()
-	if msg == nil {
-		return app
-	}
-	m, _ := app.Update(msg)
-	return m.(App)
-}
-
-// Escaping a data-entry screen confirms before leaving, rather than silently
-// dropping the operator on the rail. Confirm returns to the rail; the modal's
-// own esc keeps them on the screen.
-func TestApp_EscFromDataEntryScreenConfirms(t *testing.T) {
+// Escaping a data-entry screen returns straight to the rail — no confirm. The
+// only guarded action left in the shell is quit.
+func TestApp_EscFromDataEntryScreenReturnsToRail(t *testing.T) {
 	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup") // backupConfigure = data entry
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = m.(App)
-	if len(app.modals) != 1 {
-		t.Fatalf("esc on a data-entry screen must pop a confirm modal, modals=%d", len(app.modals))
-	}
-	if app.focus != focusContent {
-		t.Error("focus must not leave the screen until the modal is confirmed")
-	}
-	if !strings.Contains(app.View(), "Leave this screen") {
-		t.Errorf("modal must ask about leaving:\n%s", app.View())
-	}
-
-	// Confirm (enter routed to the modal) → confirmedMsg{esc-leave} → rail.
-	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = deliverCmd(t, m.(App), cmd)
 	if len(app.modals) != 0 {
-		t.Error("confirming must dismiss the modal")
+		t.Errorf("esc must not pop a confirm modal, modals=%d", len(app.modals))
 	}
 	if app.focus != focusSidebar {
-		t.Error("confirming 'leave' must return focus to the rail")
+		t.Error("esc on a data-entry screen must return focus to the rail")
 	}
 }
 
-// The modal's own esc keeps you on the screen.
-func TestApp_EscConfirmDismissKeepsYouOnScreen(t *testing.T) {
-	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup")
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // pops the leave-confirm
-	app = m.(App)
-	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // esc in the modal = back out
-	app = deliverCmd(t, m.(App), cmd)
-	if len(app.modals) != 0 {
-		t.Error("esc in the modal must dismiss it")
-	}
-	if app.focus != focusContent {
-		t.Error("backing out of the modal must keep you on the screen")
-	}
-}
-
-// A read-only screen escapes instantly — nothing to lose, no confirm.
-func TestApp_EscFromReadOnlyScreenSkipsConfirm(t *testing.T) {
+// A read-only screen escapes to the rail the same way — proving the data-entry
+// special-case is gone, not just bypassed.
+func TestApp_EscFromReadOnlyScreenReturnsToRail(t *testing.T) {
 	app := focusView(t, sizedApp(t, newFlowRepo(t)), "snapshots")
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = m.(App)
@@ -1985,8 +1966,8 @@ func TestApp_EscFromReadOnlyScreenSkipsConfirm(t *testing.T) {
 	}
 }
 
-// Escaping a running operation confirms before cancelling it.
-func TestApp_EscDuringRunningOpConfirmsBeforeCancel(t *testing.T) {
+// Escaping a running operation cancels it immediately — no confirm modal.
+func TestApp_EscDuringRunningOpCancelsImmediately(t *testing.T) {
 	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup")
 	// Simulate a running backup: the view is in its running stage and the App
 	// holds the op guard with a cancel hook we can observe.
@@ -1999,19 +1980,43 @@ func TestApp_EscDuringRunningOpConfirmsBeforeCancel(t *testing.T) {
 
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = m.(App)
-	if len(app.modals) != 1 {
-		t.Fatalf("esc during a running op must confirm, modals=%d", len(app.modals))
+	if len(app.modals) != 0 {
+		t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
 	}
-	if canceled {
-		t.Error("the op must not cancel until the modal is confirmed")
-	}
-	if !strings.Contains(app.View(), "Cancel the running backup") {
-		t.Errorf("modal must name the running op:\n%s", app.View())
-	}
-
-	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = deliverCmd(t, m.(App), cmd)
 	if !canceled {
-		t.Error("confirming must cancel the running op")
+		t.Error("esc during a running op must cancel it immediately")
+	}
+}
+
+// TestApp_DataViewsRefreshAfterBackup locks the wiring the per-view reload
+// tests can't reach (a view cannot test the shell): a completed backup,
+// broadcast through the App as an opResultMsg, must land on the dashboard and
+// snapshots views so a snapshot taken this session appears without a restart.
+func TestApp_DataViewsRefreshAfterBackup(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{Repo: r, RepoName: "test"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+
+	seedTaggedSnaps(t, r, "nightly") // a backup lands in the repo
+
+	m, _ = app.Update(backupDoneMsg{}) // the flow's terminal op result
+	app = m.(App)
+
+	var dash Dashboard
+	var snaps Snapshots
+	for _, v := range app.views {
+		switch model := v.model.(type) {
+		case Dashboard:
+			dash = model
+		case Snapshots:
+			snaps = model
+		}
+	}
+	if dash.data.SnapshotCount != 1 {
+		t.Errorf("dashboard did not refresh through the shell: count = %d, want 1", dash.data.SnapshotCount)
+	}
+	if len(snaps.snaps) != 1 {
+		t.Errorf("snapshots did not refresh through the shell: got %d, want 1", len(snaps.snaps))
 	}
 }
