@@ -1037,3 +1037,70 @@ func TestSetupWizardDetailsValueColumnAligns(t *testing.T) {
 		}
 	}
 }
+
+// wizardWithAWSProfileInEnv builds a wizard whose DefaultPlan infers an AWS
+// profile, as it does on any machine with a [profile sentra] in ~/.aws/config.
+func wizardWithInferredProfile(t *testing.T, cfg *config.Config) SetupWizardView {
+	t.Helper()
+	t.Setenv("AWS_PROFILE", "inferred-profile")
+	v := NewSetupWizardView(Deps{Config: cfg})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	if v.fields[setupFieldProfile].Value() != "inferred-profile" {
+		t.Fatalf("precondition: profile should be inferred, got %q", v.fields[setupFieldProfile].Value())
+	}
+	return v
+}
+
+// Choosing the S3-compatible backend by hand must drop an AWS profile the user
+// never chose. aws-sdk-go-v2 resolves a shared-config profile BEFORE static env
+// credentials, so carrying an inferred profile into a MinIO/R2 plan hands the
+// endpoint the wrong credentials entirely — the same failure that broke
+// `sentra local`, reached through the manual path instead of inference.
+func TestSetupWizardS3CompatibleDropsInferredProfile(t *testing.T) {
+	v := wizardWithInferredProfile(t, &config.Config{})
+	v.backendCursor = 1 // S3-compatible
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+
+	if v.plan.Backend != setup.BackendS3Compatible {
+		t.Fatalf("backend = %q, want s3-compatible", v.plan.Backend)
+	}
+	if got := v.fields[setupFieldProfile].Value(); got != "" {
+		t.Errorf("s3-compatible plan kept inferred AWS profile %q; it must be dropped", got)
+	}
+}
+
+// Only the INFERRED value is dropped. A profile the operator wrote into
+// sentra.yaml is theirs — R2 and Wasabi credentials legitimately live in one.
+func TestSetupWizardS3CompatibleKeepsConfiguredProfile(t *testing.T) {
+	cfg := &config.Config{}
+	cfg.Repo.S3.Profile = "wasabi"
+	v := NewSetupWizardView(Deps{Config: cfg})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+
+	v.backendCursor = 1
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+
+	if got := v.fields[setupFieldProfile].Value(); got != "wasabi" {
+		t.Errorf("configured profile = %q, want wasabi (must survive)", got)
+	}
+}
+
+// The AWS branch keeps clearing the endpoint, which the S3-compatible branch
+// mirrors for the profile.
+func TestSetupWizardAWSStillClearsEndpoint(t *testing.T) {
+	cfg := &config.Config{}
+	v := NewSetupWizardView(Deps{Config: cfg})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	v.fields[setupFieldEndpoint].SetValue("http://localhost:9000")
+	v.backendCursor = 0
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if got := v.fields[setupFieldEndpoint].Value(); got != "" {
+		t.Errorf("aws backend must clear endpoint, got %q", got)
+	}
+}
