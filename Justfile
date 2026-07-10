@@ -47,7 +47,7 @@ install:
 	@bindir="$({{GO}} env GOBIN)"; [ -n "$bindir" ] || bindir="$({{GO}} env GOPATH)/bin"; echo "Installed sentra -> $bindir/sentra (ensure $bindir is on your PATH)"
 
 # Run the standard local quality gate (mirrors CI).
-check: build test vet lint vuln _tidy-check _fmt-check _diff-check
+check: build test vet lint vuln _tidy-check _fmt-check _diff-check commits-build
 
 # Run the full quality, security, and release-tooling gate.
 full-check: check release-local
@@ -317,6 +317,43 @@ _fmt-check:
 
 _diff-check:
 	git diff --check
+
+# Verify every commit in <base>..HEAD compiles on its own.
+#
+# A gate builds the working TREE, never your commits. The two diverge exactly
+# when the tree is dirty — which is when you are most likely to `git add` a file
+# carrying a hunk you did not write. That is how three non-building commits once
+# reached main while every check reported success. `git bisect` is what this
+# protects.
+commits-build base="origin/main":
+	#!/usr/bin/env bash
+	set -euo pipefail
+	if ! git rev-parse --verify -q "{{base}}" >/dev/null; then
+	  echo "base {{base}} not found — skipping"
+	  exit 0
+	fi
+	commits="$(git rev-list --reverse "{{base}}..HEAD")"
+	if [ -z "$commits" ]; then
+	  echo "no commits in {{base}}..HEAD — nothing to check"
+	  exit 0
+	fi
+	tmp="$(mktemp -d)"
+	wt="$tmp/wt"
+	cleanup() { git worktree remove --force "$wt" >/dev/null 2>&1 || true; rm -rf "$tmp"; }
+	trap cleanup EXIT
+	rc=0
+	for sha in $commits; do
+	  subject="$(git log -1 --format=%s "$sha")"
+	  git worktree add -q --detach "$wt" "$sha"
+	  if (cd "$wt" && {{GO}} build ./... >/dev/null 2>&1); then
+	    printf 'ok     %s  %s\n' "$(git rev-parse --short "$sha")" "$subject"
+	  else
+	    printf 'BROKEN %s  %s\n' "$(git rev-parse --short "$sha")" "$subject"
+	    rc=1
+	  fi
+	  git worktree remove --force "$wt"
+	done
+	exit $rc
 
 _require-local-passphrase:
 	@if [ -z "$SENTRA_PASSPHRASE" ]; then \

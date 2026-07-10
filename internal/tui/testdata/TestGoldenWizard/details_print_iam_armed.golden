@@ -1,0 +1,13 @@
+Sentra setup                                                         Step 2 of 5
+
+Storage details
+
+  S3 bucket         globally-unique bucket name             
+  S3 key prefix     sentra/                                  
+  AWS region        us-east-1                                
+  AWS profile       default                                 
+
+▍ [x] print IAM policy and stop before any changes
+
+⏎  Show IAM policy and stop
+   tab field · space toggle

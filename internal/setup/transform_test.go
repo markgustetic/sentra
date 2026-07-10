@@ -2,6 +2,7 @@ package setup
 
 import (
 	"errors"
+	"fmt"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -279,5 +280,62 @@ func TestDefaultPlanS3CompatibleIgnoresAWSProfileEnv(t *testing.T) {
 	p := DefaultPlan(cfg, probe)
 	if got := p.Config.Repo.S3.Profile; got != "" {
 		t.Errorf("s3-compatible plan inherited AWS_PROFILE %q, want empty", got)
+	}
+}
+
+// TestApplyBackendChoiceInvariant is a RULE, not a case. It sweeps every
+// combination of chosen backend, operator-configured profile, and inferred
+// profile, and asserts the two hygiene invariants that must hold however the
+// backend was settled:
+//
+//	AWS forbids endpoint_url.
+//	An S3-compatible target carries only a profile the operator configured.
+//
+// The second is the one that keeps biting. blobstore.NewS3 passes a non-empty
+// Profile to awsconfig.WithSharedConfigProfile, and aws-sdk-go-v2's
+// resolveCredentialChain tests `sharedProfileSet` BEFORE
+// `envConfig.Credentials.HasKeys()` — so an inferred profile silently outranks
+// the endpoint's own static credentials. It was fixed twice by hand, in
+// DefaultPlan and in the TUI wizard, and still survived in the CLI wizard.
+// Testing the rule instead of the instances is what closes it.
+func TestApplyBackendChoiceInvariant(t *testing.T) {
+	for _, backend := range []Backend{BackendAWS, BackendS3Compatible} {
+		for _, configured := range []string{"", "wasabi"} {
+			for _, inferred := range []string{"", "sentra"} {
+				name := fmt.Sprintf("%s/configured=%q/inferred=%q", backend, configured, inferred)
+				t.Run(name, func(t *testing.T) {
+					var p Plan
+					p.Config.Repo.S3.EndpointURL = "http://localhost:9000"
+					// The plan's profile is whatever survived inference: the
+					// operator's own value wins, else the inferred one.
+					p.Config.Repo.S3.Profile = configured
+					if configured == "" {
+						p.Config.Repo.S3.Profile = inferred
+					}
+
+					ApplyBackendChoice(&p, backend, configured)
+
+					if p.Backend != backend {
+						t.Fatalf("backend = %q, want %q", p.Backend, backend)
+					}
+					switch backend {
+					case BackendAWS:
+						if p.Config.Repo.S3.EndpointURL != "" {
+							t.Errorf("aws backend must clear endpoint_url, got %q",
+								p.Config.Repo.S3.EndpointURL)
+						}
+					case BackendS3Compatible:
+						if got := p.Config.Repo.S3.Profile; got != configured {
+							t.Errorf("s3-compatible profile = %q, want %q "+
+								"(only a configured profile may survive)", got, configured)
+						}
+						if p.Config.Repo.S3.EndpointURL != "http://localhost:9000" {
+							t.Errorf("s3-compatible must preserve endpoint_url, got %q",
+								p.Config.Repo.S3.EndpointURL)
+						}
+					}
+				})
+			}
+		}
 	}
 }
