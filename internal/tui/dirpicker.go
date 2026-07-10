@@ -186,7 +186,10 @@ func (p dirPicker) enterVerb() string {
 	}
 	switch r := p.rows[p.cursor]; r.kind {
 	case rowUseCurrent:
-		return "back up this folder"
+		// Activating this row commits — for the sole caller (backup) that means
+		// starting the run, so the verb says "start the backup", not the old
+		// "back up this folder" which read like a start but only re-selected.
+		return "start the backup"
 	case rowParent:
 		return "go up to " + filepath.Base(r.path)
 	default:
