@@ -553,6 +553,19 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.cleanup()
 			return m, tea.Quit
 		}
+		// The two esc-confirm modals are shell-owned: leaving a data-entry screen
+		// returns focus to the rail; cancelling a running op tears down its
+		// context (the same path as a direct cancelOpMsg).
+		if msg.id == escLeaveID {
+			m.focus = focusSidebar
+			return m, nil
+		}
+		if msg.id == escCancelOpID {
+			if m.opCancel != nil {
+				m.opCancel()
+			}
+			return m, nil
+		}
 		// Every other confirmation belongs to a flow (e.g. prune's typed
 		// "prune" gate): forward it to every view so the owning flow can
 		// act on its id. Without this, popping the modal here silently
@@ -638,6 +651,35 @@ type escapeConsumer interface{ ConsumesEscape() bool }
 func (m App) contentConsumesEscape() bool {
 	ec, ok := m.views[m.active].model.(escapeConsumer)
 	return ok && ec.ConsumesEscape()
+}
+
+// escapeCloser is implemented by a data-entry view: one whose current stage
+// collects input to perform an action (backup config, passphrase, a form). While
+// such a view is focused, esc-to-rail is intercepted by a "leave this screen?"
+// confirm rather than dropping the operator on the rail silently. Read-only
+// views (lists, results) never implement it and escape instantly.
+type escapeCloser interface{ ConfirmsClose() bool }
+
+// contentConfirmsClose reports whether leaving the active view should be
+// confirmed first.
+func (m App) contentConfirmsClose() bool {
+	ec, ok := m.views[m.active].model.(escapeCloser)
+	return ok && ec.ConfirmsClose()
+}
+
+// escLeaveID / escCancelOpID tag the two esc confirmation modals so the
+// confirmedMsg handler can tell "leave the screen" from "cancel the running op".
+const (
+	escLeaveID    = "esc-leave"
+	escCancelOpID = "esc-cancel-op"
+)
+
+// pushConfirmModal puts a y/n ConfirmModal on the stack sized to the terminal.
+// enter emits confirmedMsg{id}; the modal's own esc dismisses it (see
+// ConfirmModal.Update), so backing out is free.
+func (m App) pushConfirmModal(title, body, id string) App {
+	m.modals = append(m.modals, NewConfirmModal(title, body, id, m.width, m.height))
+	return m
 }
 
 // advertisesKey reports whether any of the view's own hints already bind k, so
@@ -769,10 +811,29 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Backup's tag field and Password used to trap the keyboard entirely, with
 	// ctrl+c (which quits the app) the only way out. Startup gates keep esc —
 	// the wizard uses it to restart, and there is no rail to return to.
-	viewOwnsEscape := m.focus == focusContent && m.contentConsumesEscape()
-	if msg.Type == tea.KeyEsc && !m.inStartupGate() && !viewOwnsEscape {
-		m.focus = focusSidebar
-		return m, nil
+	if msg.Type == tea.KeyEsc && !m.inStartupGate() && m.focus == focusContent {
+		switch {
+		case m.opRunning != "":
+			// Escaping a running op confirms before cancelling it, so a stray
+			// esc doesn't abandon work in progress.
+			return m.pushConfirmModal(
+				"Cancel the running "+m.opRunning+"?",
+				"The operation stops where it is. Anything already written stays.",
+				escCancelOpID), nil
+		case m.contentConsumesEscape():
+			// The view means something by esc itself — close a detail, step back
+			// a wizard stage. Let it handle the key (fall through below).
+		case m.contentConfirmsClose():
+			// A data-entry screen: confirm before dropping the operator on the
+			// rail, rather than losing their place silently.
+			return m.pushConfirmModal(
+				"Leave this screen?",
+				"Anything entered here has not been applied yet.",
+				escLeaveID), nil
+		default:
+			m.focus = focusSidebar
+			return m, nil
+		}
 	}
 
 	// A startup gate, or a content-focused view capturing text, owns the rest of

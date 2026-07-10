@@ -144,21 +144,28 @@ func FuzzAppKeyRouting(f *testing.F) {
 			}
 		}
 
-		// Invariant 6: the shell is never a dead end — esc always gets you back to
-		// the rail unless the focused view means something by it.
+		// Invariant 6: the shell is never a dead end — esc always makes progress
+		// toward the rail. Either it returns focus directly, or (on a data-entry
+		// screen) it opens a leave-confirm modal whose own esc backs out. Both are
+		// escapable; neither traps.
 		//
-		// The earlier version of this invariant asserted "tab always moves focus"
-		// and EXCLUDED text-capturing views. That exclusion was the bug: on
-		// Backup's tag field and on Password, esc, tab and ctrl+p were all
-		// swallowed and only ctrl+c escaped, which quits the app. An invariant
-		// that carves out the broken case cannot catch it.
+		// The earlier version asserted "tab always moves focus" and EXCLUDED
+		// text-capturing views. That exclusion was the bug: on Backup's tag field
+		// and Password, esc/tab/ctrl+p were all swallowed and only ctrl+c escaped.
+		// An invariant that carves out the broken case cannot catch it.
 		overlay := len(app.modals) > 0 || app.paletteOpen || app.inStartupGate() ||
 			app.splashActive || app.tooSmall()
 		viewOwnsEscape := app.focus == focusContent && app.contentConsumesEscape()
 		if !overlay && !viewOwnsEscape {
 			m3, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
-			if after := m3.(App); after.focus != focusSidebar {
-				t.Fatalf("esc did not return focus to the rail from view %q — the shell is a dead end",
+			after := m3.(App)
+			// Progress = focus reached the rail, OR a confirm modal opened (which
+			// esc-dismisses back to the screen). A running op likewise pops a
+			// cancel-confirm.
+			leftToRail := after.focus == focusSidebar
+			confirmOpened := len(after.modals) > len(app.modals)
+			if !leftToRail && !confirmOpened {
+				t.Fatalf("esc made no progress from view %q — the shell is a dead end",
 					app.views[app.active].id)
 			}
 		}

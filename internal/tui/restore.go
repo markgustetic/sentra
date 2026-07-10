@@ -116,6 +116,10 @@ func (v RestoreView) ConsumesEscape() bool {
 	}
 }
 
+// ConfirmsClose: only the destination-path entry is data entry. The snapshot
+// picker is browsing (like the snapshots list), so it escapes without a confirm.
+func (v RestoreView) ConfirmsClose() bool { return v.stage == restoreDest }
+
 func (v RestoreView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case restorePick:

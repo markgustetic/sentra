@@ -119,6 +119,9 @@ func (v PoliciesView) CapturesText() bool { return v.stage == policiesForm }
 // the shell.
 func (v PoliciesView) ConsumesEscape() bool { return v.stage == policiesForm }
 
+// ConfirmsClose: the add/edit form is data entry; the list stage is not.
+func (v PoliciesView) ConfirmsClose() bool { return v.stage == policiesForm }
+
 func (v PoliciesView) ShortHelp() []key.Binding {
 	if v.stage != policiesList || len(v.names) == 0 {
 		return nil

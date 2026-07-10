@@ -109,6 +109,10 @@ func (v BackupView) ConsumesTab() bool { return v.stage == backupConfigure }
 // tag field.
 func (v BackupView) ConsumesEscape() bool { return v.stage == backupRunning }
 
+// ConfirmsClose: the configure stage collects a folder and tag, so leaving it
+// pops a "leave this screen?" confirm.
+func (v BackupView) ConfirmsClose() bool { return v.stage == backupConfigure }
+
 func (v BackupView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case backupRunning:

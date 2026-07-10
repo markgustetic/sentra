@@ -110,6 +110,9 @@ func (v SyncView) CapturesText() bool { return v.stage == syncConfigure }
 // ConsumesEscape: only while the copy is running, where esc cancels it.
 func (v SyncView) ConsumesEscape() bool { return v.stage == syncRunning }
 
+// ConfirmsClose: the configure stage collects the destination and toggles.
+func (v SyncView) ConfirmsClose() bool { return v.stage == syncConfigure }
+
 func (v SyncView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case syncRunning:

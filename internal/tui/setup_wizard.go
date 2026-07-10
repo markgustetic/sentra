@@ -321,6 +321,19 @@ func (v SetupWizardView) ConsumesEscape() bool {
 	return v.stage == stageIAMPreview || v.stage == stageError
 }
 
+// ConfirmsClose: every entry stage collects input. The IAM preview and error
+// stages own esc themselves (ConsumesEscape), and provision/done are terminal,
+// so they are excluded. On first run the wizard is a startup gate and esc never
+// reaches this check.
+func (v SetupWizardView) ConfirmsClose() bool {
+	switch v.stage {
+	case stageBackend, stageDetails, stageActions, stagePassphrase, stageReview:
+		return true
+	default:
+		return false
+	}
+}
+
 func (v SetupWizardView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case stageProvision:
