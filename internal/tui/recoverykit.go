@@ -97,6 +97,9 @@ func (v RecoveryKitView) CapturesText() bool { return v.stage == rkSaving }
 // ConsumesEscape: esc abandons the save-path prompt.
 func (v RecoveryKitView) ConsumesEscape() bool { return v.stage == rkSaving }
 
+// ConfirmsClose: the save-path prompt is data entry.
+func (v RecoveryKitView) ConfirmsClose() bool { return v.stage == rkSaving }
+
 func (v RecoveryKitView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case rkRunning:

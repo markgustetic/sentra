@@ -100,6 +100,9 @@ func (v PasswordView) Title() string { return "Password" }
 // running/done stages have no input.
 func (v PasswordView) CapturesText() bool { return v.stage == passwordInput }
 
+// ConfirmsClose: the input stage holds a half-typed new passphrase.
+func (v PasswordView) ConfirmsClose() bool { return v.stage == passwordInput }
+
 func (v PasswordView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case passwordRunning:
