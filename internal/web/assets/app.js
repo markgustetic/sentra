@@ -17,8 +17,8 @@ async function api(path, opts) {
 
 const NAV = [
   { cat: 'Views', items: [['dashboard', 'Dashboard'], ['snapshots', 'Snapshots']] },
-  { cat: 'Operations', items: [['backup', 'Backup'], ['restore', 'Restore'], ['prune', 'Prune'], ['password', 'Password']] },
-  { cat: 'Inspect', items: [['check', 'Check'], ['diff', 'Diff'], ['recovery', 'Recovery Kit']] },
+  { cat: 'Operations', items: [['backup', 'Backup'], ['restore', 'Restore'], ['prune', 'Prune'], ['sync', 'Sync'], ['password', 'Password']] },
+  { cat: 'Inspect', items: [['check', 'Check'], ['diff', 'Diff'], ['doctor', 'Doctor'], ['recovery', 'Recovery Kit']] },
 ];
 
 function renderNav() {
@@ -57,7 +57,7 @@ $('#unlock-form').addEventListener('submit', async (e) => {
 });
 
 // ---------- router ----------
-const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery, restore: viewRestore, prune: viewPrune, password: viewPassword };
+const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery, restore: viewRestore, prune: viewPrune, password: viewPassword, sync: viewSync, doctor: viewDoctor };
 function route() {
   const view = (location.hash.replace(/^#\//, '') || 'dashboard').split('/')[0];
   const fn = VIEWS[view] || viewDashboard;
@@ -290,6 +290,45 @@ async function viewPassword(c) {
       $('#np').value = ''; $('#cp').value = '';
       $('#pwout').innerHTML = r.warning ? `<div class="err">${esc(r.warning)}</div>` : `<div class="ok">✓ Passphrase rotated${r.keyringSaved ? ' · keyring updated' : ''}</div>`;
     } catch (err) { $('#pwout').innerHTML = `<div class="err">${esc(err.message)}</div>`; }
+  });
+}
+
+// ---------- doctor ----------
+async function viewDoctor(c) {
+  c.innerHTML = `<p class="eyebrow">Doctor</p><div class="sub">running diagnostics…</div>`;
+  let d;
+  try { d = await api('/api/doctor'); }
+  catch (err) { c.innerHTML = `<p class="eyebrow">Doctor</p><div class="err">${esc(err.message)}</div>`; return; }
+  const badge = s => s === 'ok' ? '<span class="ok">✓</span>' : s === 'warn' ? '<span style="color:var(--gold)">▲</span>' : '<span class="err">✗</span>';
+  const rows = d.checks.map(ck => `<tr class="row"><td style="width:2rem">${badge(ck.status)}</td><td>${esc(ck.label)}</td><td class="sub">${esc(ck.detail || '')}</td></tr>`).join('');
+  c.innerHTML = `<p class="eyebrow">Doctor · ${esc(d.backend)} backend</p><table><tbody>${rows}</tbody></table>`;
+}
+
+// ---------- sync ----------
+async function viewSync(c) {
+  c.innerHTML = `<p class="eyebrow">Sync to a clone</p>
+    <div class="sub" style="margin-bottom:.8rem">Replicate this repository to a destination described by another sentra.yaml. The destination becomes a working clone with the same passphrase.</div>
+    <div style="display:flex;flex-direction:column;gap:.7rem;max-width:560px">
+      <input id="sdst" placeholder="path to destination sentra.yaml (on this machine)">
+      <label class="sub"><input id="sinit" type="checkbox"> initialize an empty destination (copy config first)</label>
+      <label class="sub"><input id="sdry" type="checkbox"> dry run (list what would be copied, write nothing)</label>
+      <button id="sgo" class="btn go" style="align-self:flex-start">Sync</button>
+    </div>
+    <div id="sprog"></div>`;
+  $('#sgo').addEventListener('click', async () => {
+    const path = $('#sdst').value.trim();
+    if (!path) { $('#sprog').innerHTML = `<div class="err" style="margin-top:1rem">enter the destination sentra.yaml path</div>`; return; }
+    const dry = $('#sdry').checked;
+    if (!dry && !(await typedConfirm('sync', 'Sync to destination?', `Copies this repository (and its wrapped key) to the destination in <b>${esc(path)}</b>.`))) return;
+    const box = progressBox($('#sprog'));
+    let res;
+    try { res = await api('/api/sync', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ dstConfigPath: path, initDest: $('#sinit').checked, dryRun: dry, confirm: 'sync' }) }); }
+    catch (err) { box.err(err.message); return; }
+    streamSSE(res.opId, {
+      onProgress: box.prog,
+      onDone: d => box.ok(`<span class="ok">✓ ${d.dryRun ? 'Dry run' : 'Synced'}</span> — ${d.copiedBlobs} copied (${fmtBytes(d.copiedBytes)}), ${d.skippedBlobs} already present${d.bootstrapped ? ' · destination bootstrapped' : ''}`),
+      onError: box.err,
+    });
   });
 }
 
