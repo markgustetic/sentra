@@ -171,6 +171,24 @@ func TestApp_SidebarEnterSwitchesView(t *testing.T) {
 	}
 }
 
+// TestApp_SidebarScrollSwitchesViewLive checks the rail switches the shown view
+// as the cursor scrolls over items, while keeping focus on the rail so you can
+// keep scrolling.
+func TestApp_SidebarScrollSwitchesViewLive(t *testing.T) {
+	app := newTestApp(t)
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown}) // cursor → Snapshots
+	if cmd == nil {
+		t.Fatal("scrolling the rail should emit a preview cmd")
+	}
+	m, _ = m.(App).Update(cmd()) // deliver navPreviewMsg
+	if got := m.(App).active; got != 1 {
+		t.Fatalf("active = %d, want 1 (snapshots) — the view should follow the cursor", got)
+	}
+	if m.(App).focus != focusSidebar {
+		t.Fatal("live scroll must keep focus on the rail")
+	}
+}
+
 func TestApp_NumberKeyJumpsToView(t *testing.T) {
 	app := newTestApp(t)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})

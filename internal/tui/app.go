@@ -556,6 +556,19 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case navPreviewMsg:
+		// Live rail scroll: show the highlighted view but keep focus on the rail
+		// (the list already moved its own selection, so don't touch it) so the
+		// user can keep scrolling through screens. No load is triggered — views
+		// load eagerly at Init, so switching m.active is a pure render change.
+		for i, v := range m.views {
+			if v.id == msg.id {
+				m.active = i
+				break
+			}
+		}
+		return m, nil
+
 	case pushModalMsg:
 		m.modals = append(m.modals, msg.modal.SetSize(m.width, m.height))
 		return m, nil
