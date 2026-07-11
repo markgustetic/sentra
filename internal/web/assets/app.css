@@ -11,6 +11,10 @@
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
 }
 *{box-sizing:border-box}
+/* The `hidden` attribute must win over the class rules below (.overlay/.app set
+   their own display, which would otherwise defeat the UA [hidden] rule and leave
+   toggled overlays visible). */
+[hidden]{display:none!important}
 html,body{height:100%}
 body{
   margin:0; color:var(--subtle); font-family:var(--mono); font-size:14px;
