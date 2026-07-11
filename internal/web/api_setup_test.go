@@ -144,6 +144,19 @@ func TestSetup_SeededPlanKeepsRetentionDefaults(t *testing.T) {
 	}
 }
 
+func TestSetup_S3CompatibleKeepsUserProfile(t *testing.T) {
+	// A profile the user types for an S3-compatible target (R2/Wasabi creds live
+	// in a named profile) must survive — not be cleared as an inferred default.
+	srv := setupServer(t, nil)
+	plan := srv.buildPlan(setupForm{
+		Backend: "s3-compatible", Bucket: "sentra-test",
+		EndpointURL: "http://x:9000", Profile: "r2-creds", InitRepo: true,
+	})
+	if plan.Config.Repo.S3.Profile != "r2-creds" {
+		t.Errorf("S3-compatible dropped the user-typed profile: %q", plan.Config.Repo.S3.Profile)
+	}
+}
+
 func TestSetup_IAMPolicy(t *testing.T) {
 	srv := setupServer(t, nil)
 	rec := req(t, srv, "GET", "/api/setup/iam-policy?bucket=my-sentra-bucket&prefix=team", "", true)

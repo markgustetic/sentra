@@ -153,6 +153,15 @@ func TestSetup_ApplyExistingRepoCorrectPassphraseAdopts(t *testing.T) {
 	}
 }
 
+func TestSetup_ApplyRejectsNoInit(t *testing.T) {
+	// initRepo:false would leave a configured-but-repo-less, unrecoverable server.
+	srv := setupServerWithEffects(t, &fakeSetupEffects{store: blobstore.NewMemory()})
+	body := `{"backend":"s3-compatible","bucket":"sentra-web","endpointUrl":"http://x:9000","initRepo":false,"passphrase":"correct-horse-battery"}`
+	if rec := req(t, srv, "POST", "/api/setup/apply", body, true); rec.Code != 400 {
+		t.Errorf("initRepo:false apply = %d, want 400", rec.Code)
+	}
+}
+
 func TestSetup_ApplyRejectsShortPassphrase(t *testing.T) {
 	srv := setupServerWithEffects(t, &fakeSetupEffects{store: blobstore.NewMemory()})
 	body := `{"backend":"s3-compatible","bucket":"sentra-web","endpointUrl":"http://x:9000","initRepo":true,"passphrase":"short"}`

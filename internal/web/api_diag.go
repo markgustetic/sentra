@@ -144,12 +144,15 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 }
 
 // sameS3Location reports whether two configs point at the same bucket+prefix on
-// the same endpoint — the guard against syncing a repo onto itself.
+// the same endpoint — the guard against syncing a repo onto itself. Prefixes are
+// compared after stripping surrounding slashes because the S3 store keys via
+// path.Join (blobstore/s3.go), which collapses "backup" and "backup/" to the
+// same namespace — so a trailing-slash difference must not slip past the guard.
 func sameS3Location(a, b *config.Config) bool {
 	if a == nil || b == nil {
 		return false
 	}
 	return a.Repo.S3.Bucket == b.Repo.S3.Bucket &&
-		a.Repo.S3.Prefix == b.Repo.S3.Prefix &&
+		strings.Trim(a.Repo.S3.Prefix, "/") == strings.Trim(b.Repo.S3.Prefix, "/") &&
 		a.Repo.S3.EndpointURL == b.Repo.S3.EndpointURL
 }

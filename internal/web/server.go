@@ -216,6 +216,12 @@ func (s *Server) routes() {
 // mux so no route can skip it.
 func (s *Server) originGuard(next http.Handler) http.Handler {
 	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		// Refuse to be framed. The Host/Origin checks below stop forged
+		// cross-origin requests, but not a malicious page that iframes the real
+		// app and clickjacks a single-click action (delete policy, schedule
+		// install, lock). Set on every response, before the guard's own errors.
+		w.Header().Set("X-Frame-Options", "DENY")
+		w.Header().Set("Content-Security-Policy", "frame-ancestors 'none'")
 		if !loopbackHost(r.Host) {
 			http.Error(w, "forbidden host", http.StatusForbidden)
 			return

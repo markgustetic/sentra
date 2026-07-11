@@ -49,7 +49,13 @@ func (s *Server) buildPlan(f setupForm) setup.Plan {
 	if backend != setup.BackendS3Compatible {
 		backend = setup.BackendAWS
 	}
-	setup.ApplyBackendChoice(&plan, backend, seed.Repo.S3.Profile)
+	// Pass the SUBMITTED profile as the "configured" one: the web driver rebuilds
+	// the plan from scratch on every request, so a value in the profile field is
+	// always operator-typed, never DefaultPlan's inference. Passing the (empty)
+	// seed profile would let ApplyBackendChoice clear a profile the user wrote for
+	// an S3-compatible target (R2/Wasabi creds live in a named profile) — the
+	// invariant CLAUDE.md guards.
+	setup.ApplyBackendChoice(&plan, backend, f.Profile)
 
 	plan.InitRepo = f.InitRepo
 	if backend == setup.BackendS3Compatible {
@@ -182,6 +188,14 @@ func (s *Server) handleSetupApply(w http.ResponseWriter, r *http.Request) {
 	if err := setup.ValidatePlan(plan); err != nil {
 		crypto.Zeroize(pass)
 		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	// The web wizard has no config-only mode and no way to resume initialization
+	// later, so a config-written-but-repo-less server would be a dead end (setup
+	// 409s, unlock can't init). Refuse it rather than wedge.
+	if !plan.InitRepo {
+		crypto.Zeroize(pass)
+		writeErr(w, http.StatusBadRequest, "the web setup wizard always initializes the repository")
 		return
 	}
 	if plan.InitRepo && len(pass) < minPasswordLen {

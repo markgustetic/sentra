@@ -71,17 +71,53 @@ func (s *Server) startOp(name string, run func(context.Context, progress.Reporte
 	rp := s.repo
 	s.mu.Unlock()
 
-	go func() {
-		data, err := run(context.Background(), &opReporter{op: o}, rp)
-		o.mu.Lock()
-		o.result = opResult{data: data, err: err}
-		o.mu.Unlock()
-		close(o.done)
-		s.mu.Lock()
-		s.opRunning = ""
-		s.mu.Unlock()
-	}()
+	go s.finishOp(o, true, func() (any, error) {
+		return run(context.Background(), &opReporter{op: o}, rp)
+	})
 	return o.id, nil
+}
+
+// finishOp runs fn on an op goroutine, records its result — or a recovered
+// panic as an error rather than letting it crash the whole process — then closes
+// o.done. When guarded it clears the one-op guard afterwards, always via defer so
+// a panic can't wedge opRunning. This matters because a panic in a goroutine a
+// handler spawned is otherwise unrecoverable (net/http's recover covers only the
+// synchronous handler), so a nil-deref deep in CreateSnapshot / Scan / GC would
+// take the server down and drop the unlocked repo.
+func (s *Server) finishOp(o *op, guarded bool, fn func() (any, error)) {
+	if guarded {
+		defer func() {
+			s.mu.Lock()
+			s.opRunning = ""
+			s.mu.Unlock()
+		}()
+	}
+	data, err := safeRun(fn)
+	o.mu.Lock()
+	o.result = opResult{data: data, err: err}
+	o.mu.Unlock()
+	close(o.done)
+}
+
+// safeRun runs fn, converting a panic into an error so the op reports a failure
+// instead of crashing the process.
+func safeRun(fn func() (any, error)) (data any, err error) {
+	defer func() {
+		if p := recover(); p != nil {
+			err = fmt.Errorf("internal error: %v", p)
+		}
+	}()
+	return fn()
+}
+
+// emitTo returns a non-blocking token emitter for an op's text channel.
+func emitTo(o *op) func(string) {
+	return func(tok string) {
+		select {
+		case o.text <- tok:
+		default:
+		}
+	}
 }
 
 // startReadStream registers a read-only streaming op — the agent scan, which
@@ -100,19 +136,9 @@ func (s *Server) startReadStream(run func(context.Context, func(string), *repo.R
 	rp := s.repo
 	s.mu.Unlock()
 
-	go func() {
-		emit := func(tok string) {
-			select {
-			case o.text <- tok:
-			default: // reader is slow or absent — drop; the done payload is authoritative
-			}
-		}
-		data, err := run(context.Background(), emit, rp)
-		o.mu.Lock()
-		o.result = opResult{data: data, err: err}
-		o.mu.Unlock()
-		close(o.done)
-	}()
+	go s.finishOp(o, false, func() (any, error) {
+		return run(context.Background(), emitTo(o), rp)
+	})
 	return o.id, nil
 }
 
@@ -132,22 +158,9 @@ func (s *Server) startSetupOp(run func(context.Context, func(string)) (any, erro
 	s.ops[o.id] = o
 	s.mu.Unlock()
 
-	go func() {
-		emit := func(tok string) {
-			select {
-			case o.text <- tok:
-			default:
-			}
-		}
-		data, err := run(context.Background(), emit)
-		o.mu.Lock()
-		o.result = opResult{data: data, err: err}
-		o.mu.Unlock()
-		close(o.done)
-		s.mu.Lock()
-		s.opRunning = ""
-		s.mu.Unlock()
-	}()
+	go s.finishOp(o, true, func() (any, error) {
+		return run(context.Background(), emitTo(o))
+	})
 	return o.id, nil
 }
 
@@ -177,6 +190,14 @@ type opReporter struct {
 
 func (r *opReporter) Total(n int64) {
 	r.mu.Lock()
+	// Total(0) is the per-operation start signal (repo CreateSnapshot emits it).
+	// Reset done too, so a reporter reused across sub-operations — a multi-path
+	// policy run calls CreateSnapshot once per path against this one reporter —
+	// reports each path from 0 instead of carrying the prior path's bytes forward
+	// and reading past 100%.
+	if n == 0 {
+		r.done = 0
+	}
 	r.total = n
 	r.mu.Unlock()
 	r.emit()
