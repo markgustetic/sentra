@@ -9,6 +9,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 
 	"github.com/markgustetic/sentra/internal/agent"
 	"github.com/markgustetic/sentra/internal/agent/action"
@@ -70,15 +71,19 @@ func (s *Server) handleAgentScan(w http.ResponseWriter, r *http.Request) {
 			Config:     agentCfg,
 			Actions:    actions,
 		}
-		// Bridge Scan's token channel onto the op's emit callback.
+		// Bridge Scan's token channel onto the op's emit callback. Wait for the
+		// forwarder to finish draining before returning, so the op's done event
+		// can't race ahead of the last reasoning tokens and truncate the stream.
 		stream := make(chan string, 64)
-		go func() {
+		var fwd sync.WaitGroup
+		fwd.Go(func() {
 			for tok := range stream {
 				emit(tok)
 			}
-		}()
+		})
 		recs, scanErr := a.Scan(ctx, root, stream)
 		close(stream)
+		fwd.Wait()
 		if scanErr != nil {
 			return nil, scanErr
 		}
