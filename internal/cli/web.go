@@ -12,6 +12,9 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/markgustetic/sentra/internal/agent/action"
+	"github.com/markgustetic/sentra/internal/agent/heuristics"
+	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -36,6 +39,17 @@ type WebDeps struct {
 
 	// PassphraseFile resolves the --passphrase-file path, same as UIDeps.
 	PassphraseFile func() string
+
+	// ProviderForConfig builds the agent's LLM provider from the loaded config,
+	// mirroring AgentDeps/UIDeps. Nil disables the LLM (local-only scans still
+	// work).
+	ProviderForConfig func(cfg *config.Config) llm.Provider
+
+	// Actions is the agent action registry the apply path dispatches through.
+	Actions *action.Registry
+
+	// Heuristics is the local heuristic set the agent scan runs first.
+	Heuristics []heuristics.Heuristic
 }
 
 // NewWeb builds the `sentra web` cobra command: a localhost-only browser UI over
@@ -98,6 +112,11 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 		return repo.Open(cmd.Context(), store, pass)
 	}
 
+	var provider llm.Provider
+	if deps.ProviderForConfig != nil {
+		provider = deps.ProviderForConfig(st.Config)
+	}
+
 	srv := web.New(web.Deps{
 		Repo:        opened,
 		Config:      st.Config,
@@ -106,6 +125,9 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 		Unlock:      unlock,
 		SaveKeyring: deps.SaveKeyring,
 		NewStore:    deps.NewStore,
+		Provider:    provider,
+		Actions:     deps.Actions,
+		Heuristics:  deps.Heuristics,
 		Assets:      web.Assets,
 	})
 
