@@ -18,6 +18,7 @@ async function api(path, opts) {
 const NAV = [
   { cat: 'Views', items: [['dashboard', 'Dashboard'], ['snapshots', 'Snapshots']] },
   { cat: 'Operations', items: [['backup', 'Backup']] },
+  { cat: 'Inspect', items: [['check', 'Check'], ['diff', 'Diff'], ['recovery', 'Recovery Kit']] },
 ];
 
 function renderNav() {
@@ -56,7 +57,7 @@ $('#unlock-form').addEventListener('submit', async (e) => {
 });
 
 // ---------- router ----------
-const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup };
+const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery };
 function route() {
   const view = (location.hash.replace(/^#\//, '') || 'dashboard').split('/')[0];
   const fn = VIEWS[view] || viewDashboard;
@@ -144,6 +145,56 @@ async function startBackup() {
     ev.close();
     const msg = e.data ? JSON.parse(e.data).message : 'connection lost';
     $('#pmsg').innerHTML = `<span class="err">${esc(msg)}</span>`;
+  });
+}
+
+// ---------- inspect ----------
+async function viewCheck(c) {
+  c.innerHTML = `<p class="eyebrow">Integrity check</p><div class="sub">scanning the repository…</div>`;
+  const r = await api('/api/check');
+  const issues = (r.missing_blobs || []).length + (r.manifest_issues || []).length;
+  const staleLock = r.lock && r.lock.stale;
+  const verdict = issues === 0 && !staleLock
+    ? `<span class="ok">✓ healthy</span>`
+    : `<span class="err">${issues} issue${issues === 1 ? '' : 's'}${staleLock ? ' · stale lock' : ''}</span>`;
+  c.innerHTML = `<p class="eyebrow">Integrity check</p>
+    <div class="cards">
+      <div class="panel"><h3>verdict</h3><div class="metric ${issues || staleLock ? '' : 'mint'}">${verdict}</div><div class="sub">checked ${esc(r.checked_at || '')}</div></div>
+      <div class="panel"><h3>contents</h3><div class="metric">${r.snapshots}</div><div class="sub">snapshots · ${r.files} files · ${fmtBytes(r.bytes)}</div></div>
+      <div class="panel"><h3>blobs</h3><div class="metric magenta">${r.data_blobs}</div><div class="sub">${r.referenced_blobs} referenced · ${fmtBytes(r.orphan_bytes)} orphaned</div></div>
+    </div>
+    ${issues ? `<div class="panel" style="margin-top:1.2rem;border-color:var(--red)"><h3 style="color:var(--red)">issues</h3>${(r.missing_blobs || []).map(m => `<div class="err">missing blob ${esc(JSON.stringify(m))}</div>`).join('')}${(r.manifest_issues || []).map(m => `<div class="err">${esc(JSON.stringify(m))}</div>`).join('')}</div>` : ''}`;
+}
+
+async function viewDiff(c) {
+  const snaps = await api('/api/snapshots');
+  const opts = snaps.map(s => `<option value="${esc(s.id)}">${esc(s.id.slice(0, 20))} · ${esc(s.tag || 'no tag')}</option>`).join('');
+  c.innerHTML = `<p class="eyebrow">Diff snapshots</p>
+    <div class="startbar"><select id="da">${opts}</select><span class="sub">→</span><select id="db">${opts}</select><button id="cmp" class="btn go">Compare</button></div>
+    <div id="dout"></div>`;
+  if (snaps.length > 1) $('#db').selectedIndex = 1;
+  $('#cmp').addEventListener('click', async () => {
+    const a = $('#da').value, b = $('#db').value;
+    $('#dout').innerHTML = '<div class="sub" style="margin-top:1rem">comparing…</div>';
+    try {
+      const d = await api(`/api/diff?a=${encodeURIComponent(a)}&b=${encodeURIComponent(b)}`);
+      const col = (title, arr, cls) => `<div class="panel" style="border-color:var(--${cls})"><h3>${title} (${arr.length})</h3>${arr.slice(0, 300).map(p => `<div class="sub">${esc(p)}</div>`).join('') || '<div class="sub">—</div>'}</div>`;
+      $('#dout').innerHTML = `<div class="cards" style="margin-top:1.2rem">${col('added', d.added, 'mint')}${col('removed', d.removed, 'red')}${col('changed', d.changed, 'gold')}</div>`;
+    } catch (err) { $('#dout').innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+  });
+}
+
+async function viewRecovery(c) {
+  c.innerHTML = `<p class="eyebrow">Recovery kit</p><div class="sub">building…</div>`;
+  const r = await api('/api/recovery-kit');
+  c.innerHTML = `<p class="eyebrow">Recovery kit</p>
+    <div class="sub" style="margin-bottom:.8rem">How to recover this repository. No secrets are included. <button id="dl" class="btn">Download .md</button></div>
+    <div class="panel" style="border-color:var(--purple)"><pre style="white-space:pre-wrap;margin:0;color:var(--subtle);font-size:.82rem">${esc(r.markdown)}</pre></div>`;
+  $('#dl').addEventListener('click', () => {
+    const blob = new Blob([r.markdown], { type: 'text/markdown' });
+    const a = document.createElement('a');
+    a.href = URL.createObjectURL(blob); a.download = 'sentra-recovery-kit.md'; a.click();
+    URL.revokeObjectURL(a.href);
   });
 }
 
