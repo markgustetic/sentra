@@ -43,6 +43,9 @@ type Deps struct {
 	Config *config.Config
 	// RepoName is the human label shown in the chrome (bucket or config name).
 	RepoName string
+	// ConfigPath is the sentra.yaml path, needed to render the recovery kit's
+	// "where your config lives" guidance. Display only — never its contents.
+	ConfigPath string
 	// Unlock opens the repo from a passphrase typed in the browser. It owns the
 	// passphrase bytes' lifetime beyond the call is the caller's concern; this
 	// server zeroizes the copy it received. Nil is allowed only when Repo is set.
@@ -104,6 +107,11 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/fs", s.requireSession(s.handleFS))
 	m.HandleFunc("POST /api/backup", s.requireSession(s.handleBackupStart))
 	m.HandleFunc("GET /api/backup/{id}/events", s.requireSession(s.handleBackupEvents))
+
+	// Inspect surfaces (Phase 2) — read-only.
+	m.HandleFunc("GET /api/check", s.requireSession(s.handleCheck))
+	m.HandleFunc("GET /api/diff", s.requireSession(s.handleDiff))
+	m.HandleFunc("GET /api/recovery-kit", s.requireSession(s.handleRecoveryKit))
 
 	s.mux = m
 }

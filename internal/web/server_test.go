@@ -226,3 +226,73 @@ func TestBackup_RoundTripSSE(t *testing.T) {
 		t.Fatalf("backup did not persist: %d snapshots", len(snaps))
 	}
 }
+
+func TestCheck_ReportsHealthy(t *testing.T) {
+	r := testRepo(t)
+	seedSnapshot(t, r, "nightly")
+	srv := testServer(t, r)
+	rec := req(t, srv, "GET", "/api/check", "", true)
+	if rec.Code != 200 {
+		t.Fatalf("check = %d: %s", rec.Code, rec.Body)
+	}
+	var rep struct {
+		Snapshots    int        `json:"snapshots"`
+		MissingBlobs []struct{} `json:"missing_blobs"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &rep)
+	if rep.Snapshots != 1 {
+		t.Errorf("check snapshots = %d, want 1", rep.Snapshots)
+	}
+	if len(rep.MissingBlobs) != 0 {
+		t.Errorf("a fresh repo must have no missing blobs")
+	}
+}
+
+func TestDiff_ReportsDeltas(t *testing.T) {
+	r := testRepo(t)
+	seedSnapshot(t, r, "a")
+	seedSnapshot(t, r, "b")
+	srv := testServer(t, r)
+	list := []snapshotDTO{}
+	lrec := req(t, srv, "GET", "/api/snapshots", "", true)
+	_ = json.Unmarshal(lrec.Body.Bytes(), &list)
+	if len(list) != 2 {
+		t.Fatalf("want 2 snapshots to diff, got %d", len(list))
+	}
+	rec := req(t, srv, "GET", "/api/diff?a="+list[0].ID+"&b="+list[1].ID, "", true)
+	if rec.Code != 200 {
+		t.Fatalf("diff = %d: %s", rec.Code, rec.Body)
+	}
+	var d map[string][]string
+	_ = json.Unmarshal(rec.Body.Bytes(), &d)
+	if _, ok := d["added"]; !ok {
+		t.Errorf("diff missing 'added' key: %v", d)
+	}
+}
+
+func TestDiff_RequiresTwoIDs(t *testing.T) {
+	srv := testServer(t, testRepo(t))
+	if rec := req(t, srv, "GET", "/api/diff?a=x", "", true); rec.Code != 400 {
+		t.Errorf("diff with one id = %d, want 400", rec.Code)
+	}
+}
+
+func TestRecoveryKit_RendersNoSecrets(t *testing.T) {
+	r := testRepo(t)
+	srv := testServer(t, r)
+	rec := req(t, srv, "GET", "/api/recovery-kit", "", true)
+	if rec.Code != 200 {
+		t.Fatalf("recovery-kit = %d: %s", rec.Code, rec.Body)
+	}
+	var out struct {
+		Markdown string `json:"markdown"`
+	}
+	_ = json.Unmarshal(rec.Body.Bytes(), &out)
+	if len(out.Markdown) == 0 {
+		t.Error("recovery kit markdown is empty")
+	}
+	// the test passphrase must never appear in the kit
+	if strings.Contains(out.Markdown, "web-test-pass") {
+		t.Error("recovery kit must never contain the passphrase")
+	}
+}

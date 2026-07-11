@@ -94,11 +94,12 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 	}
 
 	srv := web.New(web.Deps{
-		Repo:     opened,
-		Config:   st.Config,
-		RepoName: repoName,
-		Unlock:   unlock,
-		Assets:   web.Assets,
+		Repo:       opened,
+		Config:     st.Config,
+		RepoName:   repoName,
+		ConfigPath: cfgPath,
+		Unlock:     unlock,
+		Assets:     web.Assets,
 	})
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))
