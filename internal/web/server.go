@@ -163,8 +163,11 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/snapshots/{id}", s.requireSession(s.handleSnapshotDetail))
 	m.HandleFunc("GET /api/fs", s.requireSession(s.handleFS))
 	m.HandleFunc("POST /api/backup", s.requireSession(s.handleBackupStart))
-	m.HandleFunc("GET /api/backup/{id}/events", s.requireSession(s.handleOpEvents))
-	m.HandleFunc("GET /api/op/{id}/events", s.requireSession(s.handleOpEvents)) // generic SSE
+	// Op event streams are cookie-gated but NOT repo-gated: they read a
+	// registered op by unguessable id, touch no repo state, and must also work
+	// during setup (when the repo does not exist yet).
+	m.HandleFunc("GET /api/backup/{id}/events", s.requireCookie(s.handleOpEvents))
+	m.HandleFunc("GET /api/op/{id}/events", s.requireCookie(s.handleOpEvents)) // generic SSE
 
 	// Inspect surfaces (Phase 2) — read-only.
 	m.HandleFunc("GET /api/check", s.requireSession(s.handleCheck))
@@ -185,6 +188,7 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/setup", s.requireSetupSession(s.handleSetupStatus))
 	m.HandleFunc("POST /api/setup/validate", s.requireSetupSession(s.handleSetupValidate))
 	m.HandleFunc("GET /api/setup/iam-policy", s.requireSetupSession(s.handleSetupIAMPolicy))
+	m.HandleFunc("POST /api/setup/apply", s.requireSetupSession(s.handleSetupApply))
 
 	// Management (Phase 4) — named policies. CRUD is config-only; run is guarded.
 	m.HandleFunc("GET /api/policies", s.requireSession(s.handlePolicies))
@@ -248,13 +252,31 @@ func originMatchesHost(origin, host string) bool {
 	return origin == host
 }
 
+// validCookie reports whether the request carries the per-run session token.
+func (s *Server) validCookie(r *http.Request) bool {
+	c, err := r.Cookie(sessionCookie)
+	return err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.token)) == 1
+}
+
+// requireCookie gates on the session cookie alone — no repo-unlocked or setup
+// check. Used for the op event streams, which read a registered op by
+// unguessable id, touch no repo state, and must work during setup too.
+func (s *Server) requireCookie(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.validCookie(r) {
+			writeErr(w, http.StatusUnauthorized, "no session")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // requireSession enforces a valid session cookie and an unlocked repo before
 // handing off. It returns the open repo to the handler via the request context
 // would be cleaner, but a method closure keeps the handlers plain.
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(sessionCookie)
-		if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.token)) != 1 {
+		if !s.validCookie(r) {
 			writeErr(w, http.StatusUnauthorized, "no session")
 			return
 		}
@@ -312,8 +334,7 @@ func (s *Server) currentUnlock() func([]byte) (*repo.Repo, error) {
 // since setup runs before any repo exists. It 409s once configured.
 func (s *Server) requireSetupSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(sessionCookie)
-		if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.token)) != 1 {
+		if !s.validCookie(r) {
 			writeErr(w, http.StatusUnauthorized, "no session")
 			return
 		}

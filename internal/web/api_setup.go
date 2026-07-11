@@ -2,11 +2,15 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
@@ -137,4 +141,159 @@ func (s *Server) handleSetupIAMPolicy(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	writeJSON(w, http.StatusOK, map[string]string{"policy": buf.String()})
+}
+
+// setupEffects returns the setup engine's side-effect seam, defaulting to the
+// production effects when none was injected.
+func (s *Server) setupEffects() setup.Effects {
+	if s.deps.SetupEffects != nil {
+		return s.deps.SetupEffects
+	}
+	return setup.DefaultEffects()
+}
+
+// handleSetupApply provisions the repository from the wizard's final submission
+// and streams progress. It builds and validates the plan, then runs the shared
+// engine — WriteDraft → PrepareAWS → WriteConfig → InitRepo → RemoveDraft — as a
+// setup op, emitting a step marker per stage. On success it re-opens the repo
+// and transitions the server to unlocked in place; the passphrase is used once
+// and zeroized. AWS uses ambient credentials only; no secret is ever written.
+func (s *Server) handleSetupApply(w http.ResponseWriter, r *http.Request) {
+	var body struct {
+		setupForm
+		Passphrase     string `json:"passphrase"`
+		SavePassphrase bool   `json:"savePassphrase"`
+	}
+	if err := json.NewDecoder(http.MaxBytesReader(w, r.Body, 1<<16)).Decode(&body); err != nil {
+		writeErr(w, http.StatusBadRequest, "invalid request")
+		return
+	}
+	plan := s.buildPlan(body.setupForm)
+	plan.SavePassphrase = body.SavePassphrase
+	setup.ApplyPassphraseConfig(&plan)
+
+	pass := []byte(body.Passphrase)
+	body.Passphrase = ""
+
+	if err := setup.ValidatePlan(plan); err != nil {
+		crypto.Zeroize(pass)
+		writeErr(w, http.StatusBadRequest, err.Error())
+		return
+	}
+	if plan.InitRepo && len(pass) < minPasswordLen {
+		crypto.Zeroize(pass)
+		writeErr(w, http.StatusBadRequest, "passphrase must be at least 8 characters")
+		return
+	}
+
+	cfgPath := s.deps.ConfigPath
+	opID, err := s.startSetupOp(func(ctx context.Context, emit func(string)) (any, error) {
+		defer crypto.Zeroize(pass) // the op owns the passphrase's lifetime now
+		return s.runSetup(ctx, emit, cfgPath, &plan, pass)
+	})
+	if err != nil {
+		crypto.Zeroize(pass)
+	}
+	writeOpStart(w, opID, err)
+}
+
+// runSetup drives the engine steps and, on success, unlocks the server. Step
+// markers ("bucket-created", "public-blocked", "encrypted", "repo-initialized")
+// stream over SSE; the done payload carries the repo id and a no-secrets summary.
+func (s *Server) runSetup(ctx context.Context, emit func(string), cfgPath string, plan *setup.Plan, pass []byte) (any, error) {
+	eng := setup.NewEngine(s.setupEffects())
+	if err := eng.WriteDraft(cfgPath, &plan.Config); err != nil {
+		return nil, fmt.Errorf("write draft: %w", err)
+	}
+	var auth setup.AWSAuthReport
+	var prep setup.AWSPrepareReport
+	if plan.PrepareAWS {
+		a, p, err := eng.PrepareAWS(ctx, plan)
+		if err != nil {
+			return nil, enrichAWSError(err, plan.Config)
+		}
+		auth, prep = a, p
+		if prep.BucketCreated {
+			emit("bucket-created")
+		}
+		if prep.PublicAccessBlocked {
+			emit("public-blocked")
+		}
+		if prep.DefaultEncryptionEnabled {
+			emit("encrypted")
+		}
+	}
+	if err := eng.WriteConfig(cfgPath, plan); err != nil {
+		return nil, fmt.Errorf("write config: %w", err)
+	}
+	var initRes setup.InitResult
+	if plan.InitRepo {
+		res, err := eng.InitRepo(ctx, &plan.Config, pass, plan.SavePassphrase)
+		if err != nil {
+			return nil, fmt.Errorf("initialize repository: %w", err)
+		}
+		initRes = res
+		emit("repo-initialized")
+	}
+	eng.RemoveDraft(cfgPath)
+
+	if err := s.completeSetup(ctx, plan, pass); err != nil {
+		return nil, fmt.Errorf("open repository after setup: %w", err)
+	}
+	return map[string]any{
+		"repoId":  initRes.RepoID,
+		"summary": setup.SummaryLines(cfgPath, *plan, &auth, &prep, &initRes),
+	}, nil
+}
+
+// completeSetup swaps the server from setup mode to unlocked in place: it
+// re-opens the just-initialized repo (the engine's InitRepo closes the handle it
+// opened), then publishes the new repo/config/label and a fresh unlock closure
+// so a later lock→unlock uses the config setup just wrote.
+func (s *Server) completeSetup(ctx context.Context, plan *setup.Plan, pass []byte) error {
+	newCfg := &plan.Config
+	name := newCfg.Repo.S3.Bucket
+	if name == "" {
+		name = "sentra"
+	}
+
+	var opened *repo.Repo
+	if plan.InitRepo {
+		store, err := s.setupEffects().NewStore(ctx, newCfg)
+		if err != nil {
+			return err
+		}
+		r, err := repo.Open(ctx, store, pass)
+		if err != nil {
+			return err
+		}
+		opened = r
+	}
+
+	unlock := func(p []byte) (*repo.Repo, error) {
+		store, err := s.setupEffects().NewStore(context.Background(), newCfg)
+		if err != nil {
+			return nil, err
+		}
+		return repo.Open(context.Background(), store, p)
+	}
+
+	s.mu.Lock()
+	s.repo = opened
+	s.cfg = newCfg
+	s.name = name
+	s.setupNeeded = false
+	s.unlockFn = unlock
+	s.mu.Unlock()
+	return nil
+}
+
+// enrichAWSError folds setup.ErrorAdvice lines into the error message so the
+// browser shows the operator-facing hints (e.g. "run `aws sso login`") inline.
+func enrichAWSError(err error, cfg config.Config) error {
+	advice := setup.ErrorAdvice(err, cfg)
+	if len(advice) == 0 {
+		return err
+	}
+	return fmt.Errorf("%s\n%s", err.Error(), strings.Join(advice, "\n"))
 }
