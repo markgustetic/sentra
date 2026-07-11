@@ -31,8 +31,8 @@ func (s *Server) handleBackupStart(w http.ResponseWriter, r *http.Request) {
 	tag := strings.TrimSpace(body.Tag)
 
 	var wopts walker.Options
-	if s.deps.Config != nil {
-		wopts = walker.Options{IgnoreFile: s.deps.Config.Backup.IgnoreFile, ExcludeCaches: s.deps.Config.Backup.ExcludeCaches}
+	if s.currentConfig() != nil {
+		wopts = walker.Options{IgnoreFile: s.currentConfig().Backup.IgnoreFile, ExcludeCaches: s.currentConfig().Backup.ExcludeCaches}
 	}
 
 	opID, err := s.startOp("backup", func(ctx context.Context, rep progress.Reporter, rp *repo.Repo) (any, error) {

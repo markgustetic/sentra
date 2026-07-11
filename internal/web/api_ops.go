@@ -64,7 +64,7 @@ func retentionFromConfig(cfg *config.Config) repo.RetentionPolicy {
 // handlePrunePreview returns which snapshots retention would keep vs drop, with
 // reasons. Read-only — safe to call before the destructive apply.
 func (s *Server) handlePrunePreview(w http.ResponseWriter, r *http.Request) {
-	policy := retentionFromConfig(s.deps.Config)
+	policy := retentionFromConfig(s.currentConfig())
 	if policy == (repo.RetentionPolicy{}) {
 		writeErr(w, http.StatusBadRequest, "no retention policy configured — set retention.keep_* in sentra.yaml first")
 		return
@@ -114,7 +114,7 @@ func (s *Server) handlePrune(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, `type "prune" to confirm`)
 		return
 	}
-	policy := retentionFromConfig(s.deps.Config)
+	policy := retentionFromConfig(s.currentConfig())
 	if policy == (repo.RetentionPolicy{}) {
 		writeErr(w, http.StatusBadRequest, "no retention policy configured")
 		return
@@ -206,8 +206,8 @@ func (s *Server) handlePassword(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadGateway, passwdErrMessage(err))
 		return
 	}
-	if s.deps.Config != nil && s.deps.Config.Passphrase.UseKeyring && s.deps.SaveKeyring != nil {
-		if err := s.deps.SaveKeyring(s.deps.Config, newPass); err != nil {
+	if s.currentConfig() != nil && s.currentConfig().Passphrase.UseKeyring && s.deps.SaveKeyring != nil {
+		if err := s.deps.SaveKeyring(s.currentConfig(), newPass); err != nil {
 			writeJSON(w, http.StatusOK, map[string]any{
 				"rotated": true, "keyringSaved": false,
 				"warning": "passphrase rotated, but the keyring update failed: " + err.Error(),
