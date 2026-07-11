@@ -105,6 +105,7 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 		ConfigPath:  cfgPath,
 		Unlock:      unlock,
 		SaveKeyring: deps.SaveKeyring,
+		NewStore:    deps.NewStore,
 		Assets:      web.Assets,
 	})
 

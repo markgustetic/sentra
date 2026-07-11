@@ -14,6 +14,7 @@
 package web
 
 import (
+	"context"
 	"crypto/rand"
 	"crypto/subtle"
 	"encoding/hex"
@@ -23,6 +24,7 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -55,6 +57,9 @@ type Deps struct {
 	// just isn't updated). Called only after a successful rotate, when the config
 	// opts into keyring storage.
 	SaveKeyring func(cfg *config.Config, passphrase []byte) error
+	// NewStore opens a blobstore for a config — used to build the DESTINATION
+	// store for sync from a dst-config. Same factory the CLI uses.
+	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
 	// Assets is the embedded frontend (index.html, app.css, app.js, images).
 	Assets fs.FS
 }
@@ -124,6 +129,10 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/prune/preview", s.requireSession(s.handlePrunePreview))
 	m.HandleFunc("POST /api/prune", s.requireSession(s.handlePrune))
 	m.HandleFunc("POST /api/password", s.requireSession(s.handlePassword))
+	m.HandleFunc("POST /api/sync", s.requireSession(s.handleSync))
+
+	// Diagnostics (Phase 2 completion).
+	m.HandleFunc("GET /api/doctor", s.requireSession(s.handleDoctor))
 
 	s.mux = m
 }
