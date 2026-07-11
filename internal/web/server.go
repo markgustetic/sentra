@@ -50,6 +50,11 @@ type Deps struct {
 	// passphrase bytes' lifetime beyond the call is the caller's concern; this
 	// server zeroizes the copy it received. Nil is allowed only when Repo is set.
 	Unlock func(passphrase []byte) (*repo.Repo, error)
+	// SaveKeyring re-saves a rotated passphrase to the OS keyring, mirroring the
+	// CLI/TUI. Nil means "no keyring wiring" (rotation still succeeds; the keyring
+	// just isn't updated). Called only after a successful rotate, when the config
+	// opts into keyring storage.
+	SaveKeyring func(cfg *config.Config, passphrase []byte) error
 	// Assets is the embedded frontend (index.html, app.css, app.js, images).
 	Assets fs.FS
 }
@@ -63,7 +68,7 @@ type Server struct {
 	mu        sync.Mutex
 	repo      *repo.Repo // nil ⇒ locked
 	opRunning string     // "" when idle; one mutating op at a time
-	ops       map[string]*backupOp
+	ops       map[string]*op
 
 	mux *http.ServeMux
 }
@@ -79,7 +84,7 @@ func New(deps Deps) *Server {
 		deps:  deps,
 		token: hex.EncodeToString(tok),
 		repo:  deps.Repo,
-		ops:   map[string]*backupOp{},
+		ops:   map[string]*op{},
 	}
 	s.routes()
 	return s
@@ -106,12 +111,19 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/snapshots/{id}", s.requireSession(s.handleSnapshotDetail))
 	m.HandleFunc("GET /api/fs", s.requireSession(s.handleFS))
 	m.HandleFunc("POST /api/backup", s.requireSession(s.handleBackupStart))
-	m.HandleFunc("GET /api/backup/{id}/events", s.requireSession(s.handleBackupEvents))
+	m.HandleFunc("GET /api/backup/{id}/events", s.requireSession(s.handleOpEvents))
+	m.HandleFunc("GET /api/op/{id}/events", s.requireSession(s.handleOpEvents)) // generic SSE
 
 	// Inspect surfaces (Phase 2) — read-only.
 	m.HandleFunc("GET /api/check", s.requireSession(s.handleCheck))
 	m.HandleFunc("GET /api/diff", s.requireSession(s.handleDiff))
 	m.HandleFunc("GET /api/recovery-kit", s.requireSession(s.handleRecoveryKit))
+
+	// Operations (Phase 3) — destructive; each requires a typed confirmation.
+	m.HandleFunc("POST /api/restore", s.requireSession(s.handleRestoreStart))
+	m.HandleFunc("GET /api/prune/preview", s.requireSession(s.handlePrunePreview))
+	m.HandleFunc("POST /api/prune", s.requireSession(s.handlePrune))
+	m.HandleFunc("POST /api/password", s.requireSession(s.handlePassword))
 
 	s.mux = m
 }
