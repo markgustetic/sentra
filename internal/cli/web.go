@@ -12,6 +12,7 @@ import (
 
 	"github.com/spf13/cobra"
 
+	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/web"
@@ -28,6 +29,10 @@ type WebDeps struct {
 
 	// OpenBrowser opens url in the default browser. Nil (or --no-open) skips.
 	OpenBrowser func(url string) error
+
+	// SaveKeyring re-saves a rotated passphrase to the OS keyring (same as
+	// UIDeps.SavePassphrase). Nil is allowed — rotation still works.
+	SaveKeyring func(cfg *config.Config, passphrase []byte) error
 
 	// PassphraseFile resolves the --passphrase-file path, same as UIDeps.
 	PassphraseFile func() string
@@ -94,12 +99,13 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 	}
 
 	srv := web.New(web.Deps{
-		Repo:       opened,
-		Config:     st.Config,
-		RepoName:   repoName,
-		ConfigPath: cfgPath,
-		Unlock:     unlock,
-		Assets:     web.Assets,
+		Repo:        opened,
+		Config:      st.Config,
+		RepoName:    repoName,
+		ConfigPath:  cfgPath,
+		Unlock:      unlock,
+		SaveKeyring: deps.SaveKeyring,
+		Assets:      web.Assets,
 	})
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))

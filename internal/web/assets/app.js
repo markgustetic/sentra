@@ -17,7 +17,7 @@ async function api(path, opts) {
 
 const NAV = [
   { cat: 'Views', items: [['dashboard', 'Dashboard'], ['snapshots', 'Snapshots']] },
-  { cat: 'Operations', items: [['backup', 'Backup']] },
+  { cat: 'Operations', items: [['backup', 'Backup'], ['restore', 'Restore'], ['prune', 'Prune'], ['password', 'Password']] },
   { cat: 'Inspect', items: [['check', 'Check'], ['diff', 'Diff'], ['recovery', 'Recovery Kit']] },
 ];
 
@@ -57,7 +57,7 @@ $('#unlock-form').addEventListener('submit', async (e) => {
 });
 
 // ---------- router ----------
-const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery };
+const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery, restore: viewRestore, prune: viewPrune, password: viewPassword };
 function route() {
   const view = (location.hash.replace(/^#\//, '') || 'dashboard').split('/')[0];
   const fn = VIEWS[view] || viewDashboard;
@@ -195,6 +195,101 @@ async function viewRecovery(c) {
     const a = document.createElement('a');
     a.href = URL.createObjectURL(blob); a.download = 'sentra-recovery-kit.md'; a.click();
     URL.revokeObjectURL(a.href);
+  });
+}
+
+// ---------- shared: typed confirm + SSE + progress ----------
+function typedConfirm(word, title, bodyHtml) {
+  return new Promise((resolve) => {
+    const m = el(`<div class="modal-wrap"><div class="card modal">
+      <div class="mh">${esc(title)}</div><div class="mb">${bodyHtml}</div>
+      <input id="cw" placeholder="type &quot;${esc(word)}&quot; to confirm" autocomplete="off" style="margin-top:.9rem;width:100%">
+      <div class="mrow"><button class="btn" id="cc">Cancel</button><button class="btn primary" id="co" disabled style="opacity:.5">Confirm</button></div>
+    </div></div>`);
+    document.body.appendChild(m);
+    const inp = $('#cw', m), ok = $('#co', m); inp.focus();
+    inp.addEventListener('input', () => { const g = inp.value === word; ok.disabled = !g; ok.style.opacity = g ? '1' : '.5'; });
+    const close = v => { m.remove(); resolve(v); };
+    $('#cc', m).addEventListener('click', () => close(false));
+    ok.addEventListener('click', () => { if (inp.value === word) close(true); });
+  });
+}
+function streamSSE(opId, { onProgress, onDone, onError }) {
+  const ev = new EventSource('/api/op/' + opId + '/events');
+  ev.addEventListener('progress', e => onProgress(JSON.parse(e.data)));
+  ev.addEventListener('done', e => { ev.close(); onDone(JSON.parse(e.data)); });
+  ev.addEventListener('error', e => { ev.close(); onError(e.data ? JSON.parse(e.data).message : 'connection lost'); });
+}
+function progressBox(container) {
+  container.innerHTML = `<div class="progress"><div class="bar"><i id="fill"></i></div><div id="pmsg" class="sub" style="margin-top:.4rem">starting…</div></div>`;
+  return {
+    prog: p => { const pct = p.total > 0 ? Math.round(100 * p.done / p.total) : 0; $('#fill').style.width = pct + '%'; $('#pmsg').textContent = `${fmtBytes(p.done)} / ${fmtBytes(p.total)} (${pct}%)`; },
+    ok: html => { $('#fill').style.width = '100%'; $('#pmsg').innerHTML = html; },
+    err: msg => { $('#pmsg').innerHTML = `<span class="err">${esc(msg)}</span>`; },
+  };
+}
+
+// ---------- restore ----------
+async function viewRestore(c) {
+  const snaps = await api('/api/snapshots');
+  if (!snaps.length) { c.innerHTML = `<p class="eyebrow">Restore</p><div class="sub">no snapshots to restore.</div>`; return; }
+  const opts = snaps.map(s => `<option value="${esc(s.id)}">${esc(s.id.slice(0, 20))} · ${esc(s.tag || 'no tag')} · ${fmtBytes(s.bytes)}</option>`).join('');
+  c.innerHTML = `<p class="eyebrow">Restore</p>
+    <div class="startbar"><select id="rsnap">${opts}</select><input id="rdest" placeholder="destination folder (absolute path)"><button id="rgo" class="btn go">Restore</button></div>
+    <div id="rprog"></div>`;
+  $('#rgo').addEventListener('click', async () => {
+    const id = $('#rsnap').value, dest = $('#rdest').value.trim();
+    if (!dest) { $('#rprog').innerHTML = `<div class="err" style="margin-top:1rem">enter a destination folder</div>`; return; }
+    if (!(await typedConfirm('restore', 'Restore snapshot?', `Writes the snapshot's files into <b>${esc(dest)}</b>, overwriting existing files there.`))) return;
+    const box = progressBox($('#rprog'));
+    let res;
+    try { res = await api('/api/restore', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ snapshotId: id, dest, confirm: 'restore' }) }); }
+    catch (err) { box.err(err.message); return; }
+    streamSSE(res.opId, { onProgress: box.prog, onDone: d => box.ok(`<span class="ok">✓ Restored</span> to ${esc(d.dest)}`), onError: box.err });
+  });
+}
+
+// ---------- prune ----------
+async function viewPrune(c) {
+  c.innerHTML = `<p class="eyebrow">Prune</p><div class="sub">computing retention…</div>`;
+  let pv;
+  try { pv = await api('/api/prune/preview'); }
+  catch (err) { c.innerHTML = `<p class="eyebrow">Prune</p><div class="err">${esc(err.message)}</div>`; return; }
+  const rows = pv.decisions.map(d => `<tr class="row"><td class="id">${esc(d.id.slice(0, 16))}</td><td>${esc(d.tag || '—')}</td><td>${d.keep ? '<span class="ok">keep</span>' : '<span class="err">drop</span>'}</td><td class="sub">${esc((d.reasons || []).join(', '))}</td></tr>`).join('');
+  c.innerHTML = `<p class="eyebrow">Prune</p>
+    <div class="sub" style="margin-bottom:.8rem">Retention: keep_last=${pv.policy.KeepLast} daily=${pv.policy.KeepDaily} weekly=${pv.policy.KeepWeekly} monthly=${pv.policy.KeepMonthly}. <b>${pv.dropCount}</b> snapshot(s) would be dropped.</div>
+    <table><thead><tr><th>ID</th><th>Tag</th><th>Verdict</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="startbar"><button id="pgo" class="btn primary" ${pv.dropCount ? '' : 'disabled style="opacity:.5"'}>Prune ${pv.dropCount} snapshot(s)</button></div>
+    <div id="pout"></div>`;
+  const btn = $('#pgo'); if (!btn) return;
+  btn.addEventListener('click', async () => {
+    if (!(await typedConfirm('prune', 'Prune snapshots?', `Permanently deletes <b>${pv.dropCount}</b> snapshot(s) and their unreferenced data. This cannot be undone.`))) return;
+    try {
+      const r = await api('/api/prune', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: 'prune' }) });
+      $('#pout').innerHTML = `<div class="ok" style="margin-top:1rem">✓ Pruned — ${r.deletedBlobs} blobs freed (${fmtBytes(r.deletedBytes)}), ${r.liveBlobs} retained</div>`;
+    } catch (err) { $('#pout').innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+  });
+}
+
+// ---------- password ----------
+async function viewPassword(c) {
+  c.innerHTML = `<p class="eyebrow">Rotate passphrase</p>
+    <div style="display:flex;flex-direction:column;gap:.7rem;max-width:440px">
+      <input id="np" type="password" placeholder="new passphrase (min 8)" autocomplete="new-password">
+      <input id="cp" type="password" placeholder="confirm new passphrase" autocomplete="new-password">
+      <button id="prot" class="btn primary">Rotate passphrase</button>
+      <div id="pwout"></div>
+    </div>`;
+  $('#prot').addEventListener('click', async () => {
+    const np = $('#np').value, cp = $('#cp').value;
+    if (np.length < 8) { $('#pwout').innerHTML = `<div class="err">passphrase must be at least 8 characters</div>`; return; }
+    if (np !== cp) { $('#pwout').innerHTML = `<div class="err">passphrases do not match</div>`; return; }
+    if (!(await typedConfirm('rotate', 'Rotate passphrase?', `The <b>old passphrase stops working immediately</b> and there is no recovery if the new one is lost. Existing snapshots stay readable.`))) return;
+    try {
+      const r = await api('/api/password', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ newPassphrase: np, confirmPassphrase: cp, confirm: 'rotate' }) });
+      $('#np').value = ''; $('#cp').value = '';
+      $('#pwout').innerHTML = r.warning ? `<div class="err">${esc(r.warning)}</div>` : `<div class="ok">✓ Passphrase rotated${r.keyringSaved ? ' · keyring updated' : ''}</div>`;
+    } catch (err) { $('#pwout').innerHTML = `<div class="err">${esc(err.message)}</div>`; }
   });
 }
 

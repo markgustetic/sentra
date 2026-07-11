@@ -159,6 +159,7 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 		},
 		Serve:          cli.ServeWebProduction,
 		OpenBrowser:    cli.OpenBrowserProduction,
+		SaveKeyring:    saveRepoPassphraseToKeyring,
 		PassphraseFile: func() string { return rootFlags.PassphraseFile },
 	}))
 }
