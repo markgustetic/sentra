@@ -20,10 +20,12 @@ import (
 // static and deterministic — which is what keeps goldens and geometry tests
 // stable and gives motion-sensitive/NO_COLOR users a still interface for free.
 
-// uiFrameInterval is the chrome's repaint cadence. Slower than the splash's
-// reveal (60ms): the steady-state glow only needs to breathe, not animate
-// smoothly, and a gentler rate keeps a long-lived TUI from spinning the CPU.
-const uiFrameInterval = 120 * time.Millisecond
+// uiFrameInterval is the chrome's repaint cadence. Deliberately slow — much
+// slower than the splash's reveal (60ms): the steady-state glow only needs to
+// breathe gently, not flash, and a gentle rate keeps a long-lived TUI from
+// spinning the CPU. Paired with the narrow ramps below, one lap reads as a slow
+// pulse, not a blink.
+const uiFrameInterval = 240 * time.Millisecond
 
 // uiFrameMsg advances the ambient animation clock. It is self-sustaining: Init
 // arms the first tick and each frame re-arms the next, so the chrome breathes
@@ -34,14 +36,15 @@ func uiTick() tea.Cmd {
 	return tea.Tick(uiFrameInterval, func(time.Time) tea.Msg { return uiFrameMsg{} })
 }
 
-// Breathing ramps — each sweeps a hue from bright to brighter and back, so
-// cycling them reads as a pulse rather than a hard blink. Sized so one lap at
-// uiFrameInterval lasts roughly a second.
+// Breathing ramps — each oscillates gently around its base color, a small
+// luminance swing so cycling reads as a soft shimmer rather than a flash.
+// Narrowed deliberately: the wide bright→dim sweeps this replaced read as
+// flashing in a long-lived app. Sized so one lap at uiFrameInterval is ~1s.
 var (
-	animBrand  = []string{"#FF5AD6", "#FF6BDD", "#FF86E6", "#FFA0EF", "#FF86E6", "#FF6BDD"}                       // title brand
-	animFocus  = []string{"#22DBFF", "#3FE3FF", "#5CEBFF", "#79F0FF", "#93F4FF", "#79F0FF", "#5CEBFF", "#3FE3FF"} // focused border (cyan)
-	animIdle   = []string{"#8A5BEA", "#9A68F2", "#AD7CFC", "#9A68F2"}                                             // unfocused border (purple)
-	animActive = []string{"#FF6BDD", "#FF86E6", "#E79BFF", "#FF86E6"}                                             // active nav item
+	animBrand  = []string{"#F462D4", "#FF6BDD", "#FF7EE2", "#FF6BDD"} // title brand (gentle magenta breath)
+	animFocus  = []string{"#4FE2FF", "#5CEBFF", "#72EFFF", "#5CEBFF"} // focused border (gentle cyan)
+	animIdle   = []string{"#9163EE", "#9A68F2", "#A276F5", "#9A68F2"} // unfocused border (gentle purple)
+	animActive = []string{"#F462D4", "#FF6BDD", "#FF7EE2", "#FF6BDD"} // active nav item (gentle magenta)
 )
 
 // animColor samples a ramp at the current frame, wrapping so the pulse loops.

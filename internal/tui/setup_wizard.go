@@ -1095,8 +1095,11 @@ func (v SetupWizardView) View() string {
 		if v.notice != "" {
 			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
 		}
-		b.WriteString(v.newPass.View() + "\n")
-		b.WriteString(v.confirmPass.View() + "\n\n")
+		// Mark the focused input with the ▍ selection glyph (and dim the other's
+		// prompt), the same affordance as the details stage — a masked field with
+		// only a cursor was too easy to lose track of.
+		b.WriteString(v.passRow(v.newPass, !v.focusConf) + "\n")
+		b.WriteString(v.passRow(v.confirmPass, v.focusConf) + "\n\n")
 		box := "[ ]"
 		if v.savePass {
 			box = "[x]"
@@ -1270,6 +1273,16 @@ func (v SetupWizardView) detailRow(i int, label string) string {
 		f.TextStyle = ui.Subtle
 	}
 	return ui.SelectRow(v.fieldCursor == i, fmt.Sprintf("%-*s", setupLabelCol, label)) + f.View()
+}
+
+// passRow renders a passphrase input with the ▍ selection glyph when it's the
+// focused field (and a dimmed prompt otherwise), so the active field is obvious
+// even though both are masked. Mirrors detailRow's affordance.
+func (v SetupWizardView) passRow(f textinput.Model, focused bool) string {
+	if !focused {
+		f.PromptStyle = ui.Muted
+	}
+	return ui.SelectRow(focused, "") + f.View()
 }
 
 // setupAuthMethodLabel mirrors setupAWSAuthMethodLabel
