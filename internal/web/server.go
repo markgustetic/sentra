@@ -134,6 +134,12 @@ func (s *Server) routes() {
 	// Diagnostics (Phase 2 completion).
 	m.HandleFunc("GET /api/doctor", s.requireSession(s.handleDoctor))
 
+	// Management (Phase 4) — named policies. CRUD is config-only; run is guarded.
+	m.HandleFunc("GET /api/policies", s.requireSession(s.handlePolicies))
+	m.HandleFunc("POST /api/policies", s.requireSession(s.handlePolicyCreate))
+	m.HandleFunc("DELETE /api/policies/{name}", s.requireSession(s.handlePolicyDelete))
+	m.HandleFunc("POST /api/policies/{name}/run", s.requireSession(s.handlePolicyRun))
+
 	s.mux = m
 }
 
