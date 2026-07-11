@@ -130,6 +130,20 @@ func TestSetup_ValidateGoodAndBad(t *testing.T) {
 	}
 }
 
+func TestSetup_SeededPlanKeepsRetentionDefaults(t *testing.T) {
+	// A minimal MinIO-style seed (S3 coordinates only) must not wipe the
+	// retention defaults, or Prune/policy-prune would see no policy.
+	seed := &config.Config{}
+	seed.Repo.S3.EndpointURL = "http://localhost:9000"
+	seed.Repo.S3.Bucket = "sentra-test"
+	srv := setupServer(t, seed)
+	plan := srv.buildPlan(setupForm{Backend: "s3-compatible", Bucket: "sentra-test", EndpointURL: "http://localhost:9000", InitRepo: true})
+	want := config.Defaults().Retention.KeepLast
+	if want == 0 || plan.Config.Retention.KeepLast != want {
+		t.Errorf("seeded plan retention KeepLast = %d, want %d (defaults dropped)", plan.Config.Retention.KeepLast, want)
+	}
+}
+
 func TestSetup_IAMPolicy(t *testing.T) {
 	srv := setupServer(t, nil)
 	rec := req(t, srv, "GET", "/api/setup/iam-policy?bucket=my-sentra-bucket&prefix=team", "", true)
