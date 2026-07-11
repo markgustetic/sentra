@@ -183,6 +183,8 @@ func (s *Server) routes() {
 
 	// Setup (Phase 5) — first-run wizard; active only while unconfigured.
 	m.HandleFunc("GET /api/setup", s.requireSetupSession(s.handleSetupStatus))
+	m.HandleFunc("POST /api/setup/validate", s.requireSetupSession(s.handleSetupValidate))
+	m.HandleFunc("GET /api/setup/iam-policy", s.requireSetupSession(s.handleSetupIAMPolicy))
 
 	// Management (Phase 4) — named policies. CRUD is config-only; run is guarded.
 	m.HandleFunc("GET /api/policies", s.requireSession(s.handlePolicies))
