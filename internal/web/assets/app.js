@@ -18,6 +18,7 @@ async function api(path, opts) {
 const NAV = [
   { cat: 'Views', items: [['dashboard', 'Dashboard'], ['snapshots', 'Snapshots']] },
   { cat: 'Operations', items: [['backup', 'Backup'], ['restore', 'Restore'], ['prune', 'Prune'], ['sync', 'Sync'], ['password', 'Password']] },
+  { cat: 'Manage', items: [['policies', 'Policies'], ['schedule', 'Schedule'], ['agent', 'Agent']] },
   { cat: 'Inspect', items: [['check', 'Check'], ['diff', 'Diff'], ['doctor', 'Doctor'], ['recovery', 'Recovery Kit']] },
 ];
 
@@ -57,7 +58,7 @@ $('#unlock-form').addEventListener('submit', async (e) => {
 });
 
 // ---------- router ----------
-const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery, restore: viewRestore, prune: viewPrune, password: viewPassword, sync: viewSync, doctor: viewDoctor };
+const VIEWS = { dashboard: viewDashboard, snapshots: viewSnapshots, backup: viewBackup, check: viewCheck, diff: viewDiff, recovery: viewRecovery, restore: viewRestore, prune: viewPrune, password: viewPassword, sync: viewSync, doctor: viewDoctor, policies: viewPolicies, schedule: viewSchedule, agent: viewAgent };
 function route() {
   const view = (location.hash.replace(/^#\//, '') || 'dashboard').split('/')[0];
   const fn = VIEWS[view] || viewDashboard;
@@ -214,6 +215,20 @@ function typedConfirm(word, title, bodyHtml) {
     ok.addEventListener('click', () => { if (inp.value === word) close(true); });
   });
 }
+// confirmSimple is a yes/no modal for reversible actions (delete a policy,
+// install a schedule) that don't warrant a typed word.
+function confirmSimple(title, bodyHtml) {
+  return new Promise((resolve) => {
+    const m = el(`<div class="modal-wrap"><div class="card modal">
+      <div class="mh">${esc(title)}</div><div class="mb">${bodyHtml}</div>
+      <div class="mrow"><button class="btn" id="cc">Cancel</button><button class="btn primary" id="co">Confirm</button></div>
+    </div></div>`);
+    document.body.appendChild(m);
+    const close = v => { m.remove(); resolve(v); };
+    $('#cc', m).addEventListener('click', () => close(false));
+    $('#co', m).addEventListener('click', () => close(true));
+  });
+}
 function streamSSE(opId, { onProgress, onDone, onError }) {
   const ev = new EventSource('/api/op/' + opId + '/events');
   ev.addEventListener('progress', e => onProgress(JSON.parse(e.data)));
@@ -329,6 +344,185 @@ async function viewSync(c) {
       onDone: d => box.ok(`<span class="ok">✓ ${d.dryRun ? 'Dry run' : 'Synced'}</span> — ${d.copiedBlobs} copied (${fmtBytes(d.copiedBytes)}), ${d.skippedBlobs} already present${d.bootstrapped ? ' · destination bootstrapped' : ''}`),
       onError: box.err,
     });
+  });
+}
+
+// ---------- policies ----------
+async function viewPolicies(c) {
+  const list = await api('/api/policies');
+  const rows = list.map(p => `<tr class="row">
+    <td>${esc(p.name)}${p.valid ? '' : ` <span class="err" title="${esc(p.error)}">⚠</span>`}</td>
+    <td>${esc(p.scheduleSpec)}</td>
+    <td class="sub">${esc(p.paths.join(', '))}</td>
+    <td>${p.tags.length ? p.tags.map(t => `<span class="tag-pill">${esc(t)}</span>`).join(' ') : '—'}</td>
+    <td>${p.check ? '✓' : '—'}</td>
+    <td>${esc(p.prune)}</td>
+    <td style="white-space:nowrap"><button class="btn" data-run="${esc(p.name)}" data-prune="${esc(p.prune)}">run</button> <button class="btn" data-del="${esc(p.name)}">delete</button></td>
+  </tr>`).join('');
+  c.innerHTML = `<p class="eyebrow">Backup policies</p>
+    ${list.length ? `<table><thead><tr><th>Name</th><th>Schedule</th><th>Paths</th><th>Tags</th><th>Check</th><th>Prune</th><th></th></tr></thead><tbody>${rows}</tbody></table>` : '<div class="sub">no policies yet — add one below.</div>'}
+    <div id="pol-out"></div>
+    <div class="panel" style="margin-top:1.4rem"><h3>add a policy</h3>
+      <div style="display:flex;flex-direction:column;gap:.6rem;max-width:600px;margin-top:.6rem">
+        <input id="pn" placeholder="name (letters, digits, - and _)">
+        <input id="pp" placeholder="paths — comma-separated absolute paths">
+        <input id="pt" placeholder="tags — comma-separated (optional)">
+        <input id="ps" value="manual" placeholder="schedule: manual | hourly | daily@HH:MM | weekly@mon:HH:MM | monthly@HH:MM">
+        <label class="sub"><input id="pc" type="checkbox"> run an integrity check after each backup</label>
+        <select id="ppr"><option value="off">prune: off</option><option value="dry-run">prune: dry-run</option><option value="apply">prune: apply</option></select>
+        <button id="padd" class="btn go" style="align-self:flex-start">Add policy</button>
+      </div>
+    </div>`;
+  c.querySelectorAll('[data-run]').forEach(b => b.addEventListener('click', () => runPolicy(b.dataset.run, b.dataset.prune)));
+  c.querySelectorAll('[data-del]').forEach(b => b.addEventListener('click', () => deletePolicy(b.dataset.del)));
+  $('#padd').addEventListener('click', addPolicy);
+}
+function splitCSV(v) { return v.split(',').map(s => s.trim()).filter(Boolean); }
+async function addPolicy() {
+  const body = {
+    name: $('#pn').value.trim(),
+    paths: splitCSV($('#pp').value),
+    tags: splitCSV($('#pt').value),
+    scheduleSpec: $('#ps').value.trim() || 'manual',
+    check: $('#pc').checked,
+    prune: $('#ppr').value,
+  };
+  try {
+    await api('/api/policies', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) });
+    route();
+  } catch (err) { $('#pol-out').innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+}
+async function deletePolicy(name) {
+  if (!(await confirmSimple('Delete policy?', `Removes <b>${esc(name)}</b> from sentra.yaml. Snapshots it already created are untouched.`))) return;
+  try { await api('/api/policies/' + encodeURIComponent(name), { method: 'DELETE' }); route(); }
+  catch (err) { $('#pol-out').innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+}
+async function runPolicy(name, prune) {
+  const needsConfirm = prune === 'apply';
+  if (needsConfirm && !(await typedConfirm('run', 'Run policy?', `Backs up <b>${esc(name)}</b>'s paths, then <b>applies retention</b> (deletes snapshots that fall out of policy).`))) return;
+  const box = progressBox($('#pol-out'));
+  let res;
+  try { res = await api('/api/policies/' + encodeURIComponent(name) + '/run', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: needsConfirm ? 'run' : '' }) }); }
+  catch (err) { box.err(err.message); return; }
+  streamSSE(res.opId, {
+    onProgress: box.prog,
+    onDone: d => box.ok(`<span class="ok">✓ ${d.snapshots} snapshot(s)</span>${d.checked ? ' · checked' : ''}${d.pruned ? ` · ${d.pruned} pruned` : ''}`),
+    onError: box.err,
+  });
+}
+
+// ---------- schedule ----------
+async function viewSchedule(c) {
+  const d = await api('/api/schedule');
+  if (!d.policies.length) { c.innerHTML = `<p class="eyebrow">Schedule</p><div class="sub">no policies yet — add one under Policies first.</div>`; return; }
+  const rows = d.policies.map(p => `<tr class="row">
+    <td>${esc(p.policy)}</td>
+    <td>${esc(p.spec)}</td>
+    <td>${p.manual ? '<span class="sub">—</span>' : p.installed ? '<span class="ok">installed</span>' : '<span class="sub">not installed</span>'}</td>
+    <td style="white-space:nowrap">${p.manual ? '' : `<button class="btn" data-prev="${esc(p.policy)}">preview</button> ${p.installed ? `<button class="btn" data-uninst="${esc(p.policy)}">uninstall</button>` : `<button class="btn" data-inst="${esc(p.policy)}">install</button>`}`}</td>
+  </tr>`).join('');
+  c.innerHTML = `<p class="eyebrow">Schedule · ${esc(d.os)}</p>
+    <div class="sub" style="margin-bottom:.8rem">Installs an OS timer that runs <code>sentra policy run</code> on the policy's cadence. Manual policies have nothing to schedule.</div>
+    <table><thead><tr><th>Policy</th><th>Schedule</th><th>State</th><th></th></tr></thead><tbody>${rows}</tbody></table>
+    <div id="sch-out"></div>`;
+  c.querySelectorAll('[data-prev]').forEach(b => b.addEventListener('click', () => previewSchedule(b.dataset.prev)));
+  c.querySelectorAll('[data-inst]').forEach(b => b.addEventListener('click', () => installSchedule(b.dataset.inst, d.os)));
+  c.querySelectorAll('[data-uninst]').forEach(b => b.addEventListener('click', () => uninstallSchedule(b.dataset.uninst)));
+}
+async function previewSchedule(name) {
+  const out = $('#sch-out');
+  try {
+    const d = await api('/api/schedule/' + encodeURIComponent(name) + '/preview');
+    out.innerHTML = d.files.map(f => `<div class="panel" style="margin-top:1rem"><h3 class="sub">${esc(f.path)}</h3><pre style="overflow-x:auto;white-space:pre;font-size:.8rem;margin-top:.4rem">${esc(f.body)}</pre></div>`).join('');
+  } catch (err) { out.innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+}
+async function installSchedule(name, os) {
+  if (!(await confirmSimple('Install schedule?', `Writes a <b>${esc(os)}</b> timer for <b>${esc(name)}</b> under your home directory. It runs the policy on its cadence.`))) return;
+  try { await api('/api/schedule/' + encodeURIComponent(name) + '/install', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) }); route(); }
+  catch (err) { $('#sch-out').innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+}
+async function uninstallSchedule(name) {
+  if (!(await confirmSimple('Uninstall schedule?', `Removes the scheduled timer for <b>${esc(name)}</b>. The policy itself stays.`))) return;
+  try { await api('/api/schedule/' + encodeURIComponent(name) + '/uninstall', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ confirm: true }) }); route(); }
+  catch (err) { $('#sch-out').innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; }
+}
+
+// ---------- agent ----------
+let agentRecs = [];
+async function viewAgent(c) {
+  const st = await api('/api/agent');
+  c.innerHTML = `<p class="eyebrow">Agent</p>
+    <div class="sub" style="margin-bottom:.8rem">Local heuristics scan your repository and files; ${st.llmConfigured ? 'the model triages the findings into recommendations' : 'no <code>ANTHROPIC_API_KEY</code> is set, so only the local-only scan is available'}. Nothing is applied until you approve it.</div>
+    <div class="startbar">
+      <input id="aroot" placeholder="root folder to scan (default: current directory)">
+      <label class="sub" style="align-self:center"><input id="alocal" type="checkbox" ${st.llmConfigured ? '' : 'checked disabled'}> local-only</label>
+      <button id="ascan" class="btn go">Scan</button>
+    </div>
+    <div id="areason" class="panel" style="margin-top:1rem;display:none"><h3 class="sub">reasoning</h3><pre id="areason-body" style="overflow-x:auto;white-space:pre-wrap;font-size:.82rem;margin-top:.4rem"></pre></div>
+    <div id="arecs"></div>`;
+  $('#ascan').addEventListener('click', () => scanAgent());
+}
+async function scanAgent() {
+  agentRecs = [];
+  const root = $('#aroot').value.trim();
+  const localOnly = $('#alocal').checked;
+  const reason = $('#areason'), body = $('#areason-body'), recsBox = $('#arecs');
+  reason.style.display = ''; body.textContent = ''; recsBox.innerHTML = `<div class="sub" style="margin-top:1rem">scanning…</div>`;
+  let res;
+  try { res = await api('/api/agent/scan', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ root, localOnly }) }); }
+  catch (err) { recsBox.innerHTML = `<div class="err" style="margin-top:1rem">${esc(err.message)}</div>`; return; }
+  const ev = new EventSource('/api/op/' + res.opId + '/events');
+  ev.addEventListener('token', e => { body.textContent += JSON.parse(e.data).text; body.scrollTop = body.scrollHeight; });
+  ev.addEventListener('done', e => { ev.close(); agentRecs = JSON.parse(e.data).recommendations || []; renderRecs(); });
+  ev.addEventListener('error', e => { ev.close(); recsBox.innerHTML = `<div class="err" style="margin-top:1rem">${esc(e.data ? JSON.parse(e.data).message : 'scan failed')}</div>`; });
+}
+function renderRecs() {
+  const box = $('#arecs');
+  if (!agentRecs.length) { box.innerHTML = `<div class="ok" style="margin-top:1rem">✓ no findings — all clear</div>`; return; }
+  const sev = s => s === 'critical' ? 'err' : s === 'warn' ? '' : 'sub';
+  const rows = agentRecs.map((r, i) => `<tr class="row">
+    <td>${r.action === 'none' ? '' : `<input type="checkbox" data-i="${i}" ${r.action !== 'none' ? 'checked' : ''}>`}</td>
+    <td class="${sev(r.severity)}">${esc(r.severity)}</td>
+    <td>${esc(r.action)}</td>
+    <td class="id">${esc(r.target)}</td>
+    <td class="sub">${esc(r.rationale)}</td>
+  </tr>`).join('');
+  box.innerHTML = `<table style="margin-top:1rem"><thead><tr><th></th><th>Severity</th><th>Action</th><th>Target</th><th>Why</th></tr></thead><tbody>${rows}</tbody></table>
+    <div class="startbar"><button id="aapply" class="btn primary">Apply selected</button></div>
+    <div id="aout"></div>`;
+  $('#aapply').addEventListener('click', () => applyAgent());
+}
+async function applyAgent() {
+  const ids = [...document.querySelectorAll('#arecs input[type=checkbox]:checked')].map(cb => agentRecs[+cb.dataset.i].id);
+  if (!ids.length) { $('#aout').innerHTML = `<div class="err" style="margin-top:1rem">select at least one recommendation</div>`; return; }
+  if (!(await typedConfirm('apply', 'Apply recommendations?', `Runs <b>${ids.length}</b> approved action(s). Prune and ignore edits change your repository/config.`))) return;
+  await doApplyAgent({ ids, confirm: 'apply' });
+}
+// doApplyAgent posts the apply; if the server refuses because it would empty the
+// repo, it asks for a typed "wipe" and retries once — so the wipe prompt only
+// appears when it's actually needed.
+async function doApplyAgent(payload) {
+  const box = progressBox($('#aout'));
+  let res;
+  try { res = await api('/api/agent/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(payload) }); }
+  catch (err) {
+    if (/wipe/i.test(err.message) && !payload.wipeConfirm) {
+      if (await typedConfirm('wipe', 'Delete every snapshot?', `These actions would remove the <b>last</b> snapshot in the repository. Type "wipe" to authorize deleting everything.`)) {
+        return doApplyAgent({ ...payload, wipeConfirm: 'wipe' });
+      }
+      box.err('cancelled — nothing was applied');
+      return;
+    }
+    box.err(err.message);
+    return;
+  }
+  streamSSE(res.opId, {
+    onProgress: box.prog,
+    onDone: d => {
+      const okN = d.applied.filter(a => a.ok).length;
+      box.ok(`<span class="ok">✓ ${okN} applied</span>${d.failed ? ` · <span class="err">${d.failed} failed</span>` : ''}`);
+    },
+    onError: box.err,
   });
 }
 
