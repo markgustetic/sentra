@@ -4,13 +4,18 @@ import (
 	"context"
 	"errors"
 	"io"
+	"net"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/tui"
+	"github.com/markgustetic/sentra/internal/web"
 )
 
 // localFixture builds LocalDeps whose UI runner captures the App and whose
@@ -37,6 +42,84 @@ func localFixture(t *testing.T) (LocalDeps, *tui.App, *bool) {
 		},
 	}
 	return deps, &captured, &ensured
+}
+
+// webLocalFixture builds LocalDeps whose Web.Serve stub inspects the running
+// server (via httptest) instead of listening, so the test can assert the MinIO
+// seed reached the web wizard. The TUI runner fails the test if called.
+func webLocalFixture(t *testing.T) (LocalDeps, *bool, *string) {
+	t.Helper()
+	served := false
+	setupBody := ""
+	deps := LocalDeps{
+		UI: UIDeps{
+			Run: func(tui.App) error { t.Fatal("--web must launch the web server, not the TUI"); return nil },
+		},
+		Web: WebDeps{
+			RepoDeps: RepoDeps{
+				NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+					return blobstore.NewMemory(), nil
+				},
+			},
+			OpenBrowser: func(string) error { return nil },
+			Serve: func(_ context.Context, srv *web.Server, ln net.Listener) error {
+				served = true
+				_ = ln.Close() // the stub inspects via httptest instead of listening
+				ts := httptest.NewServer(srv.Handler())
+				defer ts.Close()
+				resp, err := http.Get(ts.URL + "/") // establishes the session cookie
+				if err != nil {
+					return err
+				}
+				cookie := resp.Header.Get("Set-Cookie")
+				resp.Body.Close()
+				req, _ := http.NewRequest("GET", ts.URL+"/api/setup", nil)
+				req.Header.Set("Cookie", cookie)
+				sresp, err := http.DefaultClient.Do(req)
+				if err != nil {
+					return err
+				}
+				b, _ := io.ReadAll(sresp.Body)
+				sresp.Body.Close()
+				setupBody = string(b)
+				return nil
+			},
+		},
+		EnsureMinIO: func(context.Context) error { return nil },
+	}
+	return deps, &served, &setupBody
+}
+
+// TestLocal_WebFlagLaunchesSeededWebWizard proves `sentra local --web` boots the
+// browser UI (not the TUI) with the wizard pre-filled for MinIO: the seed
+// coordinates reach /api/setup and the S3-compatible backend is inferred+locked.
+func TestLocal_WebFlagLaunchesSeededWebWizard(t *testing.T) {
+	chDir(t, t.TempDir()) // empty dir: no .sentra-local.yaml → first-run wizard
+	t.Setenv("AWS_ACCESS_KEY_ID", "")
+	t.Setenv("AWS_SECRET_ACCESS_KEY", "")
+
+	deps, served, setupBody := webLocalFixture(t)
+	cmd := NewLocal(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--web", "--no-open"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if !*served {
+		t.Fatal("--web did not launch the web server")
+	}
+	if !strings.Contains(*setupBody, "http://localhost:9000") || !strings.Contains(*setupBody, "sentra-test") {
+		t.Errorf("web wizard not seeded with MinIO coordinates: %s", *setupBody)
+	}
+	// endpoint + minioadmin creds → the wizard infers and locks S3-compatible.
+	if !strings.Contains(*setupBody, "s3-compatible") || !strings.Contains(*setupBody, `"endpointLocked":true`) {
+		t.Errorf("web wizard should lock S3-compatible: %s", *setupBody)
+	}
+	// The real sentra.yaml is never touched.
+	if _, statErr := os.Stat("sentra.yaml"); !os.IsNotExist(statErr) {
+		t.Fatalf("sentra.yaml must not be created by `sentra local --web`, stat err=%v", statErr)
+	}
 }
 
 // TestLocal_EnsuresMinIOSeedsWizardAndSetsCreds is the heart of `sentra local`:

@@ -11,6 +11,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
@@ -109,6 +110,46 @@ func TestSetup_ApplyS3CompatibleUnlocksServer(t *testing.T) {
 	// Setup is now refused.
 	if rec := req(t, srv, "GET", "/api/setup", "", true); rec.Code != 409 {
 		t.Errorf("setup after apply = %d, want 409", rec.Code)
+	}
+}
+
+func TestSetup_ApplyExistingRepoWrongPassphraseIsClear(t *testing.T) {
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("the-existing-passphrase"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	srv := setupServerWithEffects(t, &fakeSetupEffects{store: store})
+	body := `{"backend":"s3-compatible","bucket":"sentra-web","endpointUrl":"http://x:9000","initRepo":true,"passphrase":"a-totally-different-one","savePassphrase":false}`
+	stream := drainSetupApply(t, srv, body)
+	if !strings.Contains(stream, "already contains a Sentra repository") {
+		t.Fatalf("expected the clear already-exists error, got:\n%s", stream)
+	}
+}
+
+func TestSetup_ApplyExistingRepoCorrectPassphraseAdopts(t *testing.T) {
+	const existing = "the-existing-passphrase"
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte(existing))
+	if err != nil {
+		t.Fatal(err)
+	}
+	_ = r.Close()
+	srv := setupServerWithEffects(t, &fakeSetupEffects{store: store})
+	body := `{"backend":"s3-compatible","bucket":"sentra-web","endpointUrl":"http://x:9000","initRepo":true,"passphrase":"` + existing + `","savePassphrase":false}`
+	stream := drainSetupApply(t, srv, body)
+	if !strings.Contains(stream, "event: done") {
+		t.Fatalf("adopting an existing repo with its passphrase should succeed:\n%s", stream)
+	}
+	var sess struct {
+		Locked      bool `json:"locked"`
+		SetupNeeded bool `json:"setupNeeded"`
+	}
+	rec := req(t, srv, "GET", "/api/session", "", false)
+	_ = json.Unmarshal(rec.Body.Bytes(), &sess)
+	if sess.Locked || sess.SetupNeeded {
+		t.Fatalf("server not unlocked after adopting existing repo: %+v", sess)
 	}
 }
 

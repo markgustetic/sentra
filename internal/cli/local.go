@@ -22,6 +22,11 @@ const localConfigFileName = ".sentra-local.yaml"
 type LocalDeps struct {
 	UI UIDeps
 
+	// Web is the same WebDeps the `web` command uses; `sentra local --web`
+	// launches the browser UI instead of the TUI, seeding it with the MinIO
+	// coordinates. SetupSeedConfig is set at run time, so pass it in nil.
+	Web WebDeps
+
 	// EnsureMinIO makes a local MinIO reachable before the UI launches: it
 	// returns nil once MinIO answers, starts it (docker compose) if needed, and
 	// returns a clear error when it can neither reach nor start it. Tests inject
@@ -39,27 +44,34 @@ type LocalDeps struct {
 // exports the well-known minioadmin credentials — but only when the user has
 // not already set AWS credentials, so a real environment is never clobbered.
 func NewLocal(deps LocalDeps) *cobra.Command {
+	var web bool
+	var port int
+	var noOpen bool
 	cmd := &cobra.Command{
 		Use:   "local",
 		Short: "Run Sentra against a local MinIO for development",
 		Long: "Start (or reuse) a local MinIO via docker compose, point Sentra at it, and\n" +
-			"open the TUI with the first-run setup wizard pre-filled for MinIO.\n\n" +
+			"open the first-run setup wizard pre-filled for MinIO.\n\n" +
 			"This is a development convenience: it launches against .sentra-local.yaml\n" +
 			"(never your real sentra.yaml) and, unless you have already set AWS\n" +
-			"credentials, exports the default minioadmin credentials for the session.",
+			"credentials, exports the default minioadmin credentials for the session.\n\n" +
+			"By default it opens the terminal UI; pass --web for the browser UI.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runLocal(cmd, deps)
+			return runLocal(cmd, deps, web, port, noOpen)
 		},
 	}
+	cmd.Flags().BoolVar(&web, "web", false, "open the browser UI instead of the terminal UI")
+	cmd.Flags().IntVar(&port, "port", 0, "with --web, the TCP port on 127.0.0.1 (0 = an ephemeral free port)")
+	cmd.Flags().BoolVar(&noOpen, "no-open", false, "with --web, do not open a browser automatically")
 	return cmd
 }
 
 // runLocal is the body of `sentra local`, pulled out for grep-ability and to
 // keep the cobra closure shallow.
-func runLocal(cmd *cobra.Command, deps LocalDeps) error {
+func runLocal(cmd *cobra.Command, deps LocalDeps, web bool, port int, noOpen bool) error {
 	cmd.SilenceUsage = true
 
 	if err := deps.EnsureMinIO(cmd.Context()); err != nil {
@@ -81,6 +93,12 @@ func runLocal(cmd *cobra.Command, deps LocalDeps) error {
 	seed.Repo.S3.EndpointURL = "http://localhost:9000"
 	seed.Repo.S3.Bucket = "sentra-test"
 	seed.Repo.S3.Region = "us-east-1"
+
+	if web {
+		wd := deps.Web
+		wd.SetupSeedConfig = seed
+		return runWeb(cmd, wd, localConfigFileName, port, noOpen)
+	}
 
 	ui := deps.UI
 	ui.SetupSeedConfig = seed

@@ -678,6 +678,7 @@ function swReview(card) {
     <div id="sw-prov"></div>
     ${swNav('Create repository')}`;
   swWire(card, () => swProvision());
+  if (SW.provError) { $('#sw-prov').innerHTML = `<div class="err" style="margin-top:1rem;white-space:pre-wrap">${esc(SW.provError)}</div>`; SW.provError = ''; }
 }
 async function swProvision() {
   const out = $('#sw-prov');
@@ -692,7 +693,7 @@ async function swProvision() {
   const body = { ...swForm(), passphrase: SW.passphrase, savePassphrase: SW.savePassphrase };
   let res;
   try { res = await api('/api/setup/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
-  catch (err) { swProvError(out, err.message); return; }
+  catch (err) { swProvError(err.message); return; }
   const ev = new EventSource('/api/op/' + res.opId + '/events');
   ev.addEventListener('token', e => { done[JSON.parse(e.data).text] = true; paint(); });
   ev.addEventListener('done', () => {
@@ -703,14 +704,15 @@ async function swProvision() {
     out.appendChild(ok);
     setTimeout(() => location.reload(), 900);
   });
-  ev.addEventListener('error', e => { ev.close(); swProvError(out, e.data ? JSON.parse(e.data).message : 'setup failed'); });
+  ev.addEventListener('error', e => { ev.close(); swProvError(e.data ? JSON.parse(e.data).message : 'setup failed'); });
 }
-function swProvError(out, msg) {
-  SW.passphrase = SW.confirmPass = '';
-  out.innerHTML = `<div class="err" style="margin-top:1rem;white-space:pre-wrap">${esc(msg)}</div>`;
-  const next = $('#sw-next'), back = $('#sw-back');
-  if (back) back.disabled = false;
-  if (next) { next.disabled = false; next.textContent = 'Back to passphrase'; next.onclick = () => { SW.i = swSteps().indexOf('passphrase'); swRender(); }; }
+// swProvError re-renders the Review step with the error shown. It does NOT
+// mutate the shared nav button (that double-fired the apply) and keeps the
+// passphrase so "Create repository" can be retried, or "Back" used to amend.
+function swProvError(msg) {
+  SW.provError = msg;
+  SW.i = swSteps().indexOf('review');
+  swRender();
 }
 
 boot().catch(err => { document.body.innerHTML = `<pre style="color:#FF6B86;padding:2rem">${esc(err.message)}</pre>`; });
