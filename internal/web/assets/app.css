@@ -1,0 +1,136 @@
+/* sentra web — synthwave design system.
+   Deep-space ground, neon-on-dark, glowing chrome, an outrun grid + sun.
+   Single-theme by intent (it's a neon arcade screen). */
+
+:root{
+  --void:#08010f; --void2:#12042a; --panel:#180a33; --panel2:#1e0c3f;
+  --magenta:#FF6BDD; --purple:#CB8CFF; --cyan:#5CEBFF; --mint:#5CFFB4;
+  --gold:#FFD84D; --red:#FF6B86; --muted:#8E7DC8; --subtle:#CBB8FF;
+  --grid:#9a3bff; --line:#ffffff14; --line2:#ffffff22;
+  --mono:ui-monospace,"SF Mono",Menlo,Monaco,"Cascadia Code",Consolas,monospace;
+  --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
+}
+*{box-sizing:border-box}
+html,body{height:100%}
+body{
+  margin:0; color:var(--subtle); font-family:var(--mono); font-size:14px;
+  background:radial-gradient(130% 90% at 50% -10%, #2a0a52 0%, var(--void2) 45%, var(--void) 100%);
+  overflow:hidden;
+}
+
+/* ---------- outrun wallpaper ---------- */
+.backdrop{position:fixed; inset:0; z-index:0; overflow:hidden; pointer-events:none}
+.sun{position:absolute; top:6%; left:50%; transform:translateX(-50%);
+  width:min(46vw,520px); aspect-ratio:1; border-radius:50%;
+  background:radial-gradient(circle at 50% 45%, #ffe08a 0%, var(--magenta) 48%, transparent 70%);
+  filter:blur(1px); opacity:.55;}
+.grid{position:absolute; left:-25%; right:-25%; bottom:-5%; height:60%;
+  background-image:
+    linear-gradient(var(--grid) 1.5px, transparent 1.5px),
+    linear-gradient(90deg, var(--grid) 1.5px, transparent 1.5px);
+  background-size:52px 52px; opacity:.24;
+  transform:perspective(360px) rotateX(70deg); transform-origin:bottom center;
+  mask-image:linear-gradient(transparent, #000 55%);
+  animation:drift 7s linear infinite;}
+@keyframes drift{from{background-position:0 0}to{background-position:0 52px}}
+.scanlines{position:absolute; inset:0; opacity:.05;
+  background:repeating-linear-gradient(0deg, #fff 0 1px, transparent 1px 3px);}
+
+/* ---------- logo (glowing wordmark) ---------- */
+.logo{font-weight:700; letter-spacing:.05em; color:var(--magenta);
+  text-shadow:0 0 10px var(--magenta),0 0 26px rgba(255,107,221,.5);
+  animation:brandpulse 2.2s ease-in-out infinite;}
+@keyframes brandpulse{0%,100%{color:#FF5AD6;text-shadow:0 0 10px rgba(255,90,214,.7),0 0 26px rgba(255,90,214,.4)}
+  50%{color:#FFA0EF;text-shadow:0 0 16px rgba(255,160,239,.9),0 0 34px rgba(255,160,239,.5)}}
+.logo.big{font-size:clamp(18px,3.4vw,30px); margin-bottom:1.4rem; text-align:center}
+
+/* ---------- unlock gate ---------- */
+.overlay{position:fixed; inset:0; z-index:20; display:grid; place-items:center; padding:1rem}
+.card{background:linear-gradient(180deg,var(--panel),var(--void2));
+  border:1px solid var(--magenta); border-radius:14px; padding:1.6rem 1.8rem;
+  box-shadow:0 0 0 1px rgba(255,107,221,.25),0 0 40px -8px rgba(255,107,221,.6);}
+.unlock-card{width:min(440px,92vw); display:flex; flex-direction:column; gap:.7rem}
+.ul-label{color:var(--muted); text-transform:uppercase; letter-spacing:.16em; font-size:.66rem}
+input,select{font-family:var(--mono); font-size:14px; color:#efe8ff;
+  background:#0c0322; border:1px solid var(--line2); border-radius:8px; padding:.6rem .7rem; outline:none}
+input:focus{border-color:var(--cyan); box-shadow:0 0 0 1px var(--cyan),0 0 16px -4px var(--cyan)}
+.btn{font-family:var(--mono); font-size:13px; font-weight:700; cursor:pointer;
+  border-radius:8px; padding:.55rem .9rem; border:1px solid var(--line2);
+  background:#160a30; color:var(--subtle); transition:.15s}
+.btn:hover{border-color:var(--purple); box-shadow:0 0 14px -4px var(--purple)}
+.btn.primary{color:#0c0322; background:var(--magenta); border-color:var(--magenta);
+  box-shadow:0 0 18px -4px var(--magenta)}
+.btn.primary:hover{background:#ff86e6}
+.btn.go{color:#04121a; background:var(--cyan); border-color:var(--cyan); box-shadow:0 0 18px -4px var(--cyan)}
+.err{color:var(--red); font-size:.82rem; text-shadow:0 0 10px rgba(255,107,134,.4)}
+
+/* ---------- app shell ---------- */
+.app{position:relative; z-index:1; height:100%; display:grid; grid-template-columns:220px 1fr}
+.rail{border-right:1px solid var(--line); padding:1rem .6rem; display:flex; flex-direction:column; gap:.2rem;
+  backdrop-filter:blur(2px)}
+.rail-logo{color:var(--magenta); font-weight:700; padding:.2rem .6rem 1rem; text-shadow:0 0 10px rgba(255,107,221,.6)}
+.rail .cat{color:var(--muted); text-transform:uppercase; letter-spacing:.18em; font-size:.56rem; padding:.7rem .6rem .3rem}
+.rail a{display:block; color:var(--subtle); text-decoration:none; padding:.34rem .6rem; border-radius:8px; font-size:.9rem}
+.rail a:hover{background:#ffffff0c}
+.rail a.active{color:var(--magenta); font-weight:700; background:#ff6bdd18;
+  box-shadow:inset 2px 0 0 var(--magenta); text-shadow:0 0 10px rgba(255,107,221,.5)}
+.main{display:grid; grid-template-rows:auto 1fr auto; min-width:0; height:100%}
+.topbar{padding:.7rem 1rem; text-align:center; border-bottom:1px solid var(--line)}
+.topbar .logo{font-size:clamp(14px,1.8vw,20px)}
+.content{padding:1.4rem 1.6rem; overflow-y:auto; min-height:0}
+.statusbar{display:flex; justify-content:space-between; padding:.5rem 1rem; border-top:1px solid var(--line);
+  color:var(--muted); font-size:.72rem}
+.statusbar .repo{color:var(--subtle)}
+
+/* ---------- panels / cards ---------- */
+.eyebrow{color:var(--muted); text-transform:uppercase; letter-spacing:.2em; font-size:.62rem; margin:0 0 1rem}
+.cards{display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px}
+.panel{border:1px solid var(--cyan); border-radius:12px; padding:1rem 1.1rem;
+  background:linear-gradient(180deg,rgba(40,20,70,.5),rgba(12,4,30,.5));
+  box-shadow:0 0 0 1px rgba(92,235,255,.2),0 0 26px -8px rgba(92,235,255,.5);
+  animation:breathe 3s ease-in-out infinite}
+@keyframes breathe{0%,100%{border-color:#22DBFF;box-shadow:0 0 0 1px rgba(34,219,255,.22),0 0 26px -8px rgba(34,219,255,.5)}
+  50%{border-color:#93F4FF;box-shadow:0 0 0 1px rgba(147,244,255,.4),0 0 34px -6px rgba(147,244,255,.8)}}
+.panel h3{margin:0 0 .5rem; color:var(--purple); font-size:.8rem; text-transform:uppercase; letter-spacing:.12em}
+.metric{font-size:2rem; font-weight:700; color:var(--cyan); text-shadow:0 0 14px rgba(92,235,255,.5)}
+.metric.magenta{color:var(--magenta); text-shadow:0 0 14px rgba(255,107,221,.5)}
+.metric.mint{color:var(--mint); text-shadow:0 0 14px rgba(92,255,180,.5)}
+.sub{color:var(--muted); font-size:.8rem; margin-top:.2rem}
+
+/* ---------- snapshots table ---------- */
+table{width:100%; border-collapse:collapse; font-size:.86rem}
+th{text-align:left; color:var(--muted); text-transform:uppercase; letter-spacing:.1em; font-size:.62rem;
+  padding:.4rem .6rem; border-bottom:1px solid var(--line2)}
+td{padding:.5rem .6rem; border-bottom:1px solid var(--line)}
+tr.row{cursor:pointer}
+tr.row:hover td{background:#ff6bdd10}
+.id{color:var(--cyan)}
+.tag-pill{display:inline-block; background:#cb8cff22; color:var(--purple); border-radius:6px; padding:1px 8px; font-size:.74rem}
+
+/* ---------- backup picker ---------- */
+.picker{border:1px solid var(--line2); border-radius:10px; overflow:hidden; max-width:640px}
+.picker .path{color:var(--muted); padding:.5rem .7rem; border-bottom:1px solid var(--line); font-size:.8rem}
+.picker .row{display:flex; align-items:center; gap:.5rem; padding:.4rem .7rem; cursor:pointer}
+.picker .row:hover{background:#ffffff0c}
+.picker .row .ico{color:var(--purple)}
+.startbar{margin-top:1rem; display:flex; gap:.8rem; align-items:center}
+.startbar input{flex:1; max-width:280px}
+.progress{margin-top:1rem; max-width:640px}
+.bar{height:14px; border-radius:8px; background:#0c0322; border:1px solid var(--line2); overflow:hidden}
+.bar > i{display:block; height:100%; width:0;
+  background:linear-gradient(90deg,var(--magenta),var(--purple),var(--cyan)); transition:width .2s;
+  box-shadow:0 0 16px var(--cyan)}
+.ok{color:var(--mint); font-weight:700; text-shadow:0 0 10px rgba(92,255,180,.4)}
+
+/* ---------- modal ---------- */
+.modal-wrap{position:fixed; inset:0; z-index:30; display:grid; place-items:center; background:rgba(4,1,10,.6)}
+.modal{width:min(460px,92vw)}
+.modal .mh{color:var(--magenta); font-weight:700; text-shadow:0 0 10px rgba(255,107,221,.5); margin-bottom:.5rem}
+.modal .mb{color:var(--subtle); font-size:.9rem}
+.modal .mrow{display:flex; gap:.7rem; justify-content:flex-end; margin-top:1.2rem}
+
+@media (prefers-reduced-motion: reduce){
+  .grid,.logo,.panel{animation:none}
+  .logo{color:var(--magenta)}
+}
+@media (max-width:640px){ .app{grid-template-columns:1fr} .rail{display:none} }
