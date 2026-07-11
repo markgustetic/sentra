@@ -157,9 +157,12 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 			PassphraseWithConfig: openPassphrase,
 			Stdout:               os.Stdout,
 		},
-		Serve:          cli.ServeWebProduction,
-		OpenBrowser:    cli.OpenBrowserProduction,
-		SaveKeyring:    saveRepoPassphraseToKeyring,
-		PassphraseFile: func() string { return rootFlags.PassphraseFile },
+		Serve:             cli.ServeWebProduction,
+		OpenBrowser:       cli.OpenBrowserProduction,
+		SaveKeyring:       saveRepoPassphraseToKeyring,
+		PassphraseFile:    func() string { return rootFlags.PassphraseFile },
+		ProviderForConfig: newAgentProvider,
+		Actions:           action.NewDefaultRegistry(),
+		Heuristics:        defaultHeuristics(),
 	}))
 }

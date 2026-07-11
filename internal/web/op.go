@@ -33,6 +33,7 @@ func sse(w http.ResponseWriter, event string, data any) {
 type op struct {
 	id       string
 	progress chan progressMsg // buffered + lossy: only the latest matters
+	text     chan string      // buffered + lossy: streamed log/reasoning tokens
 	done     chan struct{}    // closed when the op finishes
 	mu       sync.Mutex
 	result   opResult
@@ -64,7 +65,7 @@ func (s *Server) startOp(name string, run func(context.Context, progress.Reporte
 		s.mu.Unlock()
 		return "", errBusy
 	}
-	o := &op{id: newOpID(), progress: make(chan progressMsg, 8), done: make(chan struct{})}
+	o := &op{id: newOpID(), progress: make(chan progressMsg, 8), text: make(chan string, 1), done: make(chan struct{})}
 	s.opRunning = name
 	s.ops[o.id] = o
 	rp := s.repo
@@ -79,6 +80,38 @@ func (s *Server) startOp(name string, run func(context.Context, progress.Reporte
 		s.mu.Lock()
 		s.opRunning = ""
 		s.mu.Unlock()
+	}()
+	return o.id, nil
+}
+
+// startReadStream registers a read-only streaming op — the agent scan, which
+// walks the tree and reads manifests but never mutates. Unlike startOp it does
+// NOT take the mutating guard, so a scan neither blocks nor is blocked by a
+// backup/prune. The run func gets an emit callback for reasoning/log tokens.
+// Returns errLocked if the repo is locked.
+func (s *Server) startReadStream(run func(context.Context, func(string), *repo.Repo) (any, error)) (string, error) {
+	s.mu.Lock()
+	if s.repo == nil {
+		s.mu.Unlock()
+		return "", errLocked
+	}
+	o := &op{id: newOpID(), progress: make(chan progressMsg, 1), text: make(chan string, 256), done: make(chan struct{})}
+	s.ops[o.id] = o
+	rp := s.repo
+	s.mu.Unlock()
+
+	go func() {
+		emit := func(tok string) {
+			select {
+			case o.text <- tok:
+			default: // reader is slow or absent — drop; the done payload is authoritative
+			}
+		}
+		data, err := run(context.Background(), emit, rp)
+		o.mu.Lock()
+		o.result = opResult{data: data, err: err}
+		o.mu.Unlock()
+		close(o.done)
 	}()
 	return o.id, nil
 }
@@ -131,6 +164,20 @@ func (r *opReporter) emit() {
 	}
 }
 
+// drainTokens flushes any tokens still buffered when the op finishes, so a fast
+// scan's reasoning transcript isn't truncated by the done event racing ahead.
+func drainTokens(w http.ResponseWriter, flusher http.Flusher, o *op) {
+	for {
+		select {
+		case tok := <-o.text:
+			sse(w, "token", map[string]string{"text": tok})
+		default:
+			flusher.Flush()
+			return
+		}
+	}
+}
+
 // handleOpEvents streams a running op's progress and terminal result as SSE. It
 // backs both /api/backup/{id}/events and the generic /api/op/{id}/events.
 func (s *Server) handleOpEvents(w http.ResponseWriter, r *http.Request) {
@@ -159,7 +206,11 @@ func (s *Server) handleOpEvents(w http.ResponseWriter, r *http.Request) {
 		case p := <-o.progress:
 			sse(w, "progress", map[string]int64{"done": p.Done, "total": p.Total})
 			flusher.Flush()
+		case tok := <-o.text:
+			sse(w, "token", map[string]string{"text": tok})
+			flusher.Flush()
 		case <-o.done:
+			drainTokens(w, flusher, o)
 			o.mu.Lock()
 			res := o.result
 			o.mu.Unlock()

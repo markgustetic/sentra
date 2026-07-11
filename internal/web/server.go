@@ -24,6 +24,10 @@ import (
 	"strings"
 	"sync"
 
+	"github.com/markgustetic/sentra/internal/agent"
+	"github.com/markgustetic/sentra/internal/agent/action"
+	"github.com/markgustetic/sentra/internal/agent/heuristics"
+	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
@@ -60,8 +64,29 @@ type Deps struct {
 	// NewStore opens a blobstore for a config — used to build the DESTINATION
 	// store for sync from a dst-config. Same factory the CLI uses.
 	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	// Schedule injects the OS/home/exe seam used to render launchd/systemd units.
+	// The zero value uses runtime defaults; tests target a platform into a temp
+	// HOME. Mirrors cli.ScheduleDeps.
+	Schedule ScheduleEnv
+	// Provider is the LLM provider for the agent scan. Nil is allowed — the scan
+	// falls back to local-only heuristics. Built per-config by the command.
+	Provider llm.Provider
+	// Actions is the agent action registry (prune_snapshot, add_to_ignore, …) the
+	// apply path dispatches through. Nil falls back to action.NewDefaultRegistry().
+	Actions *action.Registry
+	// Heuristics is the local heuristic set the scan runs first. Empty means no
+	// local findings (and therefore no recommendations).
+	Heuristics []heuristics.Heuristic
 	// Assets is the embedded frontend (index.html, app.css, app.js, images).
 	Assets fs.FS
+}
+
+// ScheduleEnv is the injectable seam for schedule rendering. Nil funcs / empty
+// OS fall back to runtime.GOOS, os.UserHomeDir, and os.Executable.
+type ScheduleEnv struct {
+	OS         string
+	HomeDir    func() (string, error)
+	Executable func() (string, error)
 }
 
 // Server holds the session and the routes. All mutable state is guarded by mu
@@ -74,6 +99,7 @@ type Server struct {
 	repo      *repo.Repo // nil ⇒ locked
 	opRunning string     // "" when idle; one mutating op at a time
 	ops       map[string]*op
+	lastRecs  map[string]agent.Recommendation // last scan's recs, keyed by ID; apply resolves against this
 
 	mux *http.ServeMux
 }
@@ -86,10 +112,11 @@ func New(deps Deps) *Server {
 		panic("web: cannot read crypto/rand: " + err.Error())
 	}
 	s := &Server{
-		deps:  deps,
-		token: hex.EncodeToString(tok),
-		repo:  deps.Repo,
-		ops:   map[string]*op{},
+		deps:     deps,
+		token:    hex.EncodeToString(tok),
+		repo:     deps.Repo,
+		ops:      map[string]*op{},
+		lastRecs: map[string]agent.Recommendation{},
 	}
 	s.routes()
 	return s
@@ -133,6 +160,24 @@ func (s *Server) routes() {
 
 	// Diagnostics (Phase 2 completion).
 	m.HandleFunc("GET /api/doctor", s.requireSession(s.handleDoctor))
+
+	// Management (Phase 4) — named policies. CRUD is config-only; run is guarded.
+	m.HandleFunc("GET /api/policies", s.requireSession(s.handlePolicies))
+	m.HandleFunc("POST /api/policies", s.requireSession(s.handlePolicyCreate))
+	m.HandleFunc("DELETE /api/policies/{name}", s.requireSession(s.handlePolicyDelete))
+	m.HandleFunc("POST /api/policies/{name}/run", s.requireSession(s.handlePolicyRun))
+
+	// Schedule (Phase 4) — render/install launchd or systemd units. Filesystem
+	// only; preview is read-only, install/uninstall need an explicit confirm.
+	m.HandleFunc("GET /api/schedule", s.requireSession(s.handleSchedule))
+	m.HandleFunc("GET /api/schedule/{name}/preview", s.requireSession(s.handleSchedulePreview))
+	m.HandleFunc("POST /api/schedule/{name}/install", s.requireSession(s.handleScheduleInstall))
+	m.HandleFunc("POST /api/schedule/{name}/uninstall", s.requireSession(s.handleScheduleUninstall))
+
+	// Agent (Phase 4) — advisory scan (read-only, streamed) + guarded apply.
+	m.HandleFunc("GET /api/agent", s.requireSession(s.handleAgentStatus))
+	m.HandleFunc("POST /api/agent/scan", s.requireSession(s.handleAgentScan))
+	m.HandleFunc("POST /api/agent/apply", s.requireSession(s.handleAgentApply))
 
 	s.mux = m
 }
