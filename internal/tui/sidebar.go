@@ -16,6 +16,12 @@ import (
 // or action launch (Phase 2).
 type activateMsg struct{ id string }
 
+// navPreviewMsg is emitted when the rail cursor scrolls onto a new item, so the
+// shell switches the shown view live while focus stays on the rail — you see
+// each screen as you scroll over it. Enter then emits activateMsg to dive into
+// the highlighted view (moving focus to the content pane).
+type navPreviewMsg struct{ id string }
+
 // sidebarItem adapts a Command to bubbles/list.
 type sidebarItem struct{ cmd Command }
 
@@ -109,8 +115,22 @@ func (s Sidebar) Update(msg tea.Msg) (Sidebar, tea.Cmd) {
 		}
 		return s, nil
 	}
+	before := s.list.Index()
 	var cmd tea.Cmd
 	s.list, cmd = s.list.Update(msg)
+	// Live-follow: when the cursor lands on a new item, switch the shown view
+	// immediately (focus stays on the rail, so scrolling keeps switching). At the
+	// ends the index doesn't move, so no spurious re-navigation fires.
+	if s.list.Index() != before {
+		if it, ok := s.list.SelectedItem().(sidebarItem); ok {
+			id := it.cmd.ID
+			preview := func() tea.Msg { return navPreviewMsg{id: id} }
+			if cmd == nil {
+				return s, preview
+			}
+			return s, tea.Batch(cmd, preview)
+		}
+	}
 	return s, cmd
 }
 
