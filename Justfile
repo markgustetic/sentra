@@ -3,12 +3,17 @@
 # Layout:
 #   Build & quality gate  — build, test, check, lint, ...
 #   Local dev (MinIO)      — zero-cloud end-to-end via docker + MinIO
-#   AWS helpers            — open the S3 console, reset local AWS setup state
+#   AWS helpers            — run against real S3, smoke-test it, reset, open console
 #   Release & tooling      — goreleaser snapshot + SBOM
 #
 # The fast path to try the app end-to-end with no AWS account:
 #   just local          # builds, starts MinIO, opens the TUI (first-run wizard)
 #   just local-reset    # wipe everything and start fresh
+#
+# Testing against real AWS S3:
+#   just aws            # builds + runs `sentra`; first run opens the setup wizard
+#   just aws-smoke      # non-interactive backup→restore→dedup→check (after setup)
+#   just aws-reset      # wipe local state so the next `just aws` is a fresh wizard
 
 set dotenv-load := true
 
@@ -23,6 +28,9 @@ MINIO_ACCESS_KEY := env_var_or_default("MINIO_ROOT_USER", "minioadmin")
 MINIO_SECRET_KEY := env_var_or_default("MINIO_ROOT_PASSWORD", "minioadmin")
 DEMO_DIR         := env_var_or_default("SENTRA_DEMO_DIR", "demo-data")
 RESTORE_DIR      := env_var_or_default("SENTRA_RESTORE_DIR", "/tmp/sentra-restored")
+# AWS smoke-test payload + restore target (real S3; kept distinct from the MinIO demo dirs).
+AWS_DEMO_DIR     := env_var_or_default("SENTRA_AWS_DEMO_DIR", "aws-test-data")
+AWS_RESTORE_DIR  := env_var_or_default("SENTRA_AWS_RESTORE_DIR", "/tmp/sentra-aws-restored")
 # Prefix that points the sentra binary at local MinIO via the AWS SDK env chain.
 LOCAL_ENV := "AWS_ACCESS_KEY_ID=" + MINIO_ACCESS_KEY + " AWS_SECRET_ACCESS_KEY=" + MINIO_SECRET_KEY
 
@@ -180,6 +188,60 @@ local-ui: _require-local-passphrase build local-up
 # AWS helpers
 # ---------------------------------------------------------------------------
 
+# Build + run sentra against ./sentra.yaml: first run (no config, e.g. after `just aws-reset`) opens the AWS setup wizard; once configured it opens the dashboard. Same as plain `sentra` after `just install`. Needs a real terminal.
+aws: build
+	{{SENTRA}}
+
+# Create a small AWS test payload under AWS_DEMO_DIR (idempotent; two files so `just aws-smoke` can prove dedup).
+aws-seed:
+	mkdir -p "{{AWS_DEMO_DIR}}"
+	test -f "{{AWS_DEMO_DIR}}/readme.txt" || printf 'hello sentra (aws)\n' > "{{AWS_DEMO_DIR}}/readme.txt"
+	test -f "{{AWS_DEMO_DIR}}/notes.md"   || printf '# notes\nsecond file, unchanged across snapshots\n' > "{{AWS_DEMO_DIR}}/notes.md"
+
+# Verify a configured AWS repo without changing anything (identity, bucket, repo).
+aws-doctor: build
+	{{SENTRA}} doctor
+
+# Non-interactive AWS test: backup → restore+verify → incremental (proves dedup) → check. Needs a configured sentra.yaml (run `just aws` first) and a resolvable passphrase (keyring from setup, or SENTRA_PASSPHRASE in env / .env). Reads and writes S3 but never deletes it.
+aws-smoke: build aws-seed
+	#!/usr/bin/env bash
+	set -euo pipefail
+	cfg="sentra.yaml"
+	if [ ! -f "$cfg" ]; then
+	  echo "No $cfg found. Run 'just aws' and complete the setup wizard first."
+	  exit 1
+	fi
+	command -v jq >/dev/null 2>&1 || { echo "jq is required for aws-smoke (brew install jq)."; exit 1; }
+
+	echo "==> doctor"
+	{{SENTRA}} doctor
+
+	echo "==> backup (full)"
+	{{SENTRA}} backup "{{AWS_DEMO_DIR}}" --tag aws-smoke
+
+	echo "==> snapshots"
+	{{SENTRA}} snapshots
+	snap="$({{SENTRA}} snapshots --json | jq -r 'sort_by(.created_at) | last | .id')"
+	if [ -z "$snap" ] || [ "$snap" = "null" ]; then echo "no snapshot found after backup"; exit 1; fi
+	echo "latest snapshot: $snap"
+
+	echo "==> restore + verify"
+	rm -rf -- "{{AWS_RESTORE_DIR}}"
+	{{SENTRA}} restore "$snap" "{{AWS_RESTORE_DIR}}" --verify
+	# restore writes paths relative to the backup root, so the trees compare flat.
+	diff -r "{{AWS_DEMO_DIR}}" "{{AWS_RESTORE_DIR}}"
+	echo "restore is exact-byte OK"
+
+	echo "==> incremental backup (dedup)"
+	printf 'appended at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{{AWS_DEMO_DIR}}/readme.txt"
+	{{SENTRA}} backup "{{AWS_DEMO_DIR}}" --tag aws-smoke-2
+	stats="$({{SENTRA}} snapshots --json | jq -r 'sort_by(.created_at) | last | "new=\(.new_bytes) total=\(.bytes)"')"
+	echo "incremental snapshot uploaded $stats (new should be « total)"
+
+	echo "==> check"
+	{{SENTRA}} check
+	echo "AWS smoke test complete."
+
 # Open the configured AWS S3 bucket in the browser. Override with: just aws-open-bucket <bucket> <region>
 aws-open-bucket bucket="" region="" config="sentra.yaml":
 	@set -eu; \
@@ -243,6 +305,8 @@ aws-reset profile="sentra" config="sentra.yaml": build
 	echo "This will reset local AWS setup test state:"; \
 	echo "  sentra config: $cfg"; \
 	echo "  setup draft:   $draft"; \
+	echo "  test data:     {{AWS_DEMO_DIR}}"; \
+	echo "  restore dir:   {{AWS_RESTORE_DIR}}"; \
 	echo "  AWS profile:   {{profile}}"; \
 	echo; \
 	echo "It will remove Sentra's saved OS-keyring passphrase for this config if one exists."; \
@@ -256,8 +320,9 @@ aws-reset profile="sentra" config="sentra.yaml": build
 		echo "Canceled."; \
 		exit 1; \
 	fi; \
-	{{SENTRA}} password forget --config "$cfg"; \
+	{{SENTRA}} password forget --config "$cfg" || true; \
 	rm -f -- "$cfg" "$draft"; \
+	rm -rf -- "{{AWS_DEMO_DIR}}" "{{AWS_RESTORE_DIR}}"; \
 	if command -v aws >/dev/null 2>&1; then \
 		for key in \
 			aws_access_key_id \
@@ -280,7 +345,42 @@ aws-reset profile="sentra" config="sentra.yaml": build
 	else \
 		echo "AWS CLI not found; skipped profile cleanup."; \
 	fi; \
-	echo "Done. If AWS_PROFILE or AWS_ACCESS_KEY_ID are exported in your shell, unset them before rerunning setup."
+	echo "Done. Run 'just aws' to start fresh at the setup wizard."; \
+	echo "(If AWS_PROFILE or AWS_ACCESS_KEY_ID are exported in your shell, unset them first.)"
+
+# DESTRUCTIVE: delete every object under the repo's S3 prefix (read from sentra.yaml) so setup re-inits an empty repo — `aws-reset` only clears LOCAL state, leaving the encrypted repo in S3. Needs the AWS CLI + credentials; refuses an empty prefix; confirm by typing the bucket name.
+aws-s3-empty config="sentra.yaml":
+	#!/usr/bin/env bash
+	set -euo pipefail
+	cfg="{{config}}"
+	command -v aws >/dev/null 2>&1 || { echo "AWS CLI not found; install it or empty the prefix from the S3 console."; exit 1; }
+	[ -f "$cfg" ] || { echo "No $cfg found — nothing to read bucket/prefix from."; exit 1; }
+	read_s3() {
+	  awk -v want="$1" '
+	    /^[[:space:]]*repo:/ { in_repo=1; next }
+	    in_repo && /^[^[:space:]]/ { in_repo=0; in_s3=0 }
+	    in_repo && /^[[:space:]]*s3:/ { in_s3=1; next }
+	    in_s3 && /^[[:space:]][[:space:]][^[:space:]]/ && $1 != "s3:" { in_s3=0 }
+	    in_s3 {
+	      line=$0
+	      sub("^[[:space:]]*" want ":[[:space:]]*", "", line)
+	      if (line != $0) { sub("[[:space:]]+#.*$", "", line); gsub(/^"|"$/, "", line); print line; exit }
+	    }
+	  ' "$cfg"
+	}
+	bucket="$(read_s3 bucket)"
+	prefix="$(read_s3 prefix)"
+	[ -n "$bucket" ] || { echo "Could not read repo.s3.bucket from $cfg."; exit 1; }
+	[ -n "$prefix" ] || { echo "repo.s3.prefix is empty in $cfg — refusing (would target the whole bucket)."; exit 1; }
+	case "$prefix" in */) ;; *) prefix="$prefix/";; esac
+	echo "DESTRUCTIVE: this permanently deletes every object under:"
+	echo "  s3://$bucket/$prefix"
+	echo "It does NOT delete the bucket itself or anything outside that prefix."
+	printf "Type the bucket name '%s' to continue: " "$bucket"
+	IFS= read -r answer || { echo "Canceled."; exit 1; }
+	[ "$answer" = "$bucket" ] || { echo "Canceled."; exit 1; }
+	aws s3 rm "s3://$bucket/$prefix" --recursive
+	echo "Emptied s3://$bucket/$prefix. Run 'just aws-reset' next, then 'just aws' for a clean setup."
 
 # ---------------------------------------------------------------------------
 # Release & security tooling

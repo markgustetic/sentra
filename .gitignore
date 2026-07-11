@@ -19,5 +19,8 @@ sentra.yaml
 .sentra-local.yaml
 .sentra-local/
 
+# AWS smoke-test payload (`just aws-seed` / `just aws-smoke`)
+aws-test-data/
+
 # Visual brainstorming mockups (superpowers)
 .superpowers/
