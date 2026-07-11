@@ -34,13 +34,14 @@ function setActive(view) {
 }
 
 // ---------- session ----------
-function showUnlock() { $('#app').hidden = true; $('#unlock').hidden = false; $('#pass').focus(); }
-function showApp() { $('#unlock').hidden = true; $('#app').hidden = false; }
+function showUnlock() { $('#app').hidden = true; $('#setup').hidden = true; $('#unlock').hidden = false; $('#pass').focus(); }
+function showApp() { $('#unlock').hidden = true; $('#setup').hidden = true; $('#app').hidden = false; }
 
 async function boot() {
   renderNav();
   const s = await api('/api/session');
   $('#repo').textContent = s.repoName || '';
+  if (s.setupNeeded) { bootSetup(); return; }
   if (s.locked) { showUnlock(); return; }
   showApp();
   route();
@@ -524,6 +525,192 @@ async function doApplyAgent(payload) {
     },
     onError: box.err,
   });
+}
+
+// ---------- first-run setup wizard ----------
+let SW = null;
+
+async function bootSetup() {
+  const st = await api('/api/setup');
+  SW = {
+    i: 0,
+    backend: st.endpointLocked ? 's3-compatible' : (st.backend || 'aws'),
+    endpointLocked: st.endpointLocked,
+    awsCreds: st.awsCredentialsPresent,
+    bucket: st.seed.bucket || '', prefix: st.seed.prefix || '', region: st.seed.region || '',
+    profile: st.seed.profile || '', endpointUrl: st.seed.endpointUrl || '',
+    createBucket: true, blockPublicAccess: true, defaultEncryption: true, initRepo: true,
+    passphrase: '', confirmPass: '', savePassphrase: true,
+  };
+  $('#unlock').hidden = true; $('#app').hidden = true; $('#setup').hidden = false;
+  swRender();
+}
+function swSteps() {
+  const s = ['welcome', 'backend', 'details'];
+  if (SW.backend === 'aws') s.push('actions');
+  s.push('passphrase', 'review');
+  return s;
+}
+function swForm() {
+  return {
+    backend: SW.backend, bucket: SW.bucket, prefix: SW.prefix, region: SW.region,
+    profile: SW.profile, endpointUrl: SW.backend === 's3-compatible' ? SW.endpointUrl : '',
+    createBucket: SW.createBucket, blockPublicAccess: SW.blockPublicAccess,
+    defaultEncryption: SW.defaultEncryption, initRepo: SW.initRepo,
+  };
+}
+function swRender() {
+  const steps = swSteps();
+  if (SW.i >= steps.length) SW.i = steps.length - 1;
+  const fns = { welcome: swWelcome, backend: swBackend, details: swDetails, actions: swActions, passphrase: swPassphrase, review: swReview };
+  fns[steps[SW.i]]($('#setup-card'));
+}
+function swNav(nextLabel) {
+  const back = SW.i > 0 ? `<button class="btn" id="sw-back">Back</button>` : `<span></span>`;
+  return `<div class="mrow" style="margin-top:1.4rem">${back}<button class="btn primary" id="sw-next">${esc(nextLabel || 'Continue')}</button></div>`;
+}
+function swWire(card, onNext) {
+  const b = $('#sw-back', card); if (b) b.addEventListener('click', () => { SW.i--; swRender(); });
+  $('#sw-next', card).addEventListener('click', onNext);
+}
+function swWelcome(card) {
+  card.innerHTML = `<div class="logo big">✦ S E N T R A ✦</div>
+    <p class="eyebrow" style="margin-top:1rem">First-run setup</p>
+    <div class="sub" style="margin:.6rem 0 0;max-width:520px">Let's provision your encrypted, deduplicated backup repository. Sentra uses your machine's <b>existing</b> AWS credentials — it never asks for or stores your access keys.</div>
+    ${swNav('Get started')}`;
+  swWire(card, () => { SW.i++; swRender(); });
+}
+function swBackend(card) {
+  const locked = SW.endpointLocked, dis = locked ? 'disabled' : '';
+  card.innerHTML = `<p class="eyebrow">Storage backend</p>
+    <div style="display:flex;flex-direction:column;gap:.6rem;margin-top:.8rem;max-width:520px">
+      <label class="sw-opt"><input type="radio" name="be" value="aws" ${SW.backend === 'aws' ? 'checked' : ''} ${dis}> <span><b>AWS S3</b><br><span class="sub">provision a bucket in your AWS account</span></span></label>
+      <label class="sw-opt"><input type="radio" name="be" value="s3-compatible" ${SW.backend === 's3-compatible' ? 'checked' : ''} ${dis}> <span><b>S3-compatible</b><br><span class="sub">MinIO, Cloudflare R2, Wasabi, or an existing bucket</span></span></label>
+    </div>
+    ${locked ? '<div class="sub" style="margin-top:.6rem">A seeded endpoint locks this to S3-compatible.</div>' : ''}
+    ${swNav()}`;
+  card.querySelectorAll('input[name=be]').forEach(r => r.addEventListener('change', () => { SW.backend = r.value; }));
+  swWire(card, () => { SW.i++; swRender(); });
+}
+function swDetails(card) {
+  const s3 = SW.backend === 's3-compatible';
+  card.innerHTML = `<p class="eyebrow">Storage details</p>
+    <div style="display:flex;flex-direction:column;gap:.6rem;margin-top:.8rem;max-width:520px">
+      <input id="sw-bucket" placeholder="bucket name" value="${esc(SW.bucket)}">
+      <div id="sw-err" class="err" hidden></div>
+      <input id="sw-prefix" placeholder="prefix (optional, e.g. team/)" value="${esc(SW.prefix)}">
+      <input id="sw-region" placeholder="region (e.g. us-east-1)" value="${esc(SW.region)}">
+      <input id="sw-profile" placeholder="AWS profile (optional)" value="${esc(SW.profile)}">
+      ${s3 ? `<input id="sw-endpoint" placeholder="endpoint URL (e.g. http://localhost:9000)" value="${esc(SW.endpointUrl)}">` : ''}
+    </div>
+    ${swNav()}`;
+  swWire(card, async () => {
+    SW.bucket = $('#sw-bucket').value.trim();
+    SW.prefix = $('#sw-prefix').value.trim();
+    SW.region = $('#sw-region').value.trim();
+    SW.profile = $('#sw-profile').value.trim();
+    if (s3) SW.endpointUrl = $('#sw-endpoint').value.trim();
+    let v;
+    try { v = await api('/api/setup/validate', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(swForm()) }); }
+    catch (err) { const e = $('#sw-err'); e.textContent = err.message; e.hidden = false; return; }
+    if (!v.ok) { const e = $('#sw-err'); e.textContent = v.error; e.hidden = false; return; }
+    SW.i++; swRender();
+  });
+}
+function swActions(card) {
+  card.innerHTML = `<p class="eyebrow">Bucket setup</p>
+    <div class="sub" style="margin:.4rem 0 .8rem;max-width:520px">Uses your machine's existing AWS credentials ${SW.awsCreds ? '<span class="ok">(detected ✓)</span>' : '(none detected — you may need to run <code>aws sso login</code> in your terminal, then retry)'}.</div>
+    <div style="display:flex;flex-direction:column;gap:.5rem;max-width:520px">
+      <label class="sw-opt"><input type="checkbox" id="sw-create" ${SW.createBucket ? 'checked' : ''}> create the bucket if it doesn't exist</label>
+      <label class="sw-opt"><input type="checkbox" id="sw-block" ${SW.blockPublicAccess ? 'checked' : ''}> block all public access</label>
+      <label class="sw-opt"><input type="checkbox" id="sw-enc" ${SW.defaultEncryption ? 'checked' : ''}> enable default encryption</label>
+    </div>
+    <button class="btn" id="sw-iam" style="margin-top:.8rem">Show IAM policy</button>
+    <div id="sw-iam-out"></div>
+    ${swNav()}`;
+  $('#sw-iam', card).addEventListener('click', async () => {
+    try {
+      const r = await api('/api/setup/iam-policy?bucket=' + encodeURIComponent(SW.bucket) + '&prefix=' + encodeURIComponent(SW.prefix));
+      $('#sw-iam-out').innerHTML = `<pre style="overflow-x:auto;font-size:.76rem;margin-top:.6rem">${esc(r.policy)}</pre>`;
+    } catch (err) { $('#sw-iam-out').innerHTML = `<div class="err" style="margin-top:.6rem">${esc(err.message)}</div>`; }
+  });
+  swWire(card, () => {
+    SW.createBucket = $('#sw-create').checked;
+    SW.blockPublicAccess = $('#sw-block').checked;
+    SW.defaultEncryption = $('#sw-enc').checked;
+    SW.i++; swRender();
+  });
+}
+function swPassphrase(card) {
+  card.innerHTML = `<p class="eyebrow">Repository passphrase</p>
+    <div class="sub" style="margin:.4rem 0 .8rem;max-width:520px">This encrypts everything. There is <b>no recovery</b> if you lose it — store it in a password manager.</div>
+    <div style="display:flex;flex-direction:column;gap:.6rem;max-width:520px">
+      <input id="sw-pass" type="password" placeholder="passphrase (min 8 characters)" autocomplete="new-password">
+      <input id="sw-pass2" type="password" placeholder="confirm passphrase" autocomplete="new-password">
+      <label class="sw-opt"><input type="checkbox" id="sw-keyring" ${SW.savePassphrase ? 'checked' : ''}> save it to my OS keyring so I don't re-type it each run</label>
+      <div id="sw-err" class="err" hidden></div>
+    </div>
+    ${swNav('Review')}`;
+  swWire(card, () => {
+    SW.passphrase = $('#sw-pass').value;
+    SW.confirmPass = $('#sw-pass2').value;
+    SW.savePassphrase = $('#sw-keyring').checked;
+    const e = $('#sw-err');
+    if (SW.passphrase.length < 8) { e.textContent = 'passphrase must be at least 8 characters'; e.hidden = false; return; }
+    if (SW.passphrase !== SW.confirmPass) { e.textContent = 'passphrases do not match'; e.hidden = false; return; }
+    SW.i++; swRender();
+  });
+}
+function swReview(card) {
+  const f = swForm();
+  const row = (k, v) => `<div class="sw-row"><span>${k}</span><span>${esc(v || '—')}</span></div>`;
+  const prov = [f.createBucket && 'create', f.blockPublicAccess && 'block-public', f.defaultEncryption && 'encrypt'].filter(Boolean).join(', ');
+  card.innerHTML = `<p class="eyebrow">Review</p>
+    <div style="margin-top:.8rem;max-width:520px">
+      ${row('backend', f.backend)}
+      ${row('bucket', f.bucket)}
+      ${row('prefix', f.prefix)}
+      ${row('region', f.region)}
+      ${row('profile', f.profile)}
+      ${f.backend === 's3-compatible' ? row('endpoint', f.endpointUrl) : row('provision', prov)}
+      ${row('keyring', SW.savePassphrase ? 'yes' : 'no')}
+    </div>
+    <div id="sw-prov"></div>
+    ${swNav('Create repository')}`;
+  swWire(card, () => swProvision());
+}
+async function swProvision() {
+  const out = $('#sw-prov');
+  const next = $('#sw-next'), back = $('#sw-back');
+  if (next) next.disabled = true;
+  if (back) back.disabled = true;
+  const labels = { 'bucket-created': 'Bucket created', 'public-blocked': 'Public access blocked', 'encrypted': 'Default encryption enabled', 'repo-initialized': 'Repository initialized' };
+  const done = {};
+  const keys = SW.backend === 'aws' ? Object.keys(labels) : ['repo-initialized'];
+  const paint = () => { out.innerHTML = `<div style="margin-top:1rem">${keys.map(k => `<div>${done[k] ? '<span class="ok">✓</span>' : '<span class="sub">…</span>'} ${labels[k]}</div>`).join('')}</div>`; };
+  paint();
+  const body = { ...swForm(), passphrase: SW.passphrase, savePassphrase: SW.savePassphrase };
+  let res;
+  try { res = await api('/api/setup/apply', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify(body) }); }
+  catch (err) { swProvError(out, err.message); return; }
+  const ev = new EventSource('/api/op/' + res.opId + '/events');
+  ev.addEventListener('token', e => { done[JSON.parse(e.data).text] = true; paint(); });
+  ev.addEventListener('done', () => {
+    ev.close(); SW.passphrase = SW.confirmPass = '';
+    const ok = document.createElement('div');
+    ok.className = 'ok'; ok.style.marginTop = '1rem';
+    ok.textContent = '✓ Setup complete — loading your dashboard…';
+    out.appendChild(ok);
+    setTimeout(() => location.reload(), 900);
+  });
+  ev.addEventListener('error', e => { ev.close(); swProvError(out, e.data ? JSON.parse(e.data).message : 'setup failed'); });
+}
+function swProvError(out, msg) {
+  SW.passphrase = SW.confirmPass = '';
+  out.innerHTML = `<div class="err" style="margin-top:1rem;white-space:pre-wrap">${esc(msg)}</div>`;
+  const next = $('#sw-next'), back = $('#sw-back');
+  if (back) back.disabled = false;
+  if (next) { next.disabled = false; next.textContent = 'Back to passphrase'; next.onclick = () => { SW.i = swSteps().indexOf('passphrase'); swRender(); }; }
 }
 
 boot().catch(err => { document.body.innerHTML = `<pre style="color:#FF6B86;padding:2rem">${esc(err.message)}</pre>`; });
