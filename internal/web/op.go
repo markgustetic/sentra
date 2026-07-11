@@ -116,6 +116,41 @@ func (s *Server) startReadStream(run func(context.Context, func(string), *repo.R
 	return o.id, nil
 }
 
+// startSetupOp registers the first-run provisioning op. Unlike startOp it runs
+// with no repo (setup is what creates one), so it takes the one-op guard but
+// skips the unlocked-repo check. The run func gets an emit callback for step
+// markers streamed over SSE. Returns errBusy if another op (or apply) is
+// already running.
+func (s *Server) startSetupOp(run func(context.Context, func(string)) (any, error)) (string, error) {
+	s.mu.Lock()
+	if s.opRunning != "" {
+		s.mu.Unlock()
+		return "", errBusy
+	}
+	o := &op{id: newOpID(), progress: make(chan progressMsg, 1), text: make(chan string, 64), done: make(chan struct{})}
+	s.opRunning = "setup"
+	s.ops[o.id] = o
+	s.mu.Unlock()
+
+	go func() {
+		emit := func(tok string) {
+			select {
+			case o.text <- tok:
+			default:
+			}
+		}
+		data, err := run(context.Background(), emit)
+		o.mu.Lock()
+		o.result = opResult{data: data, err: err}
+		o.mu.Unlock()
+		close(o.done)
+		s.mu.Lock()
+		s.opRunning = ""
+		s.mu.Unlock()
+	}()
+	return o.id, nil
+}
+
 // writeOpStart maps startOp's error to an HTTP status, or writes the opId.
 func writeOpStart(w http.ResponseWriter, opID string, err error) {
 	switch {

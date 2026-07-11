@@ -11,6 +11,10 @@
   --sans:ui-sans-serif,system-ui,-apple-system,"Segoe UI",sans-serif;
 }
 *{box-sizing:border-box}
+/* The `hidden` attribute must win over the class rules below (.overlay/.app set
+   their own display, which would otherwise defeat the UA [hidden] rule and leave
+   toggled overlays visible). */
+[hidden]{display:none!important}
 html,body{height:100%}
 body{
   margin:0; color:var(--subtle); font-family:var(--mono); font-size:14px;
@@ -134,3 +138,13 @@ tr.row:hover td{background:#ff6bdd10}
   .logo{color:var(--magenta)}
 }
 @media (max-width:640px){ .app{grid-template-columns:1fr} .rail{display:none} }
+
+/* ---------- first-run setup wizard ---------- */
+.setup-card{width:min(620px,92vw); max-height:88vh; overflow-y:auto}
+.sw-opt{display:flex; gap:.55rem; align-items:flex-start; padding:.55rem .75rem;
+  border:1px solid var(--line2); border-radius:9px; cursor:pointer; color:var(--subtle)}
+.sw-opt:hover{border-color:var(--cyan)}
+.sw-opt input{margin-top:.15rem}
+.sw-row{display:flex; justify-content:space-between; gap:1rem;
+  padding:.4rem 0; border-bottom:1px solid var(--line)}
+.sw-row span:first-child{text-transform:uppercase; letter-spacing:.1em; font-size:.66rem}

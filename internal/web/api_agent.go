@@ -101,7 +101,7 @@ func (s *Server) handleAgentScan(w http.ResponseWriter, r *http.Request) {
 // mirroring the CLI (retention feeds the retention-drift heuristic; walker
 // options come from the backup block).
 func (s *Server) agentConfig(localOnly bool, categories []string) agent.Config {
-	cfg := s.deps.Config
+	cfg := s.currentConfig()
 	c := agent.Config{
 		LocalOnly:  localOnly,
 		Categories: categories,

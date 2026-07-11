@@ -18,6 +18,7 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/web"
 )
 
@@ -50,6 +51,14 @@ type WebDeps struct {
 
 	// Heuristics is the local heuristic set the agent scan runs first.
 	Heuristics []heuristics.Heuristic
+
+	// SetupEffects is the setup engine's side-effect seam for the first-run web
+	// wizard. Nil falls back to setup.DefaultEffects().
+	SetupEffects setup.Effects
+
+	// SetupSeedConfig optionally pre-fills the web wizard (endpoint/bucket/
+	// region), mirroring UIDeps.SetupSeedConfig for a future `sentra local --web`.
+	SetupSeedConfig *config.Config
 }
 
 // NewWeb builds the `sentra web` cobra command: a localhost-only browser UI over
@@ -80,32 +89,31 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 	if err != nil {
 		return err
 	}
-	if !st.ConfigExists {
-		// The first-run setup wizard is a later web phase; until then, point the
-		// operator at the CLI/TUI wizard.
-		return errors.New("no sentra.yaml found — run `sentra setup` first (the web setup wizard arrives in a later phase)")
+	// No sentra.yaml → first-run setup mode: the server serves the web wizard,
+	// which drives the shared setup engine and unlocks the server in place on
+	// completion. A configured repo follows the unlock/auto-open path below.
+	setupNeeded := !st.ConfigExists
+
+	cfg := st.Config // config.Load returns Defaults() when no file; always non-nil
+	repoName := "sentra"
+	if cfg != nil && cfg.Repo.S3.Bucket != "" {
+		repoName = cfg.Repo.S3.Bucket
 	}
 
-	repoName := st.Config.Repo.S3.Bucket
-	if repoName == "" {
-		repoName = "sentra"
-	}
-
-	// If a non-interactive source can supply the passphrase, open now so the
-	// browser lands unlocked. Otherwise start locked; the browser unlock gate
-	// collects it and calls the Unlock closure below.
+	// If configured and a non-interactive source can supply the passphrase, open
+	// now so the browser lands unlocked. In setup mode there is no repo yet.
 	var opened *repo.Repo
-	if st.PassphraseAvailable {
-		r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
+	if st.ConfigExists && st.PassphraseAvailable {
+		r, pass, c, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 		if err != nil {
 			return err
 		}
 		crypto.Zeroize(pass)
-		opened, st.Config = r, cfg
+		opened, cfg = r, c
 	}
 
 	unlock := func(pass []byte) (*repo.Repo, error) {
-		store, err := deps.NewStore(cmd.Context(), st.Config)
+		store, err := deps.NewStore(cmd.Context(), cfg)
 		if err != nil {
 			return nil, fmt.Errorf("open blobstore: %w", err)
 		}
@@ -114,21 +122,29 @@ func runWeb(cmd *cobra.Command, deps WebDeps, cfgPath string, port int, noOpen b
 
 	var provider llm.Provider
 	if deps.ProviderForConfig != nil {
-		provider = deps.ProviderForConfig(st.Config)
+		provider = deps.ProviderForConfig(cfg)
+	}
+
+	setupEffects := deps.SetupEffects
+	if setupEffects == nil {
+		setupEffects = setup.DefaultEffects()
 	}
 
 	srv := web.New(web.Deps{
-		Repo:        opened,
-		Config:      st.Config,
-		RepoName:    repoName,
-		ConfigPath:  cfgPath,
-		Unlock:      unlock,
-		SaveKeyring: deps.SaveKeyring,
-		NewStore:    deps.NewStore,
-		Provider:    provider,
-		Actions:     deps.Actions,
-		Heuristics:  deps.Heuristics,
-		Assets:      web.Assets,
+		Repo:            opened,
+		Config:          cfg,
+		RepoName:        repoName,
+		ConfigPath:      cfgPath,
+		Unlock:          unlock,
+		SaveKeyring:     deps.SaveKeyring,
+		NewStore:        deps.NewStore,
+		Provider:        provider,
+		Actions:         deps.Actions,
+		Heuristics:      deps.Heuristics,
+		SetupNeeded:     setupNeeded,
+		SetupEffects:    setupEffects,
+		SetupSeedConfig: deps.SetupSeedConfig,
+		Assets:          web.Assets,
 	})
 
 	ln, err := net.Listen("tcp", fmt.Sprintf("127.0.0.1:%d", port))

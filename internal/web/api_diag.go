@@ -24,7 +24,7 @@ type checkItem struct {
 // identity check and an S3 bucket inspection (accessible, public-access-block,
 // default encryption). S3-compatible backends skip the AWS-specific probes.
 func (s *Server) handleDoctor(w http.ResponseWriter, r *http.Request) {
-	cfg := s.deps.Config
+	cfg := s.currentConfig()
 	if cfg == nil {
 		writeErr(w, http.StatusBadGateway, "no configuration loaded")
 		return
@@ -119,7 +119,7 @@ func (s *Server) handleSync(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "load destination config: "+err.Error())
 		return
 	}
-	if sameS3Location(s.deps.Config, dstCfg) {
+	if sameS3Location(s.currentConfig(), dstCfg) {
 		writeErr(w, http.StatusBadRequest, "source and destination resolve to the same S3 location — refusing to sync a repo onto itself")
 		return
 	}

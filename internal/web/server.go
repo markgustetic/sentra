@@ -32,6 +32,7 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
 // sessionCookie names the cookie carrying the per-run session token.
@@ -77,6 +78,17 @@ type Deps struct {
 	// Heuristics is the local heuristic set the scan runs first. Empty means no
 	// local findings (and therefore no recommendations).
 	Heuristics []heuristics.Heuristic
+	// SetupNeeded starts the server in first-run setup mode: repo nil, the setup
+	// endpoints active until a config is written. Set by the command when there
+	// is no sentra.yaml.
+	SetupNeeded bool
+	// SetupEffects is the setup engine's side-effect seam (AWS + keyring). Nil
+	// falls back to setup.DefaultEffects(). Only exercised in setup mode.
+	SetupEffects setup.Effects
+	// SetupSeedConfig optionally pre-fills the wizard (endpoint/bucket/region),
+	// mirroring UIDeps.SetupSeedConfig for a future `sentra local --web`.
+	// Non-secret coordinates only; never written to disk on its own.
+	SetupSeedConfig *config.Config
 	// Assets is the embedded frontend (index.html, app.css, app.js, images).
 	Assets fs.FS
 }
@@ -95,11 +107,15 @@ type Server struct {
 	deps  Deps
 	token string
 
-	mu        sync.Mutex
-	repo      *repo.Repo // nil ⇒ locked
-	opRunning string     // "" when idle; one mutating op at a time
-	ops       map[string]*op
-	lastRecs  map[string]agent.Recommendation // last scan's recs, keyed by ID; apply resolves against this
+	mu          sync.Mutex
+	repo        *repo.Repo                       // nil ⇒ locked
+	cfg         *config.Config                   // current resolved config; swapped in place after setup
+	name        string                           // current repo label; swapped in place after setup
+	setupNeeded bool                             // true ⇒ first-run setup mode, setup endpoints active
+	unlockFn    func([]byte) (*repo.Repo, error) // swapped after setup so a later unlock uses the new config
+	opRunning   string                           // "" when idle; one mutating op at a time
+	ops         map[string]*op
+	lastRecs    map[string]agent.Recommendation // last scan's recs, keyed by ID; apply resolves against this
 
 	mux *http.ServeMux
 }
@@ -112,11 +128,15 @@ func New(deps Deps) *Server {
 		panic("web: cannot read crypto/rand: " + err.Error())
 	}
 	s := &Server{
-		deps:     deps,
-		token:    hex.EncodeToString(tok),
-		repo:     deps.Repo,
-		ops:      map[string]*op{},
-		lastRecs: map[string]agent.Recommendation{},
+		deps:        deps,
+		token:       hex.EncodeToString(tok),
+		repo:        deps.Repo,
+		cfg:         deps.Config,
+		name:        deps.RepoName,
+		setupNeeded: deps.SetupNeeded,
+		unlockFn:    deps.Unlock,
+		ops:         map[string]*op{},
+		lastRecs:    map[string]agent.Recommendation{},
 	}
 	s.routes()
 	return s
@@ -143,8 +163,11 @@ func (s *Server) routes() {
 	m.HandleFunc("GET /api/snapshots/{id}", s.requireSession(s.handleSnapshotDetail))
 	m.HandleFunc("GET /api/fs", s.requireSession(s.handleFS))
 	m.HandleFunc("POST /api/backup", s.requireSession(s.handleBackupStart))
-	m.HandleFunc("GET /api/backup/{id}/events", s.requireSession(s.handleOpEvents))
-	m.HandleFunc("GET /api/op/{id}/events", s.requireSession(s.handleOpEvents)) // generic SSE
+	// Op event streams are cookie-gated but NOT repo-gated: they read a
+	// registered op by unguessable id, touch no repo state, and must also work
+	// during setup (when the repo does not exist yet).
+	m.HandleFunc("GET /api/backup/{id}/events", s.requireCookie(s.handleOpEvents))
+	m.HandleFunc("GET /api/op/{id}/events", s.requireCookie(s.handleOpEvents)) // generic SSE
 
 	// Inspect surfaces (Phase 2) — read-only.
 	m.HandleFunc("GET /api/check", s.requireSession(s.handleCheck))
@@ -160,6 +183,12 @@ func (s *Server) routes() {
 
 	// Diagnostics (Phase 2 completion).
 	m.HandleFunc("GET /api/doctor", s.requireSession(s.handleDoctor))
+
+	// Setup (Phase 5) — first-run wizard; active only while unconfigured.
+	m.HandleFunc("GET /api/setup", s.requireSetupSession(s.handleSetupStatus))
+	m.HandleFunc("POST /api/setup/validate", s.requireSetupSession(s.handleSetupValidate))
+	m.HandleFunc("GET /api/setup/iam-policy", s.requireSetupSession(s.handleSetupIAMPolicy))
+	m.HandleFunc("POST /api/setup/apply", s.requireSetupSession(s.handleSetupApply))
 
 	// Management (Phase 4) — named policies. CRUD is config-only; run is guarded.
 	m.HandleFunc("GET /api/policies", s.requireSession(s.handlePolicies))
@@ -223,13 +252,31 @@ func originMatchesHost(origin, host string) bool {
 	return origin == host
 }
 
+// validCookie reports whether the request carries the per-run session token.
+func (s *Server) validCookie(r *http.Request) bool {
+	c, err := r.Cookie(sessionCookie)
+	return err == nil && subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.token)) == 1
+}
+
+// requireCookie gates on the session cookie alone — no repo-unlocked or setup
+// check. Used for the op event streams, which read a registered op by
+// unguessable id, touch no repo state, and must work during setup too.
+func (s *Server) requireCookie(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.validCookie(r) {
+			writeErr(w, http.StatusUnauthorized, "no session")
+			return
+		}
+		next(w, r)
+	}
+}
+
 // requireSession enforces a valid session cookie and an unlocked repo before
 // handing off. It returns the open repo to the handler via the request context
 // would be cleaner, but a method closure keeps the handlers plain.
 func (s *Server) requireSession(next http.HandlerFunc) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		c, err := r.Cookie(sessionCookie)
-		if err != nil || subtle.ConstantTimeCompare([]byte(c.Value), []byte(s.token)) != 1 {
+		if !s.validCookie(r) {
 			writeErr(w, http.StatusUnauthorized, "no session")
 			return
 		}
@@ -249,6 +296,54 @@ func (s *Server) currentRepo() *repo.Repo {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	return s.repo
+}
+
+// currentConfig returns the current resolved config under the lock. Setup swaps
+// the pointer in place; the pointed-to config is never mutated, so callers may
+// read its fields lock-free after this returns.
+func (s *Server) currentConfig() *config.Config {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.cfg
+}
+
+// currentRepoName returns the current repo label under the lock.
+func (s *Server) currentRepoName() string {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.name
+}
+
+// setupRequired reports whether the server is still in first-run setup mode.
+func (s *Server) setupRequired() bool {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.setupNeeded
+}
+
+// currentUnlock returns the active unlock closure under the lock. Setup swaps it
+// so a later unlock uses the config setup just wrote, not the launch config.
+func (s *Server) currentUnlock() func([]byte) (*repo.Repo, error) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.unlockFn
+}
+
+// requireSetupSession gates the setup endpoints: a valid session cookie (the
+// origin/Host guard already wraps the mux) but NOT the repo-unlocked check,
+// since setup runs before any repo exists. It 409s once configured.
+func (s *Server) requireSetupSession(next http.HandlerFunc) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !s.validCookie(r) {
+			writeErr(w, http.StatusUnauthorized, "no session")
+			return
+		}
+		if !s.setupRequired() {
+			writeErr(w, http.StatusConflict, "already configured")
+			return
+		}
+		next(w, r)
+	}
 }
 
 // setSessionCookie stamps the session token so the frontend's later /api calls
@@ -287,15 +382,16 @@ func (s *Server) handleShell(w http.ResponseWriter, r *http.Request) {
 // calls it first to decide whether to show the unlock gate.
 func (s *Server) handleSession(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
-		"locked":   s.currentRepo() == nil,
-		"repoName": s.deps.RepoName,
+		"locked":      s.currentRepo() == nil,
+		"repoName":    s.currentRepoName(),
+		"setupNeeded": s.setupRequired(),
 	})
 }
 
 // handleUnlock opens the repo from a browser-typed passphrase, then zeroizes it.
 func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	if s.currentRepo() != nil {
-		writeJSON(w, http.StatusOK, map[string]any{"locked": false, "repoName": s.deps.RepoName})
+		writeJSON(w, http.StatusOK, map[string]any{"locked": false, "repoName": s.currentRepoName()})
 		return
 	}
 	var body struct {
@@ -312,11 +408,12 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 		writeErr(w, http.StatusBadRequest, "enter the repository passphrase")
 		return
 	}
-	if s.deps.Unlock == nil {
+	unlock := s.currentUnlock()
+	if unlock == nil {
 		writeErr(w, http.StatusInternalServerError, "no unlock path configured")
 		return
 	}
-	r2, err := s.deps.Unlock(pass)
+	r2, err := unlock(pass)
 	if err != nil {
 		writeErr(w, http.StatusUnauthorized, unlockErrMessage(err))
 		return
@@ -325,7 +422,7 @@ func (s *Server) handleUnlock(w http.ResponseWriter, r *http.Request) {
 	s.repo = r2
 	s.mu.Unlock()
 	s.setSessionCookie(w)
-	writeJSON(w, http.StatusOK, map[string]any{"locked": false, "repoName": s.deps.RepoName})
+	writeJSON(w, http.StatusOK, map[string]any{"locked": false, "repoName": s.currentRepoName()})
 }
 
 // handleLock closes the repo and drops it from the session.

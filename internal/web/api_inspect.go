@@ -44,7 +44,7 @@ func (s *Server) handleDiff(w http.ResponseWriter, r *http.Request) {
 // passphrase, wrapped key, or credentials — the same no-secrets invariant the
 // CLI/TUI kit honors.
 func (s *Server) handleRecoveryKit(w http.ResponseWriter, r *http.Request) {
-	k, err := recoverykit.Build(r.Context(), s.currentRepo(), s.deps.Config, s.deps.ConfigPath)
+	k, err := recoverykit.Build(r.Context(), s.currentRepo(), s.currentConfig(), s.deps.ConfigPath)
 	if err != nil {
 		writeErr(w, http.StatusBadGateway, "could not build recovery kit: "+err.Error())
 		return
