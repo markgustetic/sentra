@@ -103,12 +103,12 @@ func splashBigWordmarkLines(elapsed time.Duration) []string {
 		revealed := elapsed >= splashLettersAt+time.Duration(li)*splashLetterStep
 		for r := 0; r < splashBigRows; r++ {
 			if li > 0 {
-				rows[r] += splashBigGap
+				rows[r] += splashBgStyle.Render(splashBigGap)
 			}
 			if revealed {
 				rows[r] += splashLetterStyle(r, li, elapsed).Render(glyph[r])
 			} else {
-				rows[r] += strings.Repeat(" ", splashBigLetterWidths[li])
+				rows[r] += splashBgStyle.Render(strings.Repeat(" ", splashBigLetterWidths[li]))
 			}
 		}
 	}
@@ -125,13 +125,26 @@ var splashSunset = []string{
 	"#9B8CFF", "#6C9BFF", "#4DC8FF", "#5CEBFF",
 }
 
+// splashBg is the splash's "deep space" ground — the same near-black indigo the
+// preview mockup floats its neon on. Because the splash centers its body with
+// lipgloss.Place, it's the one screen whose background can be filled cleanly
+// (Place paints the surrounding whitespace and every glyph carries the bg via
+// its own style), so bright neon on deep space reads the way the mock does.
+// splashBgStyle paints the plain gaps/reserved cells so no default-bg slivers
+// show between letters. Fixed hex; stripped under Ascii like every splash color.
+var (
+	splashBg      = lipgloss.Color("#0D0221")
+	splashBgStyle = lipgloss.NewStyle().Background(splashBg)
+)
+
 // splashFlash is the white pop a letter shows for splashFlashDur as it lands,
 // before it settles into the flowing gradient — the per-letter "flash".
-var splashFlash = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true)
+var splashFlash = lipgloss.NewStyle().Foreground(lipgloss.Color("#FFFFFF")).Bold(true).Background(splashBg)
 
 // splashLetterStyle picks the color for one letter's row at time elapsed: white
 // while the letter is freshly revealed, otherwise the flowing sunset sampled at
-// (row + time offset) so the gradient scrolls down the block.
+// (row + time offset) so the gradient scrolls down the block. Every style carries
+// the deep-space bg so the block's interior holes fill instead of showing through.
 func splashLetterStyle(row, letter int, elapsed time.Duration) lipgloss.Style {
 	revealAt := splashLettersAt + time.Duration(letter)*splashLetterStep
 	if since := elapsed - revealAt; since >= 0 && since < splashFlashDur {
@@ -139,7 +152,7 @@ func splashLetterStyle(row, letter int, elapsed time.Duration) lipgloss.Style {
 	}
 	phase := int(elapsed / splashFlowStep)
 	c := splashSunset[((row+phase)%len(splashSunset)+len(splashSunset))%len(splashSunset)]
-	return lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Bold(true)
+	return lipgloss.NewStyle().Foreground(lipgloss.Color(c)).Bold(true).Background(splashBg)
 }
 
 // splashGlyphColor pulses the ✦ through bright neons (and a white beat) so the
@@ -153,10 +166,10 @@ func splashGlyphColor(elapsed time.Duration) lipgloss.Color {
 // splash self-contained (like splashSunset); the base matches FgMuted's dark
 // tone so the resting line reads the same as the rest of the chrome.
 var (
-	splashShimmerBase   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8E7DC8"))
-	splashShimmerEdge   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7FE6FF"))
-	splashShimmerCrest  = lipgloss.NewStyle().Foreground(lipgloss.Color("#EAFDFF")).Bold(true)
-	splashShimmerBright = lipgloss.NewStyle().Foreground(lipgloss.Color("#CBB8FF"))
+	splashShimmerBase   = lipgloss.NewStyle().Foreground(lipgloss.Color("#8E7DC8")).Background(splashBg)
+	splashShimmerEdge   = lipgloss.NewStyle().Foreground(lipgloss.Color("#7FE6FF")).Background(splashBg)
+	splashShimmerCrest  = lipgloss.NewStyle().Foreground(lipgloss.Color("#EAFDFF")).Bold(true).Background(splashBg)
+	splashShimmerBright = lipgloss.NewStyle().Foreground(lipgloss.Color("#CBB8FF")).Background(splashBg)
 )
 
 // splashTextLine animates a secondary line (tagline, version): it flashes white

@@ -1001,7 +1001,15 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 // gives the visual effect of a centered dialog without a hand-rolled
 // cell-level blitter. The too-small guard comes first so a shrunken
 // terminal shows a resize hint rather than a mangled layout.
+// View renders the frame and paints the deep-space ground behind it (a no-op on
+// non-truecolor terminals — see paintBackground). Splitting the composition into
+// viewFrame keeps every early-return path (too-small, splash, modal, palette,
+// normal) covered by one paint pass.
 func (m App) View() string {
+	return paintBackground(m.viewFrame())
+}
+
+func (m App) viewFrame() string {
 	if m.width > 0 && (m.width < minWidth || m.height < minHeight) {
 		hint := fmt.Sprintf("terminal too small (%dx%d)\nneed at least %dx%d",
 			m.width, m.height, minWidth, minHeight)
@@ -1111,7 +1119,7 @@ func (m App) cleanup() {
 // un-placed body's geometry (the m.width == 0 path) invariant across frames.
 func (m App) renderSplash() string {
 	elapsed := m.splashElapsed()
-	glyph := lipgloss.NewStyle().Foreground(splashGlyphColor(elapsed)).Bold(true)
+	glyph := lipgloss.NewStyle().Foreground(splashGlyphColor(elapsed)).Bold(true).Background(splashBg)
 
 	const (
 		tagline1 = "Encrypted, deduplicated, agent-aware backups"
@@ -1147,7 +1155,12 @@ func (m App) renderSplash() string {
 	if m.width == 0 || m.height == 0 {
 		return body
 	}
-	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, body)
+	// Fill the whole splash with the deep-space ground: WithWhitespaceBackground
+	// paints every padded cell Place adds around the centered body, and each body
+	// glyph already carries splashBg, so the frame reads as neon on deep space —
+	// the mock's hero — with no default-bg gaps.
+	return lipgloss.Place(m.width, m.height, lipgloss.Center, lipgloss.Center, body,
+		lipgloss.WithWhitespaceBackground(splashBg))
 }
 
 // splashGlyphAt twinkles the brand glyph in: a point, a spark, then the star.
@@ -1164,8 +1177,12 @@ func splashGlyphAt(elapsed time.Duration) string {
 	}
 }
 
-// splashBlank reserves exactly the cells a line will occupy once it appears.
-func splashBlank(s string) string { return strings.Repeat(" ", lipgloss.Width(s)) }
+// splashBlank reserves exactly the cells a line will occupy once it appears,
+// painted with the deep-space bg so a not-yet-revealed line reads as ground, not
+// a default-bg strip. The width is unchanged, so geometry stays pinned.
+func splashBlank(s string) string {
+	return splashBgStyle.Render(strings.Repeat(" ", lipgloss.Width(s)))
+}
 
 // versionLine renders "version · shortcommit". The commit is dropped when it
 // is empty or the goreleaser placeholder "none" (a plain `go build`), and it

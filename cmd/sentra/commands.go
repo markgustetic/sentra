@@ -150,4 +150,15 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 		UI:          uiDeps,
 		EnsureMinIO: ensureLocalMinIO,
 	}))
+
+	root.AddCommand(cli.NewWeb(cli.WebDeps{
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		Serve:          cli.ServeWebProduction,
+		OpenBrowser:    cli.OpenBrowserProduction,
+		PassphraseFile: func() string { return rootFlags.PassphraseFile },
+	}))
 }
