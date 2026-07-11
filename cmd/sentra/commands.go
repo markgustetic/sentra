@@ -143,29 +143,11 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 	root.AddCommand(cli.NewUI(uiDeps))
 	cli.SetUIAsDefault(root, uiDeps)
 
-	webDeps := cli.WebDeps{
-		RepoDeps: cli.RepoDeps{
-			NewStore:             newS3Store,
-			PassphraseWithConfig: openPassphrase,
-			Stdout:               os.Stdout,
-		},
-		Serve:             cli.ServeWebProduction,
-		OpenBrowser:       cli.OpenBrowserProduction,
-		SaveKeyring:       saveRepoPassphraseToKeyring,
-		PassphraseFile:    func() string { return rootFlags.PassphraseFile },
-		ProviderForConfig: newAgentProvider,
-		Actions:           action.NewDefaultRegistry(),
-		Heuristics:        defaultHeuristics(),
-	}
-
-	// `sentra local` reuses the very same uiDeps and webDeps (SetupSeedConfig
-	// stays nil here — the local command sets its own MinIO seed at run time)
-	// and wires the production docker/health probe.
+	// `sentra local` reuses the very same uiDeps (SetupSeedConfig stays nil here
+	// — the local command sets its own MinIO seed at run time) and wires the
+	// production docker/health probe.
 	root.AddCommand(cli.NewLocal(cli.LocalDeps{
 		UI:          uiDeps,
-		Web:         webDeps,
 		EnsureMinIO: ensureLocalMinIO,
 	}))
-
-	root.AddCommand(cli.NewWeb(webDeps))
 }
