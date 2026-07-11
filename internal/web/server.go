@@ -60,8 +60,20 @@ type Deps struct {
 	// NewStore opens a blobstore for a config — used to build the DESTINATION
 	// store for sync from a dst-config. Same factory the CLI uses.
 	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	// Schedule injects the OS/home/exe seam used to render launchd/systemd units.
+	// The zero value uses runtime defaults; tests target a platform into a temp
+	// HOME. Mirrors cli.ScheduleDeps.
+	Schedule ScheduleEnv
 	// Assets is the embedded frontend (index.html, app.css, app.js, images).
 	Assets fs.FS
+}
+
+// ScheduleEnv is the injectable seam for schedule rendering. Nil funcs / empty
+// OS fall back to runtime.GOOS, os.UserHomeDir, and os.Executable.
+type ScheduleEnv struct {
+	OS         string
+	HomeDir    func() (string, error)
+	Executable func() (string, error)
 }
 
 // Server holds the session and the routes. All mutable state is guarded by mu
@@ -139,6 +151,13 @@ func (s *Server) routes() {
 	m.HandleFunc("POST /api/policies", s.requireSession(s.handlePolicyCreate))
 	m.HandleFunc("DELETE /api/policies/{name}", s.requireSession(s.handlePolicyDelete))
 	m.HandleFunc("POST /api/policies/{name}/run", s.requireSession(s.handlePolicyRun))
+
+	// Schedule (Phase 4) — render/install launchd or systemd units. Filesystem
+	// only; preview is read-only, install/uninstall need an explicit confirm.
+	m.HandleFunc("GET /api/schedule", s.requireSession(s.handleSchedule))
+	m.HandleFunc("GET /api/schedule/{name}/preview", s.requireSession(s.handleSchedulePreview))
+	m.HandleFunc("POST /api/schedule/{name}/install", s.requireSession(s.handleScheduleInstall))
+	m.HandleFunc("POST /api/schedule/{name}/uninstall", s.requireSession(s.handleScheduleUninstall))
 
 	s.mux = m
 }
