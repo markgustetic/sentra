@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"sort"
 	"strings"
 
@@ -69,6 +70,37 @@ func computeAggregates(n *dirNode) (int, int64) {
 // directory ("how much lives under here"). O(1) — precomputed by buildDirTree.
 func (n *dirNode) totalFiles() int   { return n.subFiles }
 func (n *dirNode) totalBytes() int64 { return n.subBytes }
+
+// renderDirTree renders the directory hierarchy as an indented summary — each
+// directory with its subtree file count and total size, busiest first — so a
+// snapshot's shape reads at a glance instead of as a thousand-line flat file
+// list. Individual files are folded into their directory's count. Each line is
+// bounded to width. Reuses the same tree the Files graph builds.
+func renderDirTree(root *dirNode, width int) []string {
+	if width < 16 {
+		width = 16
+	}
+	var out []string
+	line := func(left, right string) {
+		out = append(out, spread(width, truncateToWidth(left, max(width-len(right)-1, 1)), right))
+	}
+	if root.files > 0 {
+		line(fmt.Sprintf("· %d files here", root.files), shortBytes(root.bytes))
+	}
+	var walk func(n *dirNode, depth int)
+	walk = func(n *dirNode, depth int) {
+		for _, c := range n.sortedChildren() {
+			line(strings.Repeat("  ", depth)+c.name+"/",
+				fmt.Sprintf("%d files  %s", c.totalFiles(), shortBytes(c.totalBytes())))
+			walk(c, depth+1)
+		}
+	}
+	walk(root, 0)
+	if len(out) == 0 {
+		out = []string{"(no files)"}
+	}
+	return out
+}
 
 // sortedChildren returns the child directories ordered by subtree file count
 // descending (ties broken by name), so the busiest directories lead — the ones

@@ -449,11 +449,11 @@ func (s Snapshots) viewDetail() string {
 	var sb strings.Builder
 	sb.WriteString(header)
 	sb.WriteString("\n\n")
-	for _, fe := range s.detailMan.Tree {
-		fmt.Fprintf(&sb, "  %s  %s\n",
-			ui.Subtle.Render(ui.FormatBytes(fe.Size)),
-			fe.Path,
-		)
+	// An indented directory summary (dirs + subtree counts/sizes) rather than a
+	// raw file dump — readable even for a snapshot with thousands of files.
+	textW := maxInt(s.width-4, 24) // panel border(2) + padding(2)
+	for _, line := range renderDirTree(buildDirTree(s.detailMan.Tree), textW) {
+		sb.WriteString(ui.Subtle.Render(line) + "\n")
 	}
 	return ui.Panel.Render(sb.String()) + "\n" + ui.Subtle.Render("esc back") + "\n"
 }
