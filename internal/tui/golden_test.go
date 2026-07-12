@@ -3,11 +3,13 @@ package tui
 import (
 	"path/filepath"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/x/exp/golden"
 
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/repo"
 )
 
 // Golden frame snapshots.
@@ -161,6 +163,44 @@ func TestGoldenSplash(t *testing.T) {
 			golden.RequireEqual(t, []byte(app.renderSplash()))
 		})
 	}
+}
+
+// TestGoldenDashboard snapshots the populated dashboard: savings gauge,
+// upload delta, and the timeline sparkline with cadence + span. Data is
+// canned with fixed clocks — nothing in the frame derives from time.Now(),
+// which is what keeps this golden stable. The growth series is deliberately
+// non-monotonic so the sparkline can't degenerate into a flat bar.
+func TestGoldenDashboard(t *testing.T) {
+	day := func(n int) time.Time {
+		return time.Date(2026, 6, n, 3, 30, 0, 0, time.UTC)
+	}
+	snaps := []repo.SnapshotInfo{ // newest-first, ListSnapshots order
+		{ID: "snap-4f9c2ab8e1", CreatedAt: day(9), Tag: "nightly",
+			Stats: repo.SnapshotStats{Files: 1382, Bytes: 96 << 20, NewBytes: 3 << 20}},
+		{ID: "snap-b71d0c55aa", CreatedAt: day(8), Tag: "nightly",
+			Stats: repo.SnapshotStats{Files: 1375, Bytes: 94 << 20, NewBytes: 2 << 20}},
+		{ID: "snap-90e3d1f207", CreatedAt: day(7), Tag: "nightly",
+			Stats: repo.SnapshotStats{Files: 1391, Bytes: 128 << 20, NewBytes: 41 << 20}},
+		{ID: "snap-2c8ba9d640", CreatedAt: day(5), Tag: "weekly",
+			Stats: repo.SnapshotStats{Files: 1120, Bytes: 61 << 20, NewBytes: 12 << 20}},
+		{ID: "snap-e5f01b3c99", CreatedAt: day(3), Tag: "nightly",
+			Stats: repo.SnapshotStats{Files: 1101, Bytes: 58 << 20, NewBytes: 58 << 20}},
+	}
+	data := DashboardData{
+		SnapshotCount: len(snaps),
+		LastSnap:      &snaps[0],
+		RecCount:      2,
+		Snaps:         snaps,
+	}
+	for _, s := range snaps {
+		data.TotalBytes += s.Stats.Bytes
+		data.UploadedBytes += s.Stats.NewBytes
+	}
+
+	v := NewDashboard(Deps{RepoName: "golden-repo"})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: goldenW - sidebarWidth - 3, Height: goldenH - 4})
+	v = m.(Dashboard).SetData(data)
+	golden.RequireEqual(t, []byte(v.View()))
 }
 
 func TestGoldenSettings(t *testing.T) {

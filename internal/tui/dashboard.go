@@ -27,19 +27,34 @@ type DashboardData struct {
 	// TotalBytes is the sum of plaintext bytes across all snapshots
 	// (the human-friendly "how big is this repo" number).
 	TotalBytes int64
+	// UploadedBytes is the sum of sealed-blob bytes actually pushed
+	// (per-snapshot NewBytes). Against TotalBytes it is what dedup +
+	// compression bought; on tiny repos it can EXCEED TotalBytes
+	// because AEAD sealing and zstd framing cost more than dedup
+	// saves — savings rendering must clamp, not go negative.
+	UploadedBytes int64
 	// LastSnap is the most-recent snapshot, or nil for fresh repos.
 	LastSnap *repo.SnapshotInfo
 	// RecCount is the count of pending agent recommendations from
 	// the most-recent scan. Zero is fine and renders as "0".
 	RecCount int
+	// Snaps is the full snapshot series, newest-first as ListSnapshots
+	// returns it. The timeline sparkline and cadence stats derive from
+	// it; the aggregates above are kept precomputed so panels that
+	// only need a number don't re-walk the slice per frame.
+	Snaps []repo.SnapshotInfo
 }
 
 // Dashboard is the home view: four panels showing repo summary, last
-// snapshot, agent state, and a placeholder for the timeline sparkline
-// (real implementation deferred — see Future below).
+// snapshot, agent state, and the timeline sparkline of snapshot sizes.
 type Dashboard struct {
 	deps Deps
 	data DashboardData
+	// width is the content-pane width from the App's synthetic
+	// WindowSizeMsg; zero until the first one arrives (headless
+	// tests), in which case rendering falls back to the min-terminal
+	// budget so output stays deterministic.
+	width int
 }
 
 // NewDashboard returns a hydrated Dashboard. If deps.Repo is non-nil
@@ -93,9 +108,11 @@ func hydrateDashboardData(deps Deps) DashboardData {
 	}
 	d := DashboardData{
 		SnapshotCount: len(snaps),
+		Snaps:         snaps,
 	}
 	for _, s := range snaps {
 		d.TotalBytes += s.Stats.Bytes
+		d.UploadedBytes += s.Stats.NewBytes
 	}
 	if len(snaps) > 0 {
 		// ListSnapshots returns newest-first.
@@ -120,7 +137,10 @@ func (Dashboard) Init() tea.Cmd { return nil }
 // operation type refreshing the dashboard for free. RecCount comes from
 // an agent scan, not ListSnapshots, so it is carried across the refresh.
 func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
-	if _, ok := msg.(opResultMsg); ok {
+	switch msg := msg.(type) {
+	case tea.WindowSizeMsg:
+		d.width = msg.Width
+	case opResultMsg:
 		recs := d.data.RecCount
 		d.data = hydrateDashboardData(d.deps)
 		d.data.RecCount = recs
@@ -129,63 +149,113 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // View renders the four panels. Layout is two rows of two panels;
-// each panel is wrapped in ui.Panel so the visual frame matches the
-// rest of the TUI.
+// each panel is wrapped in ui.Panel at a shared column width so the
+// grid stays aligned regardless of which panel has the longest line.
 func (d Dashboard) View() string {
-	repoPanel := d.renderRepoPanel()
-	lastPanel := d.renderLastPanel()
-	agentPanel := d.renderAgentPanel()
-	timelinePanel := d.renderTimelinePanel()
-
-	row1 := lipgloss.JoinHorizontal(lipgloss.Top, repoPanel, lastPanel)
-	row2 := lipgloss.JoinHorizontal(lipgloss.Top, agentPanel, timelinePanel)
+	colW := d.colWidth()
+	row1 := lipgloss.JoinHorizontal(lipgloss.Top,
+		d.renderRepoPanel(colW), d.renderLastPanel(colW))
+	row2 := lipgloss.JoinHorizontal(lipgloss.Top,
+		d.renderAgentPanel(colW), d.renderTimelinePanel(colW))
 	return lipgloss.JoinVertical(lipgloss.Left, row1, row2) + "\n"
 }
 
-// renderRepoPanel shows the repo's name, snapshot count, and total
-// bytes. The repo name doubles as the panel title so the user
+// colWidth is each panel's lipgloss Width (content + padding). The
+// width the App forwards is its own panel Width, whose Padding(0,1)
+// sits *inside* it — the drawable region is pickerContentWidth of it.
+// Two panels per row, each adding a border (2) outside their Width,
+// must fit that region: 2*(colW+2) <= drawable, hence (drawable-4)/2.
+// Without a WindowSizeMsg yet we mirror App.resize's min-terminal
+// budget so headless tests and goldens render the same frame a real
+// 80-col terminal would.
+func (d Dashboard) colWidth() int {
+	w := d.width
+	if w <= 0 {
+		w = minWidth - sidebarWidth - 3 // App.resize's contentW at min size
+	}
+	return max((pickerContentWidth(w)-4)/2, 20)
+}
+
+// dashPanel frames one panel at the shared column width.
+func dashPanel(colW int, body string) string {
+	return ui.Panel.Width(colW).Render(body)
+}
+
+// renderRepoPanel shows the repo's name, snapshot count, logical size,
+// and what dedup + compression bought: uploaded (stored) bytes plus a
+// savings gauge. The repo name doubles as the panel title so the user
 // always sees which repo is being summarized.
-func (d Dashboard) renderRepoPanel() string {
+func (d Dashboard) renderRepoPanel(colW int) string {
 	name := d.deps.RepoName
 	if name == "" {
 		name = "(unnamed)"
 	}
-	body := fmt.Sprintf("%s\n%s snapshots\n%s total",
-		ui.Primary.Render(name),
-		ui.Subtle.Render(fmt.Sprintf("%d", d.data.SnapshotCount)),
-		ui.Subtle.Render(ui.FormatBytes(d.data.TotalBytes)),
+	saved := savingsFrac(d.data.TotalBytes, d.data.UploadedBytes)
+	textW := colW - contentPanelHPad
+	body := fmt.Sprintf("%s\n%s\n%s\n%s %s",
+		ui.Primary.Render(truncateToWidth(name, textW)),
+		ui.Subtle.Render(truncateToWidth(fmt.Sprintf("%d snapshots · %s",
+			d.data.SnapshotCount, ui.FormatBytes(d.data.TotalBytes)), textW)),
+		ui.Subtle.Render(ui.FormatBytes(d.data.UploadedBytes)+" stored"),
+		ui.Success.Render(ui.Gauge(saved, 10)),
+		ui.Muted.Render(fmt.Sprintf("%d%% saved", int(saved*100+0.5))),
 	)
-	return ui.Panel.Render(body)
+	return dashPanel(colW, body)
 }
 
-// renderLastPanel shows the most-recent snapshot at a glance, or an
-// empty-state line when the repo has no snapshots. The "no snapshots
-// yet" copy is what users see on a freshly-initialized repo.
-func (d Dashboard) renderLastPanel() string {
+// savingsFrac is the fraction of logical bytes the store never had to
+// hold — dedup plus compression. Clamped at zero: sealing overhead on
+// a tiny repo can push uploaded past logical, and "-12% saved" would
+// read as a bug rather than the physics it is.
+func savingsFrac(total, uploaded int64) float64 {
+	if total <= 0 {
+		return 0
+	}
+	f := 1 - float64(uploaded)/float64(total)
+	if f < 0 {
+		f = 0
+	}
+	return f
+}
+
+// renderLastPanel shows the most-recent snapshot at a glance — ID,
+// when and what tag, file count, and how much data that snapshot
+// actually pushed (its NewBytes delta) — or an empty-state line when
+// the repo has no snapshots. The "no snapshots yet" copy is what
+// users see on a freshly-initialized repo.
+func (d Dashboard) renderLastPanel(colW int) string {
 	title := ui.Subtle.Render("last snapshot")
 	if d.data.LastSnap == nil {
 		body := title + "\n" + ui.Muted.Render("no snapshots yet")
-		return ui.Panel.Render(body)
+		return dashPanel(colW, body)
 	}
 	s := d.data.LastSnap
 	tag := s.Tag
 	if tag == "" {
 		tag = "(untagged)"
 	}
-	body := fmt.Sprintf("%s\n%s\n%s\n%s files",
+	// Composed lines are truncated, not wrapped: a long tag or ID
+	// wrapping would push this panel a row taller than its row-mate
+	// and stagger the grid. The month-name date (no year) keeps the
+	// when—tag line inside the 24-cell interior of an 80-col terminal;
+	// the snapshots table is where full ISO timestamps live.
+	when := s.CreatedAt.UTC().Format("Jan 02 15:04") + " — " + tag
+	textW := colW - contentPanelHPad
+	body := fmt.Sprintf("%s\n%s\n%s\n%s%s",
 		title,
-		ui.Primary.Render(s.ID),
-		ui.Subtle.Render(s.CreatedAt.UTC().Format(time.RFC3339)+" — "+tag),
-		ui.Subtle.Render(fmt.Sprintf("%d", s.Stats.Files)),
+		ui.Primary.Render(truncateToWidth(s.ID, textW)),
+		ui.Subtle.Render(truncateToWidth(when, textW)),
+		ui.Subtle.Render(fmt.Sprintf("%d files", s.Stats.Files)),
+		ui.Muted.Render(" · +"+ui.FormatBytes(s.Stats.NewBytes)),
 	)
-	return ui.Panel.Render(body)
+	return dashPanel(colW, body)
 }
 
 // renderAgentPanel shows the agent's pending-recommendation badge.
 // Zero recommendations is rendered with the Success color (nothing
 // to do, all clear); any non-zero count is Warn so it visually
 // stands out as work to inspect.
-func (d Dashboard) renderAgentPanel() string {
+func (d Dashboard) renderAgentPanel(colW int) string {
 	title := ui.Subtle.Render("agent")
 	style := ui.Success
 	hint := "no pending findings"
@@ -198,18 +268,76 @@ func (d Dashboard) renderAgentPanel() string {
 		style.Render(fmt.Sprintf("%d recommendations", d.data.RecCount)),
 		ui.Muted.Render(hint),
 	)
-	return ui.Panel.Render(body)
+	return dashPanel(colW, body)
 }
 
-// renderTimelinePanel is the sparkline placeholder. A real
-// implementation would walk snapshot byte sizes and render an inline
-// braille sparkline; that's gold-plating for v1 and is deferred.
-//
-// Future: replace with a proper sparkline of snapshot sizes
-// over time. Suggested approach: bucket snapshots by week, render
-// each bucket's NewBytes via the unicode block-characters scale.
-func (d Dashboard) renderTimelinePanel() string {
+// renderTimelinePanel graphs per-snapshot logical bytes oldest→newest
+// as a block sparkline, with the cadence ("how often do I back up")
+// and the covered date span beneath it. Size, not NewBytes, is the
+// series: the question this graph answers is "how is my data growing",
+// and a mostly-deduplicated snapshot would render as a misleading dip.
+func (d Dashboard) renderTimelinePanel(colW int) string {
 	title := ui.Subtle.Render("timeline")
-	body := title + "\n" + ui.Muted.Render("sparkline coming soon")
-	return ui.Panel.Render(body)
+	snaps := d.data.Snaps
+	if len(snaps) == 0 {
+		body := title + "\n" + ui.Muted.Render("no backups graphed yet")
+		return dashPanel(colW, body)
+	}
+
+	// Snaps is newest-first; the graph reads left→right in time.
+	values := make([]int64, len(snaps))
+	for i, s := range snaps {
+		values[len(snaps)-1-i] = s.Stats.Bytes
+	}
+	textW := colW - contentPanelHPad
+	spark := ui.Sparkline(values, textW)
+
+	cadence := "1 backup"
+	if len(snaps) > 1 {
+		cadence = fmt.Sprintf("%d backups · ~%s apart",
+			len(snaps), formatApproxDuration(avgSnapshotInterval(snaps)))
+	}
+	oldest := snaps[len(snaps)-1].CreatedAt.UTC()
+	newest := snaps[0].CreatedAt.UTC()
+	span := oldest.Format("2006-01-02") + " → " + newest.Format("2006-01-02")
+
+	body := fmt.Sprintf("%s\n%s\n%s\n%s",
+		title,
+		ui.Primary.Render(spark),
+		ui.Subtle.Render(truncateToWidth(cadence, textW)),
+		ui.Muted.Render(truncateToWidth(span, textW)),
+	)
+	return dashPanel(colW, body)
+}
+
+// avgSnapshotInterval is the mean gap between consecutive snapshots:
+// total span over n-1 gaps. Fewer than two snapshots have no gaps and
+// return zero; callers render a count instead of a cadence then.
+// snaps is newest-first (ListSnapshots order).
+func avgSnapshotInterval(snaps []repo.SnapshotInfo) time.Duration {
+	if len(snaps) < 2 {
+		return 0
+	}
+	span := snaps[0].CreatedAt.Sub(snaps[len(snaps)-1].CreatedAt)
+	if span < 0 {
+		return 0
+	}
+	return span / time.Duration(len(snaps)-1)
+}
+
+// formatApproxDuration renders a cadence in the single coarse unit an
+// operator would say out loud ("about every 26 hours"), never a
+// composite like 26h3m12s. Hours run to 47h before switching to days
+// so a drifting nightly backup reads as "26h", not a falsely-tidy "1d".
+func formatApproxDuration(dur time.Duration) string {
+	switch {
+	case dur < time.Minute:
+		return "<1m"
+	case dur < time.Hour:
+		return fmt.Sprintf("%dm", int(dur.Minutes()))
+	case dur < 48*time.Hour:
+		return fmt.Sprintf("%dh", int(dur.Hours()))
+	default:
+		return fmt.Sprintf("%dd", int(dur.Hours()/24))
+	}
 }
