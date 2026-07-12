@@ -562,20 +562,20 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
-		return m, nil
+		return m.showActive()
 
 	case navPreviewMsg:
 		// Live rail scroll: show the highlighted view but keep focus on the rail
 		// (the list already moved its own selection, so don't touch it) so the
-		// user can keep scrolling through screens. No load is triggered — views
-		// load eagerly at Init, so switching m.active is a pure render change.
+		// user can keep scrolling through screens. showActive lets a lazy view
+		// (Files) begin loading as it scrolls into view; eager views ignore it.
 		for i, v := range m.views {
 			if v.id == msg.id {
 				m.active = i
 				break
 			}
 		}
-		return m, nil
+		return m.showActive()
 
 	case pushModalMsg:
 		m.modals = append(m.modals, msg.modal.SetSize(m.width, m.height))
@@ -978,6 +978,21 @@ func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 		cmds = append(cmds, c)
 	}
 	return m, tea.Batch(cmds...)
+}
+
+// viewShownMsg tells the now-active view it is on screen. A view that defers
+// heavy loading (e.g. Files, which fetches a whole manifest) hydrates lazily on
+// first display instead of eagerly at startup; views that load in their
+// constructor or Init simply ignore it.
+type viewShownMsg struct{}
+
+// showActive notifies the active view it is displayed, returning any load
+// command it emits. Called whenever the App changes which view is active (rail
+// commit or live preview).
+func (m App) showActive() (tea.Model, tea.Cmd) {
+	var c tea.Cmd
+	m.views[m.active].model, c = m.views[m.active].model.Update(viewShownMsg{})
+	return m, c
 }
 
 // resize recomputes layout regions and forwards content-pane sizes to
