@@ -24,8 +24,8 @@ func tempTree(t *testing.T) string {
 }
 
 // rows hold only real filesystem entries — the parent, then sorted folders. The
-// Start button is the cursor slot past the last row, not a stored row, so enter
-// on the rows means only "navigate".
+// Start button is the cursor slot BEFORE the rows (the top, default option), not
+// a stored row, so enter on the rows means only "navigate".
 func TestDirPickerRowsAreParentThenSortedDirs(t *testing.T) {
 	root := tempTree(t)
 	p := newDirPicker(root)
@@ -56,34 +56,40 @@ func TestDirPickerRowsAreParentThenSortedDirs(t *testing.T) {
 	}
 }
 
-// The cursor ranges over [0, len(rows)] — the extra slot past the last row is
-// the Start button, which down-spam must be able to reach.
+// The cursor ranges over [0, len(rows)] — cursor 0 is the Start button (the
+// top, default option) and 1..len(rows) are the folder rows. A fresh picker
+// opens on the button; up-spam returns to it, down-spam reaches the last row.
 func TestDirPickerCursorClamps(t *testing.T) {
 	p := newDirPicker(tempTree(t))
-	for i := 0; i < 20; i++ {
+	if p.cursor != 0 || !p.onStart() {
+		t.Errorf("a fresh picker must open on the Start button, cursor=%d", p.cursor)
+	}
+	for range 20 {
 		p = p.moveDown()
 	}
 	if p.cursor != len(p.rows) {
-		t.Errorf("cursor after down-spam = %d, want %d (the Start button)", p.cursor, len(p.rows))
+		t.Errorf("cursor after down-spam = %d, want %d (the last folder row)", p.cursor, len(p.rows))
 	}
-	if !p.onStart() {
-		t.Error("down-spam must land on the Start button")
+	if p.onStart() {
+		t.Error("down-spam must leave the Start button")
 	}
-	for i := 0; i < 20; i++ {
+	for range 20 {
 		p = p.moveUp()
 	}
-	if p.cursor != 0 {
-		t.Errorf("cursor after up-spam = %d, want 0", p.cursor)
+	if p.cursor != 0 || !p.onStart() {
+		t.Errorf("up-spam must land back on the Start button, cursor=%d", p.cursor)
 	}
 }
 
 // Enter on a child descends; enter on ".." ascends; neither chooses. Only the
-// Start button (the slot past the last row) returns the chosen directory.
+// Start button (cursor 0, the top) returns the chosen directory. Descending
+// resets the cursor onto the Start button so the operator can immediately back
+// up the folder they just entered.
 func TestDirPickerActivate(t *testing.T) {
 	root := tempTree(t)
 	p := newDirPicker(root)
 
-	p.cursor = 1 // alpha (row 0 is "..")
+	p.cursor = 2 // alpha (cursor 0 = Start button, cursor 1 = "..")
 	p, chosen := p.activate()
 	if chosen != "" {
 		t.Errorf("descending must not choose a folder, got %q", chosen)
@@ -91,11 +97,11 @@ func TestDirPickerActivate(t *testing.T) {
 	if filepath.Base(p.cwd) != "alpha" {
 		t.Fatalf("cwd = %q, want .../alpha", p.cwd)
 	}
-	if p.cursor != 0 {
-		t.Errorf("cursor must reset on descend, got %d", p.cursor)
+	if !p.onStart() {
+		t.Errorf("cursor must reset onto the Start button on descend, got %d", p.cursor)
 	}
 
-	p.cursor = 0 // ".." (alpha has no subdirs, so the parent is the only row)
+	p.cursor = 1 // ".." (alpha has no subdirs, so rows are just the parent)
 	p, chosen = p.activate()
 	if chosen != "" {
 		t.Errorf("ascending must not choose a folder, got %q", chosen)
@@ -104,9 +110,9 @@ func TestDirPickerActivate(t *testing.T) {
 		t.Fatalf("cwd after .. = %q, want %q", p.cwd, root)
 	}
 
-	p.cursor = len(p.rows) // the Start button
+	p.cursor = 0 // the Start button (the top)
 	if !p.onStart() {
-		t.Fatal("cursor past the last row must be the Start button")
+		t.Fatal("cursor 0 must be the Start button")
 	}
 	_, chosen = p.activate()
 	if chosen != root {
@@ -125,8 +131,11 @@ func TestDirPickerUnreadableDirectory(t *testing.T) {
 	if len(p.rows) == 0 || p.rows[0].kind != rowParent {
 		t.Error("even on error the picker must offer the parent row")
 	}
-	// And a Start button to commit anyway.
-	p.cursor = len(p.rows)
+	// And a Start button to commit anyway (cursor 0, the top).
+	p.cursor = 0
+	if !p.onStart() {
+		t.Error("cursor 0 must be the Start button even on an unreadable directory")
+	}
 	if _, chosen := p.activate(); chosen == "" {
 		t.Error("the Start button must remain reachable even on an unreadable directory")
 	}
@@ -140,44 +149,60 @@ func TestDirPickerEnterVerbNamesWhatEnterActuallyDoes(t *testing.T) {
 	root := tempTree(t)
 	p := newDirPicker(root)
 
-	p.cursor = 0 // ".."
-	if got := p.enterVerb(); !strings.HasPrefix(got, "go up to ") {
-		t.Errorf("on the parent row, verb = %q", got)
-	}
-	p.cursor = 1 // alpha
-	if got := p.enterVerb(); got != "open alpha" {
-		t.Errorf("on a child row, verb = %q", got)
-	}
-	p.cursor = len(p.rows) // the Start button
+	p.cursor = 0 // the Start button (the top)
 	if got, want := p.enterVerb(), "start the backup of "+filepath.Base(root); got != want {
 		t.Errorf("on the Start button, verb = %q, want %q", got, want)
 	}
+	p.cursor = 1 // ".."
+	if got := p.enterVerb(); !strings.HasPrefix(got, "go up to ") {
+		t.Errorf("on the parent row, verb = %q", got)
+	}
+	p.cursor = 2 // alpha
+	if got := p.enterVerb(); got != "open alpha" {
+		t.Errorf("on a child row, verb = %q", got)
+	}
 }
 
-// The Start button is drawn below the folder list and stays highlighted-able no
-// matter how far the list scrolls: with more folders than fit, the "…" overflow
-// indicator shows AND the pinned button still renders, and when the cursor is on
-// it no folder row is marked.
-func TestDirPickerStartButtonPinnedBelowScrollingList(t *testing.T) {
+// The Start button is drawn ABOVE the folder list (the top, default option) and
+// stays highlighted-able no matter how far the list scrolls: with more folders
+// than fit, the "…" overflow indicator shows AND the pinned button still
+// renders above the first folder, and when the cursor is on it no folder row is
+// marked.
+func TestDirPickerStartButtonPinnedAboveScrollingList(t *testing.T) {
 	root := t.TempDir()
-	for i := 0; i < 40; i++ { // far more than dirPickerHeight
+	for i := range 40 { // far more than dirPickerHeight
 		if err := os.Mkdir(filepath.Join(root, fmt.Sprintf("d%02d", i)), 0o755); err != nil {
 			t.Fatal(err)
 		}
 	}
-	p := newDirPicker(root)
-	p.cursor = len(p.rows) // the Start button
+	p := newDirPicker(root) // opens on the Start button (cursor 0)
 
 	out := p.View(true)
 	if !strings.Contains(out, "…") {
 		t.Errorf("a list longer than the window must show the overflow indicator:\n%s", out)
 	}
-	if !strings.Contains(out, "▸ start backup of "+filepath.Base(root)) {
-		t.Errorf("the Start button must render below the folder list:\n%s", out)
+	const btn = "▸ backup the current directory"
+	if !strings.Contains(out, btn) {
+		t.Errorf("the Start button must render above the folder list:\n%s", out)
+	}
+	// The button leads the folder rows: its line comes before the first folder.
+	lines := strings.Split(out, "\n")
+	btnLine, firstFolderLine := -1, -1
+	for i, line := range lines {
+		if btnLine == -1 && strings.Contains(line, btn) {
+			btnLine = i
+		}
+		if firstFolderLine == -1 && strings.Contains(line, "d00") {
+			firstFolderLine = i
+		}
+	}
+	if btnLine == -1 || firstFolderLine == -1 || btnLine >= firstFolderLine {
+		t.Errorf("the Start button must be the top option, above the folders (btn=%d, folder=%d):\n%s",
+			btnLine, firstFolderLine, out)
 	}
 	// The marker sits on the Start button line, not on any folder row.
-	for _, line := range strings.Split(out, "\n") {
-		if strings.Contains(line, "▍") && !strings.Contains(line, "▸ start backup") {
+	for _, line := range lines {
+		if strings.Contains(line, "▍") && !strings.Contains(line, btn) {
 			t.Errorf("only the Start button may be marked when the cursor is on it, got: %q", line)
 		}
 	}

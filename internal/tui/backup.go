@@ -330,7 +330,7 @@ func (v BackupView) View() string {
 		// (open a folder / go up / start on the Start button), so it is read from
 		// the picker.
 		if v.focus == focusPicker {
-			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · ↓ to the start button · backspace up a level · tab to add a tag"))
+			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · ↓ to browse folders · backspace up a level · tab to add a tag"))
 		} else {
 			b.WriteString("\n\n" + ui.ActionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
 		}

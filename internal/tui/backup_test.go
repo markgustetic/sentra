@@ -34,11 +34,11 @@ func backupAtRepo(t *testing.T, r *repo.Repo, dir string) BackupView {
 	return m.(BackupView)
 }
 
-// onStartButton moves the picker's cursor onto the pinned Start button — the
-// only position from which enter commits and starts the backup. Fresh pickers
-// land on a navigation row, so a test that wants to start must arrow down to it.
+// onStartButton puts the picker's cursor on the Start button — the top, default
+// position (cursor 0) from which enter commits and starts the backup. A fresh
+// picker already opens here; this is explicit for tests that navigate first.
 func onStartButton(v BackupView) BackupView {
-	v.picker.cursor = len(v.picker.rows)
+	v.picker.cursor = 0
 	return v
 }
 
@@ -205,15 +205,44 @@ func TestBackupFocusSeamsFollowTheFocusedControl(t *testing.T) {
 	}
 }
 
+// The picker opens on the "backup the current directory" option, so a fresh
+// Backup view starts a backup on the very first enter — no navigating down to a
+// button. This is the whole point of making it the top, default affordance.
+func TestBackupFirstEnterBacksUpCurrentDirectory(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	v := backupAtRepo(t, r, src) // fresh picker, no navigation
+	if !v.picker.onStart() {
+		t.Fatal("a fresh backup picker must rest on the Start button (the top option)")
+	}
+
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(BackupView)
+	if cmd == nil {
+		t.Fatal("the first enter must start the backup of the current directory")
+	}
+	if v.stage != backupRunning {
+		t.Errorf("stage after the first enter = %v, want running", v.stage)
+	}
+}
+
 // Down moves the highlight; enter on a folder row descends (does not start).
 func TestBackupPickerNavigatesWithoutStarting(t *testing.T) {
 	root := tempTree(t)
 	v := backupAt(t, root)
 
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // row 0 is "..", row 1 = alpha
+	// The picker opens on the top Start button; step down past ".." onto the
+	// first folder (alpha).
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // Start button -> ".."
 	v = m.(BackupView)
-	if v.picker.rows[v.picker.cursor].label != "alpha" {
-		t.Fatalf("cursor on %q, want alpha", v.picker.rows[v.picker.cursor].label)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown}) // ".." -> alpha
+	v = m.(BackupView)
+	if got := v.picker.rows[v.picker.cursor-1].label; got != "alpha" {
+		t.Fatalf("cursor on %q, want alpha", got)
 	}
 
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // descend into alpha
