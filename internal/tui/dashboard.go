@@ -334,7 +334,10 @@ func dashPanel(w int, body string) string {
 // as a misleading dip if we plotted upload deltas.
 func (d Dashboard) renderHero(panelW, block int) string {
 	textW := panelW - contentPanelHPad
-	graphRows := max(block-4, 2) // -border(2) -title(1) -footer(1)
+	// -border(2) -title(1) -footer(1). The floor is 1, not 2: the hero block can
+	// be as small as heroMin (5), and forcing 2 graph rows there would make the
+	// panel 6 lines and overflow the content pane by one (availH 19 and 25).
+	graphRows := max(block-4, 1)
 	snaps := d.data.Snaps
 
 	if len(snaps) == 0 {
