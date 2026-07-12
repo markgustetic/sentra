@@ -16,6 +16,12 @@ type dirNode struct {
 	children map[string]*dirNode
 	files    int
 	bytes    int64
+	// subFiles/subBytes are the subtree aggregates, computed once by
+	// computeAggregates after the tree is built. Precomputing them keeps the
+	// layout's sort comparator and its fit-loop from re-walking the subtree on
+	// every call (an O(n²) trap on large trees).
+	subFiles int
+	subBytes int64
 }
 
 // buildDirTree reconstructs the directory hierarchy from a manifest's flat
@@ -41,27 +47,28 @@ func buildDirTree(entries []repo.FileEntry) *dirNode {
 		node.files++
 		node.bytes += fe.Size
 	}
+	computeAggregates(root)
 	return root
+}
+
+// computeAggregates fills subFiles/subBytes in one post-order pass: a directory
+// plus everything beneath it.
+func computeAggregates(n *dirNode) (int, int64) {
+	f, b := n.files, n.bytes
+	for _, c := range n.children {
+		cf, cb := computeAggregates(c)
+		f += cf
+		b += cb
+	}
+	n.subFiles, n.subBytes = f, b
+	return f, b
 }
 
 // totalFiles / totalBytes are the subtree aggregates: this directory plus every
 // directory beneath it. These are the numbers the graph puts on the edge INTO a
-// directory ("how much lives under here").
-func (n *dirNode) totalFiles() int {
-	t := n.files
-	for _, c := range n.children {
-		t += c.totalFiles()
-	}
-	return t
-}
-
-func (n *dirNode) totalBytes() int64 {
-	t := n.bytes
-	for _, c := range n.children {
-		t += c.totalBytes()
-	}
-	return t
-}
+// directory ("how much lives under here"). O(1) — precomputed by buildDirTree.
+func (n *dirNode) totalFiles() int   { return n.subFiles }
+func (n *dirNode) totalBytes() int64 { return n.subBytes }
 
 // sortedChildren returns the child directories ordered by subtree file count
 // descending (ties broken by name), so the busiest directories lead — the ones

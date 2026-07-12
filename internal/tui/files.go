@@ -21,7 +21,8 @@ type FilesView struct {
 	deps    Deps
 	width   int
 	height  int
-	loading bool
+	loaded  bool // a load has completed at least once
+	loading bool // a load is in flight
 	err     error
 
 	root  *dirNode // nil until loaded (or when the repo has no snapshots)
@@ -42,15 +43,17 @@ type filesLoadedMsg struct {
 }
 
 func NewFilesView(deps Deps) FilesView {
-	return FilesView{deps: deps, loading: true}
+	return FilesView{deps: deps}
 }
 
 // Title names the view in the sidebar, palette, and title bar.
 func (FilesView) Title() string { return "Files" }
 
-// Init kicks off the first load. It runs once at startup (the App batches every
-// view's Init); the load is async so it never blocks the first frame.
-func (v FilesView) Init() tea.Cmd { return filesLoadCmd(v.deps) }
+// Init is a no-op: the manifest load is deferred to the first time the view is
+// shown (viewShownMsg), so opening the app never pays for a LoadSnapshot the
+// user may not want. A LoadSnapshot can hit S3, so eager loading it at startup
+// for a view that is often never visited is wasteful.
+func (FilesView) Init() tea.Cmd { return nil }
 
 // ShortHelp advertises the reload key in the status bar (the reference's
 // "Ctrl-R: Reload").
@@ -66,20 +69,33 @@ func (v FilesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width, v.height = msg.Width, msg.Height
 		return v, nil
 
+	case viewShownMsg:
+		// First display: begin the deferred load. Ignored once loading or loaded
+		// so scrolling onto the view repeatedly does not re-fetch.
+		if !v.loaded && !v.loading {
+			v.loading = true
+			return v, filesLoadCmd(v.deps)
+		}
+		return v, nil
+
 	case filesLoadedMsg:
-		v.loading = false
+		v.loaded, v.loading = true, false
 		v.root, v.id, v.when = msg.root, msg.id, msg.when
 		v.files, v.bytes, v.err = msg.files, msg.bytes, msg.err
 		return v, nil
 
 	case opResultMsg:
 		// A backup/restore/prune changed the repo — refresh so the tree tracks
-		// the newest snapshot.
-		v.loading = true
-		return v, filesLoadCmd(v.deps)
+		// the newest snapshot. Only once the view has been opened; before that
+		// the first-display load will pick up the latest anyway.
+		if v.loaded && !v.loading {
+			v.loading = true
+			return v, filesLoadCmd(v.deps)
+		}
+		return v, nil
 
 	case tea.KeyMsg:
-		if msg.String() == "ctrl+r" {
+		if msg.String() == "ctrl+r" && !v.loading {
 			v.loading = true
 			return v, filesLoadCmd(v.deps)
 		}
@@ -134,7 +150,9 @@ var filesGraphStyle = lipgloss.NewStyle().Foreground(ui.AccentAqua)
 
 func (v FilesView) View() string {
 	switch {
-	case v.loading:
+	case v.loading || !v.loaded:
+		// Cold (not yet shown) and in-flight both read as loading; showing the
+		// view triggers the load, so the cold state is momentary.
 		return ui.Muted.Render("loading files…")
 	case v.err != nil:
 		return ui.Danger.Render("error loading files: ") + v.err.Error()

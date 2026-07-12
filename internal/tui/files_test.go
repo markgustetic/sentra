@@ -122,3 +122,47 @@ func TestFilesLoadCmd_BuildsTreeFromRepo(t *testing.T) {
 		t.Errorf("nested a/b structure not reconstructed: %+v", msg.root.children)
 	}
 }
+
+// TestFilesView_LazyLoadsOnShown: Init must not load eagerly; the load starts
+// the first time the view is shown (viewShownMsg), and a repeat show while it is
+// already loading must not re-fetch.
+func TestFilesView_LazyLoadsOnShown(t *testing.T) {
+	v := NewFilesView(Deps{Repo: newFlowRepo(t)})
+	if v.Init() != nil {
+		t.Error("Init must not load eagerly")
+	}
+	m, cmd := v.Update(viewShownMsg{})
+	if !m.(FilesView).loading || cmd == nil {
+		t.Fatal("being shown must begin the deferred load")
+	}
+	if _, cmd2 := m.(FilesView).Update(viewShownMsg{}); cmd2 != nil {
+		t.Error("a repeat show while loading must not re-fetch")
+	}
+}
+
+// TestApp_FilesLoadsOnNavigation: navigating to the Files view through the App
+// must trigger its load (via showActive → viewShownMsg), not before.
+func TestApp_FilesLoadsOnNavigation(t *testing.T) {
+	app := NewApp(Deps{Repo: newFlowRepo(t), RepoName: "x"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+
+	fi := -1
+	for i, v := range app.views {
+		if v.id == "files" {
+			fi = i
+		}
+	}
+	if app.views[fi].model.(FilesView).loading {
+		t.Fatal("Files must not be loading before it is visited")
+	}
+
+	m, cmd := app.Update(activateMsg{id: "files"})
+	app = m.(App)
+	if !app.views[fi].model.(FilesView).loading {
+		t.Error("activating Files must start its load")
+	}
+	if cmd == nil {
+		t.Error("activating Files must emit its load command")
+	}
+}
