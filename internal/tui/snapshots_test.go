@@ -161,3 +161,101 @@ func TestSnapshots_ReloadWithNoRepoDoesNotPanic(t *testing.T) {
 		t.Errorf("no-repo reload must be empty, got %d", got)
 	}
 }
+
+// TestSortSnaps locks each ordering: date/size/files descending (interesting end
+// first), tag/id ascending.
+func TestSortSnaps(t *testing.T) {
+	top := func(mode snapSort) string {
+		s := append([]repo.SnapshotInfo(nil), sampleSnaps()...)
+		sortSnaps(s, mode)
+		return s[0].ID
+	}
+	// bbbb is newer (May 2), bigger (2048), more files (200); aaaa sorts first
+	// by ascending tag ("daily" < ... no: daily is bbbb) and ascending id.
+	if got := top(sortDate); got != "snap-bbbb" {
+		t.Errorf("sortDate top = %s, want snap-bbbb", got)
+	}
+	if got := top(sortSize); got != "snap-bbbb" {
+		t.Errorf("sortSize top = %s, want snap-bbbb", got)
+	}
+	if got := top(sortFiles); got != "snap-bbbb" {
+		t.Errorf("sortFiles top = %s, want snap-bbbb", got)
+	}
+	if got := top(sortTag); got != "snap-bbbb" { // "daily" < "weekly"
+		t.Errorf("sortTag top = %s, want snap-bbbb (daily)", got)
+	}
+	if got := top(sortName); got != "snap-aaaa" { // "snap-aaaa" < "snap-bbbb"
+		t.Errorf("sortName top = %s, want snap-aaaa", got)
+	}
+}
+
+// TestFilterSnaps: case-insensitive substring over id and tag; empty keeps all.
+func TestFilterSnaps(t *testing.T) {
+	s := sampleSnaps()
+	if got := filterSnaps(s, ""); len(got) != 2 {
+		t.Errorf("empty filter kept %d, want 2", len(got))
+	}
+	if got := filterSnaps(s, "WEEKLY"); len(got) != 1 || got[0].ID != "snap-aaaa" {
+		t.Errorf("tag filter = %v, want [snap-aaaa]", got)
+	}
+	if got := filterSnaps(s, "bbbb"); len(got) != 1 || got[0].ID != "snap-bbbb" {
+		t.Errorf("id filter = %v, want [snap-bbbb]", got)
+	}
+	if got := filterSnaps(s, "nope"); len(got) != 0 {
+		t.Errorf("no-match filter kept %d, want 0", len(got))
+	}
+}
+
+// TestSnapshots_SortKeyCycles: 's' advances the sort mode and re-renders.
+func TestSnapshots_SortKeyCycles(t *testing.T) {
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	if s.sortMode != sortDate {
+		t.Fatalf("default sort = %v, want date", s.sortMode)
+	}
+	m, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("s")})
+	if got := m.(Snapshots).sortMode; got != sortSize {
+		t.Errorf("after one 's', sort = %v, want size", got)
+	}
+}
+
+// TestSnapshots_FilterFlow: '/' opens the filter (capturing text), typing narrows
+// the table, esc clears it.
+func TestSnapshots_FilterFlow(t *testing.T) {
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+
+	m, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s = m.(Snapshots)
+	if !s.filtering || !s.CapturesText() {
+		t.Fatal("'/' must open the filter and capture text")
+	}
+	m, _ = s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("weekly")})
+	s = m.(Snapshots)
+	if v := s.View(); !strings.Contains(v, "snap-aaaa") || strings.Contains(v, "snap-bbbb") {
+		t.Errorf("filter 'weekly' must show only snap-aaaa:\n%s", v)
+	}
+	m, _ = s.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	s = m.(Snapshots)
+	if s.filtering {
+		t.Error("esc must close the filter")
+	}
+	if v := s.View(); !strings.Contains(v, "snap-bbbb") {
+		t.Errorf("esc must clear the filter (both rows back):\n%s", v)
+	}
+}
+
+// TestSnapshots_CopyID: 'y' copies the highlighted id through the injected
+// clipboard fn and shows a confirmation.
+func TestSnapshots_CopyID(t *testing.T) {
+	var captured string
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	s.copyFn = func(id string) error { captured = id; return nil }
+
+	m, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("y")})
+	s = m.(Snapshots)
+	if !strings.HasPrefix(captured, "snap-") {
+		t.Errorf("y must copy a snapshot id, got %q", captured)
+	}
+	if !strings.Contains(s.View(), "copied") {
+		t.Errorf("copy must show a notice:\n%s", s.View())
+	}
+}
