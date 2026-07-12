@@ -3,11 +3,13 @@ package tui
 import (
 	"context"
 	"fmt"
+	"strings"
 	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -50,11 +52,13 @@ type DashboardData struct {
 type Dashboard struct {
 	deps Deps
 	data DashboardData
-	// width is the content-pane width from the App's synthetic
-	// WindowSizeMsg; zero until the first one arrives (headless
-	// tests), in which case rendering falls back to the min-terminal
-	// budget so output stays deterministic.
-	width int
+	// width/height are the content-pane dimensions from the App's
+	// synthetic WindowSizeMsg; zero until the first one arrives
+	// (headless tests), in which case rendering falls back to the
+	// min-terminal budget so output stays deterministic. height is
+	// what lets the hero graph grow to fill a tall terminal.
+	width  int
+	height int
 }
 
 // NewDashboard returns a hydrated Dashboard. If deps.Repo is non-nil
@@ -145,7 +149,7 @@ func (Dashboard) Init() tea.Cmd { return nil }
 func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		d.width = msg.Width
+		d.width, d.height = msg.Width, msg.Height
 	case opResultMsg:
 		recs := d.data.RecCount
 		d.data = hydrateDashboardData(d.deps)
@@ -154,58 +158,148 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return d, nil
 }
 
-// View renders the four panels. Layout is two rows of two panels;
-// each panel is wrapped in ui.Panel at a shared column width so the
-// grid stays aligned regardless of which panel has the longest line.
+// graphGradient / meterGradient are the btop-style neon ramps painted over
+// the (glyph-only) braille graph and savings meter when the terminal is
+// truecolor. The graph ramps hot→cool up its height (pink peak → aqua base);
+// the meter ramps aqua→pink left→right. Both are pure flourish: the braille
+// heights and the meter fill carry the meaning, so under NO_COLOR / 256-color
+// / the Ascii test profile the panels fall back to a flat theme color and stay
+// legible. Hexes are the theme's dark neon variants (see ui.theme).
+var (
+	graphGradient = []string{"#FF6BDD", "#CB8CFF", "#5CEBFF"}
+	meterGradient = []string{"#5CEBFF", "#CB8CFF", "#FF6BDD"}
+)
+
+// View lays the dashboard out btop-style: a full-width, terminal-tall braille
+// "activity" graph on top, then a stats row of two panels (repo summary with a
+// gradient savings meter, and the last snapshot). The graph is the hero and
+// absorbs all the vertical slack, so it grows with the terminal.
+//
+// The body is sized to exactly the content pane the App forwards (see
+// dims): the App wraps it in a fixed-height panel that pads short content but
+// does NOT clip tall content, so overshooting height would overflow the frame
+// (TestApp_NoOverflowAtMinSize is the backstop).
 func (d Dashboard) View() string {
-	colW := d.colWidth()
-	row1 := lipgloss.JoinHorizontal(lipgloss.Top,
-		d.renderRepoPanel(colW), d.renderLastPanel(colW))
-	row2 := lipgloss.JoinHorizontal(lipgloss.Top,
-		d.renderAgentPanel(colW), d.renderTimelinePanel(colW))
-	return lipgloss.JoinVertical(lipgloss.Left, row1, row2) + "\n"
+	availW, availH := d.dims()
+
+	// Reserve the stats row; the hero takes the rest.
+	const statsBlock = 6 // 4 content lines + panel border
+	heroBlock := max(availH-statsBlock, 5)
+
+	hero := d.renderHero(availW-2, heroBlock)
+
+	// Split the stats row so the two panels' borders exactly fill the hero
+	// width — an uneven split (interior is odd at the 80-col minimum) avoids a
+	// 1-column gap that JoinVertical would pad with trailing whitespace.
+	inner := availW - 4 // two panel borders
+	leftW := (inner + 1) / 2
+	rightW := inner - leftW
+	stats := lipgloss.JoinHorizontal(lipgloss.Top,
+		d.renderRepoPanel(leftW), d.renderLastPanel(rightW))
+
+	return lipgloss.JoinVertical(lipgloss.Left, hero, stats)
 }
 
-// colWidth is each panel's lipgloss Width (content + padding). The
-// width the App forwards is its own panel Width, whose Padding(0,1)
-// sits *inside* it — the drawable region is pickerContentWidth of it.
-// Two panels per row, each adding a border (2) outside their Width,
-// must fit that region: 2*(colW+2) <= drawable, hence (drawable-4)/2.
-// Without a WindowSizeMsg yet we mirror App.resize's min-terminal
-// budget so headless tests and goldens render the same frame a real
-// 80-col terminal would.
-func (d Dashboard) colWidth() int {
-	w := d.width
-	if w <= 0 {
-		w = minWidth - sidebarWidth - 3 // App.resize's contentW at min size
+// dims resolves the interior width/height the dashboard may draw into. The
+// App forwards its own panel Width/Height; the drawable text region is that
+// minus the panel's padding (pickerContentWidth). Before the first
+// WindowSizeMsg (headless tests, goldens) we mirror App.resize's min-terminal
+// budget so output stays deterministic.
+func (d Dashboard) dims() (w, h int) {
+	fw, fh := d.width, d.height
+	if fw <= 0 {
+		fw = minWidth - sidebarWidth - 3 // App.resize's contentW at min size
 	}
-	return max((pickerContentWidth(w)-4)/2, 20)
+	if fh <= 0 {
+		fh = minHeight - 4 // App.resize's contentH at min size
+	}
+	return pickerContentWidth(fw), fh
 }
 
-// dashPanel frames one panel at the shared column width.
-func dashPanel(colW int, body string) string {
-	return ui.Panel.Width(colW).Render(body)
+// dashPanel frames one panel at the given lipgloss Width (content + padding).
+func dashPanel(w int, body string) string {
+	return ui.Panel.Width(w).Render(body)
 }
 
-// renderRepoPanel shows the repo's name, snapshot count, logical size,
-// and what dedup + compression bought: uploaded (stored) bytes plus a
-// savings gauge. The repo name doubles as the panel title so the user
-// always sees which repo is being summarized.
+// renderHero draws the activity graph panel: a title row (label + peak size),
+// the gradient braille area graph of per-snapshot logical bytes, and a footer
+// (backup cadence + covered date span). panelW is the panel's lipgloss Width;
+// block is its total height including the border.
+//
+// Logical size — not NewBytes — is the series: the question the graph answers
+// is "how is my data growing", and a mostly-deduplicated snapshot would render
+// as a misleading dip if we plotted upload deltas.
+func (d Dashboard) renderHero(panelW, block int) string {
+	textW := panelW - contentPanelHPad
+	graphRows := max(block-4, 2) // -border(2) -title(1) -footer(1)
+	snaps := d.data.Snaps
+
+	if len(snaps) == 0 {
+		// Keep the exact same title + graphRows + footer scaffold as the
+		// populated case so the panel height is identical; a short hint
+		// sits on the middle graph row.
+		area := make([]string, graphRows)
+		area[graphRows/2] = ui.Muted.Render(
+			truncateToWidth("run a backup to see activity here", textW))
+		body := ui.Subtle.Render("activity") + "\n" +
+			strings.Join(area, "\n") + "\n" +
+			ui.Muted.Render("no backups yet")
+		return dashPanel(panelW, body)
+	}
+
+	// Snaps is newest-first; the graph reads left→right in time.
+	values := make([]int64, len(snaps))
+	var peak int64
+	for i, s := range snaps {
+		values[len(snaps)-1-i] = s.Stats.Bytes
+		if s.Stats.Bytes > peak {
+			peak = s.Stats.Bytes
+		}
+	}
+
+	title := spread(textW,
+		ui.Subtle.Render("activity"),
+		ui.Muted.Render("peak "+ui.FormatBytes(peak)))
+
+	cadence := "1 backup"
+	if len(snaps) > 1 {
+		cadence = fmt.Sprintf("%d backups · ~%s apart",
+			len(snaps), formatApproxDuration(avgSnapshotInterval(snaps)))
+	}
+	oldest := snaps[len(snaps)-1].CreatedAt.UTC()
+	newest := snaps[0].CreatedAt.UTC()
+	footer := spread(textW,
+		ui.Subtle.Render(cadence),
+		ui.Muted.Render(oldest.Format("2006-01-02")+" → "+newest.Format("2006-01-02")))
+
+	body := title + "\n" + renderGraph(values, textW, graphRows) + "\n" + footer
+	return dashPanel(panelW, body)
+}
+
+// renderRepoPanel summarizes the repo: name + snapshot count, the dedup
+// shrink (logical → stored), a gradient savings meter, and the agent's
+// pending-finding status folded in as the last line.
 func (d Dashboard) renderRepoPanel(colW int) string {
 	name := d.deps.RepoName
 	if name == "" {
 		name = "(unnamed)"
 	}
-	saved := savingsFrac(d.data.TotalBytes, d.data.UploadedBytes)
 	textW := colW - contentPanelHPad
-	body := fmt.Sprintf("%s\n%s\n%s\n%s %s",
-		ui.Primary.Render(truncateToWidth(name, textW)),
-		ui.Subtle.Render(truncateToWidth(fmt.Sprintf("%d snapshots · %s",
-			d.data.SnapshotCount, ui.FormatBytes(d.data.TotalBytes)), textW)),
-		ui.Subtle.Render(ui.FormatBytes(d.data.UploadedBytes)+" stored"),
-		ui.Success.Render(ui.Gauge(saved, 10)),
-		ui.Muted.Render(fmt.Sprintf("%d%% saved", int(saved*100+0.5))),
-	)
+	saved := savingsFrac(d.data.TotalBytes, d.data.UploadedBytes)
+
+	head := spread(textW,
+		ui.Primary.Render(truncateToWidth(name, textW-9)),
+		ui.Muted.Render(fmt.Sprintf("%d snaps", d.data.SnapshotCount)))
+	shrink := ui.Subtle.Render(truncateToWidth(fmt.Sprintf("%s → %s",
+		ui.FormatBytes(d.data.TotalBytes), ui.FormatBytes(d.data.UploadedBytes)), textW))
+	meter := styledGauge(saved, 10) + ui.Muted.Render(fmt.Sprintf(" %d%% saved", int(saved*100+0.5)))
+
+	agent := ui.Success.Render("✓ no findings")
+	if d.data.RecCount > 0 {
+		agent = ui.Warn.Render(fmt.Sprintf("⚠ %d findings pending", d.data.RecCount))
+	}
+
+	body := head + "\n" + shrink + "\n" + meter + "\n" + agent
 	return dashPanel(colW, body)
 }
 
@@ -224,15 +318,13 @@ func savingsFrac(total, uploaded int64) float64 {
 	return f
 }
 
-// renderLastPanel shows the most-recent snapshot at a glance — ID,
-// when and what tag, file count, and how much data that snapshot
-// actually pushed (its NewBytes delta) — or an empty-state line when
-// the repo has no snapshots. The "no snapshots yet" copy is what
-// users see on a freshly-initialized repo.
+// renderLastPanel shows the most-recent snapshot at a glance — ID, when and
+// what tag, file count, and how much data that snapshot actually pushed (its
+// NewBytes delta) — or an empty-state line when the repo has no snapshots.
 func (d Dashboard) renderLastPanel(colW int) string {
 	title := ui.Subtle.Render("last snapshot")
 	if d.data.LastSnap == nil {
-		body := title + "\n" + ui.Muted.Render("no snapshots yet")
+		body := title + "\n" + ui.Muted.Render("no snapshots yet") + "\n\n"
 		return dashPanel(colW, body)
 	}
 	s := d.data.LastSnap
@@ -240,80 +332,79 @@ func (d Dashboard) renderLastPanel(colW int) string {
 	if tag == "" {
 		tag = "(untagged)"
 	}
-	// Composed lines are truncated, not wrapped: a long tag or ID
-	// wrapping would push this panel a row taller than its row-mate
-	// and stagger the grid. The month-name date (no year) keeps the
-	// when—tag line inside the 24-cell interior of an 80-col terminal;
-	// the snapshots table is where full ISO timestamps live.
+	// Composed lines are truncated, not wrapped: a long tag or ID wrapping
+	// would push this panel a row taller than its row-mate and stagger the
+	// grid. The month-name date (no year) keeps the when—tag line inside the
+	// interior of an 80-col terminal; the snapshots table has full timestamps.
 	when := s.CreatedAt.UTC().Format("Jan 02 15:04") + " — " + tag
 	textW := colW - contentPanelHPad
-	body := fmt.Sprintf("%s\n%s\n%s\n%s%s",
-		title,
+	body := fmt.Sprintf("%s\n%s\n%s\n%s",
 		ui.Primary.Render(truncateToWidth(s.ID, textW)),
 		ui.Subtle.Render(truncateToWidth(when, textW)),
 		ui.Subtle.Render(fmt.Sprintf("%d files", s.Stats.Files)),
-		ui.Muted.Render(" · +"+ui.FormatBytes(s.Stats.NewBytes)),
+		ui.Muted.Render("+"+ui.FormatBytes(s.Stats.NewBytes)+" new"),
 	)
 	return dashPanel(colW, body)
 }
 
-// renderAgentPanel shows the agent's pending-recommendation badge.
-// Zero recommendations is rendered with the Success color (nothing
-// to do, all clear); any non-zero count is Warn so it visually
-// stands out as work to inspect.
-func (d Dashboard) renderAgentPanel(colW int) string {
-	title := ui.Subtle.Render("agent")
-	style := ui.Success
-	hint := "no pending findings"
-	if d.data.RecCount > 0 {
-		style = ui.Warn
-		hint = "pending review"
+// renderGraph turns a value series into the braille area graph, painting the
+// btop vertical gradient over it on truecolor terminals and falling back to a
+// flat theme color otherwise (both stripped to plain braille under Ascii, so
+// goldens stay stable). Rows are colored top→bottom, so tall peaks glow hot
+// (pink) and the baseline sits cool (aqua).
+func renderGraph(values []int64, w, h int) string {
+	rows := ui.BrailleGraph(values, w, h)
+	if lipgloss.ColorProfile() == termenv.TrueColor {
+		grad := ui.GradientColors(graphGradient, len(rows))
+		for i, ln := range rows {
+			rows[i] = lipgloss.NewStyle().Foreground(lipgloss.Color(grad[i])).Render(ln)
+		}
+	} else {
+		for i, ln := range rows {
+			rows[i] = ui.Subtle.Render(ln)
+		}
 	}
-	body := fmt.Sprintf("%s\n%s\n%s",
-		title,
-		style.Render(fmt.Sprintf("%d recommendations", d.data.RecCount)),
-		ui.Muted.Render(hint),
-	)
-	return dashPanel(colW, body)
+	return strings.Join(rows, "\n")
 }
 
-// renderTimelinePanel graphs per-snapshot logical bytes oldest→newest
-// as a block sparkline, with the cadence ("how often do I back up")
-// and the covered date span beneath it. Size, not NewBytes, is the
-// series: the question this graph answers is "how is my data growing",
-// and a mostly-deduplicated snapshot would render as a misleading dip.
-func (d Dashboard) renderTimelinePanel(colW int) string {
-	title := ui.Subtle.Render("timeline")
-	snaps := d.data.Snaps
-	if len(snaps) == 0 {
-		body := title + "\n" + ui.Muted.Render("no backups graphed yet")
-		return dashPanel(colW, body)
+// styledGauge renders ui.Gauge with the btop meter treatment: on truecolor the
+// filled cells carry the aqua→pink gradient and the track is muted; elsewhere
+// the whole bar is a flat success color. The fill length is the meaning; color
+// is flourish.
+func styledGauge(frac float64, width int) string {
+	bar := ui.Gauge(frac, width)
+	if lipgloss.ColorProfile() != termenv.TrueColor {
+		return ui.Success.Render(bar)
 	}
-
-	// Snaps is newest-first; the graph reads left→right in time.
-	values := make([]int64, len(snaps))
-	for i, s := range snaps {
-		values[len(snaps)-1-i] = s.Stats.Bytes
+	runes := []rune(bar)
+	filled := 0
+	for _, r := range runes {
+		if r == '█' {
+			filled++
+		}
 	}
-	textW := colW - contentPanelHPad
-	spark := ui.Sparkline(values, textW)
-
-	cadence := "1 backup"
-	if len(snaps) > 1 {
-		cadence = fmt.Sprintf("%d backups · ~%s apart",
-			len(snaps), formatApproxDuration(avgSnapshotInterval(snaps)))
+	grad := ui.GradientColors(meterGradient, filled)
+	var b strings.Builder
+	gi := 0
+	for _, r := range runes {
+		if r == '█' {
+			b.WriteString(lipgloss.NewStyle().Foreground(lipgloss.Color(grad[gi])).Render("█"))
+			gi++
+		} else {
+			b.WriteString(ui.Muted.Render(string(r)))
+		}
 	}
-	oldest := snaps[len(snaps)-1].CreatedAt.UTC()
-	newest := snaps[0].CreatedAt.UTC()
-	span := oldest.Format("2006-01-02") + " → " + newest.Format("2006-01-02")
+	return b.String()
+}
 
-	body := fmt.Sprintf("%s\n%s\n%s\n%s",
-		title,
-		ui.Primary.Render(spark),
-		ui.Subtle.Render(truncateToWidth(cadence, textW)),
-		ui.Muted.Render(truncateToWidth(span, textW)),
-	)
-	return dashPanel(colW, body)
+// spread lays a left and a right fragment on one row exactly w cells wide,
+// padding the middle with spaces. Fragments may be pre-styled — lipgloss.Width
+// measures visible cells only, so the padding math ignores ANSI. When the two
+// fragments already fill (or overflow) the row, a single space still separates
+// them.
+func spread(w int, left, right string) string {
+	pad := max(w-lipgloss.Width(left)-lipgloss.Width(right), 1)
+	return left + strings.Repeat(" ", pad) + right
 }
 
 // avgSnapshotInterval is the mean gap between consecutive snapshots:

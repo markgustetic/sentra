@@ -5,8 +5,51 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
+
 	"github.com/markgustetic/sentra/internal/repo"
 )
+
+// TestRenderGraph_TruecolorGradient exercises the flourish path the Ascii test
+// profile never reaches: on a truecolor terminal the braille graph must carry
+// the btop vertical gradient. We assert the exact endpoint colors land — the
+// top row in the hot stop (#FF6BDD → 255;107;221), the bottom row in the cool
+// stop (#5CEBFF → 92;235;255) — which proves both that truecolor SGR is emitted
+// and that it varies across rows rather than being one flat tint.
+//
+// The color profile is global process state; this test saves and restores it,
+// and no test in the package runs in parallel.
+func TestRenderGraph_TruecolorGradient(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	out := renderGraph([]int64{1, 2, 3, 4, 5, 6}, 12, 4)
+	if !strings.Contains(out, "38;2;255;107;221") {
+		t.Errorf("top graph row must use the hot gradient stop (#FF6BDD): %q", out)
+	}
+	if !strings.Contains(out, "38;2;92;235;255") {
+		t.Errorf("bottom graph row must use the cool gradient stop (#5CEBFF): %q", out)
+	}
+}
+
+// TestStyledGauge_TruecolorMeter is the meter's half of the same guarantee:
+// on truecolor the filled cells carry the aqua→pink meter gradient, starting
+// at aqua (#5CEBFF → 92;235;255).
+func TestStyledGauge_TruecolorMeter(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	out := styledGauge(0.8, 10)
+	if !strings.Contains(out, "38;2;92;235;255") {
+		t.Errorf("meter fill must start at the aqua gradient stop (#5CEBFF): %q", out)
+	}
+	if !strings.Contains(out, "█") {
+		t.Errorf("meter must still carry the fill glyph: %q", out)
+	}
+}
 
 // TestDashboard_RendersRepoName locks in the repo name as the most-
 // prominent label in the dashboard. The user opens `sentra ui` and
@@ -141,10 +184,12 @@ func TestDashboard_RendersTimelineSparkline(t *testing.T) {
 	})
 	view := d.View()
 	if strings.Contains(view, "coming soon") {
-		t.Fatalf("timeline placeholder must be replaced by the real sparkline: %s", view)
+		t.Fatalf("timeline placeholder must be replaced by the real graph: %s", view)
 	}
-	if !strings.Contains(view, "█") {
-		t.Errorf("timeline must render sparkline blocks: %s", view)
+	// The braille area graph fills from the baseline, so a full-height cell
+	// (⣿) must appear somewhere in the rendered hero.
+	if !strings.ContainsRune(view, '⣿') {
+		t.Errorf("timeline must render the braille area graph: %s", view)
 	}
 	if !strings.Contains(view, "3 backups") {
 		t.Errorf("timeline must count the backups it graphs: %s", view)
@@ -162,8 +207,11 @@ func TestDashboard_RendersTimelineSparkline(t *testing.T) {
 func TestDashboard_TimelineEmptyState(t *testing.T) {
 	d := NewDashboard(Deps{RepoName: "fresh"})
 	view := d.View()
-	if !strings.Contains(view, "timeline") {
-		t.Errorf("timeline panel must render on an empty repo: %s", view)
+	if !strings.Contains(view, "activity") {
+		t.Errorf("activity graph panel must render on an empty repo: %s", view)
+	}
+	if !strings.Contains(view, "no backups yet") {
+		t.Errorf("empty repo must show empty-state copy: %s", view)
 	}
 	if strings.Contains(view, "0 backups") {
 		t.Errorf("empty repo should show empty-state copy, not a zero count: %s", view)
