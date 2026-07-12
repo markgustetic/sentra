@@ -502,3 +502,30 @@ func TestDashboard_StorageDetail(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboard_TilesHeightExactly is the layout backstop: the dashboard body
+// must be EXACTLY the content height at every size, populated or empty. The App
+// pads short content but does not clip tall content, so a body one row too tall
+// overflows the frame. It regresses a real off-by-one at the heights where the
+// hero graph lands on its minimum (availH 19 and 25).
+func TestDashboard_TilesHeightExactly(t *testing.T) {
+	populated := DashboardData{
+		SnapshotCount: 2, TotalBytes: 157 << 20, UploadedBytes: 15 << 20,
+		LastSnap: &repo.SnapshotInfo{ID: "a", Tag: "n", Stats: repo.SnapshotStats{Files: 10, Bytes: 96 << 20}},
+		Snaps: []repo.SnapshotInfo{
+			{ID: "a", CreatedAt: time.Date(2026, 6, 9, 0, 0, 0, 0, time.UTC), Tag: "n", Stats: repo.SnapshotStats{Files: 10, Bytes: 96 << 20, NewBytes: 3 << 20}},
+			{ID: "b", CreatedAt: time.Date(2026, 6, 5, 0, 0, 0, 0, time.UTC), Tag: "w", Stats: repo.SnapshotStats{Files: 9, Bytes: 61 << 20, NewBytes: 12 << 20}},
+		},
+	}
+	for _, data := range []DashboardData{populated, {}} {
+		for h := 16; h <= 42; h++ {
+			d := NewDashboard(Deps{RepoName: "x"})
+			m, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: h})
+			d = m.(Dashboard).SetData(data)
+			if got := len(strings.Split(d.View(), "\n")); got != h {
+				t.Errorf("availH=%d (empty=%v): View has %d lines, want exactly %d",
+					h, data.SnapshotCount == 0, got, h)
+			}
+		}
+	}
+}
