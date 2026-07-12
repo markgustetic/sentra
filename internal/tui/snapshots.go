@@ -3,17 +3,47 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
+	"github.com/atotto/clipboard"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
+
+// snapSort is the snapshot list ordering. Date (newest first) is the default —
+// the order ListSnapshots already returns.
+type snapSort int
+
+const (
+	sortDate snapSort = iota
+	sortSize
+	sortFiles
+	sortTag
+	sortName
+)
+
+func (s snapSort) label() string {
+	switch s {
+	case sortSize:
+		return "size"
+	case sortFiles:
+		return "files"
+	case sortTag:
+		return "tag"
+	case sortName:
+		return "id"
+	default:
+		return "date"
+	}
+}
 
 // detailLoader is the hook the snapshots view uses to fetch a
 // manifest by ID. Production wires this to repo.LoadSnapshot;
@@ -39,6 +69,17 @@ type Snapshots struct {
 	detailOpen bool
 	detailMan  repo.Manifest
 	detailErr  error
+
+	// sortMode orders the list; filter is a live substring on id+tag. Both are
+	// applied by rebuild() to derive the table rows from the full snaps slice.
+	sortMode  snapSort
+	filter    textinput.Model
+	filtering bool
+	notice    string // transient banner (e.g. "copied <id>")
+
+	// copyFn writes text to the system clipboard. Overridable so tests don't
+	// touch the real clipboard (and so CI without xclip stays green).
+	copyFn func(string) error
 }
 
 // NewSnapshots constructs the view with the production loader
@@ -67,15 +108,23 @@ func NewSnapshots(deps Deps) Snapshots {
 func (Snapshots) Title() string { return "Snapshots" }
 
 // ShortHelp lists the view-specific keys for the status bar.
-// ConsumesEscape: esc closes the detail page. With the list showing, a second
-// esc leaves the view — which is what an operator expects.
-func (s Snapshots) ConsumesEscape() bool { return s.detailOpen }
+// ConsumesEscape: esc closes the detail page or the filter field. With the plain
+// list showing, a second esc leaves the view — which is what an operator expects.
+func (s Snapshots) ConsumesEscape() bool { return s.detailOpen || s.filtering }
 
-func (Snapshots) ShortHelp() []key.Binding {
+func (s Snapshots) ShortHelp() []key.Binding {
+	if s.filtering {
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "apply filter")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "clear")),
+		}
+	}
 	return []key.Binding{
 		key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "row")),
 		key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "detail")),
-		key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
+		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
+		key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy id")),
 	}
 }
 
@@ -83,11 +132,15 @@ func (Snapshots) ShortHelp() []key.Binding {
 // the loader so test code can return canned manifest data without
 // reaching into the repo package.
 func NewSnapshotsWithLoader(deps Deps, loader detailLoader) Snapshots {
-	t := newSnapshotsTable(nil)
+	fi := textinput.New()
+	fi.Prompt = "filter> "
+	fi.Placeholder = "id or tag"
 	s := Snapshots{
 		deps:   deps,
-		tbl:    t,
+		tbl:    newSnapshotsTable(nil),
 		loader: loader,
+		filter: fi,
+		copyFn: clipboard.WriteAll,
 	}
 	if deps.Repo != nil {
 		s = s.SetSnapshots(loadSnapshotsBestEffort(deps))
@@ -152,12 +205,23 @@ func newSnapshotsTable(rows []table.Row) table.Model {
 	return t
 }
 
-// SetSnapshots replaces the model's snapshot list and rebuilds the
-// table rows. Returns the updated model so callers can chain.
+// SetSnapshots replaces the model's full snapshot list and rebuilds the visible
+// table (applying the current sort and filter). Returns the updated model so
+// callers can chain.
 func (s Snapshots) SetSnapshots(snaps []repo.SnapshotInfo) Snapshots {
 	s.snaps = snaps
-	rows := make([]table.Row, 0, len(snaps))
-	for _, sn := range snaps {
+	return s.rebuild()
+}
+
+// rebuild derives the table rows from the full snaps slice by applying the
+// active filter then the active sort. Kept separate from SetSnapshots so a sort
+// or filter change re-renders without re-fetching.
+func (s Snapshots) rebuild() Snapshots {
+	shown := filterSnaps(s.snaps, strings.TrimSpace(s.filter.Value()))
+	sortSnaps(shown, s.sortMode)
+
+	rows := make([]table.Row, 0, len(shown))
+	for _, sn := range shown {
 		tag := sn.Tag
 		if tag == "" {
 			tag = "-"
@@ -174,13 +238,100 @@ func (s Snapshots) SetSnapshots(snaps []repo.SnapshotInfo) Snapshots {
 	return s
 }
 
+// filterSnaps keeps snapshots whose id or tag contains q (case-insensitive). An
+// empty query returns the slice unfiltered. It copies rather than mutating the
+// caller's slice so the full list is preserved for a later filter change.
+func filterSnaps(snaps []repo.SnapshotInfo, q string) []repo.SnapshotInfo {
+	if q == "" {
+		return append([]repo.SnapshotInfo(nil), snaps...)
+	}
+	q = strings.ToLower(q)
+	out := make([]repo.SnapshotInfo, 0, len(snaps))
+	for _, sn := range snaps {
+		if strings.Contains(strings.ToLower(sn.ID), q) || strings.Contains(strings.ToLower(sn.Tag), q) {
+			out = append(out, sn)
+		}
+	}
+	return out
+}
+
+// sortSnaps orders in place by the given mode. Date/size/files sort descending
+// (newest, biggest, most first — the interesting end leads); tag/id ascending.
+// Every mode breaks ties by CreatedAt descending so the order is deterministic.
+func sortSnaps(snaps []repo.SnapshotInfo, mode snapSort) {
+	newerFirst := func(i, j int) bool { return snaps[i].CreatedAt.After(snaps[j].CreatedAt) }
+	sort.SliceStable(snaps, func(i, j int) bool {
+		switch mode {
+		case sortSize:
+			if snaps[i].Stats.Bytes != snaps[j].Stats.Bytes {
+				return snaps[i].Stats.Bytes > snaps[j].Stats.Bytes
+			}
+		case sortFiles:
+			if snaps[i].Stats.Files != snaps[j].Stats.Files {
+				return snaps[i].Stats.Files > snaps[j].Stats.Files
+			}
+		case sortTag:
+			if snaps[i].Tag != snaps[j].Tag {
+				return snaps[i].Tag < snaps[j].Tag
+			}
+		case sortName:
+			if snaps[i].ID != snaps[j].ID {
+				return snaps[i].ID < snaps[j].ID
+			}
+		}
+		return newerFirst(i, j)
+	})
+}
+
 // cursor returns the table's current cursor index. Exposed for
 // tests so they can assert on navigation without poking the
 // embedded table directly.
-// ConsumesArrows: only when the table has rows and the detail page is closed.
-// The detail page handles nothing but esc, and an empty table has no cursor to
-// move — in both states the arrows belong to the nav rail.
-func (s Snapshots) ConsumesArrows() bool { return !s.detailOpen && len(s.snaps) > 0 }
+// ConsumesArrows: only when the table has rows, the detail page is closed, and
+// the filter field is not capturing (its single line ignores arrows anyway). In
+// the other states the arrows belong to the nav rail.
+func (s Snapshots) ConsumesArrows() bool {
+	return !s.detailOpen && !s.filtering && len(s.snaps) > 0
+}
+
+// CapturesText: while the filter field is focused it owns printable keys, so the
+// shell must not treat them as globals ('q' quit, digit view-jumps).
+func (s Snapshots) CapturesText() bool { return s.filtering }
+
+// handleFilterKey routes keys while the filter field is focused: esc clears and
+// closes it, enter keeps the filter and closes it, everything else edits the
+// query and re-renders the list live.
+func (s Snapshots) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		s.filtering = false
+		s.filter.Blur()
+		s.filter.SetValue("")
+		return s.rebuild(), nil
+	case tea.KeyEnter:
+		s.filtering = false
+		s.filter.Blur()
+		return s, nil
+	}
+	var cmd tea.Cmd
+	s.filter, cmd = s.filter.Update(msg)
+	return s.rebuild(), cmd
+}
+
+// copySelectedID copies the highlighted snapshot's ID to the clipboard, setting
+// a transient notice with the outcome. Uses OSC-52-free clipboard tools, so it
+// works locally; over SSH the copy may not reach the client (a known limit).
+func (s Snapshots) copySelectedID() Snapshots {
+	row := s.tbl.SelectedRow()
+	if len(row) == 0 {
+		return s
+	}
+	if err := s.copyFn(row[0]); err != nil {
+		s.notice = "copy failed: " + err.Error()
+		return s
+	}
+	s.notice = "copied " + row[0]
+	return s
+}
 
 func (s Snapshots) cursor() int { return s.tbl.Cursor() }
 
@@ -208,6 +359,22 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				s.detailErr = nil
 			}
 			return s, nil
+		}
+		if s.filtering {
+			return s.handleFilterKey(msg)
+		}
+		switch msg.String() {
+		case "/":
+			s.notice = ""
+			s.filtering = true
+			s.filter.Focus()
+			return s, nil
+		case "s":
+			s.notice = ""
+			s.sortMode = (s.sortMode + 1) % 5
+			return s.rebuild(), nil
+		case "y":
+			return s.copySelectedID(), nil
 		}
 		if msg.Type == tea.KeyEnter {
 			row := s.tbl.SelectedRow()
@@ -247,7 +414,20 @@ func (s Snapshots) View() string {
 			ui.Subtle.Render("snapshots")+"\n"+ui.Muted.Render("no snapshots in this repo"),
 		) + "\n"
 	}
-	return s.tbl.View() + "\n" + ui.ActionLine("view this snapshot", "↑↓ move · esc back") + "\n"
+
+	// Status line: which sort is active, plus the live filter field or a notice.
+	status := ui.Muted.Render("sort: " + s.sortMode.label())
+	switch {
+	case s.filtering:
+		status = s.filter.View()
+	case s.notice != "":
+		status = ui.Success.Render(s.notice)
+	case strings.TrimSpace(s.filter.Value()) != "":
+		status = ui.Muted.Render("sort: "+s.sortMode.label()) + "  " +
+			ui.Subtle.Render("filter: "+s.filter.Value())
+	}
+	footer := ui.ActionLine("view this snapshot", "↑↓ move · s sort · / filter · y copy id · esc back")
+	return s.tbl.View() + "\n" + status + "\n" + footer + "\n"
 }
 
 // viewDetail renders the manifest file tree as a vertical list with
