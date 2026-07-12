@@ -15,6 +15,7 @@ require (
 	github.com/charmbracelet/huh v1.0.0
 	github.com/charmbracelet/lipgloss v1.1.0
 	github.com/charmbracelet/x/exp/golden v0.0.0-20260705004817-2cc9a8fe1146
+	github.com/charmbracelet/x/exp/teatest v0.0.0-20260712004152-b16d026a9d2e
 	github.com/charmbracelet/x/term v0.2.2
 	github.com/klauspost/compress v1.18.6
 	github.com/knadh/koanf/parsers/yaml v1.1.0
