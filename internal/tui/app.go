@@ -1060,9 +1060,10 @@ func (m App) View() string {
 //
 // Both forms live off the ambient clock (animColor / the banner's frame are
 // pure in animFrame, so they stay reproducible and vanish under Ascii): the
-// one-line logo breathes its neon, and the banner flows the sunset, shimmers the
-// sun, and sweeps the grid. Like the splash, all of it is color over fixed
-// glyphs, so it survives the Ascii profile the tests render under.
+// one-line logo breathes its neon, and the banner's sun shimmers for a few
+// rounds then settles (the wordmark and grid are static). Like the splash, all
+// of it is color over fixed glyphs, so it survives the Ascii profile the tests
+// render under.
 func (m App) headerView() string {
 	if titleRows(m.height) > 1 && m.width > 0 {
 		return synthwaveBanner(m.width, m.animFrame)

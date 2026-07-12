@@ -55,11 +55,9 @@ func TestSynthwaveBanner_CarriesTheScene(t *testing.T) {
 	if !strings.Contains(out, "S E N T R A") {
 		t.Errorf("banner is missing the SENTRA logotype:\n%s", out)
 	}
-	if !strings.Contains(out, bannerSunArt[0]) {
+	// The sun's solid band is a distinctive fingerprint of the disc.
+	if !strings.Contains(out, bannerSunArt[2]) {
 		t.Errorf("banner is missing the sun:\n%s", out)
-	}
-	if !strings.Contains(out, "│") {
-		t.Errorf("banner is missing the grid horizon:\n%s", out)
 	}
 }
 
@@ -77,18 +75,41 @@ func TestSynthwaveBanner_PlainUnderAsciiProfile(t *testing.T) {
 	}
 }
 
-// TestSynthwaveBanner_AnimatesWithFrame: on a truecolor terminal the banner must
-// actually move — consecutive ambient frames must render differently — or the
-// animation is dead. The color profile is process-global; this test saves and
-// restores it, and no test in the package runs in parallel.
-func TestSynthwaveBanner_AnimatesWithFrame(t *testing.T) {
+// TestSynthwaveBanner_OnlySunAnimates: during its rounds, stepping the frame
+// must change ONLY the sun rows — the wordmark is static. The banner's lines are
+// [margin, sun×bannerSunHeight, wordmark]. Color is process-global state; this
+// test saves/restores the profile and no test in the package runs in parallel.
+func TestSynthwaveBanner_OnlySunAnimates(t *testing.T) {
 	prev := lipgloss.ColorProfile()
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
-	// Compare frames a full slowdown apart, since bannerSlowdown holds each
-	// step for several ticks (frame 0 and frame 1 share a tick by design).
-	if synthwaveBanner(80, 0) == synthwaveBanner(80, bannerSlowdown) {
-		t.Error("banner must animate: frames a slowdown apart must differ under truecolor")
+	a := strings.Split(synthwaveBanner(80, 0), "\n")
+	b := strings.Split(synthwaveBanner(80, bannerSlowdown), "\n")
+	word := bannerTopMargin + bannerSunHeight // the wordmark's line index
+	if a[word] != b[word] {
+		t.Error("the wordmark must be static, not animated")
+	}
+	sunMoved := false
+	for i := bannerTopMargin; i < word; i++ {
+		if a[i] != b[i] {
+			sunMoved = true
+		}
+	}
+	if !sunMoved {
+		t.Error("the sun must animate during its rounds")
+	}
+}
+
+// TestSynthwaveBanner_SunStopsAfterThreeRounds: once the sun has shimmered its
+// rounds, the whole banner freezes — frames past the stop render identically.
+func TestSynthwaveBanner_SunStopsAfterThreeRounds(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	stop := len(bannerSunRamp) * bannerSunRounds * bannerSlowdown
+	if synthwaveBanner(80, stop) != synthwaveBanner(80, stop+37*bannerSlowdown) {
+		t.Error("the sun must stop after its rounds: frames past the stop must be identical")
 	}
 }

@@ -530,8 +530,9 @@ func TestApp_SynthwaveBannerAtTallSize(t *testing.T) {
 		}
 	}
 	// The sun is the banner's fingerprint (its logotype text matches the
-	// one-line fallback, so the sun/grid scene is what distinguishes them).
-	if !strings.Contains(out, bannerSunArt[0]) {
+	// one-line fallback, so the sun scene is what distinguishes them). The
+	// solid band is a distinctive, mostly-non-blank sun row.
+	if !strings.Contains(out, bannerSunArt[2]) {
 		t.Errorf("tall terminal must show the synthwave banner (its sun):\n%s", out)
 	}
 	if !strings.Contains(out, "S E N T R A") {
@@ -559,7 +560,7 @@ func TestApp_HeaderFallsBackWhenShort(t *testing.T) {
 	if !strings.Contains(out, "S E N T R A") {
 		t.Errorf("a short terminal must show the one-line logo:\n%s", out)
 	}
-	if strings.Contains(out, bannerSunArt[0]) {
+	if strings.Contains(out, bannerSunArt[2]) {
 		t.Errorf("a short terminal must NOT show the synthwave banner (no sun):\n%s", out)
 	}
 }
