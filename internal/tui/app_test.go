@@ -1670,6 +1670,48 @@ func TestApp_ActivatingADifferentViewFocusesContent(t *testing.T) {
 	}
 }
 
+// TestApp_ScrollPreviewThenEnterDivesIn reproduces the real runtime sequence the
+// two tests above skip by discarding the Down cmd: scrolling the rail delivers a
+// navPreviewMsg that makes the highlighted view active BEFORE Enter arrives. The
+// activate handler must still hand the keyboard to the content pane.
+//
+// The regressed guard (i != m.active) saw the previewed view already active and
+// swallowed the Enter, so diving into any view you scrolled to silently did
+// nothing — the "hitting return doesn't go into the item" report.
+func TestApp_ScrollPreviewThenEnterDivesIn(t *testing.T) {
+	app := newTestApp(t)
+
+	// Scroll down one and DELIVER the preview cmd, exactly as the Bubbletea
+	// runtime does — this is the step the older tests dropped.
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if cmd == nil {
+		t.Fatal("scrolling the rail should emit a preview cmd")
+	}
+	m, _ = m.(App).Update(cmd()) // deliver navPreviewMsg → active follows the cursor
+	app = m.(App)
+	if app.focus != focusSidebar {
+		t.Fatalf("precondition: preview keeps focus on the rail, got %v", app.focus)
+	}
+	previewed := app.active
+	if previewed == 0 {
+		t.Fatal("precondition: preview should have moved active off the dashboard")
+	}
+
+	// Enter must now dive into the previewed (interactive) view.
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on the rail should emit an activate cmd")
+	}
+	m, _ = m.(App).Update(cmd()) // deliver activateMsg
+	app = m.(App)
+	if app.active != previewed {
+		t.Fatalf("active = %d, want %d (the previewed view)", app.active, previewed)
+	}
+	if app.focus != focusContent {
+		t.Fatal("enter must dive into the previewed view — focus should move to content")
+	}
+}
+
 // TestApp_ArrowsNeverDead is the rule behind two "the UI froze" reports.
 //
 // Activating a view moves focus to the content pane, and ↑/↓ then go only to

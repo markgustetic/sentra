@@ -77,6 +77,12 @@ func (Dashboard) Title() string { return "Dashboard" }
 // ShortHelp lists the view-specific keys for the status bar.
 func (Dashboard) ShortHelp() []key.Binding { return nil }
 
+// InertContent marks the Dashboard as a passive readout: its Update handles no
+// keys, so activating it from the rail must not move the focus border into its
+// pane — there is nothing to do there, and it would read as Enter doing nothing.
+// Focus stays on the rail so scrolling continues. See App.contentFocusable.
+func (Dashboard) InertContent() bool { return true }
+
 // SetData replaces the model's data. Tests use this to inject canned
 // state; production code calls it after a backup or scan completes
 // to refresh the dashboard without rebuilding the model.

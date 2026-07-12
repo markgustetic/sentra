@@ -541,15 +541,22 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			if v.id != msg.id {
 				continue
 			}
-			// Activating the view you are already on navigates nowhere, so it
-			// must not hand the keyboard to the content pane either. The rail
-			// lands highlighting the active view, so the user's first Enter
-			// would otherwise move focus with nothing to show for it — and
-			// since a content-focused Dashboard ignores every key, ↑/↓ would
-			// stop driving the rail and the app would look frozen.
-			if i != m.active {
-				m.active = i
-				m.sidebar.Select(msg.id)
+			m.active = i
+			m.sidebar.Select(msg.id)
+			// Enter commits the rail's live preview: hand the keyboard to the
+			// content pane so the user can act on the view they scrolled to.
+			//
+			// We deliberately do NOT gate this on "is this a different view than
+			// m.active" — live rail preview (navPreviewMsg) already made the
+			// highlighted view active during the scroll, so that guard saw the
+			// previewed view as "already active" and silently swallowed Enter,
+			// stranding the user on the rail. Instead gate on whether the view can
+			// use focus at all: a passive readout (the Dashboard handles no keys)
+			// keeps focus on the rail, since moving the focus border onto an inert
+			// pane would only look like Enter did nothing — and the rail stays live
+			// because the ↑/↓ fallback (see routeKey) drives it regardless of focus.
+			// Every interactive view takes focus, restoring the pre-preview behavior.
+			if m.contentFocusable(i) {
 				m.focus = focusContent
 			}
 			break
@@ -637,6 +644,26 @@ func (m App) contentCapturesText() bool {
 	}
 	tc, ok := m.views[m.active].model.(textCapturer)
 	return ok && tc.CapturesText()
+}
+
+// inertContent is implemented by a view that has nothing to interact with when
+// its pane is focused — the Dashboard is a static readout whose Update ignores
+// every key. Activating such a view from the rail must not move the focus border
+// into its content pane; focus stays on the rail so scrolling keeps working.
+//
+// This exists because live rail preview (navPreviewMsg) makes the highlighted
+// view active BEFORE Enter, so the activate handler can no longer distinguish
+// "Enter on the view I scrolled to" (dive in) from "Enter on the passive
+// Dashboard I launched on" (stay) by comparing indices — both have i == m.active.
+// The one durable difference is the view itself, which it declares here. Every
+// view that omits this method is focusable by default.
+type inertContent interface{ InertContent() bool }
+
+// contentFocusable reports whether activating view i should hand it the keyboard.
+// Only a view that declares itself inert (the Dashboard) keeps focus on the rail.
+func (m App) contentFocusable(i int) bool {
+	ic, ok := m.views[i].model.(inertContent)
+	return !ok || !ic.InertContent()
 }
 
 // arrowConsumer is implemented by a view that can use ↑/↓ in its CURRENT state:
