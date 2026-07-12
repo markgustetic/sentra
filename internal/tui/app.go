@@ -998,8 +998,11 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	// test couldn't detect drift.)
 	//
 	// Vertical: Style.Height sets content+padding rows and adds the
-	// border (1 top + 1 bottom = 2). With title bar (1) + status bar (1)
-	// + panel border (2) that's msg.Height - 4.
+	// border (1 top + 1 bottom = 2). The header is titleRows(height) tall
+	// — one line normally, the full synthwave banner on a tall terminal —
+	// so with status bar (1) + panel border (2) the content budget is
+	// msg.Height - titleRows - 3. The banner only engages above the common
+	// test height, so at 80×20 titleRows is 1 and this stays msg.Height-4.
 	//
 	// View() sizes the panel to exactly contentW×contentH, so the frame
 	// is (contentW+2) wide within the row and the whole row is pinned to
@@ -1013,7 +1016,7 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 		// Drop the rail(sidebarWidth) + gap(1) from the budget.
 		contentW = msg.Width - 2
 	}
-	contentH := msg.Height - 4 // title(1) + status(1) + panel border(2)
+	contentH := msg.Height - titleRows(msg.Height) - 3 // header + status(1) + panel border(2)
 	if contentW < 1 {
 		contentW = 1
 	}
@@ -1049,6 +1052,29 @@ func (m App) View() string {
 	return paintBackground(m.viewFrame())
 }
 
+// headerView renders the top-of-screen brand: the full synthwave banner when
+// the terminal is tall enough (titleRows > 1), otherwise the one-line logo. The
+// repo name is NOT repeated here — the status bar's left already carries it — so
+// the header stays pure brand. Its row count MUST equal titleRows(m.height),
+// which resize() reserves in the content budget, or the frame over/underflows.
+//
+// The one-line logo breathes with the ambient clock (animColor is pure in
+// animFrame, so it stays reproducible and vanishes under Ascii). The banner is a
+// static gradient — calm enough to sit on every working page — and, like the
+// splash, carries its meaning in glyph shape, so it too survives the Ascii
+// profile the tests render under.
+func (m App) headerView() string {
+	if titleRows(m.height) > 1 && m.width > 0 {
+		return synthwaveBanner(m.width)
+	}
+	logo := lipgloss.NewStyle().Foreground(animColor(animBrand, m.animFrame)).Bold(true).
+		Render("✦  S E N T R A  ✦")
+	if m.width > 0 {
+		return lipgloss.Place(m.width, 1, lipgloss.Center, lipgloss.Center, logo)
+	}
+	return logo
+}
+
 func (m App) viewFrame() string {
 	if m.width > 0 && (m.width < minWidth || m.height < minHeight) {
 		hint := fmt.Sprintf("terminal too small (%dx%d)\nneed at least %dx%d",
@@ -1066,19 +1092,7 @@ func (m App) viewFrame() string {
 		return m.palette.View()
 	}
 
-	// A breathing logo, centered on the top row of every screen. The repo name
-	// is NOT repeated here — the status bar's left already carries it — so the
-	// header stays pure brand. It is exactly one row tall (the ✦ flankers and
-	// spaced caps echo the splash wordmark), so resize()'s title(1) budget and
-	// the overflow test are unchanged; lipgloss.Place centers it across the full
-	// terminal width. The neon breathes with the ambient clock (animColor is
-	// pure in animFrame, so it stays reproducible and vanishes under Ascii).
-	logo := lipgloss.NewStyle().Foreground(animColor(animBrand, m.animFrame)).Bold(true).
-		Render("✦  S E N T R A  ✦")
-	title := logo
-	if m.width > 0 {
-		title = lipgloss.Place(m.width, 1, lipgloss.Center, lipgloss.Center, logo)
-	}
+	title := m.headerView()
 
 	body := m.views[m.active].model.View()
 	contentStyle := ui.Panel.BorderForeground(animColor(animIdle, m.animFrame))

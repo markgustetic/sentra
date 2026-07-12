@@ -506,6 +506,62 @@ func TestApp_NoOverflowAtMinSize(t *testing.T) {
 	}
 }
 
+// TestApp_SynthwaveBannerAtTallSize: on a terminal tall enough (>=
+// bannerMinHeight) the full synthwave banner heads every page. The frame must
+// still be EXACTLY the terminal height with no line overflowing — the banner is
+// reserved in resize()'s content budget, so a miscount would over/underflow —
+// and the block SENTRA wordmark and the rail must both render (banner AND
+// content, not banner instead of content).
+func TestApp_SynthwaveBannerAtTallSize(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{RepoName: "test-repo", Repo: r})
+	const w, h = 80, 40
+	m, _ := app.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	a := m.(App)
+
+	out := a.View()
+	lines := strings.Split(out, "\n")
+	if len(lines) != h {
+		t.Fatalf("frame is %d lines, want exactly %d:\n%s", len(lines), h, out)
+	}
+	for i, line := range lines {
+		if lw := lipgloss.Width(line); lw > w {
+			t.Errorf("line %d overflows: width %d > %d: %q", i, lw, w, line)
+		}
+	}
+	if !strings.Contains(out, "███████╗") {
+		t.Errorf("tall terminal must show the block SENTRA banner:\n%s", out)
+	}
+	if strings.Contains(out, "S E N T R A") {
+		t.Errorf("the banner replaces the one-line logo, not sits beside it:\n%s", out)
+	}
+	if !strings.Contains(out, "Snapshots") {
+		t.Errorf("the banner must not crowd out the rail/content:\n%s", out)
+	}
+}
+
+// TestApp_HeaderFallsBackWhenShort: below bannerMinHeight the header collapses
+// to the one-line ✦ S E N T R A ✦ logo so the shell stays usable — the block
+// banner must NOT appear, and the frame stays exactly the terminal height.
+func TestApp_HeaderFallsBackWhenShort(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{RepoName: "test-repo", Repo: r})
+	const w, h = 80, 30 // below bannerMinHeight (32)
+	m, _ := app.Update(tea.WindowSizeMsg{Width: w, Height: h})
+	a := m.(App)
+
+	out := a.View()
+	if lines := strings.Split(out, "\n"); len(lines) != h {
+		t.Fatalf("frame is %d lines, want exactly %d:\n%s", len(lines), h, out)
+	}
+	if !strings.Contains(out, "S E N T R A") {
+		t.Errorf("a short terminal must show the one-line logo:\n%s", out)
+	}
+	if strings.Contains(out, "███████╗") {
+		t.Errorf("a short terminal must NOT show the tall block banner:\n%s", out)
+	}
+}
+
 // TestApp_HelpKeyShowsKeysModal makes `?` real: the status bar
 // advertises it, so pressing it must open the key reference. The
 // modal is derived from the live keymap, so the global palette
