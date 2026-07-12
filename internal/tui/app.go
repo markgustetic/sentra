@@ -251,6 +251,7 @@ func NewApp(deps Deps) App {
 		// in the palette; the rail renders registration order, not category groups.
 		{id: "backup", model: NewBackupView(deps)},
 		{id: "snapshots", model: NewSnapshots(deps)},
+		{id: "files", model: NewFilesView(deps)},
 		{id: "diff", model: NewDiff(deps)},
 		{id: "check", model: NewCheckView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
