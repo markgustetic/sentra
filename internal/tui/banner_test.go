@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/charmbracelet/lipgloss"
+	"github.com/muesli/termenv"
 )
 
 // TestTitleRows locks the responsive threshold: the tall synthwave banner only
@@ -35,7 +36,7 @@ func TestTitleRows(t *testing.T) {
 // resize() relies on to keep the frame from over/underflowing.
 func TestSynthwaveBanner_Geometry(t *testing.T) {
 	const w = 80
-	lines := strings.Split(synthwaveBanner(w), "\n")
+	lines := strings.Split(synthwaveBanner(w, 0), "\n")
 	if len(lines) != bannerRows {
 		t.Fatalf("banner is %d lines, want %d", len(lines), bannerRows)
 	}
@@ -50,7 +51,7 @@ func TestSynthwaveBanner_Geometry(t *testing.T) {
 // of the synthwave logo — the sun, the large SENTRA wordmark, and the grid
 // horizon — so a palette swap or a refactor that drops one is caught.
 func TestSynthwaveBanner_CarriesTheScene(t *testing.T) {
-	out := synthwaveBanner(80)
+	out := synthwaveBanner(80, 0)
 	// The "S" block glyph's top row is a stable fingerprint of the wordmark.
 	if !strings.Contains(out, "███████╗") {
 		t.Errorf("banner is missing the block SENTRA wordmark:\n%s", out)
@@ -65,9 +66,28 @@ func TestSynthwaveBanner_CarriesTheScene(t *testing.T) {
 
 // TestSynthwaveBanner_PlainUnderAsciiProfile: the banner is color over fixed
 // glyphs, so under the Ascii profile the unit tests run in it must emit no ANSI
-// at all — that is what keeps the geometry deterministic and the golden stable.
+// at all. And because the animation is COLOR only, the glyphs are identical
+// across frames under Ascii — that frame-independence is what keeps the geometry
+// deterministic and the golden stable regardless of the ambient clock.
 func TestSynthwaveBanner_PlainUnderAsciiProfile(t *testing.T) {
-	if strings.Contains(synthwaveBanner(80), "\x1b") {
+	if strings.Contains(synthwaveBanner(80, 0), "\x1b") {
 		t.Error("banner must strip to plain glyphs under the Ascii color profile")
+	}
+	if synthwaveBanner(80, 0) != synthwaveBanner(80, 7) {
+		t.Error("under Ascii the banner shape must be frame-independent (animation is color only)")
+	}
+}
+
+// TestSynthwaveBanner_AnimatesWithFrame: on a truecolor terminal the banner must
+// actually move — consecutive ambient frames must render differently — or the
+// animation is dead. The color profile is process-global; this test saves and
+// restores it, and no test in the package runs in parallel.
+func TestSynthwaveBanner_AnimatesWithFrame(t *testing.T) {
+	prev := lipgloss.ColorProfile()
+	lipgloss.SetColorProfile(termenv.TrueColor)
+	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
+
+	if synthwaveBanner(80, 0) == synthwaveBanner(80, 1) {
+		t.Error("banner must animate: consecutive frames must differ under truecolor")
 	}
 }

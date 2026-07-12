@@ -1058,14 +1058,14 @@ func (m App) View() string {
 // the header stays pure brand. Its row count MUST equal titleRows(m.height),
 // which resize() reserves in the content budget, or the frame over/underflows.
 //
-// The one-line logo breathes with the ambient clock (animColor is pure in
-// animFrame, so it stays reproducible and vanishes under Ascii). The banner is a
-// static gradient — calm enough to sit on every working page — and, like the
-// splash, carries its meaning in glyph shape, so it too survives the Ascii
-// profile the tests render under.
+// Both forms live off the ambient clock (animColor / the banner's frame are
+// pure in animFrame, so they stay reproducible and vanish under Ascii): the
+// one-line logo breathes its neon, and the banner flows the sunset, shimmers the
+// sun, and sweeps the grid. Like the splash, all of it is color over fixed
+// glyphs, so it survives the Ascii profile the tests render under.
 func (m App) headerView() string {
 	if titleRows(m.height) > 1 && m.width > 0 {
-		return synthwaveBanner(m.width)
+		return synthwaveBanner(m.width, m.animFrame)
 	}
 	logo := lipgloss.NewStyle().Foreground(animColor(animBrand, m.animFrame)).Bold(true).
 		Render("✦  S E N T R A  ✦")

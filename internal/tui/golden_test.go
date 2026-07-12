@@ -208,7 +208,7 @@ func TestGoldenDashboard(t *testing.T) {
 // profile, so this locks the SHAPE — the piece a human would eyeball in a
 // terminal — and turns any drift in the art into a reviewable diff.
 func TestGoldenBanner(t *testing.T) {
-	golden.RequireEqual(t, []byte(synthwaveBanner(goldenW)))
+	golden.RequireEqual(t, []byte(synthwaveBanner(goldenW, 0)))
 }
 
 func TestGoldenSettings(t *testing.T) {
