@@ -165,9 +165,10 @@ func TestGoldenSplash(t *testing.T) {
 	}
 }
 
-// TestGoldenDashboard snapshots the populated dashboard: savings gauge,
-// upload delta, and the timeline sparkline with cadence + span. Data is
-// canned with fixed clocks — nothing in the frame derives from time.Now(),
+// TestGoldenDashboard snapshots the populated dashboard at a tall size so the
+// whole btop-style layout is locked: the activity graph, the storage + last-
+// snapshot row, the tags + retention row, and the recent-snapshots table. Data
+// is canned with fixed clocks — nothing in the frame derives from time.Now(),
 // which is what keeps this golden stable. The growth series is deliberately
 // non-monotonic so the sparkline can't degenerate into a flat bar.
 func TestGoldenDashboard(t *testing.T) {
@@ -197,8 +198,11 @@ func TestGoldenDashboard(t *testing.T) {
 		data.UploadedBytes += s.Stats.NewBytes
 	}
 
-	v := NewDashboard(Deps{RepoName: "golden-repo"})
-	m, _ := v.Update(tea.WindowSizeMsg{Width: goldenW - sidebarWidth - 3, Height: goldenH - 4})
+	cfg := config.Defaults()
+	v := NewDashboard(Deps{RepoName: "golden-repo", Config: &cfg})
+	// A tall content pane (well above the 24-row golden frame) so every section
+	// renders; the dashboard is snapshotted on its own, not inside the shell.
+	m, _ := v.Update(tea.WindowSizeMsg{Width: goldenW - sidebarWidth - 3, Height: 40})
 	v = m.(Dashboard).SetData(data)
 	golden.RequireEqual(t, []byte(v.View()))
 }

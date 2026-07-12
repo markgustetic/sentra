@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"sort"
 	"strings"
 	"time"
 
@@ -11,6 +12,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
+	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -158,6 +160,102 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return d, nil
 }
 
+// dashStatsBlock is the rendered height of one stats-row panel: 5 content lines
+// plus the panel border. Every stats panel renders exactly 5 content lines so
+// the two panels in a row stay aligned.
+const dashStatsBlock = 7
+
+// dashLayout is the responsive section budget for a given content height: how
+// tall the hero graph is, whether the second stats row shows, and the snapshots
+// table's height (0 = hidden). The pieces always tile availH exactly.
+type dashLayout struct {
+	hero       int
+	showStatsB bool
+	table      int
+}
+
+// computeDashLayout allocates the content height top-to-bottom. The first stats
+// row (storage + last snapshot) is always shown; the second (tags + retention)
+// and the snapshots table appear as height allows. The hero absorbs slack up to
+// a cap, after which the table takes the rest — so a tall terminal grows the
+// snapshots list, btop-style, rather than an ever-taller graph.
+func computeDashLayout(availH int) dashLayout {
+	const heroMin, tableMin, heroCap = 5, 6, 12
+
+	showStatsB := availH >= heroMin+2*dashStatsBlock
+	statsRows := 1
+	if showStatsB {
+		statsRows = 2
+	}
+	reserved := statsRows * dashStatsBlock
+
+	// The table is the last section to appear — only once the second stats row
+	// fits too, so sections fill in a stable top-to-bottom order as the terminal
+	// grows (no flicker where the table shows before tags/retention).
+	if showStatsB && availH >= reserved+heroMin+tableMin {
+		hero := max(min(availH-reserved-tableMin, heroCap), heroMin)
+		return dashLayout{hero: hero, showStatsB: true, table: availH - reserved - hero}
+	}
+	return dashLayout{hero: max(availH-reserved, heroMin), showStatsB: showStatsB}
+}
+
+// tagStat is one row of the tags breakdown: a tag, how many snapshots carry it,
+// and their total logical bytes.
+type tagStat struct {
+	tag   string
+	count int
+	bytes int64
+}
+
+// tagBreakdown groups snapshots by tag (empty → "(untagged)"), summing counts
+// and bytes, ordered by total size descending (ties broken by tag name) so the
+// heaviest tags lead the panel.
+func tagBreakdown(snaps []repo.SnapshotInfo) []tagStat {
+	idx := map[string]int{}
+	var out []tagStat
+	for _, s := range snaps {
+		tag := s.Tag
+		if tag == "" {
+			tag = "(untagged)"
+		}
+		if i, ok := idx[tag]; ok {
+			out[i].count++
+			out[i].bytes += s.Stats.Bytes
+			continue
+		}
+		idx[tag] = len(out)
+		out = append(out, tagStat{tag: tag, count: 1, bytes: s.Stats.Bytes})
+	}
+	sort.Slice(out, func(i, j int) bool {
+		if out[i].bytes != out[j].bytes {
+			return out[i].bytes > out[j].bytes
+		}
+		return out[i].tag < out[j].tag
+	})
+	return out
+}
+
+// shortBytes is a compact binary byte format for the dense panels and the
+// snapshots table: a single-letter unit, one decimal below ten and none at or
+// above (128M, 8.5M, 1.0G). ui.FormatBytes ("128.0 MiB") is too wide for a
+// half-panel column.
+func shortBytes(n int64) string {
+	const k = 1024
+	if n < k {
+		return fmt.Sprintf("%dB", n)
+	}
+	units := []string{"K", "M", "G", "T", "P"}
+	f, i := float64(n)/k, 0
+	for f >= k && i < len(units)-1 {
+		f /= k
+		i++
+	}
+	if f < 10 {
+		return fmt.Sprintf("%.1f%s", f, units[i])
+	}
+	return fmt.Sprintf("%.0f%s", f, units[i])
+}
+
 // graphGradient / meterGradient are the btop-style neon ramps painted over
 // the (glyph-only) braille graph and savings meter when the terminal is
 // truecolor. The graph ramps hot→cool up its height (pink peak → aqua base);
@@ -181,23 +279,28 @@ var (
 // (TestApp_NoOverflowAtMinSize is the backstop).
 func (d Dashboard) View() string {
 	availW, availH := d.dims()
+	lo := computeDashLayout(availH)
 
-	// Reserve the stats row; the hero takes the rest.
-	const statsBlock = 6 // 4 content lines + panel border
-	heroBlock := max(availH-statsBlock, 5)
-
-	hero := d.renderHero(availW-2, heroBlock)
-
-	// Split the stats row so the two panels' borders exactly fill the hero
+	// Split each stats row so the two panels' borders exactly fill the hero
 	// width — an uneven split (interior is odd at the 80-col minimum) avoids a
 	// 1-column gap that JoinVertical would pad with trailing whitespace.
 	inner := availW - 4 // two panel borders
 	leftW := (inner + 1) / 2
 	rightW := inner - leftW
-	stats := lipgloss.JoinHorizontal(lipgloss.Top,
-		d.renderRepoPanel(leftW), d.renderLastPanel(rightW))
 
-	return lipgloss.JoinVertical(lipgloss.Left, hero, stats)
+	sections := []string{
+		d.renderHero(availW-2, lo.hero),
+		lipgloss.JoinHorizontal(lipgloss.Top,
+			d.renderStoragePanel(leftW), d.renderLastPanel(rightW)),
+	}
+	if lo.showStatsB {
+		sections = append(sections, lipgloss.JoinHorizontal(lipgloss.Top,
+			d.renderTagsPanel(leftW), d.renderRetentionPanel(rightW)))
+	}
+	if lo.table > 0 {
+		sections = append(sections, d.renderSnapTable(availW-2, lo.table))
+	}
+	return lipgloss.JoinVertical(lipgloss.Left, sections...)
 }
 
 // dims resolves the interior width/height the dashboard may draw into. The
@@ -276,10 +379,11 @@ func (d Dashboard) renderHero(panelW, block int) string {
 	return dashPanel(panelW, body)
 }
 
-// renderRepoPanel summarizes the repo: name + snapshot count, the dedup
-// shrink (logical → stored), a gradient savings meter, and the agent's
-// pending-finding status folded in as the last line.
-func (d Dashboard) renderRepoPanel(colW int) string {
+// renderStoragePanel is the repo's storage detail (btop's mem-panel analog):
+// name + snapshot count, the dedup shrink (logical → stored), a gradient savings
+// meter, the dedup ratio with average and largest snapshot, and the agent's
+// pending-finding status folded in as the last line. Five content lines.
+func (d Dashboard) renderStoragePanel(colW int) string {
 	name := d.deps.RepoName
 	if name == "" {
 		name = "(unnamed)"
@@ -293,14 +397,173 @@ func (d Dashboard) renderRepoPanel(colW int) string {
 	shrink := ui.Subtle.Render(truncateToWidth(fmt.Sprintf("%s → %s",
 		ui.FormatBytes(d.data.TotalBytes), ui.FormatBytes(d.data.UploadedBytes)), textW))
 	meter := styledGauge(saved, 10) + ui.Muted.Render(fmt.Sprintf(" %d%% saved", int(saved*100+0.5)))
+	detail := ui.Muted.Render(truncateToWidth(d.storageDetail(), textW))
 
 	agent := ui.Success.Render("✓ no findings")
 	if d.data.RecCount > 0 {
 		agent = ui.Warn.Render(fmt.Sprintf("⚠ %d findings pending", d.data.RecCount))
 	}
 
-	body := head + "\n" + shrink + "\n" + meter + "\n" + agent
+	body := head + "\n" + shrink + "\n" + meter + "\n" + detail + "\n" + agent
 	return dashPanel(colW, body)
+}
+
+// storageDetail composes the dedup ratio, average snapshot size, and largest
+// snapshot into one compact line, dropping any piece it can't compute so an
+// empty or count-only repo still reads sensibly.
+func (d Dashboard) storageDetail() string {
+	var parts []string
+	if d.data.UploadedBytes > 0 {
+		parts = append(parts, fmt.Sprintf("%.1f×", float64(d.data.TotalBytes)/float64(d.data.UploadedBytes)))
+	}
+	if d.data.SnapshotCount > 0 {
+		parts = append(parts, "avg "+shortBytes(d.data.TotalBytes/int64(d.data.SnapshotCount)))
+	}
+	var maxB int64
+	for _, s := range d.data.Snaps {
+		if s.Stats.Bytes > maxB {
+			maxB = s.Stats.Bytes
+		}
+	}
+	if maxB > 0 {
+		parts = append(parts, "max "+shortBytes(maxB))
+	}
+	if len(parts) == 0 {
+		return "no snapshots yet"
+	}
+	return strings.Join(parts, " · ")
+}
+
+// renderTagsPanel breaks the snapshots down by tag (btop's disk-list analog):
+// each tag's count and total size with a proportion meter, heaviest first.
+// Five content lines: a title and up to four tag rows.
+func (d Dashboard) renderTagsPanel(colW int) string {
+	textW := colW - contentPanelHPad
+	title := ui.Subtle.Render("tags")
+	tags := tagBreakdown(d.data.Snaps)
+
+	rows := make([]string, 4)
+	switch {
+	case len(tags) == 0:
+		rows[0] = ui.Muted.Render("no tags yet")
+	case len(tags) > 4:
+		// Reserve the last row for the overflow count.
+		for i := range 3 {
+			rows[i] = tagRow(tags[i], d.data.TotalBytes, textW)
+		}
+		rows[3] = ui.Muted.Render(fmt.Sprintf("… %d more", len(tags)-3))
+	default:
+		for i, t := range tags {
+			rows[i] = tagRow(t, d.data.TotalBytes, textW)
+		}
+	}
+	return dashPanel(colW, title+"\n"+strings.Join(rows, "\n"))
+}
+
+// tagRow renders one tag as "name  N · size" on the left and a proportion meter
+// (its share of total bytes) pinned to the right, so the meters align down the
+// column.
+func tagRow(t tagStat, total int64, textW int) string {
+	const barW = 8
+	frac := 0.0
+	if total > 0 {
+		frac = float64(t.bytes) / float64(total)
+	}
+	label := fmt.Sprintf("%s  %d · %s", t.tag, t.count, shortBytes(t.bytes))
+	return spread(textW, ui.Subtle.Render(truncateToWidth(label, textW-barW-1)), styledGauge(frac, barW))
+}
+
+// renderRetentionPanel shows the retention policy (from config; defaults when
+// absent) and the backup cadence — what will be pruned and how often backups
+// run. Five content lines.
+func (d Dashboard) renderRetentionPanel(colW int) string {
+	textW := colW - contentPanelHPad
+	ret := config.Defaults().Retention
+	if d.deps.Config != nil {
+		ret = d.deps.Config.Retention
+	}
+
+	cadence := "—"
+	if len(d.data.Snaps) > 1 {
+		cadence = "~" + formatApproxDuration(avgSnapshotInterval(d.data.Snaps)) + " apart"
+	}
+	since := ""
+	if n := len(d.data.Snaps); n > 0 {
+		since = "since " + d.data.Snaps[n-1].CreatedAt.UTC().Format("2006-01-02")
+	}
+
+	// Every line is truncated to the interior so nothing wraps and pushes the
+	// panel a row taller than its neighbour; the labels are kept short enough
+	// to fit the ~24-cell interior at the 80-col minimum.
+	line := func(s string) string { return ui.Subtle.Render(truncateToWidth(s, textW)) }
+	body := strings.Join([]string{
+		spread(textW, ui.Subtle.Render("retention"), ui.Muted.Render(cadence)),
+		line(fmt.Sprintf("keep last %d · daily %d", ret.KeepLast, ret.KeepDaily)),
+		line(fmt.Sprintf("weekly %d · monthly %d", ret.KeepWeekly, ret.KeepMonthly)),
+		line(since),
+		"",
+	}, "\n")
+	return dashPanel(colW, body)
+}
+
+// renderSnapTable is the recent-snapshots table (btop's process-list analog):
+// a header plus the most-recent snapshots that fit, newest first. panelW is the
+// panel's lipgloss Width; block is its total height including the border.
+func (d Dashboard) renderSnapTable(panelW, block int) string {
+	textW := panelW - contentPanelHPad
+	dataRows := max(block-3, 1) // -border(2) -header(1)
+
+	const createdW, filesW, sizeW, newW = 12, 7, 8, 8
+	tagW := max(textW-createdW-filesW-sizeW-newW-4, 4) // 4 single-space gaps
+
+	header := snapTableRow(ui.Subtle, createdW, tagW, filesW, sizeW, newW,
+		"created", "tag", "files", "size", "+new")
+
+	snaps := d.data.Snaps
+	// When there are more snapshots than rows, reserve the last row for a
+	// "… N more" marker rather than silently dropping the tail.
+	limit := len(snaps)
+	overflow := len(snaps) > dataRows
+	if overflow {
+		limit = dataRows - 1
+	}
+
+	rows := make([]string, dataRows)
+	for i := range rows {
+		switch {
+		case i < limit:
+			s := snaps[i]
+			tag := s.Tag
+			if tag == "" {
+				tag = "—"
+			}
+			rows[i] = snapTableRow(ui.Muted, createdW, tagW, filesW, sizeW, newW,
+				s.CreatedAt.UTC().Format("Jan 02 15:04"), tag,
+				fmt.Sprintf("%d", s.Stats.Files), shortBytes(s.Stats.Bytes), shortBytes(s.Stats.NewBytes))
+		case overflow && i == dataRows-1:
+			rows[i] = ui.Muted.Render(fmt.Sprintf("… %d more", len(snaps)-limit))
+		case i == 0 && len(snaps) == 0:
+			rows[i] = ui.Muted.Render("no snapshots yet")
+		}
+	}
+	return dashPanel(panelW, header+"\n"+strings.Join(rows, "\n"))
+}
+
+// snapTableRow lays five cells at fixed widths (date and tag left-aligned, the
+// numeric columns right-aligned) and colors the whole row with one style. The
+// widths sum to textW, so the row exactly fills the panel and never wraps.
+func snapTableRow(style lipgloss.Style, cw, tw, fw, sw, nw int, created, tag, files, size, newb string) string {
+	cell := func(s string, w int, right bool) string {
+		s = truncateToWidth(s, w)
+		pad := strings.Repeat(" ", max(w-lipgloss.Width(s), 0))
+		if right {
+			return pad + s
+		}
+		return s + pad
+	}
+	row := cell(created, cw, false) + " " + cell(tag, tw, false) + " " +
+		cell(files, fw, true) + " " + cell(size, sw, true) + " " + cell(newb, nw, true)
+	return style.Render(row)
 }
 
 // savingsFrac is the fraction of logical bytes the store never had to
@@ -324,7 +587,7 @@ func savingsFrac(total, uploaded int64) float64 {
 func (d Dashboard) renderLastPanel(colW int) string {
 	title := ui.Subtle.Render("last snapshot")
 	if d.data.LastSnap == nil {
-		body := title + "\n" + ui.Muted.Render("no snapshots yet") + "\n\n"
+		body := title + "\n" + ui.Muted.Render("no snapshots yet") + "\n\n\n"
 		return dashPanel(colW, body)
 	}
 	s := d.data.LastSnap
@@ -338,7 +601,8 @@ func (d Dashboard) renderLastPanel(colW int) string {
 	// interior of an 80-col terminal; the snapshots table has full timestamps.
 	when := s.CreatedAt.UTC().Format("Jan 02 15:04") + " — " + tag
 	textW := colW - contentPanelHPad
-	body := fmt.Sprintf("%s\n%s\n%s\n%s",
+	body := fmt.Sprintf("%s\n%s\n%s\n%s\n%s",
+		title,
 		ui.Primary.Render(truncateToWidth(s.ID, textW)),
 		ui.Subtle.Render(truncateToWidth(when, textW)),
 		ui.Subtle.Render(fmt.Sprintf("%d files", s.Stats.Files)),
