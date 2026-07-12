@@ -92,12 +92,18 @@ func TestSnapshots_EnterOpensDetail(t *testing.T) {
 	if loaderCalled == "" {
 		t.Errorf("detail loader was not invoked")
 	}
+	// The detail is a directory summary: the "src" directory (holding a.go,
+	// b.go) appears with its file count, and the root-level README.md is
+	// counted as a file at the root — individual paths are folded into counts.
 	view := got.View()
-	if !strings.Contains(view, "src/a.go") {
-		t.Errorf("detail view missing tree entry: %s", view)
+	if !strings.Contains(view, "src/") {
+		t.Errorf("detail view missing the src/ directory:\n%s", view)
 	}
-	if !strings.Contains(view, "src/b.go") {
-		t.Errorf("detail view missing tree entry: %s", view)
+	if !strings.Contains(view, "2 files") {
+		t.Errorf("detail view should count src/'s 2 files:\n%s", view)
+	}
+	if !strings.Contains(view, "files here") {
+		t.Errorf("detail view should count the root-level README.md:\n%s", view)
 	}
 }
 

@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/repo"
 )
@@ -66,4 +69,39 @@ func names(ns []*dirNode) []string {
 		out[i] = n.name
 	}
 	return out
+}
+
+// TestRenderDirTree: the indented directory summary shows each dir with its
+// subtree file count and size, deepest nesting indented, and folds root-level
+// files into a "· N files here" line — never the individual paths.
+func TestRenderDirTree(t *testing.T) {
+	entries := []repo.FileEntry{
+		{Path: "photos/2024/a.jpg", Size: 1 << 20},
+		{Path: "photos/2024/b.jpg", Size: 1 << 20},
+		{Path: "photos/2023/c.jpg", Size: 2 << 20},
+		{Path: "readme.txt", Size: 50},
+	}
+	lines := renderDirTree(buildDirTree(entries), 60)
+	joined := strings.Join(lines, "\n")
+
+	for _, want := range []string{"photos/", "2024/", "2023/", "3 files", "· 1 files here"} {
+		if !strings.Contains(joined, want) {
+			t.Errorf("tree missing %q:\n%s", want, joined)
+		}
+	}
+	if strings.Contains(joined, "a.jpg") {
+		t.Errorf("tree must summarize, not list individual files:\n%s", joined)
+	}
+	// 2024/ is nested one level under photos/, so it is indented.
+	for _, ln := range lines {
+		if strings.Contains(ln, "2024/") && !strings.HasPrefix(ln, "  ") {
+			t.Errorf("nested dir 2024/ must be indented: %q", ln)
+		}
+	}
+	// No line exceeds the width.
+	for _, ln := range lines {
+		if lipgloss.Width(ln) > 60 {
+			t.Errorf("tree line exceeds width: %q", ln)
+		}
+	}
 }
