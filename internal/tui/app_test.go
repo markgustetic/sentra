@@ -529,11 +529,13 @@ func TestApp_SynthwaveBannerAtTallSize(t *testing.T) {
 			t.Errorf("line %d overflows: width %d > %d: %q", i, lw, w, line)
 		}
 	}
-	if !strings.Contains(out, "███████╗") {
-		t.Errorf("tall terminal must show the block SENTRA banner:\n%s", out)
+	// The sun is the banner's fingerprint (its logotype text matches the
+	// one-line fallback, so the sun/grid scene is what distinguishes them).
+	if !strings.Contains(out, bannerSunArt[0]) {
+		t.Errorf("tall terminal must show the synthwave banner (its sun):\n%s", out)
 	}
-	if strings.Contains(out, "S E N T R A") {
-		t.Errorf("the banner replaces the one-line logo, not sits beside it:\n%s", out)
+	if !strings.Contains(out, "S E N T R A") {
+		t.Errorf("the banner must still carry the SENTRA logotype:\n%s", out)
 	}
 	if !strings.Contains(out, "Snapshots") {
 		t.Errorf("the banner must not crowd out the rail/content:\n%s", out)
@@ -557,8 +559,8 @@ func TestApp_HeaderFallsBackWhenShort(t *testing.T) {
 	if !strings.Contains(out, "S E N T R A") {
 		t.Errorf("a short terminal must show the one-line logo:\n%s", out)
 	}
-	if strings.Contains(out, "███████╗") {
-		t.Errorf("a short terminal must NOT show the tall block banner:\n%s", out)
+	if strings.Contains(out, bannerSunArt[0]) {
+		t.Errorf("a short terminal must NOT show the synthwave banner (no sun):\n%s", out)
 	}
 }
 

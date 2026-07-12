@@ -52,9 +52,8 @@ func TestSynthwaveBanner_Geometry(t *testing.T) {
 // horizon — so a palette swap or a refactor that drops one is caught.
 func TestSynthwaveBanner_CarriesTheScene(t *testing.T) {
 	out := synthwaveBanner(80, 0)
-	// The "S" block glyph's top row is a stable fingerprint of the wordmark.
-	if !strings.Contains(out, "███████╗") {
-		t.Errorf("banner is missing the block SENTRA wordmark:\n%s", out)
+	if !strings.Contains(out, "S E N T R A") {
+		t.Errorf("banner is missing the SENTRA logotype:\n%s", out)
 	}
 	if !strings.Contains(out, bannerSunArt[0]) {
 		t.Errorf("banner is missing the sun:\n%s", out)
@@ -87,7 +86,9 @@ func TestSynthwaveBanner_AnimatesWithFrame(t *testing.T) {
 	lipgloss.SetColorProfile(termenv.TrueColor)
 	t.Cleanup(func() { lipgloss.SetColorProfile(prev) })
 
-	if synthwaveBanner(80, 0) == synthwaveBanner(80, 1) {
-		t.Error("banner must animate: consecutive frames must differ under truecolor")
+	// Compare frames a full slowdown apart, since bannerSlowdown holds each
+	// step for several ticks (frame 0 and frame 1 share a tick by design).
+	if synthwaveBanner(80, 0) == synthwaveBanner(80, bannerSlowdown) {
+		t.Error("banner must animate: frames a slowdown apart must differ under truecolor")
 	}
 }
