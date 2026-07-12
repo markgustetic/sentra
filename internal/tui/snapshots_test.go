@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"errors"
 	"strings"
 	"testing"
 	"time"
@@ -263,5 +264,43 @@ func TestSnapshots_CopyID(t *testing.T) {
 	}
 	if !strings.Contains(s.View(), "copied") {
 		t.Errorf("copy must show a notice:\n%s", s.View())
+	}
+}
+
+// TestInitialSnapshots_UsesPreload: when the App has set a shared preload,
+// initialSnapshots returns it WITHOUT touching the repo (proved by a nil Repo
+// that would panic if dereferenced), and a preload error propagates.
+func TestInitialSnapshots_UsesPreload(t *testing.T) {
+	pre := &snapshotPreload{snaps: []repo.SnapshotInfo{{ID: "x"}}}
+	snaps, err := initialSnapshots(Deps{preload: pre}) // Repo is nil
+	if err != nil || len(snaps) != 1 || snaps[0].ID != "x" {
+		t.Errorf("preload path = %v, %v; want [{x}], nil", snaps, err)
+	}
+	if _, err := initialSnapshots(Deps{preload: &snapshotPreload{err: errTest}}); err == nil {
+		t.Error("a preload error must propagate")
+	}
+}
+
+var errTest = errors.New("boom")
+
+// TestApp_SharesOneSnapshotLoad: NewApp performs the snapshot load once and the
+// snapshot-consuming views construct from that shared preload — not five
+// independent ListSnapshots.
+func TestApp_SharesOneSnapshotLoad(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTaggedSnaps(t, r, "a", "b")
+	app := NewApp(Deps{Repo: r, RepoName: "x"})
+
+	if app.Deps().preload == nil {
+		t.Fatal("NewApp must set a shared snapshot preload")
+	}
+	if n := len(app.Deps().preload.snaps); n != 2 {
+		t.Fatalf("preload holds %d snapshots, want 2", n)
+	}
+	if got := app.views[indexOf(app, "dashboard")].model.(Dashboard).data.SnapshotCount; got != 2 {
+		t.Errorf("dashboard did not use the shared load: count = %d", got)
+	}
+	if got := len(app.views[indexOf(app, "snapshots")].model.(Snapshots).snaps); got != 2 {
+		t.Errorf("snapshots view did not use the shared load: %d", got)
 	}
 }

@@ -67,14 +67,10 @@ func NewRestoreView(deps Deps) RestoreView {
 	ti.Placeholder = "empty or new directory"
 	v.dest = ti
 
-	// Synchronous hydrate, Phase 1 style (async loading arrives with a
-	// later phase). Nil repo renders a placeholder.
-	if deps.Repo != nil {
-		ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), hydrateTimeout)
-		defer cancel()
-		if snaps, err := deps.Repo.ListSnapshots(ctx); err == nil {
-			v.snaps = snaps
-		}
+	// Hydrate from the App's shared snapshot load. Nil repo (or an error)
+	// renders a placeholder.
+	if snaps, err := initialSnapshots(deps); err == nil {
+		v.snaps = snaps
 	}
 	rows := make([]table.Row, len(v.snaps))
 	for i, s := range v.snaps {

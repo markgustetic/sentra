@@ -143,9 +143,36 @@ func NewSnapshotsWithLoader(deps Deps, loader detailLoader) Snapshots {
 		copyFn: clipboard.WriteAll,
 	}
 	if deps.Repo != nil {
-		s = s.SetSnapshots(loadSnapshotsBestEffort(deps))
+		snaps, _ := initialSnapshots(deps) // shared load; empty on error
+		s = s.SetSnapshots(snaps)
 	}
 	return s
+}
+
+// snapshotPreload is the App's ONE shared snapshot-list load, handed to every
+// view that needs the list at construction (dashboard, snapshots, diff, restore,
+// prune) so they don't each hit the store — five ListSnapshots at launch became
+// one. Both the slice and the error are carried so callers keep their own error
+// handling (prune surfaces it; diff/restore/snapshots fall back to empty).
+type snapshotPreload struct {
+	snaps []repo.SnapshotInfo
+	err   error
+}
+
+// initialSnapshots returns the App's shared preload if one was set (the common
+// path — the shell always sets it), else a fresh bounded load. It mirrors
+// ListSnapshots' (snaps, err) contract. Used only at view construction; the
+// refresh-after-op paths reload fresh so they never serve a stale preload.
+func initialSnapshots(deps Deps) ([]repo.SnapshotInfo, error) {
+	if deps.preload != nil {
+		return deps.preload.snaps, deps.preload.err
+	}
+	if deps.Repo == nil {
+		return nil, nil
+	}
+	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 20*time.Second)
+	defer cancel()
+	return deps.Repo.ListSnapshots(ctx)
 }
 
 // loadSnapshotsBestEffort wraps repo.ListSnapshots with a timeout
