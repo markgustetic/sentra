@@ -203,6 +203,14 @@ func TestGoldenDashboard(t *testing.T) {
 	golden.RequireEqual(t, []byte(v.View()))
 }
 
+// TestGoldenBanner snapshots the synthwave header banner (sun, large SENTRA
+// wordmark, grid horizon) at the golden width. It renders plain under the Ascii
+// profile, so this locks the SHAPE — the piece a human would eyeball in a
+// terminal — and turns any drift in the art into a reviewable diff.
+func TestGoldenBanner(t *testing.T) {
+	golden.RequireEqual(t, []byte(synthwaveBanner(goldenW)))
+}
+
 func TestGoldenSettings(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "golden-bucket"
