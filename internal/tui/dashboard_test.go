@@ -5,6 +5,7 @@ import (
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/muesli/termenv"
 
@@ -325,5 +326,179 @@ func TestDashboard_RefreshesAfterOpCompletes(t *testing.T) {
 	}
 	if d.data.RecCount != 3 {
 		t.Errorf("refresh must preserve the agent rec count: want 3, got %d", d.data.RecCount)
+	}
+}
+
+// --- new-section helpers -------------------------------------------------
+
+// TestShortBytes locks the compact byte format used by the dense panels and the
+// snapshots table: single-letter units, one decimal below ten, none at/above.
+func TestShortBytes(t *testing.T) {
+	cases := []struct {
+		in   int64
+		want string
+	}{
+		{0, "0B"},
+		{999, "999B"},
+		{1024, "1.0K"},
+		{1536, "1.5K"},
+		{10 * 1024, "10K"},
+		{128 << 20, "128M"},
+		{8<<20 + 512<<10, "8.5M"},
+		{1 << 30, "1.0G"},
+		{3 << 40, "3.0T"},
+	}
+	for _, tc := range cases {
+		if got := shortBytes(tc.in); got != tc.want {
+			t.Errorf("shortBytes(%d) = %q, want %q", tc.in, got, tc.want)
+		}
+	}
+}
+
+// TestTagBreakdown groups snapshots by tag (empty → "(untagged)"), sums bytes
+// and counts, and orders by total size descending — what the tags panel needs.
+func TestTagBreakdown(t *testing.T) {
+	mib := func(n int64) int64 { return n << 20 }
+	snaps := []repo.SnapshotInfo{
+		{Tag: "nightly", Stats: repo.SnapshotStats{Bytes: mib(96)}},
+		{Tag: "nightly", Stats: repo.SnapshotStats{Bytes: mib(94)}},
+		{Tag: "weekly", Stats: repo.SnapshotStats{Bytes: mib(61)}},
+		{Tag: "", Stats: repo.SnapshotStats{Bytes: mib(58)}},
+	}
+	got := tagBreakdown(snaps)
+	if len(got) != 3 {
+		t.Fatalf("want 3 tag groups, got %d: %+v", len(got), got)
+	}
+	if got[0].tag != "nightly" || got[0].count != 2 || got[0].bytes != mib(190) {
+		t.Errorf("first group = %+v, want nightly/2/190MiB", got[0])
+	}
+	if got[1].tag != "weekly" || got[1].bytes != mib(61) {
+		t.Errorf("second group = %+v, want weekly/61MiB", got[1])
+	}
+	if got[2].tag != "(untagged)" || got[2].bytes != mib(58) {
+		t.Errorf("third group = %+v, want (untagged)/58MiB", got[2])
+	}
+}
+
+// TestComputeDashLayout locks the responsive budget: which sections appear at a
+// given content height, and that the pieces always sum to exactly that height
+// (so the dashboard never over/underflows the content pane).
+func TestComputeDashLayout(t *testing.T) {
+	cases := []struct {
+		availH     int
+		wantStatsB bool
+		wantTable  bool
+	}{
+		{16, false, false}, // 80x20 floor: hero + one stats row only
+		{18, false, false},
+		{19, true, false}, // room for the second stats row
+		{24, true, false},
+		{25, true, true}, // room for the snapshots table
+		{40, true, true},
+	}
+	for _, tc := range cases {
+		lo := computeDashLayout(tc.availH)
+		if lo.showStatsB != tc.wantStatsB {
+			t.Errorf("availH %d: showStatsB = %v, want %v", tc.availH, lo.showStatsB, tc.wantStatsB)
+		}
+		if (lo.table > 0) != tc.wantTable {
+			t.Errorf("availH %d: table shown = %v (h=%d), want %v", tc.availH, lo.table > 0, lo.table, tc.wantTable)
+		}
+		// The pieces must tile the height exactly.
+		statsRows := 1
+		if lo.showStatsB {
+			statsRows = 2
+		}
+		sum := lo.hero + statsRows*dashStatsBlock + lo.table
+		if sum != tc.availH {
+			t.Errorf("availH %d: hero(%d)+stats(%d)+table(%d) = %d, want %d",
+				tc.availH, lo.hero, statsRows*dashStatsBlock, lo.table, sum, tc.availH)
+		}
+		if lo.hero < 5 {
+			t.Errorf("availH %d: hero %d below the minimum 5", tc.availH, lo.hero)
+		}
+	}
+}
+
+// TestDashboard_ShowsAllSectionsWhenTall: a tall terminal must render the full
+// btop-style layout — the tags and retention panels and the recent-snapshots
+// table, not just the hero + first stats row.
+func TestDashboard_ShowsAllSectionsWhenTall(t *testing.T) {
+	day := func(n int) time.Time { return time.Date(2026, 6, n, 3, 30, 0, 0, time.UTC) }
+	snaps := []repo.SnapshotInfo{
+		{ID: "snap-newest", CreatedAt: day(9), Tag: "nightly", Stats: repo.SnapshotStats{Files: 100, Bytes: 96 << 20, NewBytes: 3 << 20}},
+		{ID: "snap-older", CreatedAt: day(5), Tag: "weekly", Stats: repo.SnapshotStats{Files: 90, Bytes: 61 << 20, NewBytes: 12 << 20}},
+	}
+	data := DashboardData{SnapshotCount: 2, LastSnap: &snaps[0], Snaps: snaps,
+		TotalBytes: (96 + 61) << 20, UploadedBytes: 15 << 20}
+	d := NewDashboard(Deps{RepoName: "x"}) // nil Config → retention shows defaults
+	m, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	d = m.(Dashboard).SetData(data)
+
+	view := d.View()
+	for _, want := range []string{
+		"tags", "nightly", "weekly", // tags panel
+		"retention", "keep last", // retention panel
+		"created", "snap-newest", // snapshots table (header + a row)
+	} {
+		if !strings.Contains(view, want) {
+			t.Errorf("tall dashboard is missing %q:\n%s", want, view)
+		}
+	}
+}
+
+// TestDashboard_SectionsHiddenWhenShort: at the 80x20 floor the dashboard shows
+// only the hero and the first stats row — the extra sections must not appear (or
+// they would overflow the content pane).
+func TestDashboard_SectionsHiddenWhenShort(t *testing.T) {
+	d := NewDashboard(Deps{RepoName: "x"})
+	d = d.SetData(DashboardData{SnapshotCount: 1, TotalBytes: 1 << 20, UploadedBytes: 1 << 19,
+		Snaps: []repo.SnapshotInfo{{Tag: "nightly", Stats: repo.SnapshotStats{Bytes: 1 << 20}}}})
+	// No WindowSizeMsg → the min-terminal fallback (availH 16).
+	view := d.View()
+	if strings.Contains(view, "retention") {
+		t.Errorf("retention panel must be hidden at the minimum height:\n%s", view)
+	}
+	if strings.Contains(view, "created ") { // the table header column
+		t.Errorf("snapshots table must be hidden at the minimum height:\n%s", view)
+	}
+}
+
+// TestDashboard_TableShowsOverflow: when more snapshots exist than table rows,
+// the last row must be a "… N more" marker rather than a silent truncation.
+func TestDashboard_TableShowsOverflow(t *testing.T) {
+	var snaps []repo.SnapshotInfo
+	for i := range 30 {
+		snaps = append(snaps, repo.SnapshotInfo{
+			ID: "s", CreatedAt: time.Date(2026, 6, 1, 0, 0, i, 0, time.UTC),
+			Tag: "t", Stats: repo.SnapshotStats{Bytes: 1 << 20}})
+	}
+	data := DashboardData{SnapshotCount: 30, LastSnap: &snaps[0], Snaps: snaps,
+		TotalBytes: 30 << 20, UploadedBytes: 10 << 20}
+	d := NewDashboard(Deps{RepoName: "x"})
+	m, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	d = m.(Dashboard).SetData(data)
+	if view := d.View(); !strings.Contains(view, "more") {
+		t.Errorf("a table with more snapshots than rows must show a '… N more' marker:\n%s", view)
+	}
+}
+
+// TestDashboard_StorageDetail: the storage panel must surface the dedup ratio,
+// the average snapshot size, and the largest snapshot.
+func TestDashboard_StorageDetail(t *testing.T) {
+	d := NewDashboard(Deps{RepoName: "x"})
+	m, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 20}) // wide enough not to truncate the detail line
+	d = m.(Dashboard).SetData(DashboardData{
+		SnapshotCount: 2, TotalBytes: 200 << 20, UploadedBytes: 50 << 20,
+		Snaps: []repo.SnapshotInfo{
+			{Stats: repo.SnapshotStats{Bytes: 128 << 20}},
+			{Stats: repo.SnapshotStats{Bytes: 72 << 20}},
+		},
+	})
+	view := d.View()
+	for _, want := range []string{"4.0×", "avg 100M", "max 128M"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("storage detail missing %q:\n%s", want, view)
+		}
 	}
 }
