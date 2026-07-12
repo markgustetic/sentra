@@ -35,6 +35,13 @@ type backupDoneMsg struct {
 
 func (backupDoneMsg) opResult() {}
 
+// backupConfirmID tags the backup confirmation modal so the App's confirmedMsg
+// broadcast routes back to this flow (mirrors pruneConfirmID). Backup is not
+// destructive, so a plain yes/no ConfirmModal — not the typed gate prune uses —
+// is the right weight: it exists to stop an accidental enter from kicking off a
+// snapshot, not to force deliberate intent.
+const backupConfirmID = "backup"
+
 // BackupView drives configure → running → done for a new snapshot.
 // The repo call runs in the App-managed op goroutine; this view only
 // renders progress (polled via opTick) and the result.
@@ -60,6 +67,7 @@ type BackupView struct {
 	bar      progress.Model
 	result   backupDoneMsg
 	notice   string // transient banner, e.g. after an op rejection
+	pending  string // the directory awaiting the confirmation gate
 	width    int
 	height   int
 }
@@ -159,6 +167,15 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case confirmedMsg:
+		// The confirmation gate was accepted (the App pops the modal and
+		// broadcasts this). Ignore a foreign id, or one that arrives when we
+		// are no longer waiting to start, then launch the pending backup.
+		if msg.id != backupConfirmID || v.stage != backupConfigure {
+			return v, nil
+		}
+		return v.startBackup(v.pending)
+
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -216,21 +233,21 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				v.picker, _ = v.picker.activate()
 			case tea.KeyEnter:
 				// enter navigates the folder rows; only the Start button, which
-				// activate signals by returning the current directory, commits and
-				// starts the backup.
+				// activate signals by returning the current directory, asks to
+				// back up — raising the confirmation gate.
 				var chosen string
 				v.picker, chosen = v.picker.activate()
 				if chosen != "" {
-					return v.startBackup(chosen)
+					return v.requestBackup(chosen)
 				}
 			}
 			return v, nil
 		}
 
-		// focusTagField: enter starts the backup of whatever the picker is
+		// focusTagField: enter confirms the backup of whatever the picker is
 		// browsing, so a tag can be set first without hunting for a submit.
 		if msg.Type == tea.KeyEnter {
-			return v.startBackup(v.picker.cwd)
+			return v.requestBackup(v.picker.cwd)
 		}
 		var cmd tea.Cmd
 		v.tag, cmd = v.tag.Update(msg)
@@ -238,10 +255,42 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	}
 }
 
+// requestBackup validates root and raises the confirmation gate before any
+// snapshot is taken. Validation is deliberately cheap (stat only) and happens
+// BEFORE the modal, so the operator never confirms a path that can't be backed
+// up; the walker surfaces everything else. On confirm the App broadcasts a
+// confirmedMsg{backupConfirmID} that Update turns into startBackup(v.pending).
+func (v BackupView) requestBackup(root string) (tea.Model, tea.Cmd) {
+	root = strings.TrimSpace(root)
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		v.pathErr = fmt.Sprintf("directory not found: %s", root)
+		return v, nil
+	}
+	if v.deps.Repo == nil {
+		v.pathErr = "no repository configured"
+		return v, nil
+	}
+	v.pathErr = ""
+	v.notice = ""
+	v.pending = root
+
+	// Plain body text — the modal frames it. (Embedding styled fragments would
+	// hit the "never wrap an already-styled string" trap, since ModalBox renders
+	// the whole body.)
+	body := "Back up this directory?\n\n" + root
+	if tag := strings.TrimSpace(v.tag.Value()); tag != "" {
+		body += "\n\ntag: " + tag
+	} else {
+		body += "\n\nno tag"
+	}
+	modal := NewConfirmModal("Confirm backup", body, backupConfirmID, v.width, v.height)
+	return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+}
+
 // startBackup validates root and emits startOpMsg. Validation is deliberately
 // cheap (stat only) — the walker surfaces everything else. The stat is kept even
-// though the picker only ever browses real directories: the folder can be
-// removed between browsing it and pressing enter.
+// though requestBackup already checked: the folder can be removed between the
+// confirmation and the confirm.
 func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	root = strings.TrimSpace(root)
 	if info, err := os.Stat(root); err != nil || !info.IsDir() {

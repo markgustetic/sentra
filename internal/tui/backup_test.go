@@ -35,16 +35,38 @@ func backupAtRepo(t *testing.T, r *repo.Repo, dir string) BackupView {
 }
 
 // onStartButton puts the picker's cursor on the Start button — the top, default
-// position (cursor 0) from which enter commits and starts the backup. A fresh
+// position (cursor 0) from which enter raises the confirmation gate. A fresh
 // picker already opens here; this is explicit for tests that navigate first.
 func onStartButton(v BackupView) BackupView {
 	v.picker.cursor = 0
 	return v
 }
 
+// confirmModalFrom runs cmd and returns the ConfirmModal it pushes via a
+// pushModalMsg, failing if there isn't exactly one.
+func confirmModalFrom(t *testing.T, cmd tea.Cmd) ConfirmModal {
+	t.Helper()
+	var found *ConfirmModal
+	for _, msg := range execCmds(t, cmd) {
+		pm, ok := msg.(pushModalMsg)
+		if !ok {
+			continue
+		}
+		cm, ok := pm.modal.(ConfirmModal)
+		if !ok {
+			t.Fatalf("pushed modal is %T, want ConfirmModal", pm.modal)
+		}
+		found = &cm
+	}
+	if found == nil {
+		t.Fatal("expected a pushModalMsg carrying a ConfirmModal")
+	}
+	return *found
+}
+
 // TestBackupFlow_EnterOnStartButtonStarts: enter on the pinned Start button must
-// START the backup of the browsed directory. Enter on the folder rows only
-// navigates, so the operator arrows down to the Start button and commits there.
+// raise the confirmation gate — naming the directory — and only a confirm
+// actually starts the backup. Enter on the folder rows only navigates.
 func TestBackupFlow_EnterOnStartButtonStarts(t *testing.T) {
 	r := newFlowRepo(t)
 	src := t.TempDir()
@@ -52,12 +74,31 @@ func TestBackupFlow_EnterOnStartButtonStarts(t *testing.T) {
 		t.Fatal(err)
 	}
 
-	// Cursor on the Start button = commit src. One enter must start the backup.
+	// Cursor on the Start button = choose src. Enter asks for confirmation; it
+	// must NOT start the backup yet.
 	v := onStartButton(backupAtRepo(t, r, src))
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
+	if v.stage != backupConfigure {
+		t.Fatalf("enter must not start the backup before confirmation; stage = %v", v.stage)
+	}
 	if cmd == nil {
-		t.Fatal("enter on the Start button must start the backup")
+		t.Fatal("enter on the Start button must raise the confirmation modal")
+	}
+	// It pushes a backup ConfirmModal whose body names the directory.
+	cm := confirmModalFrom(t, cmd)
+	if cm.id != backupConfirmID {
+		t.Fatalf("confirmation modal id = %q, want %q", cm.id, backupConfirmID)
+	}
+	if !strings.Contains(cm.body, src) {
+		t.Errorf("confirmation must name the directory %q:\n%s", src, cm.body)
+	}
+
+	// Confirming (the App broadcasts confirmedMsg to every view) starts it.
+	m, cmd = v.Update(confirmedMsg{id: backupConfirmID})
+	v = m.(BackupView)
+	if cmd == nil {
+		t.Fatal("confirming must start the backup")
 	}
 	// The command batches the startOpMsg with the seeded first opTickMsg.
 	// Both must be present: the startOpMsg launches the op, and the
@@ -118,6 +159,121 @@ func TestBackupFlow_EnterOnStartButtonStarts(t *testing.T) {
 	}
 }
 
+// TestApp_BackupConfirmationFlowEndToEnd drives the whole gate through the real
+// App: enter raises the confirmation modal, and a second enter (routed to the
+// modal, whose confirmedMsg the App pops and broadcasts) starts the backup and
+// clears the overlay. This is the integration the view-level tests can't reach —
+// the App's modal-first key routing and the confirmedMsg broadcast.
+func TestApp_BackupConfirmationFlowEndToEnd(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	app := NewApp(Deps{Repo: r, RepoName: "x"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+
+	bi := -1
+	for i, v := range app.views {
+		if v.id == "backup" {
+			bi = i
+		}
+	}
+	if bi < 0 {
+		t.Fatal("backup view not registered in App")
+	}
+	app.active = bi
+	app.focus = focusContent
+	bv := app.views[bi].model.(BackupView)
+	bv.picker = newDirPicker(src) // point the picker at src, cursor on Start
+	app.views[bi].model = bv
+
+	// First enter → the confirmation modal is raised.
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	if len(app.modals) != 1 {
+		t.Fatalf("enter must raise a confirmation modal, got %d", len(app.modals))
+	}
+	if !strings.Contains(app.modals[0].View(), "Confirm backup") {
+		t.Errorf("the overlay must be the backup confirmation:\n%s", app.modals[0].View())
+	}
+	if got := app.views[bi].model.(BackupView).stage; got != backupConfigure {
+		t.Fatalf("the backup must not start until confirmed; stage = %v", got)
+	}
+
+	// Second enter is routed to the modal → confirmedMsg → pop + broadcast →
+	// the backup starts and the overlay clears.
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	if len(app.modals) != 0 {
+		t.Errorf("confirming must clear the overlay, got %d modals", len(app.modals))
+	}
+	if got := app.views[bi].model.(BackupView).stage; got != backupRunning {
+		t.Errorf("confirming must start the backup; stage = %v", got)
+	}
+}
+
+// Esc on the confirmation modal must cancel it — no backup starts and the shell
+// returns to the picker.
+func TestApp_BackupConfirmationEscCancels(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(Deps{Repo: r, RepoName: "x"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+
+	bi := -1
+	for i, v := range app.views {
+		if v.id == "backup" {
+			bi = i
+		}
+	}
+	app.active, app.focus = bi, focusContent
+	bv := app.views[bi].model.(BackupView)
+	bv.picker = newDirPicker(src)
+	app.views[bi].model = bv
+
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // raise the modal
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	if len(app.modals) != 1 {
+		t.Fatalf("precondition: expected the confirmation modal, got %d", len(app.modals))
+	}
+
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // cancel it
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	if len(app.modals) != 0 {
+		t.Errorf("esc must dismiss the confirmation, got %d modals", len(app.modals))
+	}
+	if got := app.views[bi].model.(BackupView).stage; got != backupConfigure {
+		t.Errorf("cancelling must leave the backup unstarted; stage = %v", got)
+	}
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 0 {
+		t.Errorf("cancelling must take no snapshot, found %d", len(snaps))
+	}
+}
+
 // The picker only ever offers real directories, so startBackup's stat guard
 // exists for one case: the browsed folder disappears before enter. Pin it.
 func TestBackupFlow_VanishedFolderRefusesToStart(t *testing.T) {
@@ -146,8 +302,13 @@ func TestBackupFlow_EscDuringRunEmitsCancel(t *testing.T) {
 		t.Fatal(err)
 	}
 	v := onStartButton(backupAtRepo(t, r, src))
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on the Start button starts
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // raise the confirmation
 	v = m.(BackupView)
+	m, _ = v.Update(confirmedMsg{id: backupConfirmID}) // confirm → running
+	v = m.(BackupView)
+	if v.stage != backupRunning {
+		t.Fatalf("confirming must start the backup; stage = %v", v.stage)
+	}
 	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if cmd == nil {
 		t.Fatal("esc while running must emit a command")
@@ -206,9 +367,9 @@ func TestBackupFocusSeamsFollowTheFocusedControl(t *testing.T) {
 }
 
 // The picker opens on the "backup the current directory" option, so a fresh
-// Backup view starts a backup on the very first enter — no navigating down to a
-// button. This is the whole point of making it the top, default affordance.
-func TestBackupFirstEnterBacksUpCurrentDirectory(t *testing.T) {
+// Backup view reaches the confirmation gate on the very first enter — no
+// navigating down to a button — and only a confirm starts the snapshot.
+func TestBackupFirstEnterRaisesConfirmation(t *testing.T) {
 	r := newFlowRepo(t)
 	src := t.TempDir()
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
@@ -222,11 +383,14 @@ func TestBackupFirstEnterBacksUpCurrentDirectory(t *testing.T) {
 
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
-	if cmd == nil {
-		t.Fatal("the first enter must start the backup of the current directory")
+	if v.stage != backupConfigure {
+		t.Errorf("the first enter must confirm, not start; stage = %v", v.stage)
 	}
-	if v.stage != backupRunning {
-		t.Errorf("stage after the first enter = %v, want running", v.stage)
+	if cmd == nil {
+		t.Fatal("the first enter must raise the confirmation gate")
+	}
+	if cm := confirmModalFrom(t, cmd); cm.id != backupConfirmID {
+		t.Fatalf("confirmation modal id = %q, want %q", cm.id, backupConfirmID)
 	}
 }
 
@@ -269,20 +433,27 @@ func TestBackupPickerBackspaceGoesUp(t *testing.T) {
 	}
 }
 
-// Enter in the tag field also starts the backup (of the browsed folder), so a
-// tag can be set first without hunting for a separate submit.
-func TestBackupTagFieldEnterStarts(t *testing.T) {
+// Enter in the tag field also reaches the confirmation gate (for the browsed
+// folder), so a tag can be set first without hunting for a separate submit;
+// confirming then starts the op through the one-op guard.
+func TestBackupTagFieldEnterRaisesConfirmation(t *testing.T) {
 	root := tempTree(t)
 	v := backupAt(t, root)
 
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // focus the tag field
 	v = m.(BackupView)
-	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(BackupView)
 	if cmd == nil {
-		t.Fatal("enter with a chosen folder must emit the start op")
+		t.Fatal("enter in the tag field must raise the confirmation gate")
 	}
-	// startBackup batches the startOpMsg with the seeded first opTickMsg. Both
-	// must survive the picker rework, or the progress bar never repaints.
+	if cm := confirmModalFrom(t, cmd); cm.id != backupConfirmID {
+		t.Fatalf("confirmation modal id = %q, want %q", cm.id, backupConfirmID)
+	}
+
+	// Confirming batches the startOpMsg with the seeded first opTickMsg. Both
+	// must be present, or the progress bar never repaints during a real run.
+	_, cmd = v.Update(confirmedMsg{id: backupConfirmID})
 	var foundStart, foundTick bool
 	for _, msg := range execCmds(t, cmd) {
 		switch mm := msg.(type) {
