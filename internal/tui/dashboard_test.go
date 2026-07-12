@@ -529,3 +529,37 @@ func TestDashboard_TilesHeightExactly(t *testing.T) {
 		}
 	}
 }
+
+// TestDashboard_PeriodicRefresh: Init arms the refresh tick; a tick loads
+// asynchronously and re-arms; the delivered data is adopted (preserving the
+// agent RecCount, which comes from a scan, not ListSnapshots).
+func TestDashboard_PeriodicRefresh(t *testing.T) {
+	r := newFlowRepo(t)
+	d := NewDashboard(Deps{Repo: r})
+	if d.Init() == nil {
+		t.Error("Init must arm the refresh tick")
+	}
+
+	// A tick emits work (the async load + the re-armed tick).
+	if _, cmd := d.Update(dashboardTickMsg{}); cmd == nil {
+		t.Error("a tick must emit a load + re-arm command")
+	}
+
+	// dashLoadCmd hydrates from the repo off-loop.
+	seedTaggedSnaps(t, r, "a", "b")
+	msg, ok := dashLoadCmd(Deps{Repo: r})().(dashboardDataMsg)
+	if !ok || msg.data.SnapshotCount != 2 {
+		t.Fatalf("dashLoadCmd should hydrate 2 snapshots, got %+v", msg)
+	}
+
+	// Delivering data adopts it but keeps the agent finding count.
+	d = d.SetData(DashboardData{RecCount: 5})
+	m, _ := d.Update(dashboardDataMsg{data: DashboardData{SnapshotCount: 9}})
+	d = m.(Dashboard)
+	if d.data.SnapshotCount != 9 {
+		t.Errorf("data not adopted: count = %d, want 9", d.data.SnapshotCount)
+	}
+	if d.data.RecCount != 5 {
+		t.Errorf("refresh must preserve RecCount: got %d, want 5", d.data.RecCount)
+	}
+}
