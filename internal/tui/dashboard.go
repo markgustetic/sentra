@@ -136,7 +136,32 @@ func hydrateDashboardData(deps Deps) DashboardData {
 
 // Init is a no-op — hydration runs in NewDashboard. A future
 // iteration could refresh on a timer here.
-func (Dashboard) Init() tea.Cmd { return nil }
+// dashboardRefreshInterval is how often the dashboard polls the repo for
+// changes made outside the app (e.g. a scheduled backup from cron). Deliberately
+// slow — the snapshot index is a single GET, but a dashboard is a glance, not a
+// live monitor, so a gentle cadence keeps background S3 traffic minimal.
+const dashboardRefreshInterval = 30 * time.Second
+
+// dashboardTickMsg fires the periodic refresh; dashboardDataMsg delivers the
+// freshly-loaded data back to the model.
+type (
+	dashboardTickMsg struct{}
+	dashboardDataMsg struct{ data DashboardData }
+)
+
+func dashRefreshTick() tea.Cmd {
+	return tea.Tick(dashboardRefreshInterval, func(time.Time) tea.Msg { return dashboardTickMsg{} })
+}
+
+// dashLoadCmd hydrates off the Bubbletea loop so the periodic refresh never
+// blocks rendering (hydrateDashboardData does a bounded ListSnapshots).
+func dashLoadCmd(deps Deps) tea.Cmd {
+	return func() tea.Msg { return dashboardDataMsg{data: hydrateDashboardData(deps)} }
+}
+
+// Init arms the periodic refresh. The first tick fires after the interval; the
+// data shown until then is what NewDashboard hydrated synchronously at launch.
+func (Dashboard) Init() tea.Cmd { return dashRefreshTick() }
 
 // Update refreshes the dashboard when an operation completes and is
 // otherwise a no-op (the dashboard has no input bindings — App handles
@@ -152,6 +177,13 @@ func (d Dashboard) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		d.width, d.height = msg.Width, msg.Height
+	case dashboardTickMsg:
+		// Load asynchronously and re-arm the tick so the poll self-sustains.
+		return d, tea.Batch(dashLoadCmd(d.deps), dashRefreshTick())
+	case dashboardDataMsg:
+		recs := d.data.RecCount
+		d.data = msg.data
+		d.data.RecCount = recs
 	case opResultMsg:
 		recs := d.data.RecCount
 		d.data = hydrateDashboardData(d.deps)
