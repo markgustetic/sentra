@@ -59,9 +59,7 @@ func NewPruneView(deps Deps) PruneView {
 		v.loadErr = "no repository configured"
 		return v
 	}
-	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), hydrateTimeout)
-	defer cancel()
-	snaps, err := deps.Repo.ListSnapshots(ctx)
+	snaps, err := initialSnapshots(deps) // shared load
 	if err != nil {
 		v.loadErr = err.Error()
 		return v

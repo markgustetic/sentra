@@ -125,6 +125,11 @@ type Deps struct {
 	// placeholder "none", in which case it is omitted from the rendered line.
 	Version string
 	Commit  string
+
+	// preload is the App's one shared snapshot-list load, set by NewApp before
+	// it constructs the views (see initialSnapshots). nil in tests that build a
+	// view directly, which then load fresh — unchanged behavior.
+	preload *snapshotPreload
 }
 
 // viewEntry pairs a registered command ID with its model. Order is
@@ -241,6 +246,18 @@ func NewApp(deps Deps) App {
 	}
 	ctx, cancel := context.WithCancel(parent)
 	deps.Ctx = ctx
+
+	// One shared snapshot-list load for every view that needs the list at
+	// construction (dashboard, snapshots, diff, restore, prune) — five separate
+	// ListSnapshots at launch collapse into one. Bounded so a slow store can't
+	// stall startup; each view still falls back gracefully on error.
+	if deps.Repo != nil {
+		loadCtx, loadCancel := context.WithTimeout(ctx, 20*time.Second)
+		var pre snapshotPreload
+		pre.snaps, pre.err = deps.Repo.ListSnapshots(loadCtx)
+		loadCancel()
+		deps.preload = &pre
+	}
 
 	registry := NewRegistry()
 	views := []viewEntry{

@@ -40,12 +40,8 @@ type Diff struct {
 
 func NewDiff(deps Deps) Diff {
 	d := Diff{deps: deps}
-	if deps.Repo != nil {
-		ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 20*time.Second)
-		defer cancel()
-		if snaps, err := deps.Repo.ListSnapshots(ctx); err == nil {
-			d.snaps = snaps
-		}
+	if snaps, err := initialSnapshots(deps); err == nil { // shared load
+		d.snaps = snaps
 	}
 	rows := make([]table.Row, len(d.snaps))
 	for i, s := range d.snaps {

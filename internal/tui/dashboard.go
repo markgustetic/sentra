@@ -73,7 +73,10 @@ type Dashboard struct {
 // "one ListSnapshots per `sentra ui` invocation" which is fine.
 func NewDashboard(deps Deps) Dashboard {
 	d := Dashboard{deps: deps}
-	d.data = hydrateDashboardData(deps)
+	// Construct from the App's shared snapshot load rather than a private
+	// ListSnapshots; the periodic tick and op-completion refresh reload fresh.
+	snaps, _ := initialSnapshots(deps)
+	d.data = dashboardDataFromSnaps(snaps)
 	return d
 }
 
@@ -118,6 +121,13 @@ func hydrateDashboardData(deps Deps) DashboardData {
 	if err != nil {
 		return DashboardData{}
 	}
+	return dashboardDataFromSnaps(snaps)
+}
+
+// dashboardDataFromSnaps aggregates a snapshot list into the dashboard's
+// read-only view model. Separated from the fetch so both the shared construction
+// load and the fresh refresh paths compute the same aggregates.
+func dashboardDataFromSnaps(snaps []repo.SnapshotInfo) DashboardData {
 	d := DashboardData{
 		SnapshotCount: len(snaps),
 		Snaps:         snaps,
