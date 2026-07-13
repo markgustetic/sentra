@@ -1,228 +1,108 @@
-# sentra
+<div align="center">
 
-Encrypted, deduplicated, agent-aware backups for S3 and S3-compatible storage.
+# ✦ S E N T R A ✦
 
-[![CI](https://github.com/markgustetic/sentra/actions/workflows/ci.yml/badge.svg)](https://github.com/markgustetic/sentra/actions/workflows/ci.yml)
-[![Codecov](https://codecov.io/gh/markgustetic/sentra/branch/main/graph/badge.svg)](https://codecov.io/gh/markgustetic/sentra)
-[![Go Report Card](https://goreportcard.com/badge/github.com/markgustetic/sentra)](https://goreportcard.com/report/github.com/markgustetic/sentra)
-[![License: MIT](https://img.shields.io/badge/License-MIT-yellow.svg)](LICENSE)
+**Encrypted, deduplicated, agent-aware backups for S3 — driven from a synthwave terminal.**
 
-`sentra` is a single-binary Go CLI that backs up local directories to S3 as
-encrypted, content-addressed snapshots. It ships with a built-in agent —
-local heuristics first, an optional LLM second — that audits the repository
-and surfaces recommendations: prune candidates, ignore-list additions, secret
-findings, retention drift. It runs equally well as a scriptable CLI
-(`sentra backup ./Documents`, or `sentra backup plan` / `apply` for
-reviewed runs) or a full-screen TUI (`sentra ui`).
+[![CI](https://img.shields.io/github/actions/workflow/status/markgustetic/sentra/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=0D0221&color=5CFFB4)](https://github.com/markgustetic/sentra/actions/workflows/ci.yml)
+[![Go 1.25+](https://img.shields.io/badge/go-1.25+-5CEBFF?style=for-the-badge&labelColor=0D0221&logo=go&logoColor=5CEBFF)](go.mod)
+[![License MIT](https://img.shields.io/badge/license-MIT-CB8CFF?style=for-the-badge&labelColor=0D0221)](LICENSE)
+[![XChaCha20-Poly1305](https://img.shields.io/badge/AEAD-XChaCha20--Poly1305-FFD84D?style=for-the-badge&labelColor=0D0221)](#security)
+[![S3 · S3-compatible](https://img.shields.io/badge/storage-S3%20%C2%B7%20S3--compatible-FF6BDD?style=for-the-badge&labelColor=0D0221&logo=amazons3&logoColor=FF6BDD)](#quickstart)
 
-- **Client-side encryption.** New blobs use XChaCha20-Poly1305 with
-  per-blob 24-byte random nonces. The data key is derived from your
-  passphrase via Argon2id. The S3 bucket sees ciphertext, never plaintext.
-- **Content-defined dedup.** FastCDC chunking + SHA-256 content addressing.
-  A 50 GiB tree with one changed file uploads ~1 MiB on the next snapshot.
-- **Versioned snapshots.** Each snapshot is an immutable, encrypted manifest
-  pointing at chunk hashes. `restore` is exact-byte by construction.
-- **Agent.** Heuristics run locally; the LLM is invoked on summaries only,
-  never on file contents. Recommendations are read-only by default.
-- **TUI dashboard.** `sentra ui` is a Bubbletea app with dashboard,
-  snapshots, diff, agent, and operations views. The bare `sentra`
-  command launches it.
+<img src="docs/screenshots/dashboard.png" width="840" alt="Sentra TUI dashboard: a synthwave sun banner over an activity sparkline, storage savings, tags, retention, and a recent-snapshots table.">
 
-## Quickstart
+<sub>The default surface is a full-screen TUI — 18 views, a first-run wizard, and every CLI capability at your fingertips.</sub>
 
-End-to-end against a local MinIO instance (no AWS account needed).
+</div>
 
-### 1. Start MinIO
+---
 
-Save as `docker-compose.yaml`:
+## What is Sentra?
 
-```yaml
-services:
-  minio:
-    image: minio/minio:latest
-    command: server /data --console-address ":9001"
-    ports:
-      - "9000:9000"
-      - "9001:9001"
-    environment:
-      MINIO_ROOT_USER: minioadmin
-      MINIO_ROOT_PASSWORD: minioadmin
-    volumes:
-      - minio-data:/data
-volumes:
-  minio-data:
-```
+Sentra is a **single Go binary** (`sentra`) that backs up local directories to
+S3 or any S3-compatible store as **encrypted, content-addressed snapshots**. It
+runs equally well as a scriptable CLI or a full-screen TUI, and it ships with a
+built-in agent that audits your repository and surfaces recommendations.
 
-```bash
-docker compose up -d
-# Create the bucket through the MinIO console at http://localhost:9001
-# (login minioadmin / minioadmin), or via the AWS CLI:
-AWS_ACCESS_KEY_ID=minioadmin AWS_SECRET_ACCESS_KEY=minioadmin \
-  aws --endpoint-url http://localhost:9000 s3 mb s3://sentra-test
-```
+- 🔒 **Client-side encryption.** New blobs are sealed with XChaCha20-Poly1305
+  using a per-blob 24-byte random nonce; the data key is derived from your
+  passphrase with Argon2id. **The bucket only ever sees ciphertext.**
+- 🧩 **Content-defined dedup.** FastCDC chunking + SHA-256 content addressing.
+  A 50 GiB tree with one changed file uploads roughly **1 MiB** on the next
+  snapshot.
+- 🗂️ **Versioned snapshots.** Each snapshot is an immutable, encrypted manifest
+  pointing at chunk hashes. Restore re-derives and verifies every hash, so it is
+  **exact-byte by construction**.
+- 🤖 **A hybrid agent.** Local heuristics run first; the optional LLM sees
+  **summaries only — never file contents or secret values**. Recommendations are
+  read-only by default (prune candidates, ignore-list additions, secret
+  findings, retention drift).
+- 🌆 **A synthwave TUI.** `sentra ui` — or just `sentra` — opens a Bubbletea app
+  that lands on a first-run wizard, an unlock gate, or the dashboard depending on
+  your state.
 
-### 2. Initialize a repo
+## A quick tour
 
-Export the credentials MinIO is expecting:
-
-```bash
-export AWS_ACCESS_KEY_ID=minioadmin
-export AWS_SECRET_ACCESS_KEY=minioadmin
-```
-
-When setup initializes the repo, Sentra prompts you to set the repository
-passphrase unless `--passphrase-file` or `SENTRA_PASSPHRASE` supplies it.
-For normal local use, choose `Save in keychain` when setup asks; Sentra saves
-the passphrase in your OS keyring and writes only
-`passphrase.use_keyring: true` to `sentra.yaml`. For throwaway local demos,
-you can still set `SENTRA_PASSPHRASE='change-me-to-something-good'` in your
-shell, or in a gitignored `.env` when running through a tool that loads it.
-
-Then run the guided setup wizard:
-
-```bash
-sentra setup
-```
-
-Choose `S3-compatible or existing bucket`, enter `sentra-test` for the
-bucket, `us-east-1` for the region, and `http://localhost:9000` for the
-endpoint URL. Leave profile and prefix blank unless you want them. When
-asked whether to initialize, choose `Initialize`.
-
-That writes a local `sentra.yaml` with these important settings:
-
-```yaml
-repo:
-  s3:
-    bucket: sentra-test
-    region: us-east-1
-    endpoint_url: http://localhost:9000
-backup:
-  ignore_file: .sentraignore
-  exclude_caches: true
-retention:
-  keep_last: 10
-  keep_daily: 7
-  keep_weekly: 4
-  keep_monthly: 6
-passphrase:
-  use_keyring: true
-```
-
-For real AWS S3, choose `AWS S3` in the same wizard. Sentra can verify
-or create the bucket, block public access, enable default bucket
-encryption, write `sentra.yaml`, and initialize the repo in one flow.
-The default AWS sign-in method is browser login with the AWS CLI, which
-stores temporary local credentials. You can also choose IAM Identity
-Center / SSO, use an existing profile/environment/role, or write config
-only. If you need an AWS administrator to grant permissions first, the
-wizard can print the non-secret least-privilege IAM policy and stop before
-writing config or touching AWS. Setup reviews the non-secret plan before
-applying it; if AWS auth or bucket prep fails, it lets you retry, switch
-sign-in methods, edit the profile/region, or write config only. For a
-normal AWS CLI profile, configure it first, for example:
-
-```bash
-aws configure --profile sentra
-```
-
-You can also print that policy directly:
-
-```bash
-sentra setup iam-policy --bucket my-backups --prefix sentra/
-```
-
-### 3. Take a snapshot
-
-```bash
-sentra backup ./Documents --tag weekly
-```
-
-For repeated backups, save the path and maintenance choices as a policy:
-
-```bash
-sentra policy add home --path ./Documents --tag home --schedule daily@03:00 --check --prune dry-run
-sentra policy run home
-```
-
-Install the policy into your OS user scheduler:
-
-```bash
-sentra schedule install home
-sentra schedule status home
-```
-
-For a reviewed two-step run, write a JSON plan first and apply it after
-inspection:
-
-```bash
-sentra backup plan ./Documents --tag weekly --out weekly-plan.json
-sentra backup apply weekly-plan.json
-```
-
-### 4. List snapshots
-
-```bash
-sentra snapshots
-sentra snapshots --json | jq .
-```
-
-### 5. Restore
-
-```bash
-sentra restore <snapshot-id> /tmp/restored --dry-run
-sentra restore <snapshot-id> /tmp/restored --verify
-```
-
-### 6. Check health and export recovery notes
-
-```bash
-sentra check
-sentra recovery-kit --out sentra-recovery-kit.md
-```
-
-### 7. Run the agent
-
-```bash
-sentra agent advise-ignore ./Documents
-sentra agent scan --local-only --root ./Documents
-# Apply recommendations interactively:
-sentra agent scan --apply
-```
-
-The full version of this walkthrough lives in
-[`docs/QUICKSTART.md`](docs/QUICKSTART.md).
+<table>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/snapshots.png" alt="Snapshots view: a sortable, filterable table of snapshots with id, date, tag, file count, and size.">
+      <br><sub><b>Snapshots</b> — sort, filter, copy an id, drill into any snapshot.</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/files.png" alt="Files view: a box-and-arrows directory topology with per-edge file counts.">
+      <br><sub><b>Files</b> — a box-and-arrows map of a snapshot's directory topology.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/setup.png" alt="First-run setup wizard: choosing a storage backend between AWS S3 and an S3-compatible or existing bucket.">
+      <br><sub><b>First-run wizard</b> — guided setup for AWS or any S3-compatible store.</sub>
+    </td>
+    <td width="50%" valign="top" align="center">
+      <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts with actions to re-run setup, rotate the passphrase, and toggle the splash.">
+      <br><sub><b>Settings</b> — inspect config and re-run setup, rotate the passphrase, toggle the splash.</sub>
+    </td>
+  </tr>
+</table>
 
 ## Install
 
-### Homebrew
+<details open>
+<summary><b>Homebrew</b></summary>
 
 ```bash
 brew install markgustetic/tap/sentra
 ```
+</details>
 
-### `go install`
+<details>
+<summary><b><code>go install</code></b></summary>
 
 ```bash
 go install github.com/markgustetic/sentra/cmd/sentra@latest
 ```
+</details>
 
-### Docker (GHCR)
+<details>
+<summary><b>Docker (GHCR)</b></summary>
 
 ```bash
 docker pull ghcr.io/markgustetic/sentra:latest
 docker run --rm -v "$PWD:/work" -w /work ghcr.io/markgustetic/sentra:latest --version
 ```
+</details>
 
-### Prebuilt binaries
+<details>
+<summary><b>Prebuilt binaries (signed)</b></summary>
 
-Download platform-specific archives from the
-[releases page](https://github.com/markgustetic/sentra/releases). Each
-release includes `checksums.txt` plus a cosign keyless signature
-(`checksums.txt.sig` and `checksums.txt.pem`) and a syft SBOM per archive.
-
-The certificate identity is the exact release-workflow path bound to a
-tag ref. Substitute the version you downloaded (e.g. `v0.2.0`):
+Download platform archives from the
+[releases page](https://github.com/markgustetic/sentra/releases). Each release
+ships a `checksums.txt` plus a cosign keyless signature (`checksums.txt.sig` and
+`checksums.txt.pem`) and a syft SBOM per archive. The certificate identity is
+the exact release-workflow path bound to a tag ref — substitute the version you
+downloaded (e.g. `v0.2.0`):
 
 ```bash
 cosign verify-blob \
@@ -232,84 +112,167 @@ cosign verify-blob \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 ```
+</details>
 
-If you need to verify across multiple versions in a script, anchor the
-regexp to the workflow path so it doesn't match arbitrary refs:
+## Quickstart
+
+### 🚀 Fastest: kick the tires with local MinIO (no AWS account)
+
+`sentra local` starts a local MinIO via docker compose, points Sentra at a
+throwaway `.sentra-local.yaml` (never your real config), and opens the TUI with
+the first-run wizard pre-filled for MinIO:
 
 ```bash
---certificate-identity-regexp '^https://github\.com/markgustetic/sentra/\.github/workflows/release\.yml@refs/tags/v[0-9]+\.[0-9]+\.[0-9]+$'
+sentra local          # needs Docker running
 ```
+
+Working from a clone? `just local` builds the binary and does the same thing;
+`just local-reset` wipes everything back to a clean first run.
+
+### 🪣 Real storage: the setup wizard
+
+For AWS S3 or any S3-compatible store, let the wizard do the work:
+
+```bash
+sentra setup
+```
+
+It walks you through the backend choice, can **create or verify the bucket,
+block public access, enable default encryption, write `sentra.yaml`, and
+initialize the encrypted repo** — all in one flow, reviewing a non-secret plan
+before it touches anything.
+
+- **AWS S3** → sign in with AWS CLI browser login (the default), IAM Identity
+  Center / SSO, an existing profile/role, or write config only. Need an admin to
+  grant permissions first? The wizard can print the least-privilege IAM policy
+  and stop:
+
+  ```bash
+  sentra setup iam-policy --bucket my-backups --prefix sentra/
+  ```
+
+- **S3-compatible or existing bucket** (MinIO, LocalStack, Cloudflare R2,
+  Wasabi, …) → enter the bucket, region, and `endpoint_url` and you're set.
+
+When it initializes the repo, Sentra asks you to set a repository passphrase
+(unless `--passphrase-file` or `SENTRA_PASSPHRASE` supplies one). Choose **Save
+in keychain** and Sentra stores it in your OS keyring, writing only
+`passphrase.use_keyring: true` to `sentra.yaml` — **never the secret itself**.
+
+> [!NOTE]
+> **No secrets are ever written to `sentra.yaml`, logs, setup drafts, or
+> recovery kits.** Not the passphrase, not wrapped keys, not AWS credentials.
+
+### 📸 Take a snapshot
+
+```bash
+sentra backup ./Documents --tag weekly
+```
+
+Repeating a backup? Save the path and maintenance choices as a **policy**, then
+install it into your OS user scheduler (launchd on macOS, systemd user
+timers on Linux — no resident daemon):
+
+```bash
+sentra policy add home --path ./Documents --tag home --schedule daily@03:00 --check --prune dry-run
+sentra policy run home
+sentra schedule install home
+sentra schedule status home
+```
+
+Want a reviewed, two-step run? Write a JSON plan, inspect it, then apply:
+
+```bash
+sentra backup plan  ./Documents --tag weekly --out weekly-plan.json
+sentra backup apply weekly-plan.json
+```
+
+### 🔍 List, restore, verify
+
+```bash
+sentra snapshots                         # newest first; --json for scripting
+sentra restore <snapshot-id> /tmp/out --dry-run   # preview, writes nothing
+sentra restore <snapshot-id> /tmp/out --verify    # restore + re-check chunk hashes
+sentra check                             # audit manifests, chunk refs, orphans, stale locks
+sentra recovery-kit --out sentra-recovery-kit.md  # non-secret restore notes
+```
+
+### 🤖 Ask the agent
+
+```bash
+sentra agent advise-ignore ./Documents            # suggest .sentraignore patterns (read-only)
+sentra agent scan --local-only --root ./Documents # heuristics only, no LLM
+sentra agent scan --apply                          # review + apply recommendations interactively
+```
+
+The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
+
+## The TUI
+
+Bare `sentra` falls through to `sentra ui`. Where it lands depends on your state:
+**no `sentra.yaml` → first-run wizard**, **configured but locked → unlock gate**,
+otherwise **the dashboard**. Every CLI capability is also a view — 18 in all.
+
+Handy keys (the status bar always shows what's live):
+
+| Key | Action |
+| --- | --- |
+| `↑` / `↓` · digits | Move the nav rail · jump straight to a view |
+| `tab` | Toggle focus between the rail and the content pane |
+| `enter` · `esc` | Trigger the primary action · go back |
+| `ctrl+p` | Command palette |
+| `?` · `q` | Help · quit |
+
+> Selection is carried by a `▍` glyph, not just color, and the neon strips
+> cleanly under `NO_COLOR`, a pipe, or a 2-color terminal — the synthwave look is
+> a dark-terminal flourish, never a legibility risk.
 
 ## Commands
 
-| Command                         | Description                                                                |
-| ------------------------------- | -------------------------------------------------------------------------- |
-| `sentra setup`                  | Guided setup wizard for AWS/S3 config, optional bucket prep, and repo init. |
-| `sentra setup iam-policy`       | Print non-secret AWS IAM JSON for a bucket/prefix.                         |
-| `sentra doctor`                 | Check config, AWS access, bucket settings, and repo health read-only.       |
-| `sentra init`                   | Create `sentra.yaml`, derive a repo key, write the encrypted config blob. |
-| `sentra backup <path>`          | Snapshot a directory immediately. `--tag` to label the snapshot.           |
-| `sentra backup plan <path>`     | Write a reviewable JSON plan file for the exact file set.                  |
-| `sentra backup apply <plan>`    | Validate and snapshot from a reviewed plan file. `--yes` skips confirm.    |
-| `sentra policy add/list/show/remove/run` | Manage named backup policies stored in `sentra.yaml`.             |
-| `sentra schedule install/status/uninstall` | Install user-level OS schedules for named policies.              |
-| `sentra snapshots`              | List snapshots, newest first. `--json` for scripting.                      |
-| `sentra check`                  | Audit manifests, chunk references, orphan blobs, and stale locks.          |
-| `sentra diff <a> <b>`           | Show added / removed / changed paths between two snapshots.                |
-| `sentra restore <snap> <dest>`  | Restore a snapshot. `--dry-run` previews; `--verify` validates output.     |
-| `sentra prune`                  | Dry-run retention by default; `--explain` shows keep/drop reasons.         |
-| `sentra password`               | Rotate or forget the saved wrapping passphrase. `passwd` remains an alias. |
-| `sentra sync --dst-config`      | Replicate this repo to a clone destination. Additive; share the passphrase. |
-| `sentra recovery-kit`           | Export non-secret recovery notes and restore commands.                     |
-| `sentra agent advise-ignore`    | Suggest first-run `.sentraignore` patterns without editing files.          |
-| `sentra agent scan`             | Run heuristics + optional LLM. Supports `--local-only`, `--root`, `--categories`, and `--apply`. |
-| `sentra ui`                     | Launch the Bubbletea TUI. Bare `sentra` (no args) is equivalent.           |
+| Command | What it does |
+| --- | --- |
+| `sentra ui` | Launch the full-screen TUI. Bare `sentra` is equivalent. |
+| `sentra local` | Dev flow: start local MinIO and open the wizard-prefilled TUI. |
+| `sentra setup` | Guided wizard for AWS/S3 config, bucket prep, and repo init. |
+| `sentra setup iam-policy` | Print non-secret AWS IAM JSON for a bucket/prefix. |
+| `sentra doctor` | Check config, AWS access, bucket settings, and repo health — read-only. |
+| `sentra init` | Non-interactively create `sentra.yaml` and the encrypted repo config. |
+| `sentra backup <path>` | Snapshot a directory now. `--tag` labels it. `plan`/`apply` for reviewed runs. |
+| `sentra snapshots` | List snapshots, newest first. `--json` for scripting. |
+| `sentra restore <snap> <dest>` | Restore a snapshot. `--dry-run` previews; `--verify` validates output. |
+| `sentra diff <a> <b>` | Show added / removed / changed paths between two snapshots. |
+| `sentra check` | Audit manifests, chunk references, orphan blobs, and stale locks. |
+| `sentra prune` | Dry-run retention by default; `--apply` reclaims, `--explain` shows reasons. |
+| `sentra policy …` | Manage named backup policies (`add`/`list`/`show`/`remove`/`run`). |
+| `sentra schedule …` | Install user-level OS schedules for named policies. |
+| `sentra password` | Rotate or forget the repository passphrase (`passwd` is an alias). |
+| `sentra sync --dst-config` | Replicate this repo to a clone destination (additive; share the passphrase). |
+| `sentra recovery-kit` | Export non-secret recovery notes and restore commands. |
+| `sentra agent advise-ignore` | Suggest first-run `.sentraignore` patterns without editing files. |
+| `sentra agent scan` | Heuristics + optional LLM. `--local-only`, `--root`, `--categories`, `--apply`. |
 
-Every subcommand respects:
-
-- `--config <path>` — override the config search (default `sentra.yaml`).
-- `--passphrase-file <path>` — read the passphrase from a file (highest priority).
-- `SENTRA_PASSPHRASE` — env var (second priority).
-- OS keyring — setup can save the passphrase there and opt in via `passphrase.use_keyring: true`.
-- Interactive `huh` prompt — last resort, TTY only.
-
-Keyring entries are scoped to the configured S3 bucket and prefix so multiple
-Sentra repos can safely share one bucket under different prefixes. Older
-bucket-only keyring entries are still read as a migration fallback.
-
-Use `sentra password` to rotate the repository passphrase. If
-`passphrase.use_keyring: true`, a successful rotation also replaces the saved
-OS-keyring passphrase so the old one is not left behind. Use
-`sentra password forget` to remove the saved OS-keyring passphrase and disable
-keyring lookup in `sentra.yaml`; this does not change the repository
-passphrase or delete S3 data.
+Every subcommand resolves the passphrase in this order:
+**`--passphrase-file`** → **`SENTRA_PASSPHRASE`** → **OS keyring** (when
+`passphrase.use_keyring: true`) → **interactive prompt** (TTY only). Keyring
+entries are scoped to the configured bucket **and** prefix, so multiple repos can
+safely share one bucket under different prefixes.
 
 ## Configuration
 
-`sentra setup` opens a guided terminal wizard. For AWS S3 it can print a
-non-secret IAM policy and stop, sign in with
-`aws login --profile <profile>`, run IAM Identity Center / SSO setup when
-selected, verify existing AWS credentials, create or verify the bucket,
-block public access, enable bucket default encryption, write
-`sentra.yaml`, and optionally initialize the encrypted repo. Repo init
-prompts for the repository passphrase unless `--passphrase-file` or
-`SENTRA_PASSPHRASE` supplies it. Setup can then save that passphrase to the
-OS keyring so future commands do not need to prompt. Setup detects `AWS_PROFILE`,
-`AWS_REGION`, and environment/role credentials for better defaults,
-validates bucket names up front, writes a non-secret
-`.sentra.yaml.setup-draft` while setup is in progress, and removes the
-draft after success. For MinIO, LocalStack, or an existing bucket, choose
-the S3-compatible/manual path.
-**No secrets in this file, ever.**
+`sentra.yaml` holds non-secret settings only. A `.sentraignore` at the walk root
+applies gitignore-style globs (a starter ships at
+[`.sentraignore.example`](.sentraignore.example)). The Anthropic provider needs
+`ANTHROPIC_API_KEY`; without it every non-agent command still works and
+`sentra agent scan` returns a clear error.
 
 ```yaml
 repo:
   s3:
     bucket: my-backups            # required
-    prefix: sentra/               # optional, lets multiple repos share a bucket
-    region: us-west-2             # optional, falls back to AWS SDK chain
-    profile: default              # optional, AWS shared-credentials profile
-    endpoint_url: ""              # optional, set for MinIO / LocalStack
+    prefix: sentra/               # optional — lets multiple repos share a bucket
+    region: us-west-2             # optional — falls back to the AWS SDK chain
+    profile: default              # optional — AWS shared-credentials profile
+    endpoint_url: ""              # optional — set for MinIO / LocalStack / R2 / Wasabi
 
 agent:
   provider: anthropic
@@ -318,7 +281,7 @@ agent:
 
 backup:
   ignore_file: .sentraignore
-  exclude_caches: true            # honor CACHEDIR.TAG (per spec)
+  exclude_caches: true            # honor CACHEDIR.TAG
 
 retention:
   keep_last: 10
@@ -331,91 +294,74 @@ passphrase:
 
 policies:
   home:
-    paths:
-      - "~/Documents"
-    tags:
-      - "home"
-    schedule:
-      cadence: "daily"
-      at: "03:00"
-    after_backup:
-      check: true
-      prune: "dry-run"            # off, dry-run, or apply
+    paths: ["~/Documents"]
+    tags:  ["home"]
+    schedule: { cadence: daily, at: "03:00" }
+    after_backup: { check: true, prune: dry-run }   # prune: off | dry-run | apply
 ```
 
-A `.sentraignore` file at the walk root applies gitignore-style globs
-(via `sabhiram/go-gitignore`). A starter file ships at
-`.sentraignore.example`.
+## Security
 
-The Anthropic LLM provider needs `ANTHROPIC_API_KEY`. Without it, every
-non-agent command still works; `sentra agent scan` returns a clear error.
+Sentra is a backup tool, so it's worth being explicit about what the encryption
+protects — and what it doesn't. The [threat model](docs/threat-model.md) has the
+full write-up; the load-bearing invariants:
 
-Policies are local, non-secret automation settings. `sentra policy run <name>`
-opens the configured repo once, snapshots every configured path with a
-`policy:<name>` tag, then optionally runs `check` and dry-run/apply prune.
-`sentra schedule install <name>` writes a user-level LaunchAgent on macOS or
-systemd user service/timer files on Linux that call the current `sentra`
-binary with `policy run`. Sentra does not run a background daemon.
+- **Encryption.** New blobs use XChaCha20-Poly1305 with a per-blob 24-byte random
+  nonce and the version byte bound as associated data. A nonce is never reused
+  under a key, and the bucket never sees plaintext.
+- **Content addressing.** A chunk's key is the SHA-256 of its raw (decompressed)
+  plaintext. Restore re-derives and checks it on read, so restore is exact-byte.
+- **GC safety.** GC computes its live set from the snapshots present in the store
+  under the repo lock — never from a caller-supplied set — so a blob referenced by
+  any present manifest is never reaped.
+- **One repo lock.** `backup`, `GC`, `sync`, `passwd`, and snapshot-apply
+  serialize on an advisory `meta/lock` (atomic put-if-absent). Release is
+  fail-closed.
+- **Agent boundary.** The LLM sees summaries only, never file contents or secret
+  values; recommendations are read-only by default.
 
-## Threat model
-
-`sentra` is a backup tool, so it's worth being explicit about what the
-encryption protects against — and what it doesn't. See
-[`docs/threat-model.md`](docs/threat-model.md) for the full write-up;
-in brief:
-
-- Protects: file contents, file paths, manifest metadata, snapshot tags.
-- Does not protect: object counts, object sizes (zstd-then-encrypt leaks
-  approximate plaintext size), S3 access logs.
-- Out of scope: forward secrecy across passphrase compromise, post-quantum
-  key strength.
+**Protects:** file contents, file paths, manifest metadata, snapshot tags.
+**Leaks:** object counts and approximate sizes (compress-then-encrypt), S3 access
+logs. **Out of scope:** forward secrecy across passphrase compromise, post-quantum
+key strength.
 
 ## Architecture
 
-See [`docs/architecture.md`](docs/architecture.md) for the storage model,
-the agent loop, and Mermaid diagrams of the `backup`, `restore`, and
-`agent scan` flows.
+See [`docs/architecture.md`](docs/architecture.md) for the storage model, the
+agent loop, and Mermaid diagrams of the `backup`, `restore`, and `agent scan`
+flows. In one breath: a snapshot is an encrypted manifest of SHA-256 chunk hashes;
+chunks are FastCDC-split, zstd-compressed, then sealed; dedup falls out of content
+addressing; and both the CLI and TUI drive the same core in `internal/repo`.
 
 ## Development
 
+Go **1.25+** is required, and the codebase is `internal/`-only (no public API in
+v1). Prefer `just`:
+
 ```bash
-just build       # builds bin/sentra
-just check       # build, race tests, vet, lint, vuln, tidy/gofmt/diff checks
-just full-check  # check + local release artifacts and source SBOM
-just test        # race tests with coverage
-just integration # spins MinIO via testcontainers; Linux only
-just fmt         # go fmt ./...
-just vet         # go vet ./...
-just tidy        # go mod tidy
-just lint        # golangci-lint run; prints install help if missing
-just vuln        # govulncheck ./...
-just tools       # verify optional security/release tools are installed
-just release-local # local GoReleaser snapshot + source SBOM under dist/
+just build        # → bin/sentra
+just local        # build + open the TUI against local MinIO (the easy path)
+just check        # build, race tests, vet, lint, vuln, tidy/gofmt/diff checks
+just test         # go test -race with coverage
+just integration  # testcontainers + MinIO (needs Docker; Linux)
 ```
 
-Go 1.25+ is required (the dependency ecosystem moved past 1.24 mid-Phase 13).
-The codebase is `internal/`-only — no public Go API shipped in v1.
-CI also enforces `go mod tidy -diff`, gofmt over `cmd/` and `internal/`,
-and `go test ./...` inside `third_party/fastcdc-go`.
+The vendored FastCDC is a **separate module** — test it with
+`go test ./third_party/fastcdc-go/...` when you touch chunking. CI enforces
+`go mod tidy -diff`, gofmt over `cmd/` and `internal/`, `go vet`, `go test -race`,
+the FastCDC module tests, and `golangci-lint`.
 
 ## Releasing
 
-Releases are cut by pushing a `v*` tag, which triggers
-`.github/workflows/release.yml`. The workflow runs goreleaser to:
-
-- Cross-compile `linux/darwin/windows` × `amd64/arm64` archives
-- Generate a SHA-256 `checksums.txt`
-- Sign the checksums file with cosign keyless (GitHub OIDC)
-- Build a multi-arch GHCR image at `ghcr.io/markgustetic/sentra`
-- Update the Homebrew tap at `markgustetic/homebrew-tap`
-- Attach a syft-generated SBOM per archive
-
-Required GitHub Actions secrets:
-
-- `GITHUB_TOKEN` — provided automatically by Actions.
-- `HOMEBREW_TAP_TOKEN` — a personal access token with `contents: write`
-  scope on the `markgustetic/homebrew-tap` repo.
+Push a `v*` tag to trigger [`release.yml`](.github/workflows/release.yml):
+goreleaser cross-compiles `linux/darwin/windows × amd64/arm64` archives, writes a
+SHA-256 `checksums.txt`, signs it with cosign keyless (GitHub OIDC), builds a
+multi-arch GHCR image, updates the Homebrew tap, and attaches a syft SBOM per
+archive. Requires the `HOMEBREW_TAP_TOKEN` secret (`contents: write` on
+`markgustetic/homebrew-tap`); `GITHUB_TOKEN` is provided automatically.
 
 ## License
 
-MIT. See [`LICENSE`](LICENSE).
+[MIT](LICENSE).
+
+<div align="center"><sub>✦ built to keep your bytes safe, and to look good doing it ✦</sub></div>
