@@ -3,7 +3,7 @@ module github.com/markgustetic/sentra
 go 1.25.0
 
 require (
-	github.com/anthropics/anthropic-sdk-go v1.57.0
+	github.com/anthropics/anthropic-sdk-go v1.58.0
 	github.com/atotto/clipboard v0.1.4
 	github.com/aws/aws-sdk-go-v2 v1.42.1
 	github.com/aws/aws-sdk-go-v2/config v1.32.17
@@ -27,7 +27,7 @@ require (
 	github.com/spf13/cobra v1.10.2
 	github.com/testcontainers/testcontainers-go/modules/minio v0.43.0
 	github.com/zalando/go-keyring v0.2.8
-	golang.org/x/crypto v0.51.0
+	golang.org/x/crypto v0.54.0
 	golang.org/x/sync v0.22.0
 )
 
@@ -137,7 +137,7 @@ require (
 	go.opentelemetry.io/otel/trace v1.41.0 // indirect
 	go.yaml.in/yaml/v3 v3.0.4 // indirect
 	go.yaml.in/yaml/v4 v4.0.0-rc.2 // indirect
-	golang.org/x/sys v0.45.0 // indirect
-	golang.org/x/text v0.37.0 // indirect
+	golang.org/x/sys v0.47.0 // indirect
+	golang.org/x/text v0.40.0 // indirect
 	gopkg.in/yaml.v3 v3.0.1 // indirect
 )
