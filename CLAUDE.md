@@ -13,7 +13,7 @@ content-addressed** snapshots. Go 1.25, module `github.com/markgustetic/sentra`.
 The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
 it lands on the unlock gate; otherwise the dashboard. Every CLI capability is
-also operable from the TUI (17 views).
+also operable from the TUI (18 views).
 
 `sentra local` is the dev flow: it starts MinIO, exports the `minioadmin`
 credentials **only if you have not set AWS credentials yourself**, and opens the
@@ -152,5 +152,11 @@ below both.
   key-routing bugs — a global binding stealing `q` or a digit from a focused
   text input only shows up in an `App`-level test or a real terminal. Views
   that own the keyboard declare it via `CapturesText()`.
+- **Live rail preview activates the highlighted view _before_ `enter`.** So the
+  activate handler can't distinguish "enter on the view I scrolled to" (dive in)
+  from "enter on the passive Dashboard I launched on" (stay) by index — both are
+  `m.active`. A view with nothing to interact with declares `InertContent()`, and
+  the shell keeps focus on the rail instead of moving the border into its pane so
+  scrolling still works. Every other view is focusable by default.
 - Mutating operations go through the App's one-op guard (`startOpMsg` /
   `opResultMsg`); read-only flows use a plain `tea.Cmd` and a spinner.

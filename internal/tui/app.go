@@ -226,13 +226,13 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with all 17 Phase 3 views registered:
-// the original read-only views (dashboard, snapshots, diff), the
-// async-check views (check, doctor), the management views
-// (recovery-kit, policies, schedule), the agent view (which now also
-// hosts agent-apply in place, so it gets no separate id), the direct
-// data operations (backup, restore, prune, sync, password), the
-// "Settings" category (setup, settings), and the unlock gate.
+// NewApp constructs the shell with all 18 views — 17 navigable commands plus
+// the unlock startup gate: the original read-only views (dashboard, snapshots,
+// files, diff), the async-check views (check, doctor), the management views
+// (recovery-kit, policies, schedule), the agent view (which now also hosts
+// agent-apply in place, so it gets no separate id), the direct data operations
+// (backup, restore, prune, sync, password), the "Settings" category (setup,
+// settings), and the unlock gate.
 //
 // unlock is a startup gate, not a navigable operation: it is present
 // in the views slice (so InitialView can land on it) but excluded from
