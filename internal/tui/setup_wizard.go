@@ -1043,21 +1043,21 @@ func (v SetupWizardView) View() string {
 			// row (no AWS option) with a hint explaining why it's fixed.
 			b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
 				"MinIO, LocalStack, or a bucket you manage yourself."))
-			b.WriteString("\n" + ui.Muted.Render("endpoint detected — S3-compatible"))
-			b.WriteString("\n" + v.actionLine(""))
+			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("endpoint detected — S3-compatible"))
+			fmt.Fprintf(&b, "\n%s", v.actionLine(""))
 		} else {
 			b.WriteString(v.backendLine(0, "AWS S3",
 				"Sentra provisions and prepares the bucket for you."))
 			b.WriteString("\n")
 			b.WriteString(v.backendLine(1, "S3-compatible or existing bucket",
 				"MinIO, LocalStack, or a bucket you manage yourself."))
-			b.WriteString("\n" + v.actionLine("↑/↓ choose"))
+			fmt.Fprintf(&b, "\n%s", v.actionLine("↑/↓ choose"))
 		}
 	case stageDetails:
 		b.WriteString(v.wizardHeader())
 		labels := []string{"S3 bucket", "S3 key prefix", "AWS region", "AWS profile", "S3 endpoint URL"}
 		for i := 0; i < v.detailFieldCount(); i++ {
-			b.WriteString(v.detailRow(i, labels[i]) + "\n")
+			fmt.Fprintf(&b, "%s\n", v.detailRow(i, labels[i]))
 		}
 		if v.plan.Backend == setup.BackendAWS {
 			box := "[ ]"
@@ -1065,25 +1065,25 @@ func (v SetupWizardView) View() string {
 				box = "[x]"
 			}
 			selected := v.fieldCursor == v.detailFieldCount()
-			b.WriteString("\n" + ui.SelectRow(selected, box+" print IAM policy and stop before any changes") + "\n")
+			fmt.Fprintf(&b, "\n%s\n", ui.SelectRow(selected, box+" print IAM policy and stop before any changes"))
 		}
 		if v.detailErr != "" {
-			b.WriteString("\n" + ui.Danger.Render(v.detailErr))
+			fmt.Fprintf(&b, "\n%s", ui.Danger.Render(v.detailErr))
 		}
 		b.WriteString(v.actionLine("tab field · space toggle"))
 	case stageIAMPreview:
-		b.WriteString(ui.Primary.Render("IAM policy (no changes were made)") + "\n\n")
+		fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("IAM policy (no changes were made)"))
 		b.WriteString(v.iamViewport.View())
-		b.WriteString("\n\n" + ui.Muted.Render("↑/↓ scroll · ⏎/esc restart setup"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("↑/↓ scroll · ⏎/esc restart setup"))
 	case stageActions:
 		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
-			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
+			fmt.Fprintf(&b, "%s\n\n", ui.Warn.Render(v.notice))
 		}
-		b.WriteString(ui.SelectRow(v.actionCursor == actionRowAuth,
-			"AWS sign-in: "+setupAuthMethodLabel(setupAuthOrder[v.authCursor])) + "\n")
+		fmt.Fprintf(&b, "%s\n", ui.SelectRow(v.actionCursor == actionRowAuth,
+			"AWS sign-in: "+setupAuthMethodLabel(setupAuthOrder[v.authCursor])))
 		if v.actionCursor == actionRowAuth {
-			b.WriteString("  " + ui.Muted.Render("←/→ change method") + "\n")
+			fmt.Fprintf(&b, "  %s\n", ui.Muted.Render("←/→ change method"))
 		}
 		b.WriteString(v.actionToggle(actionRowCreate, "create missing bucket", v.createBucket))
 		b.WriteString(v.actionToggle(actionRowBlock, "block public access", v.blockPublic))
@@ -1093,52 +1093,52 @@ func (v SetupWizardView) View() string {
 	case stagePassphrase:
 		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
-			b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
+			fmt.Fprintf(&b, "%s\n\n", ui.Warn.Render(v.notice))
 		}
 		// Mark the focused input with the ▍ selection glyph (and dim the other's
 		// prompt), the same affordance as the details stage — a masked field with
 		// only a cursor was too easy to lose track of.
-		b.WriteString(v.passRow(v.newPass, !v.focusConf) + "\n")
-		b.WriteString(v.passRow(v.confirmPass, v.focusConf) + "\n\n")
+		fmt.Fprintf(&b, "%s\n", v.passRow(v.newPass, !v.focusConf))
+		fmt.Fprintf(&b, "%s\n\n", v.passRow(v.confirmPass, v.focusConf))
 		box := "[ ]"
 		if v.savePass {
 			box = "[x]"
 		}
-		b.WriteString(box + " save passphrase in OS keyring (space toggles)\n")
+		fmt.Fprintf(&b, "%s save passphrase in OS keyring (space toggles)\n", box)
 		if v.passErr != "" {
-			b.WriteString("\n" + ui.Danger.Render(v.passErr))
+			fmt.Fprintf(&b, "\n%s", ui.Danger.Render(v.passErr))
 		}
 		b.WriteString(v.actionLine("tab field · space keyring"))
 	case stageReview:
 		b.WriteString(v.wizardHeader())
 		b.WriteString(setup.ReviewText(v.deps.ConfigPath, v.plan))
 		if v.notice != "" {
-			b.WriteString(ui.Warn.Render(v.notice) + "\n")
+			fmt.Fprintf(&b, "%s\n", ui.Warn.Render(v.notice))
 		}
 		b.WriteString(v.actionLine(""))
 	case stageProvision:
-		b.WriteString(ui.Primary.Render("Applying setup…") + "\n\n")
+		fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Applying setup…"))
 		b.WriteString(v.checklistLine(v.steps.bucketCreated, "bucket created"))
 		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
 		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
 		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
-		b.WriteString("\n" + ui.Muted.Render("working under the repo lock…"))
+		fmt.Fprintf(&b, "\n%s", ui.Muted.Render("working under the repo lock…"))
 	case stageDone:
-		b.WriteString(ui.Success.Render("Setup complete") + "\n\n")
+		fmt.Fprintf(&b, "%s\n\n", ui.Success.Render("Setup complete"))
 		b.WriteString(v.checklistLine(v.steps.bucketCreated, "bucket created"))
 		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
 		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
 		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
-		b.WriteString("\n" + ui.ActionLine("restart setup", ""))
+		fmt.Fprintf(&b, "\n%s", ui.ActionLine("restart setup", ""))
 	case stageError:
-		b.WriteString(ui.Danger.Render("Setup failed") + "\n\n")
+		fmt.Fprintf(&b, "%s\n\n", ui.Danger.Render("Setup failed"))
 		if v.result.err != nil {
-			b.WriteString(v.result.err.Error() + "\n")
+			fmt.Fprintf(&b, "%s\n", v.result.err.Error())
 			for _, line := range setup.ErrorAdvice(v.result.err, v.plan.Config) {
-				b.WriteString("\n" + ui.Subtle.Render(line))
+				fmt.Fprintf(&b, "\n%s", ui.Subtle.Render(line))
 			}
 		}
-		b.WriteString("\n\n" + ui.Muted.Render("⏎ back to review · esc restart"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("⏎ back to review · esc restart"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"strings"
 
@@ -264,19 +265,19 @@ func (v RecoveryKitView) renderKit() string {
 		return ui.Danger.Render("Recovery kit failed") + "\n\n" + v.err
 	}
 	var b strings.Builder
-	b.WriteString(ui.Primary.Render("Recovery kit") + "\n\n")
+	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Recovery kit"))
 	b.WriteString(v.vp.View())
 	if v.stage == rkSaving {
-		b.WriteString("\n\n" + v.savePath.View())
+		fmt.Fprintf(&b, "\n\n%s", v.savePath.View())
 		if v.saveErr != "" {
-			b.WriteString("\n" + ui.Danger.Render(v.saveErr))
+			fmt.Fprintf(&b, "\n%s", ui.Danger.Render(v.saveErr))
 		}
-		b.WriteString("\n" + ui.ActionLine("write the kit to disk", "esc cancel"))
+		fmt.Fprintf(&b, "\n%s", ui.ActionLine("write the kit to disk", "esc cancel"))
 		return b.String()
 	}
 	if v.saved != "" {
-		b.WriteString("\n\n" + ui.Success.Render("Saved: ") + v.saved)
+		fmt.Fprintf(&b, "\n\n%s%s", ui.Success.Render("Saved: "), v.saved)
 	}
-	b.WriteString("\n\n" + ui.Muted.Render("s save · ⏎ rebuild"))
+	fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("s save · ⏎ rebuild"))
 	return b.String()
 }

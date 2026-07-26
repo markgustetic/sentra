@@ -182,18 +182,18 @@ func (v PruneView) View() string {
 	case pruneDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Prune failed"))
-			b.WriteString("\n\n" + v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
 		} else {
 			b.WriteString(ui.Success.Render("Prune complete"))
 			fmt.Fprintf(&b, "\n\n  deleted snapshots  %d\n  reclaimed blobs    %d\n  reclaimed bytes    %s\n  live blobs         %d",
 				v.result.deleted, v.result.stats.DeletedBlobs,
 				ui.FormatBytes(v.result.stats.DeletedBytes), v.result.stats.LiveBlobs)
 		}
-		b.WriteString("\n\n" + ui.ActionLine("recompute the retention preview", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("recompute the retention preview", ""))
 	default:
 		b.WriteString(ui.Primary.Render("Retention preview"))
 		if v.notice != "" {
-			b.WriteString("  " + ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "  %s", ui.Warn.Render(v.notice))
 		}
 		fmt.Fprintf(&b, "  %s\n\n", ui.Muted.Render(
 			fmt.Sprintf("keep %d · drop %d", len(v.keep), len(v.drop))))
@@ -222,9 +222,9 @@ func (v PruneView) View() string {
 			fmt.Fprintf(&b, "  %s  %s  %s\n", d.Snapshot.ID, verdict, ui.Muted.Render(reason))
 		}
 		if len(v.drop) > 0 {
-			b.WriteString("\n" + ui.ActionLine("prune the flagged snapshots", "typed confirmation required"))
+			fmt.Fprintf(&b, "\n%s", ui.ActionLine("prune the flagged snapshots", "typed confirmation required"))
 		} else {
-			b.WriteString("\n" + ui.Muted.Render("nothing to prune"))
+			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("nothing to prune"))
 		}
 	}
 	return b.String()

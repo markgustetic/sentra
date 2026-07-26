@@ -2,6 +2,7 @@ package tui
 
 import (
 	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -165,20 +166,20 @@ func (v UnlockView) startOpen() (tea.Model, tea.Cmd) {
 func (v UnlockView) View() string {
 	var b strings.Builder
 	b.WriteString(ui.Primary.Render("Unlock repository"))
-	b.WriteString("\n" + ui.Muted.Render(v.deps.RepoName))
+	fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.deps.RepoName))
 
 	switch v.stage {
 	case unlockOpening:
-		b.WriteString("\n\n" + ui.Muted.Render("opening the repository…"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("opening the repository…"))
 	default:
-		b.WriteString("\n\n" + v.input.View())
+		fmt.Fprintf(&b, "\n\n%s", v.input.View())
 		if v.inputErr != "" {
-			b.WriteString("\n\n" + ui.Danger.Render(v.inputErr))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}
 		if v.openErr != nil {
-			b.WriteString("\n\n" + ui.Danger.Render(unlockErrMessage(v.openErr)))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(unlockErrMessage(v.openErr)))
 		}
-		b.WriteString("\n\n" + ui.ActionLine("unlock the repository", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("unlock the repository", ""))
 	}
 	return b.String()
 }

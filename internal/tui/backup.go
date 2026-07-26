@@ -348,12 +348,12 @@ func (v BackupView) View() string {
 		b.WriteString(v.bar.ViewAs(pct))
 		fmt.Fprintf(&b, "\n\n%s / %s uploaded",
 			ui.FormatBytes(done), ui.FormatBytes(total))
-		b.WriteString("\n" + ui.Muted.Render("esc cancel"))
+		fmt.Fprintf(&b, "\n%s", ui.Muted.Render("esc cancel"))
 
 	case backupDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Backup failed"))
-			b.WriteString("\n\n" + v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
 		} else {
 			b.WriteString(ui.Success.Render("Backup complete"))
 			info := v.result.info
@@ -361,17 +361,17 @@ func (v BackupView) View() string {
 				info.ID, info.Stats.Files,
 				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes))
 		}
-		b.WriteString("\n\n" + ui.ActionLine("run another backup", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("run another backup", ""))
 
 	default:
 		b.WriteString(ui.Primary.Render("New backup"))
 		if v.notice != "" {
-			b.WriteString("\n" + ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		b.WriteString("\n\n" + v.picker.View(v.focus == focusPicker))
-		b.WriteString("\n" + v.tag.View())
+		fmt.Fprintf(&b, "\n\n%s", v.picker.View(v.focus == focusPicker))
+		fmt.Fprintf(&b, "\n%s", v.tag.View())
 		if v.pathErr != "" {
-			b.WriteString("\n\n" + ui.Danger.Render(v.pathErr))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.pathErr))
 		}
 
 		// The action line names what enter does to the FOCUSED control right now.
@@ -379,9 +379,9 @@ func (v BackupView) View() string {
 		// (open a folder / go up / start on the Start button), so it is read from
 		// the picker.
 		if v.focus == focusPicker {
-			b.WriteString("\n\n" + ui.ActionLine(v.picker.enterVerb(), "↑↓ move · ↓ to browse folders · backspace up a level · tab to add a tag"))
+			fmt.Fprintf(&b, "\n\n%s", ui.ActionLine(v.picker.enterVerb(), "↑↓ move · ↓ to browse folders · backspace up a level · tab to add a tag"))
 		} else {
-			b.WriteString("\n\n" + ui.ActionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
+			fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
 		}
 	}
 	return b.String()

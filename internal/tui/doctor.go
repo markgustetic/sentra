@@ -2,6 +2,7 @@ package tui
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"time"
 
@@ -233,7 +234,7 @@ func (v DoctorView) renderReport() string {
 	if !v.result.healthy {
 		status = ui.Danger.Render("● issues found")
 	}
-	b.WriteString(ui.Primary.Render("Doctor report") + "  " + status + "\n\n")
+	fmt.Fprintf(&b, "%s  %s\n\n", ui.Primary.Render("Doctor report"), status)
 	for _, row := range v.result.rows {
 		mark := ui.Success.Render("ok  ")
 		switch row.status {
@@ -242,11 +243,11 @@ func (v DoctorView) renderReport() string {
 		case doctorFail:
 			mark = ui.Danger.Render("fail")
 		}
-		b.WriteString("  " + mark + "  " + row.label + "\n")
+		fmt.Fprintf(&b, "  %s  %s\n", mark, row.label)
 		if row.detail != "" {
-			b.WriteString("        " + ui.Muted.Render(row.detail) + "\n")
+			fmt.Fprintf(&b, "        %s\n", ui.Muted.Render(row.detail))
 		}
 	}
-	b.WriteString("\n" + ui.ActionLine("run diagnostics again", ""))
+	fmt.Fprintf(&b, "\n%s", ui.ActionLine("run diagnostics again", ""))
 	return b.String()
 }

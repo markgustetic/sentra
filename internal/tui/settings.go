@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -105,20 +106,20 @@ func (v SettingsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 func (v SettingsView) View() string {
 	var b strings.Builder
-	b.WriteString(ui.Primary.Render("Settings") + "\n\n")
-	b.WriteString(v.renderSummary() + "\n")
+	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Settings"))
+	fmt.Fprintf(&b, "%s\n", v.renderSummary())
 	for i, e := range v.entries {
 		line := e.label
 		if e.kind == entryToggleSplash {
 			line = e.label + "   [" + v.splashState() + "]"
 		}
-		b.WriteString(ui.SelectRow(i == v.cursor, line) + "\n")
-		b.WriteString("    " + ui.Muted.Render(e.desc) + "\n")
+		fmt.Fprintf(&b, "%s\n", ui.SelectRow(i == v.cursor, line))
+		fmt.Fprintf(&b, "    %s\n", ui.Muted.Render(e.desc))
 	}
 	if v.err != "" {
-		b.WriteString("\n" + ui.Danger.Render(v.err))
+		fmt.Fprintf(&b, "\n%s", ui.Danger.Render(v.err))
 	}
-	b.WriteString("\n" + ui.Muted.Render("↑↓ move   ⏎ open / toggle"))
+	fmt.Fprintf(&b, "\n%s", ui.Muted.Render("↑↓ move   ⏎ open / toggle"))
 	return b.String()
 }
 
@@ -177,7 +178,7 @@ func (v SettingsView) renderSummary() string {
 		if val == "" {
 			val = ui.Subtle.Render("(unset)")
 		}
-		b.WriteString("  " + ui.Muted.Render(label) + "  " + val + "\n")
+		fmt.Fprintf(&b, "  %s  %s\n", ui.Muted.Render(label), val)
 	}
 	field("bucket ", cfg.Repo.S3.Bucket)
 	field("prefix ", cfg.Repo.S3.Prefix)

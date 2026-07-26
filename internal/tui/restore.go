@@ -287,17 +287,17 @@ func (v RestoreView) View() string {
 	switch v.stage {
 	case restorePick:
 		b.WriteString(ui.Primary.Render("Restore: choose a snapshot"))
-		b.WriteString("\n\n" + v.tbl.View())
+		fmt.Fprintf(&b, "\n\n%s", v.tbl.View())
 	case restoreDest:
 		b.WriteString(ui.Primary.Render("Restore " + v.snapID))
-		b.WriteString("\n\n" + v.dest.View())
+		fmt.Fprintf(&b, "\n\n%s", v.dest.View())
 		if v.destErr != "" {
-			b.WriteString("\n\n" + ui.Danger.Render(v.destErr))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.destErr))
 		}
 	case restoreConfirm:
 		b.WriteString(ui.Primary.Render("Ready to restore"))
 		if v.notice != "" {
-			b.WriteString("\n" + ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
 		fmt.Fprintf(&b, "\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  dest      %s",
 			v.plan.SnapshotID, v.plan.Files, ui.FormatBytes(v.plan.Bytes), v.plan.DestDir)
@@ -305,8 +305,8 @@ func (v RestoreView) View() string {
 		if v.verify {
 			mark = "on"
 		}
-		b.WriteString("\n  verify    " + mark)
-		b.WriteString("\n\n" + ui.ActionLine("start the restore", "v toggle verify · esc back"))
+		fmt.Fprintf(&b, "\n  verify    %s", mark)
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("start the restore", "v toggle verify · esc back"))
 	case restoreRunning:
 		total, done := v.reporter.Snapshot()
 		pct := 0.0
@@ -314,24 +314,24 @@ func (v RestoreView) View() string {
 			pct = float64(done) / float64(total)
 		}
 		b.WriteString(ui.Primary.Render("Restoring…"))
-		b.WriteString("\n\n" + v.bar.ViewAs(pct))
+		fmt.Fprintf(&b, "\n\n%s", v.bar.ViewAs(pct))
 		fmt.Fprintf(&b, "\n\n%s / %s", ui.FormatBytes(done), ui.FormatBytes(total))
 	default:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Restore failed"))
-			b.WriteString("\n\n" + v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
 		} else {
 			b.WriteString(ui.Success.Render("Restore complete"))
 			if v.result.verification != nil {
 				if v.result.verification.OK() {
-					b.WriteString("\n\nverification: " + ui.Success.Render("all files match"))
+					fmt.Fprintf(&b, "\n\nverification: %s", ui.Success.Render("all files match"))
 				} else {
 					fmt.Fprintf(&b, "\n\nverification: %s (%d mismatches)",
 						ui.Danger.Render("FAILED"), len(v.result.verification.Mismatches))
 				}
 			}
 		}
-		b.WriteString("\n\n" + ui.ActionLine("restore another snapshot", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("restore another snapshot", ""))
 	}
 	return b.String()
 }

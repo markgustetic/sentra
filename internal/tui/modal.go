@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/textinput"
@@ -205,7 +206,7 @@ func (m TypedConfirmModal) View() string {
 	b.WriteString("\n\n")
 	b.WriteString(m.body)
 	b.WriteString("\n\n")
-	b.WriteString("Type " + ui.Danger.Bold(true).Render(m.word) + " to confirm:\n")
+	fmt.Fprintf(&b, "Type %s to confirm:\n", ui.Danger.Bold(true).Render(m.word))
 	b.WriteString(m.input.View())
 	b.WriteString("\n\n")
 	b.WriteString(ui.Muted.Render("⏎ confirm · esc cancel"))

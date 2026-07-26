@@ -756,7 +756,7 @@ func (a AgentView) View() string {
 func (a AgentView) viewReviewing() string {
 	var b strings.Builder
 	b.WriteString(ui.Primary.Render("Review recommendations"))
-	b.WriteString("  " + ui.Muted.Render("space approve/decline · ⏎ apply · esc cancel"))
+	fmt.Fprintf(&b, "  %s", ui.Muted.Render("space approve/decline · ⏎ apply · esc cancel"))
 	b.WriteString("\n\n")
 	for i, r := range a.recs {
 		cursor := "  "
@@ -794,17 +794,17 @@ func (a AgentView) viewApplyDone() string {
 	var b strings.Builder
 	if a.result.err != nil {
 		b.WriteString(ui.Danger.Render("Apply failed"))
-		b.WriteString("\n\n" + a.result.err.Error())
+		fmt.Fprintf(&b, "\n\n%s", a.result.err.Error())
 	} else {
 		b.WriteString(ui.Success.Render("Apply complete"))
 		b.WriteString("\n\n")
 		for _, ln := range a.result.lines {
-			b.WriteString(ln + "\n")
+			fmt.Fprintf(&b, "%s\n", ln)
 		}
 		fmt.Fprintf(&b, "\n  applied:  %d\n  declined: %d\n  errors:   %d",
 			a.result.applied, a.result.declined, a.result.errs)
 	}
-	b.WriteString("\n\n" + ui.Muted.Render("press `s` to re-scan"))
+	fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("press `s` to re-scan"))
 	return ui.Panel.Render(b.String()) + "\n"
 }
 

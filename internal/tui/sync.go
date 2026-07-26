@@ -328,12 +328,12 @@ func (v SyncView) View() string {
 		b.WriteString(v.bar.ViewAs(pct))
 		fmt.Fprintf(&b, "\n\n%s / %s copied",
 			ui.FormatBytes(done), ui.FormatBytes(total))
-		b.WriteString("\n" + ui.Muted.Render("esc cancel"))
+		fmt.Fprintf(&b, "\n%s", ui.Muted.Render("esc cancel"))
 
 	case syncDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Sync failed"))
-			b.WriteString("\n\n" + v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
 		} else {
 			s := v.result.stats
 			if s.DryRun {
@@ -348,22 +348,22 @@ func (v SyncView) View() string {
 			fmt.Fprintf(&b, "\n\n  bootstrap   %s\n  copied      %d blobs (%s)\n  skipped     %d (already on destination)\n  elapsed     %s",
 				boot, s.CopiedBlobs, ui.FormatBytes(s.CopiedBytes), s.SkippedBlobs, s.Elapsed)
 		}
-		b.WriteString("\n\n" + ui.ActionLine("run another sync", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("run another sync", ""))
 
 	default:
 		b.WriteString(ui.Primary.Render("Replicate to a clone destination"))
 		if v.notice != "" {
-			b.WriteString("\n" + ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		b.WriteString("\n\n" + v.dstPath.View())
-		b.WriteString("\n\n" + v.toggleLine(syncFieldInitDest, "init-dest", v.initDest,
+		fmt.Fprintf(&b, "\n\n%s", v.dstPath.View())
+		fmt.Fprintf(&b, "\n\n%s", v.toggleLine(syncFieldInitDest, "init-dest", v.initDest,
 			"bootstrap an empty destination"))
-		b.WriteString("\n" + v.toggleLine(syncFieldDryRun, "dry-run", v.dryRun,
+		fmt.Fprintf(&b, "\n%s", v.toggleLine(syncFieldDryRun, "dry-run", v.dryRun,
 			"list what would be copied, write nothing"))
 		if v.pathErr != "" {
-			b.WriteString("\n\n" + ui.Danger.Render(v.pathErr))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.pathErr))
 		}
-		b.WriteString("\n\n" + ui.ActionLine("start the sync", "tab field · space toggle"))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("start the sync", "tab field · space toggle"))
 	}
 	return b.String()
 }

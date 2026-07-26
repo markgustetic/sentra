@@ -262,12 +262,12 @@ func (v PasswordView) View() string {
 	switch v.stage {
 	case passwordRunning:
 		b.WriteString(ui.Primary.Render("Rotating passphrase…"))
-		b.WriteString("\n\n" + ui.Muted.Render("rewriting the encrypted config under the repo lock"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("rewriting the encrypted config under the repo lock"))
 
 	case passwordDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Rotation failed"))
-			b.WriteString("\n\n" + passwordErrMessage(v.result.err))
+			fmt.Fprintf(&b, "\n\n%s", passwordErrMessage(v.result.err))
 		} else {
 			b.WriteString(ui.Success.Render("Passphrase rotated"))
 			b.WriteString("\n\n  the old passphrase is no longer accepted")
@@ -275,19 +275,19 @@ func (v PasswordView) View() string {
 				b.WriteString("\n  OS keyring updated with the new passphrase")
 			}
 		}
-		b.WriteString("\n\n" + ui.ActionLine("rotate the passphrase again", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("rotate the passphrase again", ""))
 
 	default: // passwordInput
 		b.WriteString(ui.Primary.Render("Rotate repository passphrase"))
 		if v.notice != "" {
-			b.WriteString("\n" + ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		b.WriteString("\n\n" + v.newPass.View())
-		b.WriteString("\n" + v.confirmPass.View())
+		fmt.Fprintf(&b, "\n\n%s", v.newPass.View())
+		fmt.Fprintf(&b, "\n%s", v.confirmPass.View())
 		if v.inputErr != "" {
-			b.WriteString("\n\n" + ui.Danger.Render(v.inputErr))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}
-		b.WriteString("\n\n" + ui.ActionLine("rotate the passphrase", "typed confirmation required · tab switch field"))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("rotate the passphrase", "typed confirmation required · tab switch field"))
 	}
 	return b.String()
 }

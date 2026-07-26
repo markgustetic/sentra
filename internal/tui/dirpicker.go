@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"fmt"
 	"os"
 	"path/filepath"
 	"sort"
@@ -244,21 +245,21 @@ func (p dirPicker) enterVerb() string {
 // the cursor is one past it (cursor == start+i+1).
 func (p dirPicker) View(focused bool) string {
 	var b strings.Builder
-	b.WriteString(ui.Muted.Render(p.cwd) + "\n")
+	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(p.cwd))
 	if p.err != "" {
-		b.WriteString(ui.Danger.Render(p.err) + "\n")
+		fmt.Fprintf(&b, "%s\n", ui.Danger.Render(p.err))
 	}
-	b.WriteString(ui.SelectRow(focused && p.onStart(), "▸ backup the current directory") + "\n")
+	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), "▸ backup the current directory"))
 	rows, start := p.window()
 	for i, r := range rows {
 		label := r.label
 		if r.kind == rowChild {
 			label += string(filepath.Separator)
 		}
-		b.WriteString(ui.SelectRow(focused && start+i == p.cursor-1, label) + "\n")
+		fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && start+i == p.cursor-1, label))
 	}
 	if len(p.rows) > len(rows) {
-		b.WriteString(ui.Subtle.Render("  …") + "\n")
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("  …"))
 	}
 	return b.String()
 }

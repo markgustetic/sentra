@@ -171,9 +171,9 @@ func (d Diff) renderResult() string {
 		if len(paths) == 0 {
 			return
 		}
-		b.WriteString(label + "\n")
+		fmt.Fprintf(&b, "%s\n", label)
 		for _, p := range paths {
-			b.WriteString("  " + style(p) + "\n")
+			fmt.Fprintf(&b, "  %s\n", style(p))
 		}
 		b.WriteString("\n")
 	}

@@ -501,14 +501,14 @@ func (v PoliciesView) View() string {
 	}
 	if v.stage == policiesForm {
 		var b strings.Builder
-		b.WriteString(ui.Primary.Render("New policy") + "\n\n")
-		b.WriteString(v.form.name.View() + "\n")
-		b.WriteString(v.form.path.View() + "\n")
-		b.WriteString(v.form.schedule.View() + "\n")
+		fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("New policy"))
+		fmt.Fprintf(&b, "%s\n", v.form.name.View())
+		fmt.Fprintf(&b, "%s\n", v.form.path.View())
+		fmt.Fprintf(&b, "%s\n", v.form.schedule.View())
 		if v.form.err != "" {
-			b.WriteString("\n" + ui.Danger.Render(v.form.err) + "\n")
+			fmt.Fprintf(&b, "\n%s\n", ui.Danger.Render(v.form.err))
 		}
-		b.WriteString("\n" + ui.ActionLine("save the policy", "tab field · esc cancel"))
+		fmt.Fprintf(&b, "\n%s", ui.ActionLine("save the policy", "tab field · esc cancel"))
 		return b.String()
 	}
 	if v.stage == policiesRunning {
@@ -524,18 +524,18 @@ func (v PoliciesView) View() string {
 		var b strings.Builder
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Policy run failed"))
-			b.WriteString("\n\n" + v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
 		} else {
 			b.WriteString(ui.Success.Render("Policy run complete"))
 			fmt.Fprintf(&b, "\n\n  policy     %s\n  snapshots  %d", v.result.name, v.result.snapshots)
 		}
-		b.WriteString("\n\n" + ui.ActionLine("return to the policy list", ""))
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("return to the policy list", ""))
 		return b.String()
 	}
 	var b strings.Builder
 	b.WriteString(ui.Primary.Render("Backup policies"))
 	if v.notice != "" {
-		b.WriteString("  " + ui.Warn.Render(v.notice))
+		fmt.Fprintf(&b, "  %s", ui.Warn.Render(v.notice))
 	}
 	b.WriteString("\n\n")
 	if len(v.names) == 0 {
@@ -553,8 +553,8 @@ func (v PoliciesView) View() string {
 		fmt.Fprintf(&b, "%s%s  %s\n", marker, label,
 			ui.Muted.Render(policycfg.FormatScheduleSpec(p.Schedule)))
 	}
-	b.WriteString("\n" + v.renderDetail())
-	b.WriteString("\n" + ui.Muted.Render("↑↓ select · r run · d remove"))
+	fmt.Fprintf(&b, "\n%s", v.renderDetail())
+	fmt.Fprintf(&b, "\n%s", ui.Muted.Render("↑↓ select · r run · d remove"))
 	return b.String()
 }
 
@@ -574,7 +574,7 @@ func (v PoliciesView) renderDetail() string {
 		return s
 	}
 	var b strings.Builder
-	b.WriteString(ui.Primary.Render(name) + "\n")
+	fmt.Fprintf(&b, "%s\n", ui.Primary.Render(name))
 	b.WriteString("  paths:\n")
 	for _, path := range p.Paths {
 		fmt.Fprintf(&b, "    - %s\n", path)

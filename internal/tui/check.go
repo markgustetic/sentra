@@ -121,7 +121,7 @@ func (v CheckView) renderReport() string {
 	if !healthy {
 		status = ui.Danger.Render("● issues found")
 	}
-	b.WriteString(ui.Primary.Render("Integrity report") + "  " + status + "\n\n")
+	fmt.Fprintf(&b, "%s  %s\n\n", ui.Primary.Render("Integrity report"), status)
 	fmt.Fprintf(&b, "  snapshots        %d\n", rep.Snapshots)
 	fmt.Fprintf(&b, "  files            %d\n", rep.Files)
 	fmt.Fprintf(&b, "  data blobs       %d  (%s)\n", rep.DataBlobs, ui.FormatBytes(rep.DataBytes))
@@ -134,8 +134,8 @@ func (v CheckView) renderReport() string {
 		fmt.Fprintf(&b, "  %s  %d manifest issue(s)\n", ui.Danger.Render("✗"), n)
 	}
 	if rep.Lock != nil && (rep.Lock.Stale || rep.Lock.Unreadable) {
-		b.WriteString("  " + ui.Warn.Render("⚠ advisory lock is stale or unreadable") + "\n")
+		fmt.Fprintf(&b, "  %s\n", ui.Warn.Render("⚠ advisory lock is stale or unreadable"))
 	}
-	b.WriteString("\n" + ui.ActionLine("run the check again", ""))
+	fmt.Fprintf(&b, "\n%s", ui.ActionLine("run the check again", ""))
 	return b.String()
 }

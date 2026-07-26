@@ -311,10 +311,10 @@ func (v ScheduleView) View() string {
 		return ui.Muted.Render("no policies configured — add one with `sentra policy add`")
 	}
 	var b strings.Builder
-	b.WriteString(ui.Primary.Render("Policy schedules") + "\n\n")
-	b.WriteString(v.tbl.View() + "\n\n")
+	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Policy schedules"))
+	fmt.Fprintf(&b, "%s\n\n", v.tbl.View())
 	if v.notice != "" {
-		b.WriteString(ui.Warn.Render(v.notice) + "\n\n")
+		fmt.Fprintf(&b, "%s\n\n", ui.Warn.Render(v.notice))
 	}
 	b.WriteString(ui.Muted.Render("i install · u uninstall · r refresh"))
 	return b.String()
