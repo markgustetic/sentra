@@ -3,6 +3,7 @@ package cli
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -13,6 +14,12 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
+
+// ErrAgentApplyFailed is returned after the apply summary is written
+// when one or more approved actions failed to apply. The loop keeps
+// going past individual failures, but the process must still exit
+// non-zero — scripted runs check $?, not the "errors: N" stdout line.
+var ErrAgentApplyFailed = errors.New("agent apply failed")
 
 // writeRecsTable emits a styled lipgloss table of recommendations. An
 // empty slice still prints the header row so the user sees the same
@@ -143,6 +150,9 @@ func applyRecommendations(
 	fmt.Fprintf(out, "  applied:  %d\n", applied)
 	fmt.Fprintf(out, "  declined: %d\n", declined)
 	fmt.Fprintf(out, "  errors:   %d\n", errs)
+	if errs > 0 {
+		return fmt.Errorf("%w: %d action(s) failed", ErrAgentApplyFailed, errs)
+	}
 	return nil
 }
 

@@ -320,6 +320,37 @@ func TestAgentScan_Apply(t *testing.T) {
 	}
 }
 
+// TestAgentScan_Apply_ActionFailure_ReturnsError: a dispatch failure
+// must surface as a command error — scripts and cron check the exit
+// code, not the "errors: N" line on stdout. A run where actions failed
+// exiting 0 is indistinguishable from success to automation.
+func TestAgentScan_Apply_ActionFailure_ReturnsError(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	finding := heuristics.Finding{
+		ID: "f1", Category: "retention", Severity: "warn", Target: "snap-x",
+	}
+	// An unknown verb fails at dispatch, after the confirm/wipe-guard
+	// gates — the same path a valid action takes when its handler errors.
+	steps := []llm.FakeStep{
+		{Text: `[{"id":"r1","action":"not_a_real_action","target":"x","severity":"warn","rationale":"bogus"}]`},
+	}
+	deps, _, _, out := agentFixture(t, steps, []heuristics.Finding{finding})
+
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--apply", "--yes"})
+	err := cmd.Execute()
+	if err == nil {
+		t.Fatalf("expected error when an action fails to apply; output: %q", out.String())
+	}
+	if !errors.Is(err, ErrAgentApplyFailed) {
+		t.Errorf("error should wrap ErrAgentApplyFailed for errors.Is dispatch; got %v", err)
+	}
+}
+
 // TestAgentScan_Apply_AddToIgnore: a recommendation with action
 // add_to_ignore appends the target to .sentraignore.
 func TestAgentScan_Apply_AddToIgnore(t *testing.T) {
