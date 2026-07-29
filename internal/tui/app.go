@@ -226,13 +226,13 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with all 18 views — 17 navigable commands plus
+// NewApp constructs the shell with all 19 views — 18 navigable commands plus
 // the unlock startup gate: the original read-only views (dashboard, snapshots,
 // files, diff), the async-check views (check, doctor), the management views
 // (recovery-kit, policies, schedule), the agent view (which now also hosts
 // agent-apply in place, so it gets no separate id), the direct data operations
 // (backup, restore, prune, sync, password), the "Settings" category (setup,
-// settings), and the unlock gate.
+// settings), the Help directory of the other screens, and the unlock gate.
 //
 // unlock is a startup gate, not a navigable operation: it is present
 // in the views slice (so InitialView can land on it) but excluded from
@@ -283,6 +283,10 @@ func NewApp(deps Deps) App {
 		{id: "unlock", model: NewUnlockView(deps)},
 		{id: "settings", model: NewSettingsView(deps)},
 		{id: "setup", model: NewSetupWizardView(deps)},
+		// Help sits last so it renders at the BOTTOM of the rail: it is the
+		// screen you reach for when you do not know which of the others you
+		// want, not one you visit in the course of a backup.
+		{id: "help", model: NewHelpView(registry)},
 	}
 	// The direct data operations form the "Operations" category in the
 	// rail and palette; every read-only/management view defaults to

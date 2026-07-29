@@ -58,6 +58,7 @@ var viewDescriptions = map[string]string{
 	"password":     "Rotate the repository passphrase",
 	"settings":     "Configuration summary and app preferences",
 	"setup":        "Re-run the first-run configuration wizard",
+	"help":         "What each screen in the rail does",
 }
 
 // helpHeaderRows is the header line plus the blank line under it. The entry

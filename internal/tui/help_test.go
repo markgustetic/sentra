@@ -163,3 +163,43 @@ func TestHelpView_WindowFitsHeightAndKeepsCursorVisible(t *testing.T) {
 		t.Errorf("window did not scroll: the first entry is still drawn:\n%s", out)
 	}
 }
+
+// TestApp_HelpIsLastRailEntry: the Help entry sits at the BOTTOM of the rail.
+// Registration order is rail order, so this pins the position, not just the
+// presence.
+func TestApp_HelpIsLastRailEntry(t *testing.T) {
+	app := NewApp(Deps{RepoName: "test-repo"})
+	cmds := app.registry.Commands()
+	if len(cmds) == 0 {
+		t.Fatal("no commands registered")
+	}
+	if got := cmds[len(cmds)-1].ID; got != "help" {
+		t.Errorf("last rail entry = %q, want help", got)
+	}
+	if got := app.views[len(app.views)-1].id; got != "help" {
+		t.Errorf("last view = %q, want help", got)
+	}
+}
+
+// TestApp_ActivateHelpRendersDescriptions: activating Help from the shell
+// switches the content pane to it and the frame shows other views' descriptions.
+// A view-level test cannot catch this — key routing and activation live in App.
+func TestApp_ActivateHelpRendersDescriptions(t *testing.T) {
+	app := NewApp(Deps{RepoName: "test-repo"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	app = m.(App)
+
+	m, _ = app.Update(activateMsg{id: "help"})
+	app = m.(App)
+
+	if got := app.views[app.active].id; got != "help" {
+		t.Fatalf("active view = %q, want help", got)
+	}
+	out := app.View()
+	if !strings.Contains(out, "What each screen does") {
+		t.Errorf("help header missing from the frame:\n%s", out)
+	}
+	if !strings.Contains(out, viewDescriptions["backup"]) {
+		t.Errorf("backup's description missing from the frame:\n%s", out)
+	}
+}
