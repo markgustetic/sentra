@@ -30,9 +30,11 @@ func main() {
 	}
 }
 
-// isUICommand reports whether cmd is the bare-sentra dispatch or the
-// explicit `sentra ui` subcommand. Both take over the terminal with
-// Bubbletea's alt-screen, so slog must not write to stderr during them.
+// isUICommand reports whether cmd ends in the Bubbletea alt-screen:
+// the bare-sentra dispatch, `sentra ui`, or `sentra local` (which
+// finishes by launching the same TUI against .sentra-local.yaml).
+// During any of these, slog must not write to stderr — raw log lines
+// interleave into the live screen buffer and corrupt the display.
 func isUICommand(cmd *cobra.Command) bool {
 	if cmd == nil {
 		return false
@@ -40,7 +42,7 @@ func isUICommand(cmd *cobra.Command) bool {
 	if cmd.Parent() == nil {
 		return true
 	}
-	return cmd.Use == "ui"
+	return cmd.Name() == "ui" || cmd.Name() == "local"
 }
 
 func configureRootLogging(root *cobra.Command, rootFlags *cli.RootFlags) {
