@@ -109,6 +109,16 @@ type SyncStats struct {
 // for any snapshot dest already has — partial sync states never
 // produce dangling-manifest restore failures.
 //
+// Listing order is the reverse: snapshots/ is listed BEFORE data/.
+// The source is not locked, so a backup can commit between the two
+// listings. Chunks are uploaded strictly before the manifest that
+// references them (snapshot_write.go), so freezing the manifest set
+// first guarantees the later data/ listing is a superset of every
+// chunk those manifests can reference. Listing data/ first opens
+// the reverse window: a manifest committed between the listings is
+// copied while its new chunks — invisible to the earlier data/
+// listing — are not, leaving dest with a dangling manifest.
+//
 // Errors:
 //   - ErrEmptyDest: dest has no config + InitDest=false
 //   - ErrDifferentRepo: dest's config has a different repo ID
@@ -191,15 +201,20 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	// single combined progress Total that spans data/ + snapshots/. Setting
 	// Total once — rather than per phase — keeps the aggregate bar monotonic
 	// instead of resetting to the small manifest total after the data phase.
-	dataPlan, err := planSyncPhase(ctx, r.store, dest, DataPrefix)
-	if err != nil {
-		stats.Elapsed = time.Since(start)
-		return stats, fmt.Errorf("repo: sync data/: %w", err)
-	}
+	//
+	// snapshots/ MUST be listed before data/ (see the SyncTo doc comment):
+	// with the unlocked source, this order is what keeps a backup committed
+	// between the listings from producing a dest manifest whose chunks the
+	// frozen data plan never saw.
 	manPlan, err := planSyncPhase(ctx, r.store, dest, snapshotPrefix)
 	if err != nil {
 		stats.Elapsed = time.Since(start)
 		return stats, fmt.Errorf("repo: sync snapshots/: %w", err)
+	}
+	dataPlan, err := planSyncPhase(ctx, r.store, dest, DataPrefix)
+	if err != nil {
+		stats.Elapsed = time.Since(start)
+		return stats, fmt.Errorf("repo: sync data/: %w", err)
 	}
 	reporter.Total(dataPlan.totalBytes + manPlan.totalBytes)
 

@@ -371,6 +371,77 @@ func TestSyncTo_DoesNotLockSource(t *testing.T) {
 	}
 }
 
+// listHookStore wraps a Store and, when armed, fires onList exactly once
+// after the next successful List returns. It lets a test inject source
+// writes between SyncTo's two listing passes — the window a concurrent
+// backup on the unlocked source can land in.
+type listHookStore struct {
+	blobstore.Store
+	armed  atomic.Bool
+	onList func()
+}
+
+func (s *listHookStore) List(ctx context.Context, prefix string) ([]blobstore.Info, error) {
+	infos, err := s.Store.List(ctx, prefix)
+	if err == nil && s.armed.CompareAndSwap(true, false) {
+		s.onList()
+	}
+	return infos, err
+}
+
+// TestSyncTo_ConcurrentSourceCommitDuringListing_NoDanglingManifest pins
+// the rule that a successful sync never leaves dest with a manifest whose
+// chunks are absent. SyncTo does not lock the source, so a backup can
+// commit a new chunk+manifest between the two listing passes; whatever
+// order SyncTo lists in, the frozen plans must never copy a manifest
+// whose chunks the data plan cannot see. (Chunks are uploaded strictly
+// before their manifest, so listing snapshots/ before data/ is safe;
+// the reverse order copies the late manifest but not its chunks.)
+func TestSyncTo_ConcurrentSourceCommitDuringListing_NoDanglingManifest(t *testing.T) {
+	ctx := context.Background()
+	hooked := &listHookStore{Store: blobstore.NewMemory()}
+	dstStore := blobstore.NewMemory()
+	src, err := Init(ctx, hooked, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init src: %v", err)
+	}
+	defer src.Close()
+	seedSourceWithSnapshot(t, src, "baseline")
+
+	// The late snapshot's content is unique, so its chunk exists in no
+	// listing taken before the commit.
+	lateRoot := t.TempDir()
+	writeFile(t, filepath.Join(lateRoot, "late.txt"), "unique-late-content-not-in-baseline")
+	hooked.onList = func() {
+		if _, err := src.CreateSnapshot(ctx, lateRoot, SnapshotOptions{Tag: "late"}); err != nil {
+			t.Errorf("concurrent snapshot during sync: %v", err)
+		}
+	}
+	hooked.armed.Store(true)
+
+	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{InitDest: true}); err != nil {
+		t.Fatalf("SyncTo: %v", err)
+	}
+
+	// Every manifest the sync copied must be fully restorable from dest
+	// alone: no referenced blob may be missing.
+	dst, err := Open(ctx, dstStore, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open dest: %v", err)
+	}
+	defer dst.Close()
+	report, err := dst.Check(ctx, CheckOptions{})
+	if err != nil {
+		t.Fatalf("check dest: %v", err)
+	}
+	if len(report.MissingBlobs) > 0 {
+		t.Errorf("dest has dangling manifests after successful sync: missing blobs %+v", report.MissingBlobs)
+	}
+	if len(report.ManifestIssues) > 0 {
+		t.Errorf("dest manifest issues after successful sync: %+v", report.ManifestIssues)
+	}
+}
+
 // TestSyncTo_RestoreFromDestMatchesRestoreFromSource is the end-
 // to-end correctness test: after sync, restoring the same
 // snapshot from src and from dst produces byte-identical output.
