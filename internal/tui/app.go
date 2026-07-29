@@ -311,7 +311,8 @@ func NewApp(deps Deps) App {
 		if cat == "" {
 			cat = "Views"
 		}
-		registry.Add(Command{ID: v.id, Title: title, Category: cat})
+		registry.Add(Command{ID: v.id, Title: title, Category: cat,
+			Description: viewDescriptions[v.id]})
 	}
 
 	keys := newGlobalKeymap()

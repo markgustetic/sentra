@@ -58,3 +58,17 @@ func TestRegistry_SetBadge(t *testing.T) {
 		}
 	}
 }
+
+// TestRegistry_CarriesDescription: the Help view renders Command.Description,
+// so the field has to survive Add -> Commands like Title and Category do.
+func TestRegistry_CarriesDescription(t *testing.T) {
+	r := NewRegistry()
+	r.Add(Command{ID: "dashboard", Title: "Dashboard", Description: "Repo health at a glance"})
+	cmds := r.Commands()
+	if len(cmds) != 1 {
+		t.Fatalf("len = %d, want 1", len(cmds))
+	}
+	if cmds[0].Description != "Repo health at a glance" {
+		t.Fatalf("Description = %q, want %q", cmds[0].Description, "Repo health at a glance")
+	}
+}
