@@ -28,6 +28,18 @@ const helpDescIndent = 4
 // TestHelp_DescriptionsFitTheNarrowestPane: a wrapped description would push the
 // view past the height the shell budgeted it, and the content panel overflows
 // rather than truncates.
+//
+// gosec's G101 flags this declaration because the "password" key sits next to
+// a string literal value — its heuristic for a hardcoded credential. It is a
+// false positive: the key is the registered command ID for the passphrase-
+// rotation view (see app.go's command table, id "password"; Settings links to
+// it as targetID "password"), and every value here is Help-view display text,
+// never a secret. The "no secrets in artifacts" invariant is unaffected —
+// nothing derived from this map is a passphrase, key, or credential.
+// Suppressed narrowly on this declaration only (not gosec package- or
+// repo-wide) so a real hardcoded credential elsewhere still trips the linter.
+//
+//nolint:gosec // G101 false positive: help text keyed by command ID "password", not a credential
 var viewDescriptions = map[string]string{
 	"dashboard":    "Repo health, last snapshot, and size timeline",
 	"backup":       "Snapshot a folder into the repository",
