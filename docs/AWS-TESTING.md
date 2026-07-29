@@ -24,7 +24,7 @@ recipes and [`QUICKSTART.md`](QUICKSTART.md) instead.
 |---|---|---|
 | `just aws` | Build + run `sentra`. First run opens the **setup wizard**; once configured, the dashboard. | reads |
 | `just aws-doctor` | Verify identity + bucket + repo without changing anything. | reads |
-| `just aws-seed` | Create the `aws-test-data/` test payload (idempotent). | no |
+| `just aws-seed` | Create the `aws-test-data/` test payload, including a fresh dedup fixture. | no |
 | `just aws-smoke` | **Automated test**: backup → restore + verify → incremental (dedup) → check. | read/write |
 | `just aws-reset` | Wipe **local** state so the next `just aws` is a fresh wizard. | no |
 | `just aws-s3-empty` | **DESTRUCTIVE** — empty the repo's S3 prefix for a truly from-scratch test. | **deletes** |
@@ -60,7 +60,7 @@ encryption, writes `sentra.yaml`, and initializes the encrypted repo.
 ## The automated smoke test
 
 Once setup is done and the passphrase resolves (from the keychain, or
-`SENTRA_PASSPHRASE` in a gitignored `.env`):
+`SENTRA_AWS_PASSPHRASE`):
 
 ```bash
 just aws-smoke
@@ -72,11 +72,35 @@ It runs, in order:
 2. **Full backup** of `aws-test-data/`.
 3. `snapshots` — list, and grab the latest snapshot id.
 4. **Restore + `--verify`**, then an exact-byte `diff` against the source.
-5. **Incremental backup** after appending one line — prints `new_bytes` vs
-   total to prove content-defined dedup uploaded almost nothing.
+5. **Incremental backup** after appending one line to the dedup fixture.
 6. `check` — repository integrity audit.
 
+Steps 2 and 5 **assert** and exit non-zero on failure; they don't just print.
+
 It reads and writes S3 but **never deletes** S3 data.
+
+### How the dedup check avoids fooling itself
+
+`aws-seed` writes `dedup-fixture.bin` — 16 MiB from `/dev/urandom`, overriding
+with `SENTRA_AWS_FIXTURE_MIB`. Three properties make the assertion mean
+something, and each has a way of quietly going wrong:
+
+- **Big enough to span chunks.** FastCDC averages 1 MiB per chunk (max 4 MiB),
+  so the original two-file, 67-byte payload was a single chunk — appending to it
+  re-cut the only chunk there was, and no possible result proved anything.
+- **Incompressible.** `new_bytes` is counted after zstd. Compressible filler
+  collapses it toward zero whether or not one chunk was reused, so the check
+  would pass on a repo with dedup entirely broken.
+- **Regenerated every run.** A stable fixture is already in the repo on the
+  second run, so snapshot 1 would dedup away to nothing and leave the
+  incremental with no baseline.
+
+The full backup guards the latter two by requiring `new_bytes >= bytes / 2` —
+fresh random bytes upload roughly what they read. If that trips, the fixture
+stopped being fresh or incompressible and the dedup number below it is
+meaningless. The incremental then requires `new_bytes < bytes / 2`: appending at
+EOF leaves every FastCDC boundary but the last intact, so only the tail chunk is
+new. Typical result is ~1.5%; the ceiling is one 4 MiB chunk against 16 MiB.
 
 ---
 
@@ -115,5 +139,11 @@ bucket or prefix** — the old objects stay put but out of the way.
 - **Passphrase resolution order** is file → `SENTRA_PASSPHRASE` → OS keyring →
   prompt. "Save in keychain" during setup lets `aws-smoke` run without any
   prompt or env var.
+- **The AWS recipes clear `SENTRA_PASSPHRASE` before running.** `.env` belongs
+  to the MinIO flow, but `set dotenv-load` in the Justfile injects it into every
+  recipe — and since env outranks the keyring above, the MinIO passphrase would
+  reach the AWS repo and fail with `repo: wrong passphrase`. To supply one
+  explicitly (CI, or a machine with no keyring), set **`SENTRA_AWS_PASSPHRASE`**;
+  the `aws-*` recipes prefer it and fall back to the keyring otherwise.
 - **`aws-test-data/` and `sentra.yaml` are gitignored** — they won't show up in
   `git status` or get committed.

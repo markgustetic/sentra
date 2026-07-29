@@ -31,6 +31,28 @@ RESTORE_DIR      := env_var_or_default("SENTRA_RESTORE_DIR", "/tmp/sentra-restor
 # AWS smoke-test payload + restore target (real S3; kept distinct from the MinIO demo dirs).
 AWS_DEMO_DIR     := env_var_or_default("SENTRA_AWS_DEMO_DIR", "aws-test-data")
 AWS_RESTORE_DIR  := env_var_or_default("SENTRA_AWS_RESTORE_DIR", "/tmp/sentra-aws-restored")
+# Size of the dedup fixture. Must span many FastCDC chunks (avg 1 MiB, max
+# 4 MiB) or appending to it re-cuts the file's only chunk and the incremental
+# backup has nothing to dedup.
+AWS_FIXTURE_MIB  := env_var_or_default("SENTRA_AWS_FIXTURE_MIB", "16")
+
+# `.env` belongs to the MinIO flow, but `set dotenv-load` above injects its
+# SENTRA_PASSPHRASE into *every* recipe — including the AWS ones, where it is
+# simply the wrong secret and fails the unlock with "repo: wrong passphrase".
+# config.Resolve checks the env var before the OS keyring, so the AWS recipes
+# have to clear it to reach the passphrase the setup wizard saved. Set
+# SENTRA_AWS_PASSPHRASE to supply one explicitly instead (CI, or no keyring).
+#
+# The value moves through the environment and never onto a command line, so it
+# stays out of `just`'s echoed recipe lines and `just --evaluate`.
+AWS_PASSPHRASE_ENV := '''
+	if [ -n "${SENTRA_AWS_PASSPHRASE:-}" ]; then
+		export SENTRA_PASSPHRASE="$SENTRA_AWS_PASSPHRASE"
+	else
+		unset SENTRA_PASSPHRASE
+	fi
+'''
+
 # Prefix that points the sentra binary at local MinIO via the AWS SDK env chain.
 LOCAL_ENV := "AWS_ACCESS_KEY_ID=" + MINIO_ACCESS_KEY + " AWS_SECRET_ACCESS_KEY=" + MINIO_SECRET_KEY
 
@@ -190,22 +212,41 @@ local-ui: _require-local-passphrase build local-up
 
 # Build + run sentra against ./sentra.yaml: first run (no config, e.g. after `just aws-reset`) opens the AWS setup wizard; once configured it opens the dashboard. Same as plain `sentra` after `just install`. Needs a real terminal.
 aws: build
+	#!/usr/bin/env bash
+	set -euo pipefail
+	{{AWS_PASSPHRASE_ENV}}
 	{{SENTRA}}
 
-# Create a small AWS test payload under AWS_DEMO_DIR (idempotent; two files so `just aws-smoke` can prove dedup).
+# Create the AWS test payload under AWS_DEMO_DIR: two small text files plus the dedup fixture.
 aws-seed:
+	#!/usr/bin/env bash
+	set -euo pipefail
 	mkdir -p "{{AWS_DEMO_DIR}}"
 	test -f "{{AWS_DEMO_DIR}}/readme.txt" || printf 'hello sentra (aws)\n' > "{{AWS_DEMO_DIR}}/readme.txt"
 	test -f "{{AWS_DEMO_DIR}}/notes.md"   || printf '# notes\nsecond file, unchanged across snapshots\n' > "{{AWS_DEMO_DIR}}/notes.md"
+	# The fixture is regenerated on every run, and deliberately NOT idempotent:
+	# a re-run against the same repo would otherwise dedup the whole thing away
+	# on the *first* snapshot, leaving the incremental with nothing to prove.
+	# Fresh bytes make snapshot 1 genuinely new on every run.
+	#
+	# /dev/urandom, not compressible filler: `new_bytes` is measured after zstd,
+	# so compressible data would collapse it toward zero and the dedup assertion
+	# below would pass whether or not a single chunk was actually reused.
+	dd if=/dev/urandom of="{{AWS_DEMO_DIR}}/dedup-fixture.bin" \
+		bs=1048576 count="{{AWS_FIXTURE_MIB}}" status=none
 
 # Verify a configured AWS repo without changing anything (identity, bucket, repo).
 aws-doctor: build
+	#!/usr/bin/env bash
+	set -euo pipefail
+	{{AWS_PASSPHRASE_ENV}}
 	{{SENTRA}} doctor
 
-# Non-interactive AWS test: backup → restore+verify → incremental (proves dedup) → check. Needs a configured sentra.yaml (run `just aws` first) and a resolvable passphrase (keyring from setup, or SENTRA_PASSPHRASE in env / .env). Reads and writes S3 but never deletes it.
+# Non-interactive AWS test: backup → restore+verify → incremental (proves dedup) → check. Needs a configured sentra.yaml (run `just aws` first) and a resolvable passphrase (the keyring entry from setup, or SENTRA_AWS_PASSPHRASE). Reads and writes S3 but never deletes it.
 aws-smoke: build aws-seed
 	#!/usr/bin/env bash
 	set -euo pipefail
+	{{AWS_PASSPHRASE_ENV}}
 	cfg="sentra.yaml"
 	if [ ! -f "$cfg" ]; then
 	  echo "No $cfg found. Run 'just aws' and complete the setup wizard first."
@@ -213,11 +254,25 @@ aws-smoke: build aws-seed
 	fi
 	command -v jq >/dev/null 2>&1 || { echo "jq is required for aws-smoke (brew install jq)."; exit 1; }
 
+	# Latest snapshot's uploaded-vs-read bytes, as "<new_bytes> <bytes>".
+	snap_bytes() { {{SENTRA}} snapshots --json | jq -r 'sort_by(.created_at) | last | "\(.new_bytes) \(.bytes)"'; }
+
 	echo "==> doctor"
 	{{SENTRA}} doctor
 
 	echo "==> backup (full)"
 	{{SENTRA}} backup "{{AWS_DEMO_DIR}}" --tag aws-smoke
+	stats="$(snap_bytes)"; full_new="${stats% *}"; full_total="${stats#* }"
+	# Sanity-check the fixture before trusting the dedup number further down. A
+	# full backup of fresh random bytes should upload about what it read; if it
+	# doesn't, the payload is compressible or already in the repo, and the
+	# incremental assertion would pass without proving a thing.
+	if [ "$full_new" -lt $(( full_total / 2 )) ]; then
+	  echo "FAIL: full backup uploaded new=$full_new of total=$full_total."
+	  echo "The fixture is not fresh incompressible data, so the dedup check below would be vacuous."
+	  exit 1
+	fi
+	echo "full backup uploaded new=$full_new total=$full_total (expected new ~= total)"
 
 	echo "==> snapshots"
 	{{SENTRA}} snapshots
@@ -233,10 +288,21 @@ aws-smoke: build aws-seed
 	echo "restore is exact-byte OK"
 
 	echo "==> incremental backup (dedup)"
-	printf 'appended at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{{AWS_DEMO_DIR}}/readme.txt"
+	# Append at EOF. FastCDC cut points depend only on the bytes preceding them,
+	# so every chunk but the last keeps its hash and only the tail is re-uploaded.
+	printf 'appended at %s\n' "$(date -u +%Y-%m-%dT%H:%M:%SZ)" >> "{{AWS_DEMO_DIR}}/dedup-fixture.bin"
 	{{SENTRA}} backup "{{AWS_DEMO_DIR}}" --tag aws-smoke-2
-	stats="$({{SENTRA}} snapshots --json | jq -r 'sort_by(.created_at) | last | "new=\(.new_bytes) total=\(.bytes)"')"
-	echo "incremental snapshot uploaded $stats (new should be « total)"
+	stats="$(snap_bytes)"; inc_new="${stats% *}"; inc_total="${stats#* }"
+	# Worst case is one max-size (4 MiB) tail chunk against the 16 MiB fixture,
+	# so half is a wide margin. Broken dedup re-uploads everything and lands
+	# near 100%, well clear of the threshold in the other direction.
+	limit=$(( inc_total / 2 ))
+	if [ "$inc_new" -ge "$limit" ]; then
+	  echo "FAIL: incremental uploaded new=$inc_new of total=$inc_total, expected < $limit."
+	  echo "Content-defined dedup did not reuse the unchanged chunks."
+	  exit 1
+	fi
+	echo "incremental uploaded new=$inc_new total=$inc_total (< $limit) — dedup reused the unchanged chunks"
 
 	echo "==> check"
 	{{SENTRA}} check
