@@ -404,6 +404,15 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			crypto.Zeroize(v.pass)
 			v.pass = nil
 			v.stage = stagePassphrase
+			// The forced route back is a stage DECREASE, which the Update
+			// wrapper never records — the history stack still ends with the
+			// entry pushed on review→provision. Truncate to the stages
+			// strictly behind passphrase, or esc would pop that stale entry
+			// and walk FORWARD to review, skipping the re-entry this handler
+			// just made mandatory and arming a confirm with a nil passphrase.
+			for len(v.history) > 0 && v.history[len(v.history)-1] >= stagePassphrase {
+				v.history = v.history[:len(v.history)-1]
+			}
 			v.newPass.Focus()
 			v.confirmPass.Blur()
 			v.notice = "another operation is in progress — try again when it finishes"
@@ -418,6 +427,18 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case confirmedMsg:
 		if msg.id != setupReviewConfirmID || v.stage != stageReview {
+			return v, nil
+		}
+		// Review must never arm provisioning without a verified passphrase
+		// in hand — an empty one would silently derive the repository key
+		// from "". Whatever path lands here with the stash wiped goes back
+		// through re-entry instead.
+		if len(v.pass) == 0 {
+			v.stage = stagePassphrase
+			v.focusConf = false
+			v.newPass.Focus()
+			v.confirmPass.Blur()
+			v.notice = "enter the repository passphrase to continue"
 			return v, nil
 		}
 		v.notice = ""

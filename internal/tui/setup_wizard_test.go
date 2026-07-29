@@ -14,6 +14,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
@@ -880,6 +881,52 @@ func TestSetupWizard_OpRejectedZeroizesPassphrase(t *testing.T) {
 	}
 	if v.notice == "" {
 		t.Fatal("rejection must keep the in-progress notice")
+	}
+}
+
+// TestSetupWizard_OpRejected_EscCannotSkipPassphraseReentry continues the
+// scenario above one keypress further. The forced route back to passphrase
+// is a stage DECREASE, which the history wrapper never records — without
+// cleanup the stack still ends with the entry pushed on review→provision,
+// so esc would pop it and walk FORWARD to review, skipping the re-entry
+// the reject handler just made mandatory (and arming a confirm that would
+// provision with a nil passphrase).
+func TestSetupWizard_OpRejected_EscCannotSkipPassphraseReentry(t *testing.T) {
+	v := setupAtReview(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push confirm modal
+	v = m.(SetupWizardView)
+	m, _ = v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(opRejectedMsg{name: "setup"})
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("precondition: reject must land on passphrase, got %v", v.stage)
+	}
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	v = m.(SetupWizardView)
+	if v.stage >= stagePassphrase {
+		t.Fatalf("esc from forced passphrase re-entry must go backward, got stage %v (forward skip past mandatory re-entry)", v.stage)
+	}
+}
+
+// TestSetupWizard_ConfirmWithEmptyPassphraseDoesNotProvision pins the
+// review-stage invariant directly: whatever path lands on review with the
+// passphrase stash empty, the confirm must route back to re-entry instead
+// of arming the setup op — an empty passphrase would silently derive the
+// repository key from "".
+func TestSetupWizard_ConfirmWithEmptyPassphraseDoesNotProvision(t *testing.T) {
+	v := setupAtReview(t)
+	crypto.Zeroize(v.pass)
+	v.pass = nil
+
+	m, _ := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+	if v.stage == stageProvision {
+		t.Fatal("confirm with empty passphrase must not reach stageProvision")
+	}
+	if v.stage != stagePassphrase {
+		t.Fatalf("confirm with empty passphrase should route to re-entry, got %v", v.stage)
 	}
 }
 
