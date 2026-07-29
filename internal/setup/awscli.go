@@ -68,7 +68,7 @@ func DefaultAWSLogin(ctx context.Context, profile string, region string) error {
 	if region != "" {
 		args = append(args, "--region", region)
 	}
-	return runAWSCLI(ctx, args, profile, true)
+	return runAWSCLI(ctx, args, profile)
 }
 
 // DefaultAWSSSOConfigured checks whether the selected profile has a complete
@@ -86,34 +86,26 @@ func DefaultAWSSSOConfigured(_ context.Context, profile string) (bool, error) {
 
 // DefaultAWSConfigureSSO delegates first-time SSO profile setup to the AWS CLI.
 func DefaultAWSConfigureSSO(ctx context.Context, profile string) error {
-	return runAWSCLI(ctx, []string{"configure", "sso"}, profile, true)
+	return runAWSCLI(ctx, []string{"configure", "sso"}, profile)
 }
 
 // DefaultAWSSSOLogin delegates browser-based SSO authentication to the AWS CLI.
 func DefaultAWSSSOLogin(ctx context.Context, profile string) error {
-	return runAWSCLI(ctx, []string{"sso", "login"}, profile, true)
+	return runAWSCLI(ctx, []string{"sso", "login"}, profile)
 }
 
-func runAWSCLI(ctx context.Context, args []string, profile string, interactive bool) error {
+// runAWSCLI runs the aws CLI wired to the caller's terminal: login and SSO
+// flows open a browser and prompt on stdin, so the child must own the TTY.
+// The TUI wizard cannot use this — it builds its own exec.Cmd via
+// tea.ExecProcess so the running program can suspend around the child.
+func runAWSCLI(ctx context.Context, args []string, profile string) error {
 	args = appendAWSProfile(args, profile)
 	cmd := exec.CommandContext(ctx, "aws", args...) //nolint:gosec // fixed binary + fixed args; profile is a user-selected AWS profile.
-	if interactive {
-		cmd.Stdin = os.Stdin
-		cmd.Stdout = os.Stdout
-		cmd.Stderr = os.Stderr
-		if err := cmd.Run(); err != nil {
-			return fmt.Errorf("aws %s: %w", strings.Join(args, " "), err)
-		}
-		return nil
-	}
-
-	out, err := cmd.CombinedOutput()
-	if err != nil {
-		msg := strings.TrimSpace(string(out))
-		if msg == "" {
-			return fmt.Errorf("aws %s: %w", strings.Join(args, " "), err)
-		}
-		return fmt.Errorf("aws %s: %w: %s", strings.Join(args, " "), err, msg)
+	cmd.Stdin = os.Stdin
+	cmd.Stdout = os.Stdout
+	cmd.Stderr = os.Stderr
+	if err := cmd.Run(); err != nil {
+		return fmt.Errorf("aws %s: %w", strings.Join(args, " "), err)
 	}
 	return nil
 }

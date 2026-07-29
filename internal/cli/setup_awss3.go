@@ -5,7 +5,6 @@ import (
 
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/diag"
-	"github.com/markgustetic/sentra/internal/setup"
 )
 
 // AWSInspectReport is an alias for diag.AWSReport, preserved so existing
@@ -24,12 +23,4 @@ func DefaultAWSCheckSDKIdentity(ctx context.Context, cfg *config.Config) error {
 // Thin wrapper over diag.Inspect.
 func DefaultAWSInspect(ctx context.Context, cfg *config.Config) (AWSInspectReport, error) {
 	return diag.Inspect(ctx, cfg)
-}
-
-// DefaultAWSPrepare performs the deterministic AWS S3 setup work chosen
-// in the wizard. It intentionally does not create or manage IAM users.
-// Thin alias over setup.DefaultAWSPrepare so callers referencing the cli
-// name (SetupDeps.PrepareAWS default, oracle tests) keep compiling.
-func DefaultAWSPrepare(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error) {
-	return setup.DefaultAWSPrepare(ctx, cfg, opts)
 }

@@ -84,14 +84,6 @@ func (s *setupProgress) Fail() {
 	fmt.Fprintf(s.out, "\r\033[2K%s %s\n", ui.Danger.Render("error"), s.label)
 }
 
-func (s *setupProgress) Clear() {
-	if !s.animated {
-		return
-	}
-	s.stop()
-	fmt.Fprint(s.out, "\r\033[2K")
-}
-
 func (s *setupProgress) stop() {
 	s.once.Do(func() {
 		close(s.done)
