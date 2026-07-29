@@ -36,10 +36,14 @@ const helpDescIndent = 4
 // it as targetID "password"), and every value here is Help-view display text,
 // never a secret. The "no secrets in artifacts" invariant is unaffected —
 // nothing derived from this map is a passphrase, key, or credential.
-// Suppressed narrowly on this declaration only (not gosec package- or
-// repo-wide) so a real hardcoded credential elsewhere still trips the linter.
+// Suppressed on this declaration only, never package- or repo-wide, so a real
+// hardcoded credential elsewhere still trips the linter. Note the directive
+// silences ALL of gosec over the declaration, not G101 alone — gosec's
+// sub-rule IDs are not addressable from //nolint. That breadth is acceptable
+// only because this is a static string map: there is no exec, file I/O, or
+// crypto here for another gosec rule to have an opinion about.
 //
-//nolint:gosec // G101 false positive: help text keyed by command ID "password", not a credential
+//nolint:gosec // false positive: help text keyed by command ID "password", not a credential
 var viewDescriptions = map[string]string{
 	"dashboard":    "Repo health, last snapshot, and size timeline",
 	"backup":       "Snapshot a folder into the repository",
@@ -61,9 +65,12 @@ var viewDescriptions = map[string]string{
 	"help":         "What each screen in the rail does",
 }
 
-// helpHeaderRows is the header line plus the blank line under it. The entry
-// window is sized against the height left over, so the rendered block never
-// exceeds the budget the shell handed us.
+// helpHeaderRows is the header line plus the blank line under it. window()
+// sizes the entry window against the height left over, so the rendered block
+// fits the budget the shell handed us at any height with room for one entry
+// (>= 4). Below that the one-entry floor in window() wins and the block is 4
+// rows regardless — unreachable in practice, because App.tooSmall never renders
+// a content view below the 16 rows an 80x20 terminal budgets.
 const helpHeaderRows = 2
 
 // HelpView lists every navigable screen with a one-line description of what it
@@ -79,10 +86,13 @@ const helpHeaderRows = 2
 //
 // It performs no I/O, opens no repository, and takes no operation guard, so it
 // needs no Deps — hence the constructor signature differs from its siblings'.
+// Only height is kept from the WindowSizeMsg: the window arithmetic is
+// vertical, and descriptions are never wrapped — TestHelp_DescriptionsFitTheNarrowestPane
+// keeps every one of them inside the narrowest pane the shell can hand us, so
+// there is nothing for a width to decide.
 type HelpView struct {
 	registry *Registry
 	cursor   int
-	width    int
 	height   int
 }
 
@@ -118,7 +128,7 @@ func (v HelpView) entries() []Command {
 func (v HelpView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
-		v.width, v.height = msg.Width, msg.Height
+		v.height = msg.Height
 		return v, nil
 
 	case tea.KeyMsg:

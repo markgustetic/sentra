@@ -76,9 +76,15 @@ func TestHelpView_ListsCommandsInRailOrder(t *testing.T) {
 			t.Errorf("missing description for cmd%d:\n%s", i, out)
 		}
 	}
-	first, last := strings.Index(out, "View 0"), strings.Index(out, "View 2")
-	if first < 0 || last < 0 || first > last {
-		t.Errorf("entries are not in registration order:\n%s", out)
+	// Check EVERY adjacent pair, not just the endpoints: comparing only the
+	// first and last positions would pass on 0,2,1 — a middle-entry swap, which
+	// is exactly the drift this test exists to catch.
+	for i := 1; i < 3; i++ {
+		prev := strings.Index(out, fmt.Sprintf("View %d", i-1))
+		cur := strings.Index(out, fmt.Sprintf("View %d", i))
+		if prev < 0 || cur < 0 || prev > cur {
+			t.Errorf("View %d does not follow View %d in registration order:\n%s", i, i-1, out)
+		}
 	}
 }
 
@@ -125,11 +131,26 @@ func TestHelpView_EnterActivatesHighlighted(t *testing.T) {
 // it populates the registry, and a bare Deps{} test may pass nil. Neither may
 // panic on render or on enter.
 func TestHelpView_EmptyRegistryDoesNotPanic(t *testing.T) {
-	for name, v := range map[string]HelpView{
-		"nil registry":   NewHelpView(nil),
-		"empty registry": NewHelpView(NewRegistry()),
-	} {
-		t.Run(name, func(t *testing.T) {
+	cases := []struct {
+		name   string
+		view   HelpView
+		height int // 0 leaves window() on its "no WindowSizeMsg yet" early return
+	}{
+		{name: "nil registry", view: NewHelpView(nil)},
+		{name: "empty registry", view: NewHelpView(NewRegistry())},
+		// A SIZED empty list takes window()'s other path: height > 0 with total
+		// == 0, where the visible-count arithmetic actually runs and must not
+		// hand View() a range that indexes an empty slice. Without this case the
+		// branch is never executed.
+		{name: "empty registry, sized", view: NewHelpView(NewRegistry()), height: 16},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			v := tc.view
+			if tc.height > 0 {
+				m, _ := v.Update(tea.WindowSizeMsg{Width: 59, Height: tc.height})
+				v = m.(HelpView)
+			}
 			_ = v.View()
 			if _, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
 				t.Error("enter on an empty list must emit nothing")
