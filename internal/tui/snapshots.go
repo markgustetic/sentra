@@ -66,9 +66,16 @@ type Snapshots struct {
 	// detailOpen flips on enter, off on esc. Two visual modes is
 	// simpler than two sub-models; the manifest is small (a few KB
 	// of file entries) so re-rendering on each frame is fine.
-	detailOpen bool
-	detailMan  repo.Manifest
-	detailErr  error
+	// The manifest load can hit S3, so enter opens the page in a
+	// loading state and the load runs in a tea.Cmd — never inline in
+	// Update, where it would freeze rendering and input for the whole
+	// TUI. detailID keys the in-flight load so a result that resolves
+	// after esc (or after another row was opened) is dropped.
+	detailOpen    bool
+	detailLoading bool
+	detailID      string
+	detailMan     repo.Manifest
+	detailErr     error
 
 	// sortMode orders the list; filter is a live substring on id+tag. Both are
 	// applied by rebuild() to derive the table rows from the full snaps slice.
@@ -362,6 +369,15 @@ func (s Snapshots) copySelectedID() Snapshots {
 
 func (s Snapshots) cursor() int { return s.tbl.Cursor() }
 
+// snapDetailLoadedMsg carries a finished manifest load back to the view.
+// id echoes the request so Update can drop results the operator has
+// since navigated away from.
+type snapDetailLoadedMsg struct {
+	id  string
+	man repo.Manifest
+	err error
+}
+
 // Init is a no-op.
 func (Snapshots) Init() tea.Cmd { return nil }
 
@@ -379,10 +395,22 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Leave room for the parent's top/bottom bars.
 		s.tbl.SetHeight(maxInt(5, msg.Height-8))
 		return s, nil
+	case snapDetailLoadedMsg:
+		// Apply only the load the operator is still waiting on: esc
+		// clears detailID, and opening another row changes it.
+		if !s.detailOpen || msg.id != s.detailID {
+			return s, nil
+		}
+		s.detailLoading = false
+		s.detailMan = msg.man
+		s.detailErr = msg.err
+		return s, nil
 	case tea.KeyMsg:
 		if s.detailOpen {
 			if msg.Type == tea.KeyEsc {
 				s.detailOpen = false
+				s.detailLoading = false
+				s.detailID = ""
 				s.detailErr = nil
 			}
 			return s, nil
@@ -409,11 +437,16 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				return s, nil
 			}
 			id := row[0]
-			m, err := s.loader(id)
 			s.detailOpen = true
-			s.detailMan = m
-			s.detailErr = err
-			return s, nil
+			s.detailLoading = true
+			s.detailID = id
+			s.detailMan = repo.Manifest{}
+			s.detailErr = nil
+			loader := s.loader
+			return s, func() tea.Msg {
+				man, err := loader(id)
+				return snapDetailLoadedMsg{id: id, man: man, err: err}
+			}
 		}
 	}
 	// A completed operation (backup, prune, sync, …) is broadcast to every
@@ -463,6 +496,10 @@ func (s Snapshots) View() string {
 // will scroll within the terminal pager; making this a bubbles/list
 // is a future iteration.
 func (s Snapshots) viewDetail() string {
+	if s.detailLoading {
+		body := ui.Subtle.Render("loading snapshot ") + s.detailID + ui.Subtle.Render(" …")
+		return ui.Panel.Render(body) + "\n" + ui.Subtle.Render("esc back") + "\n"
+	}
 	if s.detailErr != nil {
 		body := ui.Danger.Render("error loading snapshot: ") + s.detailErr.Error()
 		return ui.Panel.Render(body) + "\n" + ui.Subtle.Render("esc back") + "\n"

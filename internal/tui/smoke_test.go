@@ -137,10 +137,15 @@ func TestSmoke_BackupThenBrowse(t *testing.T) {
 		{Type: tea.KeyRunes, Runes: []rune("y")}, // copy id
 		{Type: tea.KeyRunes, Runes: []rune("/")}, // filter open
 		{Type: tea.KeyRunes, Runes: []rune("nightly")},
-		{Type: tea.KeyEsc},   // clear filter
-		{Type: tea.KeyEnter}, // open detail
+		{Type: tea.KeyEsc}, // clear filter
 	} {
 		m, _ = app.Update(k)
+		app = m.(App)
+	}
+	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open detail
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) { // run the async manifest load, as the runtime would
+		m, _ = app.Update(msg)
 		app = m.(App)
 	}
 	if out := app.View(); !strings.Contains(out, "files") {

@@ -76,7 +76,9 @@ func TestSnapshots_NavigatesWithArrows(t *testing.T) {
 
 // TestSnapshots_EnterOpensDetail asserts that Enter on a row sets
 // the selected snapshot ID and switches to the detail sub-view. The
-// detail view's contents are loaded via the detailLoader hook.
+// detail view's contents are loaded via the detailLoader hook, which
+// runs inside the returned tea.Cmd — the test executes it and feeds
+// the resulting message back, standing in for the Bubbletea runtime.
 func TestSnapshots_EnterOpensDetail(t *testing.T) {
 	loaderCalled := ""
 	manifest := sampleManifest()
@@ -85,11 +87,16 @@ func TestSnapshots_EnterOpensDetail(t *testing.T) {
 		return manifest, nil
 	})
 	s = s.SetSnapshots(sampleSnaps())
-	updated, _ := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	updated, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := updated.(Snapshots)
 	if !got.detailOpen {
 		t.Fatalf("detail not opened after enter")
 	}
+	if cmd == nil {
+		t.Fatal("enter must return a load command")
+	}
+	updated, _ = got.Update(cmd())
+	got = updated.(Snapshots)
 	if loaderCalled == "" {
 		t.Errorf("detail loader was not invoked")
 	}
@@ -105,6 +112,57 @@ func TestSnapshots_EnterOpensDetail(t *testing.T) {
 	}
 	if !strings.Contains(view, "files here") {
 		t.Errorf("detail view should count the root-level README.md:\n%s", view)
+	}
+}
+
+// TestSnapshots_EnterLoadsDetailAsync pins the rule that the manifest
+// load — which can hit S3 — never runs inline in Update. Bubbletea
+// calls Update on its single event goroutine, so a blocking call there
+// freezes rendering AND input for the whole TUI (up to the loader's
+// 10s timeout). The load must happen inside the returned tea.Cmd, with
+// the detail page opening immediately in its loading state.
+func TestSnapshots_EnterLoadsDetailAsync(t *testing.T) {
+	loaderCalls := 0
+	s := NewSnapshotsWithLoader(Deps{}, func(string) (repo.Manifest, error) {
+		loaderCalls++
+		return sampleManifest(), nil
+	})
+	s = s.SetSnapshots(sampleSnaps())
+	updated, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Snapshots)
+	if loaderCalls != 0 {
+		t.Fatalf("loader ran %d time(s) synchronously inside Update; it must run in the returned tea.Cmd", loaderCalls)
+	}
+	if !got.detailOpen {
+		t.Fatal("detail page should open immediately (loading state)")
+	}
+	if cmd == nil {
+		t.Fatal("enter must return a tea.Cmd that performs the load")
+	}
+	if msg := cmd(); loaderCalls != 1 {
+		t.Fatalf("executing the command should invoke the loader once, got %d", loaderCalls)
+	} else if updated, _ = got.Update(msg); !strings.Contains(updated.(Snapshots).View(), "src/") {
+		t.Errorf("detail content missing after load message applied:\n%s", updated.(Snapshots).View())
+	}
+}
+
+// TestSnapshots_StaleDetailResultDropped: a load that resolves after
+// the operator already esc'd out must not reopen the detail page.
+func TestSnapshots_StaleDetailResultDropped(t *testing.T) {
+	s := NewSnapshotsWithLoader(Deps{}, func(string) (repo.Manifest, error) {
+		return sampleManifest(), nil
+	})
+	s = s.SetSnapshots(sampleSnaps())
+	updated, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := updated.(Snapshots)
+	if cmd == nil {
+		t.Fatal("enter must return a load command")
+	}
+	updated, _ = got.Update(tea.KeyMsg{Type: tea.KeyEsc}) // esc before the load resolves
+	got = updated.(Snapshots)
+	updated, _ = got.Update(cmd()) // stale result arrives late
+	if updated.(Snapshots).detailOpen {
+		t.Errorf("stale detail result must not reopen the closed detail page")
 	}
 }
 
