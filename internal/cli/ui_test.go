@@ -578,12 +578,14 @@ func TestRunUI_SetupRoutingMatrix(t *testing.T) {
 					// this hook — it is openRepoForConfig, reached only on the
 					// dashboard branch (configured+unlocked+!forceSetup, i.e. the
 					// "configured and unlocked" row), that calls it to actually open
-					// the repo. Model it the same non-interactive file source
-					// probeLaunchState used, so that row can open the repo it
-					// legitimately routes to; fatal only guards against ever falling
-					// through to a real interactive prompt when no file exists.
-					PassphraseWithConfig: func(cfg *config.Config) ([]byte, error) {
-						if passFile == "" {
+					// the repo. Gate strictly on that exact combination rather than
+					// on passFile != "" (every configured+unlocked row has a
+					// passFile, forced or not): a future regression that let
+					// forceSetup's "outranks the lock gate" path also open the repo
+					// must fail loudly here, not resolve quietly because a file
+					// happened to be present.
+					PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
+						if !(tc.configExists && tc.passphraseAvail && !tc.forceSetup) {
 							t.Fatal("interactive passphrase resolver must not run on the launch path")
 							return nil, nil
 						}
@@ -616,6 +618,16 @@ func TestRunUI_SetupRoutingMatrix(t *testing.T) {
 			}
 			if d.Reconfigure != tc.wantReconfigure {
 				t.Errorf("Reconfigure = %v, want %v", d.Reconfigure, tc.wantReconfigure)
+			}
+			// Every row except the true dashboard launch (empty InitialView) must
+			// carry a nil Repo — the wizard/unlock views own opening the repo
+			// themselves. This is a structural backstop on top of the
+			// PassphraseWithConfig gate above: even if some future change made a
+			// non-dashboard route resolve a passphrase and open a repo some other
+			// way, a live Repo here would still catch it.
+			wantNilRepo := tc.wantInitialView != ""
+			if wantNilRepo && d.Repo != nil {
+				t.Errorf("Repo = %v, want nil for a non-dashboard launch (InitialView %q)", d.Repo, d.InitialView)
 			}
 		})
 	}
