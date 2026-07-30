@@ -104,8 +104,10 @@ func NewSetup(deps UIDeps) *cobra.Command {
 deps swap unchanged.
 
 `--force` is removed. Under decision 4 the review stage is the confirmation gate, so a
-flag whose only job was to unlock a flow that gate already protects has none left. This
-is the change's one user-visible removal.
+flag whose only job was to unlock a flow that gate already protects has none left.
+
+> **Amended after review.** `--force` was not the only user-visible removal. See
+> "Capabilities this change removed" below.
 
 ### Routing
 
@@ -226,10 +228,12 @@ is the half of the invariant that matters. That test is Task 1 of the plan.
 ### New tests
 
 1. **Routing matrix** (`internal/cli`, stub `Run` captures the constructed `tui.App`) —
-   table over all eight combinations of `ConfigExists × PassphraseAvailable ×
-   forceSetup`, asserting `InitialView` and `Reconfigure`. The full matrix, not just
-   the new case; include the regression row where config + locked + `forceSetup=false`
-   still routes to `unlock`.
+   table over the reachable combinations of `ConfigExists × PassphraseAvailable ×
+   forceSetup`, asserting `InitialView` and `Reconfigure`. Six rows, not eight: with no
+   config there is nothing to unlock, so `ConfigExists=false` collapses its two
+   `PassphraseAvailable` values into one first-run row per `forceSetup`. The full
+   reachable matrix, not just the new case; include the regression row where config +
+   locked + `forceSetup=false` still routes to `unlock`.
 2. **Seed guard** — `ConfigExists && forceSetup && SetupSeedConfig != nil` launches
    with the on-disk config, not the seed.
 3. **Review warning** (tui view) — `Reconfigure` true renders the config path, false
@@ -258,9 +262,48 @@ commits.
 - **CLI flag trimming.** `prune`'s 15 flags, `agent`'s 10, `backup`'s 9. Each removal
   is an independent judgment about who depends on it, and mixing behavior changes into
   a deletion refactor obscures both.
-- **Rebuilding any deleted CLI capability elsewhere.** Nothing here is a capability
-  loss: the engine, transforms, and error classification all live in `internal/setup`
-  and keep their tests.
+- **Rebuilding any deleted CLI capability elsewhere.** The engine, transforms, and
+  error classification all live in `internal/setup` and keep their tests, so the
+  *logic* survives the wizard. That is not the same as no capability loss — see the
+  section below, added after review, for what actually left.
+
+## Capabilities this change removed
+
+Amended after review. The original text claimed "nothing here is a capability loss" and
+called `--force` "the change's one user-visible removal". Both were false.
+
+- **`sentra setup --force`.** Removed deliberately; the review stage is the gate. The
+  review confirm modal names the file it will overwrite, since unlike the `huh` confirm
+  it replaced, its Enter confirms rather than cancels.
+
+- **AWS CLI brew auto-install — REMOVED, not yet restored.** `cliSetupEffects.
+  EnsureAWSCLI` used to substitute `HuhAWSCLIInstallConfirm` for the engine's nil
+  confirm, so a missing `aws` binary on a Homebrew machine prompted and ran
+  `brew install awscli`. That decorator died with the CLI wizard.
+  `Engine.PrepareAWS` passes nil, the TUI passes nil by design (a `huh` form cannot run
+  inside a live `tea.Program`), and production now uses plain `DefaultEffects`, so
+  `DefaultEnsureAWSCLI`'s install branch and `DefaultAWSCLIInstallPlan` are unreachable.
+  The old `AGENTS.md` exception list named "AWS CLI auto-install" as a deliberate
+  CLI-only surface, so this was tracked before and must stay tracked now.
+
+  The machinery is kept rather than deleted, with a comment at the install branch
+  recording what would re-enable it: a TUI confirm modal whose "yes" drives the plan the
+  way `interactiveAWSAuthCommand` already suspends the program to run `aws login`.
+  Building that modal is a feature and was out of scope for the fix wave. Until then a
+  missing `aws` binary is reported with one actionable message — install it, or rerun
+  setup and choose Existing credentials — on brew and non-brew machines alike.
+
+- **Non-interactive passphrase sourcing — removed, then restored.** The deleted
+  `promptSetupPassphrase` ran `config.Resolve{PassphraseFile: …}`, which checks
+  `--passphrase-file` then `SENTRA_PASSPHRASE` before prompting; the TUI wizard read
+  only its two `textinput` widgets. The failure was silent and delayed: with
+  `SENTRA_PASSPHRASE=X` exported the operator types Y, the repo initializes under Y,
+  and every later command resolves X and fails to decrypt with an error that never
+  mentions setup — while `docs/QUICKSTART.md` actively recommends exporting the var.
+  Restored in the fix wave: `config.ResolveNonInteractive` splits the file-then-env half
+  of the priority list out of `Resolve` (which now calls it, so the two cannot drift),
+  and the wizard skips its passphrase stage when a source answers, naming the source —
+  never the secret — on the review screen.
 
 ## Known pre-existing issue, deliberately not fixed
 

@@ -75,6 +75,15 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   after the user chooses that setup option, but must never write secret
   material to `sentra.yaml`, setup drafts, docs, or logs. Setup drafts are
   non-secret resume state only and should be removed after successful setup.
+  It resolves `--passphrase-file` then `SENTRA_PASSPHRASE` before offering a
+  passphrase field: the repo must initialize under the same secret every later
+  command resolves, or the mismatch surfaces later as an undecryptable repo.
+  The review screen names the SOURCE, never the secret.
+  AWS CLI **brew auto-install is currently absent**: it needed a confirm prompt,
+  and `huh` cannot run inside a live `tea.Program`. `setup.DefaultEnsureAWSCLI`
+  keeps the machinery behind a confirm no caller arms, so restoring it means a
+  TUI confirm modal — not new logic. Until then a missing `aws` binary gets one
+  actionable message on every platform.
 - `sentra setup iam-policy` must emit non-secret IAM JSON only.
 - `sentra doctor` is read-only. It may validate config, AWS identity, bucket
   access/settings, and repo health, but must not create buckets, change bucket
