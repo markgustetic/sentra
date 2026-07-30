@@ -150,6 +150,16 @@ func runRestore(
 			Bytes:      m.Stats.Bytes,
 			Scope:      paths,
 		}
+		if len(paths) > 0 {
+			// Scoped runs report the scoped counts — the same numbers
+			// the dry-run form and text mode show — never the whole
+			// manifest's stats.
+			files, bytes, err := repo.ScopedTreeStats(m, paths)
+			if err != nil {
+				return err
+			}
+			row.Files, row.Bytes = files, bytes
+		}
 		if verify {
 			report, err := r.VerifyRestore(cmd.Context(), snapID, destDir, paths...)
 			if err != nil {

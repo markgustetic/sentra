@@ -225,3 +225,50 @@ func TestRestore_JSON(t *testing.T) {
 		t.Errorf("unexpected row: %+v", row)
 	}
 }
+
+// TestRestore_JSON_ScopedCounts: a scoped restore's JSON reports the
+// SCOPED file/byte counts — the numbers the dry-run and text forms
+// already show — never the whole manifest's stats.
+func TestRestore_JSON_ScopedCounts(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, dir)
+
+	deps, snapID, src, out := restoreFixture(t, "hunter2")
+	if err := os.WriteFile(filepath.Join(src, "second.txt"), []byte("more"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	_ = snapID // re-snapshot below so the repo holds two files
+	store, err := deps.NewStore(context.Background(), nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	snap, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{})
+	r.Close()
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	dest := filepath.Join(dir, "out")
+	cmd := NewRestore(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{snap.ID, dest, "second.txt", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var row struct {
+		Files int      `json:"files"`
+		Scope []string `json:"scope"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &row); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if row.Files != 1 {
+		t.Errorf("scoped restore JSON files = %d, want 1 (the scoped count)", row.Files)
+	}
+}

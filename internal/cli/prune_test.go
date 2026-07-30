@@ -428,3 +428,89 @@ func TestPrune_JSON(t *testing.T) {
 		t.Errorf("unexpected plan: %+v (ids %v)", plan, ids)
 	}
 }
+
+// TestPrune_ApplyJSONIsPureJSON: --apply --yes --json must emit exactly
+// one parseable JSON document on stdout — no plan prose mixed in. This
+// is the cron path; automation parses stdout.
+func TestPrune_ApplyJSONIsPureJSON(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, _, _, out := pruneFixture(t, "hunter2", 3)
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "1", "--apply", "--yes", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var report struct {
+		DryRun  bool `json:"dry_run"`
+		Deleted int  `json:"deleted"`
+		GC      *struct {
+			DeletedBlobs int `json:"deleted_blobs"`
+		} `json:"gc"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("stdout is not a single JSON document: %v\n%s", err, out.String())
+	}
+	if report.DryRun || report.Deleted != 2 || report.GC == nil {
+		t.Errorf("unexpected report: %+v", report)
+	}
+}
+
+// TestPrune_DeclinedConfirmStillEmitsJSON: --apply --json without --yes
+// where the confirm is declined must still emit a JSON document (with
+// aborted set), never bare prose or empty stdout.
+func TestPrune_DeclinedConfirmStillEmitsJSON(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, store, _, out := pruneFixture(t, "hunter2", 3)
+	deps.Confirm = func(string) (bool, error) { return false, nil }
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "1", "--apply", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var report struct {
+		Aborted bool `json:"aborted"`
+		Deleted int  `json:"deleted"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("declined confirm must still emit JSON: %v\n%s", err, out.String())
+	}
+	if !report.Aborted || report.Deleted != 0 {
+		t.Errorf("unexpected report: %+v", report)
+	}
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 3 {
+		t.Errorf("declined confirm must not delete anything, got %d snapshots", len(snaps))
+	}
+}
+
+// TestPrune_JSONKeepIsNeverNull: an all-dropped plan encodes keep as
+// [], not null — consumers iterate it.
+func TestPrune_JSONKeepIsNeverNull(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, _, _, out := pruneFixture(t, "hunter2", 2)
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "0", "--keep-daily", "0", "--keep-weekly", "0", "--keep-monthly", "0", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if strings.Contains(out.String(), `"keep": null`) {
+		t.Errorf("keep must encode as [], got:\n%s", out.String())
+	}
+}

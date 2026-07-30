@@ -182,13 +182,13 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	// carries the plan; the apply form re-emits it after deletion with
 	// the outcome counts filled in.
 	if flags.asJSON && !flags.apply {
-		return writePruneJSON(out, decisions, drop, true, 0, nil)
+		return writePruneJSON(out, decisions, drop, true, 0, nil, false)
 	}
 
 	// Print the dry-run / what-would-happen summary unconditionally.
 	// In apply-mode this doubles as the prompt context.
 	if len(drop) == 0 && flags.asJSON {
-		return writePruneJSON(out, decisions, drop, false, 0, nil)
+		return writePruneJSON(out, decisions, drop, false, 0, nil, false)
 	}
 	if len(drop) == 0 {
 		fmt.Fprintln(out, ui.Subtle.Render("Nothing to delete; current snapshots match retention policy."))
@@ -199,24 +199,29 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 		return nil
 	}
 
-	if !flags.apply {
-		fmt.Fprintln(out, ui.Primary.Render("Dry-run: would prune snapshots"))
-	} else if !flags.asJSON {
-		fmt.Fprintln(out, ui.Warn.Render("Will prune snapshots"))
-	}
-	fmt.Fprintf(out, "  keep:  %d snapshots\n", len(keep))
-	fmt.Fprintf(out, "  drop:  %d snapshots (~%s freed estimate)\n",
-		len(drop), ui.FormatBytes(freedEstimate))
-	for _, id := range drop {
-		info := infoByID[id]
-		fmt.Fprintf(out, "    - %s  %s  %s\n",
-			id,
-			info.CreatedAt.UTC().Format("2006-01-02 15:04"),
-			emptyDash(info.Tag),
-		)
-	}
-	if flags.explain {
-		writeRetentionExplanation(out, decisions)
+	// Every text line below is gated on !asJSON: in JSON mode stdout
+	// must carry exactly one JSON document, nothing else — automation
+	// parses it.
+	if !flags.asJSON {
+		if !flags.apply {
+			fmt.Fprintln(out, ui.Primary.Render("Dry-run: would prune snapshots"))
+		} else {
+			fmt.Fprintln(out, ui.Warn.Render("Will prune snapshots"))
+		}
+		fmt.Fprintf(out, "  keep:  %d snapshots\n", len(keep))
+		fmt.Fprintf(out, "  drop:  %d snapshots (~%s freed estimate)\n",
+			len(drop), ui.FormatBytes(freedEstimate))
+		for _, id := range drop {
+			info := infoByID[id]
+			fmt.Fprintf(out, "    - %s  %s  %s\n",
+				id,
+				info.CreatedAt.UTC().Format("2006-01-02 15:04"),
+				emptyDash(info.Tag),
+			)
+		}
+		if flags.explain {
+			writeRetentionExplanation(out, decisions)
+		}
 	}
 
 	if !flags.apply {
@@ -240,6 +245,9 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 			return fmt.Errorf("confirm: %w", err)
 		}
 		if !ok {
+			if flags.asJSON {
+				return writePruneJSON(out, decisions, drop, false, 0, nil, true)
+			}
 			fmt.Fprintln(out, ui.Subtle.Render("Aborted by user."))
 			return nil
 		}
@@ -269,7 +277,7 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	}
 
 	if flags.asJSON {
-		return writePruneJSON(out, decisions, drop, false, deletedCount, &stats)
+		return writePruneJSON(out, decisions, drop, false, deletedCount, &stats, false)
 	}
 	fmt.Fprintln(out, ui.Success.Render("Prune complete"))
 	fmt.Fprintf(out, "  deleted snapshots: %d\n", deletedCount)
@@ -288,7 +296,10 @@ type pruneJSONReport struct {
 	Keep    []pruneJSONKeep `json:"keep"`
 	Drop    []string        `json:"drop"`
 	Deleted int             `json:"deleted"`
-	GC      *pruneJSONGC    `json:"gc,omitempty"`
+	// Aborted is set when --apply's confirm was declined: nothing was
+	// deleted, and the exit code is 0 (declining is not an error).
+	Aborted bool         `json:"aborted,omitempty"`
+	GC      *pruneJSONGC `json:"gc,omitempty"`
 }
 
 type pruneJSONKeep struct {
@@ -302,11 +313,13 @@ type pruneJSONGC struct {
 	LiveBlobs    int   `json:"live_blobs"`
 }
 
-func writePruneJSON(w io.Writer, decisions []repo.RetentionDecision, drop []string, dryRun bool, deleted int, gc *repo.GCStats) error {
+func writePruneJSON(w io.Writer, decisions []repo.RetentionDecision, drop []string, dryRun bool, deleted int, gc *repo.GCStats, aborted bool) error {
 	report := pruneJSONReport{
 		DryRun:  dryRun,
+		Keep:    []pruneJSONKeep{},
 		Drop:    drop,
 		Deleted: deleted,
+		Aborted: aborted,
 	}
 	if report.Drop == nil {
 		report.Drop = []string{}
