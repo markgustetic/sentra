@@ -1310,3 +1310,42 @@ func TestSetupWizard_PrepareFailureWritesNoConfig(t *testing.T) {
 		t.Fatalf("PrepareAWS failed, so no config may be written; stat err = %v", statErr)
 	}
 }
+
+// TestSetupWizard_ReviewWarnsOnReconfigure: when the wizard was opened over an
+// existing config (`sentra setup` on a configured repo), the review stage is
+// the only confirmation gate before the file is rewritten, so it must name the
+// path it will overwrite. Asserted as text, not color — tests run under
+// lipgloss's Ascii profile, which emits no ANSI at all.
+func TestSetupWizard_ReviewWarnsOnReconfigure(t *testing.T) {
+	tests := []struct {
+		name        string
+		reconfigure bool
+		wantWarning bool
+	}{
+		{"reconfigure warns", true, true},
+		{"first run stays quiet", false, false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			cfgPath := filepath.Join(t.TempDir(), "sentra.yaml")
+			v := NewSetupWizardView(Deps{
+				Config:      &config.Config{},
+				ConfigPath:  cfgPath,
+				Reconfigure: tc.reconfigure,
+			})
+			m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+			v = m.(SetupWizardView)
+			v.stage = stageReview
+
+			out := v.View()
+			got := strings.Contains(out, "overwrites")
+			if got != tc.wantWarning {
+				t.Errorf("review stage overwrite warning present = %v, want %v; got:\n%s",
+					got, tc.wantWarning, out)
+			}
+			if tc.wantWarning && !strings.Contains(out, cfgPath) {
+				t.Errorf("overwrite warning must name the config path %q; got:\n%s", cfgPath, out)
+			}
+		})
+	}
+}

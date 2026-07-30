@@ -1133,6 +1133,14 @@ func (v SetupWizardView) View() string {
 	case stageReview:
 		b.WriteString(v.wizardHeader())
 		b.WriteString(setup.ReviewText(v.deps.ConfigPath, v.plan))
+		if v.deps.Reconfigure {
+			// Opened over an existing config: this stage is the only gate before
+			// the file is rewritten, so name the path. Styling the plain string
+			// and appending it — wrapping already-styled text would embed a
+			// reset that kills the surrounding style mid-line.
+			fmt.Fprintf(&b, "%s\n", ui.Warn.Render(
+				fmt.Sprintf("completing setup overwrites %s", v.deps.ConfigPath)))
+		}
 		if v.notice != "" {
 			fmt.Fprintf(&b, "%s\n", ui.Warn.Render(v.notice))
 		}
