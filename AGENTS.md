@@ -137,7 +137,21 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   the frozen data listing never saw.
 - Policy hooks (`hooks.before/after/on_failure`) run via `sh -c`; a failing
   before-hook aborts the run. The failure webhook URL lives in an env var —
-  only the variable NAME may appear in `sentra.yaml`.
+  only the variable NAME may appear in `sentra.yaml`. Hook execution lives in
+  `internal/policy` (below both surfaces) and MUST run identically from
+  `sentra policy run` and the TUI's policy run — a surface that skips hooks
+  backs up different data.
+- TUI parity: every operational CLI capability has a TUI affordance. Known,
+  deliberate CLI-only surfaces: `--json`/`--config`/logging flags and exit
+  codes (scripting-inherent), `backup plan`/`apply` (file-based review is the
+  point; the TUI's confirm gate is its equivalent), `init --force`
+  re-bootstrap, standalone `setup iam-policy` for an arbitrary bucket, setup
+  draft resume, AWS CLI auto-install, `password --new-passphrase-file`, and
+  per-run knob overrides (`prune --keep-*`, `--concurrency`,
+  `--stale-lock-after`, agent `--root/--categories/--local-only/
+  --max-tool-calls`) — those knobs come from config in the TUI. Do not let
+  new CLI capabilities ship without either a TUI affordance or an entry in
+  this list.
 - `repo.s3.storage_class` passes through to PutObject; GLACIER and
   DEEP_ARCHIVE must stay refused (synchronous chunk reads cannot retrieve
   them). `backup.max_upload_rate` paces uploads only — never throttle
