@@ -75,6 +75,13 @@ func runRestore(
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
+	// Accept "latest", a unique prefix, or the trailing hex a listing
+	// shows — not just the full ID.
+	snapID, err = r.ResolveSnapshotID(cmd.Context(), snapID)
+	if err != nil {
+		return err
+	}
+
 	stderr := cmdStderr(cmd, deps.Stderr)
 	stdout := cmdStdout(cmd, deps.Stdout)
 

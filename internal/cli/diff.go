@@ -65,6 +65,15 @@ func runDiff(cmd *cobra.Command, deps DiffDeps, idA, idB string, asJSON bool, cf
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
+	// Accept "latest", unique prefixes, or trailing-hex shorthand for
+	// either side.
+	if idA, err = r.ResolveSnapshotID(cmd.Context(), idA); err != nil {
+		return err
+	}
+	if idB, err = r.ResolveSnapshotID(cmd.Context(), idB); err != nil {
+		return err
+	}
+
 	res, err := r.Diff(cmd.Context(), idA, idB)
 	if err != nil {
 		return fmt.Errorf("diff: %w", err)
