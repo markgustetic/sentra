@@ -44,6 +44,7 @@ type syncFlags struct {
 	concurrency int
 	dryRun      bool
 	asJSON      bool
+	snapshots   []string
 }
 
 // NewSync returns the cobra command for `sentra sync`. The
@@ -90,6 +91,8 @@ func NewSync(deps SyncDeps) *cobra.Command {
 		"list what would be copied without writing to the destination")
 	cmd.Flags().BoolVar(&flags.asJSON, "json", false,
 		"emit the sync stats as JSON instead of the text summary")
+	cmd.Flags().StringArrayVar(&flags.snapshots, "snapshot", nil,
+		"sync only this snapshot (repeatable; accepts latest/prefix/suffix refs)")
 	return cmd
 }
 
@@ -153,10 +156,22 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 	}
 
 	// 8. SyncTo.
+	// Resolve each --snapshot ref against the SOURCE before handing
+	// full IDs to the repo layer.
+	selected := make([]string, 0, len(flags.snapshots))
+	for _, ref := range flags.snapshots {
+		id, err := src.ResolveSnapshotID(cmd.Context(), ref)
+		if err != nil {
+			return err
+		}
+		selected = append(selected, id)
+	}
+
 	stats, err := src.SyncTo(cmd.Context(), dstStore, repo.SyncOptions{
 		InitDest:    flags.initDest,
 		DryRun:      flags.dryRun,
 		Concurrency: flags.concurrency,
+		Snapshots:   selected,
 	})
 	if err != nil {
 		return fmt.Errorf("sync: %w", err)

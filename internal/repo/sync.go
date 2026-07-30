@@ -64,6 +64,13 @@ type SyncOptions struct {
 	// (sum of source's data/ blob sizes — manifests are small and
 	// excluded from the estimate). Nil is a no-op (NopReporter).
 	Progress progress.Reporter
+
+	// Snapshots restricts the sync to the named snapshot IDs (full
+	// IDs — CLI-level resolution happens before this layer): their
+	// manifests plus the chunk closure those manifests reference.
+	// Empty copies everything. A selection that doesn't exist on the
+	// source fails before anything is written to dest.
+	Snapshots []string
 }
 
 // SyncStats summarizes a SyncTo run. All fields are populated even
@@ -151,6 +158,27 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 		return stats, ErrSameSrcAndDst
 	}
 
+	// Selective sync: resolve the chosen snapshots' chunk closure up
+	// front — from the manifests themselves, not a listing, so there
+	// is no listing race to reason about — and fail before any dest
+	// write when a selection doesn't exist on the source.
+	var allowKeys map[string]struct{}
+	if len(opts.Snapshots) > 0 {
+		allowKeys = make(map[string]struct{})
+		for _, id := range opts.Snapshots {
+			m, err := r.LoadSnapshot(ctx, id)
+			if err != nil {
+				return stats, fmt.Errorf("repo: sync selected snapshot %s: %w", id, err)
+			}
+			allowKeys[snapshotPrefix+m.ID] = struct{}{}
+			for _, fe := range m.Tree {
+				for _, h := range fe.Chunks {
+					allowKeys[ChunkKey(h)] = struct{}{}
+				}
+			}
+		}
+	}
+
 	// Determine bootstrap vs incremental by looking for dest's
 	// config blob. We do this BEFORE acquiring the dest lock so a
 	// fail-fast refusal (ErrEmptyDest, ErrDifferentRepo) doesn't
@@ -216,6 +244,8 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 		stats.Elapsed = time.Since(start)
 		return stats, fmt.Errorf("repo: sync data/: %w", err)
 	}
+	manPlan = manPlan.restrictTo(allowKeys)
+	dataPlan = dataPlan.restrictTo(allowKeys)
 	reporter.Total(dataPlan.totalBytes + manPlan.totalBytes)
 
 	// Phase 1: data/ blobs (chunks). Copy every source key under
@@ -322,6 +352,29 @@ type syncPhasePlan struct {
 	srcEntries []blobstore.Info
 	dstSet     map[string]struct{}
 	totalBytes int64
+}
+
+// restrictTo drops every source entry whose key is not in allow,
+// recomputing the byte total. A nil allow set means "no restriction"
+// — the full-sync path pays nothing.
+func (p syncPhasePlan) restrictTo(allow map[string]struct{}) syncPhasePlan {
+	if allow == nil {
+		return p
+	}
+	kept := make([]blobstore.Info, 0, len(allow))
+	var total int64
+	for _, info := range p.srcEntries {
+		if _, ok := allow[info.Key]; !ok {
+			continue
+		}
+		kept = append(kept, info)
+		if _, has := p.dstSet[info.Key]; !has {
+			total += info.Size
+		}
+	}
+	p.srcEntries = kept
+	p.totalBytes = total
+	return p
 }
 
 // planSyncPhase lists src and dest under prefix and computes what would be

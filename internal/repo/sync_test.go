@@ -714,3 +714,85 @@ func TestSyncTo_RefusesSameSrcAndDst(t *testing.T) {
 // directly yet. The implementation will populate SyncStats.Elapsed
 // which uses time.Duration.
 var _ = time.Duration(0)
+
+// TestSyncTo_SelectedSnapshots: SyncOptions.Snapshots copies only the
+// named snapshots' manifests plus their chunk closure — dest is a
+// healthy repo containing exactly that subset. An unknown ID errors
+// before any writes.
+func TestSyncTo_SelectedSnapshots(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstStore := twoRepos(t)
+
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "keep.txt"), strings.Repeat("keep-me-", 100))
+	s1, err := src.CreateSnapshot(ctx, root, SnapshotOptions{Tag: "keep"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	writeFile(t, filepath.Join(root, "skip.txt"), strings.Repeat("skip-me-", 100))
+	s2, err := src.CreateSnapshot(ctx, root, SnapshotOptions{Tag: "skip"})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{
+		InitDest:  true,
+		Snapshots: []string{s1.ID},
+	}); err != nil {
+		t.Fatalf("selective sync: %v", err)
+	}
+
+	dst, err := Open(ctx, dstStore, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open dest: %v", err)
+	}
+	defer dst.Close()
+	infos, err := dst.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].ID != s1.ID {
+		t.Fatalf("dest snapshots: got %+v, want only %s", infos, s1.ID)
+	}
+	// Dest must be complete for the selected snapshot.
+	report, err := dst.Check(ctx, CheckOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(report.MissingBlobs) > 0 {
+		t.Fatalf("selected snapshot incomplete on dest: %+v", report.MissingBlobs)
+	}
+	// s2's unique chunks must NOT have been copied.
+	m2, err := src.LoadSnapshot(ctx, s2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := src.LoadSnapshot(ctx, s1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	inS1 := map[string]struct{}{}
+	for _, fe := range m1.Tree {
+		for _, h := range fe.Chunks {
+			inS1[h] = struct{}{}
+		}
+	}
+	for _, fe := range m2.Tree {
+		for _, h := range fe.Chunks {
+			if _, shared := inS1[h]; shared {
+				continue
+			}
+			if _, err := dstStore.Stat(ctx, ChunkKey(h)); err == nil {
+				t.Errorf("unselected chunk %s copied to dest", h)
+			}
+		}
+	}
+
+	// Unknown ID refuses.
+	if _, err := src.SyncTo(ctx, blobstore.NewMemory(), SyncOptions{
+		InitDest:  true,
+		Snapshots: []string{"snap-20990101T000000Z-deadbeef"},
+	}); err == nil {
+		t.Error("unknown snapshot selection must error")
+	}
+}
