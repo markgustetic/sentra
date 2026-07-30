@@ -130,14 +130,17 @@ func (p Palette) View() string {
 	for i := p.top; i < end; i++ {
 		c := p.matches[i]
 		b.WriteString("\n")
-		label := c.Title
+		// Category is styled separately and appended AFTER the row style:
+		// rendering it inside the label would embed an ANSI reset that
+		// terminates the row style mid-line.
+		category := ""
 		if c.Category != "" {
-			label += "  " + ui.Muted.Render(c.Category)
+			category = "  " + ui.Muted.Render(c.Category)
 		}
 		if i == p.cursor {
-			b.WriteString(ui.SidebarActive.Render(label))
+			b.WriteString(ui.SidebarActive.Render(c.Title) + category)
 		} else {
-			b.WriteString(ui.SidebarItem.Render(label))
+			b.WriteString(ui.SidebarItem.Render(c.Title) + category)
 		}
 	}
 	box := ui.ModalBox.Width(min(p.width-8, 64)).Render(b.String())

@@ -44,18 +44,23 @@ func (d sidebarDelegate) Render(w io.Writer, m list.Model, index int, it list.It
 	if !ok {
 		return
 	}
+	// The badge is styled separately and appended AFTER the row style is
+	// applied: rendering it inside the label would embed an ANSI reset
+	// that terminates the row style mid-line (the never-wrap-an-already-
+	// styled-string rule).
 	label := si.cmd.Title
+	badge := ""
 	if si.cmd.Badge != "" {
-		label = fmt.Sprintf("%s %s", label, ui.Muted.Render(si.cmd.Badge))
+		badge = " " + ui.Muted.Render(si.cmd.Badge)
 	}
 	if index == m.Index() {
 		// Mirror ui.SidebarActive (bold + the "▍ " marker) but with the breathing
 		// accent so the current view's rail entry pulses.
 		active := lipgloss.NewStyle().Foreground(animColor(animActive, d.frame)).Bold(true).SetString("▍ ")
-		fmt.Fprint(w, active.Render(label))
+		fmt.Fprint(w, active.Render(label)+badge)
 		return
 	}
-	fmt.Fprint(w, ui.SidebarItem.Render(label))
+	fmt.Fprint(w, ui.SidebarItem.Render(label)+badge)
 }
 
 // Sidebar is the persistent nav rail. It renders the registry in
