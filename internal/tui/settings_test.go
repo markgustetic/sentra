@@ -308,3 +308,62 @@ func TestSettings_NavigateEntryStillEmitsActivate(t *testing.T) {
 		t.Error("a navigate entry must emit activateMsg")
 	}
 }
+
+// TestSettings_ForgetKeyringEntry: the TUI face of `password forget` —
+// a confirmed forget deletes the OS keyring entry and turns
+// passphrase.use_keyring off in sentra.yaml, without touching the repo.
+func TestSettings_ForgetKeyringEntry(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Passphrase.UseKeyring = true
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deleted := false
+	v := NewSettingsView(Deps{
+		Config:     &cfg,
+		ConfigPath: path,
+		DeleteKeyringPassphrase: func(*config.Config) (bool, error) {
+			deleted = true
+			return true, nil
+		},
+	})
+
+	// Walk the cursor to the forget entry (identified by label, not index).
+	idx := -1
+	for i, e := range v.entries {
+		if strings.Contains(strings.ToLower(e.label), "forget") {
+			idx = i
+		}
+	}
+	if idx < 0 {
+		t.Fatalf("no forget-keyring entry in settings: %+v", v.entries)
+	}
+	for range idx {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SettingsView)
+	}
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SettingsView)
+	if cmd == nil {
+		t.Fatal("forget must push a confirm modal")
+	}
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatalf("expected pushModalMsg, got %#v", cmd())
+	}
+
+	m, _ = v.Update(confirmedMsg{id: settingsForgetConfirmID})
+	v = m.(SettingsView)
+	if !deleted {
+		t.Error("confirm must call the keyring delete seam")
+	}
+	got, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got.Passphrase.UseKeyring {
+		t.Error("forget must persist passphrase.use_keyring: false")
+	}
+}

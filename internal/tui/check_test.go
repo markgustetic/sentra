@@ -104,6 +104,18 @@ func TestCheckFlow_DeepVerifyToggle(t *testing.T) {
 	if !strings.Contains(v.View(), "deep") {
 		t.Errorf("idle view should show the armed deep mode:\n%s", v.View())
 	}
+	// Second press cycles to the bounded 10%% sample; third disarms.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if !strings.Contains(m.(CheckView).View(), "10%") {
+		t.Errorf("second d should arm the sampled mode:\n%s", m.(CheckView).View())
+	}
+	m, _ = m.(CheckView).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	if strings.Contains(m.(CheckView).View(), "armed") {
+		t.Errorf("third d should disarm deep verify:\n%s", m.(CheckView).View())
+	}
+	// Re-arm full deep for the run below.
+	m, _ = m.(CheckView).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("d")})
+	v = m.(CheckView)
 
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(CheckView)

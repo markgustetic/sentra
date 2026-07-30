@@ -145,3 +145,33 @@ func TestPruneFlow_ContinuesPastAlreadyDeleted(t *testing.T) {
 		t.Fatalf("snapshots after prune = %d, want 1 (kept)", len(snaps))
 	}
 }
+
+// TestPruneFlow_AllDropRequiresWipeWord: a plan that would empty the
+// repo must gate on the word "wipe", not the routine "prune" — the TUI
+// mirror of the CLI's --all rail.
+func TestPruneFlow_AllDropRequiresWipeWord(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	cfg := config.Defaults()
+	cfg.Retention.KeepLast = 0
+	cfg.Retention.KeepDaily = 0
+	cfg.Retention.KeepWeekly = 0
+	cfg.Retention.KeepMonthly = 0
+	v := NewPruneView(Deps{Repo: r, Config: &cfg})
+	if len(v.keep) != 0 || len(v.drop) == 0 {
+		t.Fatalf("precondition: all-drop plan, got keep=%d drop=%d", len(v.keep), len(v.drop))
+	}
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	_ = m
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatal("enter should push the confirm modal")
+	}
+	typed, ok := push.modal.(TypedConfirmModal)
+	if !ok {
+		t.Fatalf("all-drop must use the typed gate, got %T", push.modal)
+	}
+	if !strings.Contains(typed.View(), "wipe") {
+		t.Errorf("all-drop gate must demand the word \"wipe\":\n%s", typed.View())
+	}
+}

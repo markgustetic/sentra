@@ -100,6 +100,11 @@ type Deps struct {
 	// (the password flow then skips the keyring update).
 	SaveKeyringPassphrase func(cfg *config.Config, pass []byte) error
 
+	// DeleteKeyringPassphrase removes the OS keyring entry for the
+	// configured repo (current and legacy users). The TUI face of
+	// `sentra password forget`; nil hides the Settings entry's action.
+	DeleteKeyringPassphrase func(cfg *config.Config) (bool, error)
+
 	// SetupEffects is the headless side-effecting seam the setup wizard
 	// view drives (AWS CLI checks, login/SSO, bucket prep, repo init,
 	// keyring save). Production wires it to setup.DefaultEffects(); tests

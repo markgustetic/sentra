@@ -38,11 +38,15 @@ type CheckView struct {
 	spin   spinner.Model
 	result checkDoneMsg
 	width  int
-	// deep arms --read-data mode for the next run: every referenced
-	// chunk is downloaded and re-hashed, not just Stat'ed. Costs S3
-	// egress, so it's an explicit toggle rather than the default.
-	deep bool
+	// deepMode arms --read-data for the next run: 0 = presence only,
+	// 1 = full deep verify (every chunk downloaded and re-hashed),
+	// 2 = 10% deterministic sample — the S3-egress lever for big
+	// repos, mirroring `check --read-data-subset`.
+	deepMode int
 }
+
+// checkDeepModes is the 'd' cycle length.
+const checkDeepModes = 3
 
 func NewCheckView(deps Deps) CheckView {
 	s := spinner.New()
@@ -61,7 +65,7 @@ func (v CheckView) ShortHelp() []key.Binding {
 	default:
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "run check")),
-			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "toggle deep verify")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "verify depth")),
 		}
 	}
 }
@@ -87,16 +91,19 @@ func (v CheckView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.KeyMsg:
 		if msg.String() == "d" && v.stage != checkRunning {
-			v.deep = !v.deep
+			v.deepMode = (v.deepMode + 1) % checkDeepModes
 			return v, nil
 		}
 		if msg.Type == tea.KeyEnter && v.stage != checkRunning && v.deps.Repo != nil {
 			v.stage = checkRunning
 			r := v.deps.Repo
-			deep := v.deep
+			opts := repo.CheckOptions{ReadData: v.deepMode > 0}
+			if v.deepMode == 2 {
+				opts.ReadDataSubset = 0.10
+			}
 			ctx := ctxOrBackground(v.deps.Ctx)
 			run := func() tea.Msg {
-				report, err := r.Check(ctx, repo.CheckOptions{ReadData: deep})
+				report, err := r.Check(ctx, opts)
 				return checkDoneMsg{report: report, err: err}
 			}
 			return v, tea.Batch(v.spin.Tick, run)
@@ -116,9 +123,12 @@ func (v CheckView) View() string {
 	case checkDone:
 		return v.renderReport()
 	default:
-		mode := "presence check (fast; d for deep verify)"
-		if v.deep {
-			mode = "deep verify armed — chunks will be downloaded and re-hashed"
+		mode := "presence check (fast; d cycles verify depth)"
+		switch v.deepMode {
+		case 1:
+			mode = "deep verify armed — every chunk downloaded and re-hashed"
+		case 2:
+			mode = "deep verify (10% sample) armed — bounded S3 egress"
 		}
 		return ui.Primary.Render("Repository integrity check") + "\n" +
 			ui.Muted.Render("  mode: "+mode) + "\n\n" +

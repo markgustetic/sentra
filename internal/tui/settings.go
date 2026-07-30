@@ -18,7 +18,12 @@ type settingsEntryKind int
 const (
 	entryNavigate settingsEntryKind = iota
 	entryToggleSplash
+	entryForgetKeyring
 )
+
+// settingsForgetConfirmID ties the forget-keyring confirm modal back to
+// this view.
+const settingsForgetConfirmID = "settings-forget-keyring"
 
 // settingsEntry is one actionable row in the Settings view. A navigate entry
 // emits an activateMsg for targetID; a toggle entry mutates the config and
@@ -56,6 +61,7 @@ func NewSettingsView(deps Deps) SettingsView {
 			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
 			{kind: entryNavigate, label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
 			{kind: entryToggleSplash, label: "Welcome splash", desc: "show the logo screen at launch (applies next launch)"},
+			{kind: entryForgetKeyring, label: "Forget keyring passphrase", desc: "remove the OS keyring entry and disable keyring lookup"},
 		},
 	}
 }
@@ -94,13 +100,55 @@ func (v SettingsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, nil
 		case tea.KeyEnter:
 			e := v.entries[v.cursor]
-			if e.kind == entryToggleSplash {
+			switch e.kind {
+			case entryToggleSplash:
 				return v.toggleSplash()
+			case entryForgetKeyring:
+				modal := NewConfirmModal("Forget keyring passphrase",
+					"Remove the saved passphrase from the OS keyring and disable keyring lookup?\n"+
+						"The repository passphrase itself is unchanged — you will be prompted for it.",
+					settingsForgetConfirmID, 80, 24)
+				return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 			}
 			return v, func() tea.Msg { return activateMsg{id: e.targetID} }
 		}
 		return v, nil
+
+	case confirmedMsg:
+		if msg.id == settingsForgetConfirmID {
+			return v.forgetKeyring()
+		}
+		return v, nil
 	}
+	return v, nil
+}
+
+// forgetKeyring is the TUI face of `sentra password forget`: delete the
+// OS keyring entry (via the production seam) and persist
+// passphrase.use_keyring: false. The repo passphrase itself is never
+// touched — this only changes where it is looked up from.
+func (v SettingsView) forgetKeyring() (tea.Model, tea.Cmd) {
+	if v.deps.Config == nil || v.deps.ConfigPath == "" {
+		v.err = "available after setup"
+		return v, nil
+	}
+	if v.deps.DeleteKeyringPassphrase == nil {
+		v.err = "keyring access is not wired in this build"
+		return v, nil
+	}
+	if _, err := v.deps.DeleteKeyringPassphrase(v.deps.Config); err != nil {
+		v.err = "keyring delete failed: " + err.Error()
+		return v, nil
+	}
+	if err := config.Update(v.deps.ConfigPath, func(c *config.Config) error {
+		c.Passphrase.UseKeyring = false
+		return nil
+	}); err != nil {
+		v.err = "could not save: " + err.Error()
+		return v, nil
+	}
+	v.deps.Config.Passphrase.UseKeyring = false
+	v.err = ""
 	return v, nil
 }
 

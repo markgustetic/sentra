@@ -154,6 +154,7 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 		ProviderForConfig: newAgentProvider,
 		Actions:           action.NewDefaultRegistry(),
 		SavePassphrase:    saveRepoPassphraseToKeyring,
+		DeletePassphrase:  deleteRepoPassphraseFromKeyring,
 		Run:               cli.DefaultUIRunner,
 		Version:           version,
 		Commit:            commit,

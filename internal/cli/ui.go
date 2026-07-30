@@ -56,6 +56,10 @@ type UIDeps struct {
 	// command uses. May be nil when no keyring is wired.
 	SavePassphrase func(cfg *config.Config, passphrase []byte) error
 
+	// DeletePassphrase removes the OS keyring entry for the configured
+	// repo — the Settings view's "forget keyring passphrase" action.
+	DeletePassphrase func(cfg *config.Config) (bool, error)
+
 	// SetupEffects overrides the setup engine's side-effecting seam. Nil
 	// means runUI constructs the production setup.DefaultEffects(); tests
 	// inject a fake to keep AWS/keyring calls out of the process.
@@ -164,19 +168,20 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		}
 		repoName := launchCfg.Repo.S3.Bucket
 		app := tui.NewApp(tui.Deps{
-			Provider:              providerForLaunch(deps, launchCfg),
-			RepoName:              repoName,
-			Config:                launchCfg,
-			Ctx:                   cmd.Context(),
-			ConfigPath:            absCfgPath,
-			NewStore:              deps.NewStore,
-			Actions:               deps.Actions,
-			SaveKeyringPassphrase: deps.SavePassphrase,
-			SetupEffects:          setupEffectsForLaunch(deps),
-			InitialView:           initial,
-			ShowSplash:            showSplash,
-			Version:               deps.Version,
-			Commit:                deps.Commit,
+			Provider:                providerForLaunch(deps, launchCfg),
+			RepoName:                repoName,
+			Config:                  launchCfg,
+			Ctx:                     cmd.Context(),
+			ConfigPath:              absCfgPath,
+			NewStore:                deps.NewStore,
+			Actions:                 deps.Actions,
+			SaveKeyringPassphrase:   deps.SavePassphrase,
+			DeleteKeyringPassphrase: deps.DeletePassphrase,
+			SetupEffects:            setupEffectsForLaunch(deps),
+			InitialView:             initial,
+			ShowSplash:              showSplash,
+			Version:                 deps.Version,
+			Commit:                  deps.Commit,
 		})
 		if deps.Run == nil {
 			return fmt.Errorf("ui: no Run hook configured")
@@ -219,14 +224,15 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 
 		// Unit-1 plumbing: call-time hooks + plain data the ported
 		// operation flows consume. None hold resolved secrets.
-		ConfigPath:            absCfgPath,
-		NewStore:              deps.NewStore,
-		Actions:               deps.Actions,
-		SaveKeyringPassphrase: deps.SavePassphrase,
-		SetupEffects:          setupEffectsForLaunch(deps),
-		ShowSplash:            showSplash,
-		Version:               deps.Version,
-		Commit:                deps.Commit,
+		ConfigPath:              absCfgPath,
+		NewStore:                deps.NewStore,
+		Actions:                 deps.Actions,
+		SaveKeyringPassphrase:   deps.SavePassphrase,
+		DeleteKeyringPassphrase: deps.DeletePassphrase,
+		SetupEffects:            setupEffectsForLaunch(deps),
+		ShowSplash:              showSplash,
+		Version:                 deps.Version,
+		Commit:                  deps.Commit,
 	})
 
 	if deps.Run == nil {

@@ -132,7 +132,15 @@ func (v PruneView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == prunePreview && msg.Type == tea.KeyEnter && len(v.drop) > 0 {
 			v.notice = ""
 			body := fmt.Sprintf("This deletes %d snapshot(s) and reclaims their unique chunks.\nChunks still referenced by kept snapshots are never touched.", len(v.drop))
-			modal := NewTypedConfirmModal("Confirm prune", body, "prune", pruneConfirmID, 80, 24)
+			word := "prune"
+			if len(v.keep) == 0 {
+				// The CLI's --all rail, in TUI form: a policy that drops
+				// EVERY snapshot must be confirmed with a distinct word —
+				// an operator expecting a routine prune should trip here.
+				body = fmt.Sprintf("This deletes ALL %d snapshot(s) — the repository will be EMPTY.\nType \"wipe\" to confirm.", len(v.drop))
+				word = "wipe"
+			}
+			modal := NewTypedConfirmModal("Confirm prune", body, word, pruneConfirmID, 80, 24)
 			return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 		}
 		if v.stage == pruneDone && msg.Type == tea.KeyEnter {
@@ -201,8 +209,14 @@ func (v PruneView) View() string {
 		if v.notice != "" {
 			fmt.Fprintf(&b, "  %s", ui.Warn.Render(v.notice))
 		}
+		var freedEstimate int64
+		for _, d := range v.decisions {
+			if !d.Keep {
+				freedEstimate += d.Snapshot.Stats.NewBytes
+			}
+		}
 		fmt.Fprintf(&b, "  %s\n\n", ui.Muted.Render(
-			fmt.Sprintf("keep %d · drop %d", len(v.keep), len(v.drop))))
+			fmt.Sprintf("keep %d · drop %d (~%s freed estimate)", len(v.keep), len(v.drop), ui.FormatBytes(freedEstimate))))
 		for _, d := range v.decisions {
 			verdictText := "keep"
 			reason := strings.Join(d.Reasons, ", ")

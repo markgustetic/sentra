@@ -12,5 +12,7 @@ Settings
     rotate the repository passphrase
   Welcome splash   [on]
     show the logo screen at launch (applies next launch)
+  Forget keyring passphrase
+    remove the OS keyring entry and disable keyring lookup
 
 ↑↓ move   ⏎ open / toggle

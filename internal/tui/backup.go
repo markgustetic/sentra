@@ -323,6 +323,7 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 		wopts = walker.Options{
 			IgnoreFile:    v.deps.Config.Backup.IgnoreFile,
 			ExcludeCaches: v.deps.Config.Backup.ExcludeCaches,
+			Concurrency:   v.deps.Config.Backup.Concurrency,
 		}
 	}
 	start := startOpMsg{
