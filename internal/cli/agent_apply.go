@@ -184,10 +184,13 @@ func dispatchAction(
 
 // truncateRationale shortens long rationale text for table display.
 // The full text is still in the JSON output (and the model's stream).
+// Counts runes, not bytes: rationale comes from the LLM and can hold
+// multibyte characters a byte-index cut would split into mojibake.
 func truncateRationale(s string, n int) string {
 	s = strings.ReplaceAll(s, "\n", " ")
-	if len(s) <= n {
+	r := []rune(s)
+	if len(r) <= n {
 		return s
 	}
-	return s[:n-3] + "..."
+	return string(r[:n-3]) + "..."
 }

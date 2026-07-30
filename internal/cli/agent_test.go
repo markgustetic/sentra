@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"unicode/utf8"
 
 	"github.com/markgustetic/sentra/internal/agent"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
@@ -317,6 +318,21 @@ func TestAgentScan_Apply(t *testing.T) {
 	low := strings.ToLower(out.String())
 	if !strings.Contains(low, "applied") && !strings.Contains(low, "deleted") && !strings.Contains(low, "prune") {
 		t.Errorf("expected applied/deleted/prune in apply output, got %q", out.String())
+	}
+}
+
+// TestTruncateRationale_MultibyteSafe: the table truncation must cut on
+// rune boundaries. Rationale text comes from the LLM and can contain
+// multibyte characters; a byte-index cut can split one and render
+// mojibake in the recommendations table.
+func TestTruncateRationale_MultibyteSafe(t *testing.T) {
+	long := strings.Repeat("é", 40) // 40 runes, 80 bytes — byte-cut at 57 splits a rune
+	got := truncateRationale(long, 60)
+	if !utf8.ValidString(got) {
+		t.Fatalf("truncation split a UTF-8 rune: %q", got)
+	}
+	if want := strings.Repeat("é", 40); truncateRationale(want, 40) != want {
+		t.Errorf("a string exactly at the rune limit must not be truncated")
 	}
 }
 
