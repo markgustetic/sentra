@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"unicode/utf8"
@@ -15,6 +16,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
@@ -997,6 +999,216 @@ func TestSetupWizard_ErrorEscZeroizesPassphrase(t *testing.T) {
 	if fresh.stage != stageBackend {
 		t.Fatalf("esc must restart at the backend stage, got %v", fresh.stage)
 	}
+}
+
+// flakyPrepareEffects fails the FIRST PrepareAWS and succeeds on every call
+// after it — the "credentials were wrong, fix them and retry" scenario the
+// error stage exists for. It hands out one shared in-memory store so a test can
+// inspect what a retry actually initialized.
+type flakyPrepareEffects struct {
+	stubEffects
+	store blobstore.Store
+	calls int
+}
+
+func (f *flakyPrepareEffects) PrepareAWS(ctx context.Context, cfg *config.Config, opts setup.AWSPrepareOptions) (setup.AWSPrepareReport, error) {
+	f.calls++
+	if f.calls == 1 {
+		return setup.AWSPrepareReport{}, errors.New("prepare AWS S3: AccessDenied")
+	}
+	return setup.AWSPrepareReport{BucketCreated: true, PublicAccessBlocked: true, DefaultEncryptionEnabled: true}, nil
+}
+
+func (f *flakyPrepareEffects) NewStore(context.Context, *config.Config) (blobstore.Store, error) {
+	return f.store, nil
+}
+
+// TestSetupWizard_ErrorRetryNeverProvisionsUnderZeroedPassphrase pins the
+// security property of the retry path: a failed provisioning attempt must never
+// leave a stash that a later confirm can provision with.
+//
+// The trap is that crypto.Zeroize wipes IN PLACE without truncating. The op
+// closure aliases v.pass and zeroizes it on return, so after a failure the
+// view's stash is not empty — it is len(passphrase) ZERO bytes, which sails
+// straight through the review guard's len(v.pass) == 0 check. If retry routes
+// back to review, the operator's two keypresses (enter to retry, enter to
+// confirm) initialize the repository — and the keyring entry, when saving is on
+// — under an all-zero key instead of their passphrase.
+func TestSetupWizard_ErrorRetryNeverProvisionsUnderZeroedPassphrase(t *testing.T) {
+	const passphrase = "correcthorse"
+	store := blobstore.NewMemory()
+	eff := &flakyPrepareEffects{store: store}
+	deps := Deps{
+		Config:       &config.Config{},
+		ConfigPath:   filepath.Join(t.TempDir(), "sentra.yaml"),
+		SetupEffects: eff,
+	}
+
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	v.backendCursor = 0                             // AWS
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // details
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // actions
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // passphrase (initRepo on)
+	v = m.(SetupWizardView)
+	v = setupTypePass(v, passphrase, passphrase)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // review
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push confirm modal
+	v = m.(SetupWizardView)
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+
+	// Attempt 1: run the op as the App's guard would. It fails in PrepareAWS,
+	// and its deferred zeroize wipes the array v.pass still points at.
+	first := findSetupOp(t, cmd)
+	done, ok := first.run(context.Background()).(setupDoneMsg)
+	if !ok {
+		t.Fatal("precondition: setup op must return a setupDoneMsg")
+	}
+	if done.err == nil {
+		t.Fatal("precondition: the first provisioning attempt must fail")
+	}
+	m, _ = v.Update(done)
+	v = m.(SetupWizardView)
+	if v.stage != stageError {
+		t.Fatalf("precondition: a failed op must land on stageError, got %v", v.stage)
+	}
+
+	// The operator retries from the failure screen: enter, then enter.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // retry
+	v = m.(SetupWizardView)
+	// The rule, not the mechanism: wherever retry lands, review must never be
+	// sitting on a stash its confirm guard would accept. Either the wizard
+	// demands the passphrase again (routing back to re-entry) or it clears the
+	// stash so the guard bounces the confirm — never a full-length run of zeros.
+	if v.stage == stageReview && len(v.pass) != 0 {
+		t.Fatalf("retry landed on review holding a %d-byte stash that the confirm guard accepts", len(v.pass))
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // re-commit the passphrase / push the confirm
+	v = m.(SetupWizardView)
+	m, cmd = v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+
+	// Run whatever those keypresses armed, if anything — the security claim is
+	// about what reaches the store, not about which stage refused first.
+	for _, msg := range execCmds(t, cmd) {
+		if op, ok := msg.(startOpMsg); ok && op.run != nil {
+			op.run(context.Background())
+		}
+	}
+
+	zeros := make([]byte, len(passphrase))
+	if r, err := repo.Open(context.Background(), store, zeros); err == nil {
+		r.Close()
+		t.Fatalf("repository was initialized under %d zero bytes: the retry provisioned with the wiped passphrase stash, not the operator's passphrase", len(zeros))
+	}
+	// And the retry must still WORK — a fix that simply refuses to provision
+	// again would satisfy the assertion above while breaking the flow. The
+	// masked fields keep what was typed, so the two keypresses re-commit the
+	// same passphrase and the second attempt (PrepareAWS now succeeding) opens
+	// under it.
+	r, err := repo.Open(context.Background(), store, []byte(passphrase))
+	if err != nil {
+		t.Fatalf("retry must re-provision under the operator's passphrase: %v", err)
+	}
+	r.Close()
+}
+
+// TestSetupWizard_ErrorRetryReturnsToPassphrase pins the retry destination, the
+// second barrier in front of the zero-passphrase provision: enter on the failure
+// screen demands the passphrase again rather than dropping the operator back on
+// review, whose confirm is one keypress from arming the setup op. Esc from that
+// forced re-entry must then step strictly BACKWARD — the route back is a stage
+// decrease the history wrapper never records, so without truncation the stack
+// still ends at stageProvision and esc would walk forward into a provisioning
+// screen with no op behind it.
+func TestSetupWizard_ErrorRetryReturnsToPassphrase(t *testing.T) {
+	v := setupAtReview(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push confirm modal
+	v = m.(SetupWizardView)
+	m, _ = v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView) // stageProvision
+	m, _ = v.Update(setupDoneMsg{err: errors.New("prepare AWS S3: AccessDenied")})
+	v = m.(SetupWizardView)
+	if v.stage != stageError {
+		t.Fatalf("precondition: a failed op must land on stageError, got %v", v.stage)
+	}
+	// The failure screen must not promise a straight return to review — that is
+	// the destination this fix removes. The status-bar binding has to agree with
+	// the footer: esc is the restart here, enter is the retry.
+	if out := v.View(); !strings.Contains(out, "passphrase") {
+		t.Fatalf("the failure screen must say enter re-enters the passphrase, got:\n%s", out)
+	}
+	var enterDesc string
+	for _, b := range v.ShortHelp() {
+		if slices.Contains(b.Keys(), "enter") {
+			enterDesc = b.Help().Desc
+		}
+	}
+	if enterDesc != "retry" {
+		t.Fatalf("stageError must advertise enter as \"retry\" (esc is the restart), got %q", enterDesc)
+	}
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // retry
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("retry must return to passphrase re-entry, got %v", v.stage)
+	}
+	if v.notice == "" {
+		t.Fatal("retry must explain why the passphrase is being asked for again")
+	}
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	v = m.(SetupWizardView)
+	if v.stage >= stagePassphrase {
+		t.Fatalf("esc from forced re-entry must step backward, got stage %v", v.stage)
+	}
+}
+
+// TestSetupWizard_FailedOpClearsPassphraseStash pins the rule behind the retry
+// fix instead of only the route that exposed it: after a failed provisioning
+// attempt the wizard must hold no usable stash at all. crypto.Zeroize wipes in
+// place without truncating, so a stash the op "wiped" keeps its original
+// length — and review's confirm guard tests only len(v.pass) == 0. Clearing it
+// on the failure is what makes that guard mean what it says no matter which
+// route a later change takes back to review.
+func TestSetupWizard_FailedOpClearsPassphraseStash(t *testing.T) {
+	v := setupAtReview(t) // v.pass holds "correcthorse"
+	captured := v.pass    // the shared backing array, still plaintext here
+
+	m, _ := v.Update(setupDoneMsg{err: errors.New("prepare AWS S3: AccessDenied")})
+	v = m.(SetupWizardView)
+	if v.stage != stageError {
+		t.Fatalf("a failed op must land on stageError, got %v", v.stage)
+	}
+	for i, b := range captured {
+		if b != 0 {
+			t.Fatalf("passphrase not zeroized on setup failure: byte %d = %d (residual plaintext)", i, b)
+		}
+	}
+	if len(v.pass) != 0 {
+		t.Fatalf("a failed op must leave no passphrase stash, got %d bytes — a zero-filled slice still passes review's len(v.pass) == 0 guard", len(v.pass))
+	}
+}
+
+// findSetupOp extracts the single startOpMsg{name:"setup"} from a command.
+func findSetupOp(t *testing.T, cmd tea.Cmd) startOpMsg {
+	t.Helper()
+	for _, msg := range execCmds(t, cmd) {
+		if op, ok := msg.(startOpMsg); ok && op.name == "setup" {
+			if op.run == nil {
+				t.Fatal("setup op carried no run closure")
+			}
+			return op
+		}
+	}
+	t.Fatal("no startOpMsg{name:setup} in command")
+	return startOpMsg{}
 }
 
 // TestSetupWizardDetailsRowShowsSelection guards the regression that made the
