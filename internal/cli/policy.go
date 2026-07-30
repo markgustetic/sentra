@@ -168,8 +168,14 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
 		}
-		if _, exists := cfg.Policies[name]; exists && !flags.replace {
-			return fmt.Errorf("policy %q already exists; pass --replace to overwrite", name)
+		if existing, exists := cfg.Policies[name]; exists {
+			if !flags.replace {
+				return fmt.Errorf("policy %q already exists; pass --replace to overwrite", name)
+			}
+			// Hooks are config-authored — no flag manages them — so a
+			// replace carries them forward rather than silently wiping
+			// a hand-written notifier because someone added a path.
+			p.Hooks = existing.Hooks
 		}
 		cfg.Policies[name] = p
 		return nil

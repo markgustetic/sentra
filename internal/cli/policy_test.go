@@ -421,3 +421,44 @@ func TestPolicyRun_FailureWebhookPostsFromEnvURL(t *testing.T) {
 		t.Errorf("webhook payload missing policy/status: %q", body)
 	}
 }
+
+// TestPolicyAdd_ReplacePreservesHooks: hooks are config-authored (no
+// CLI flag manages them), so `policy add --replace` must carry the
+// existing policy's hooks forward — silently deleting a PagerDuty
+// notifier because someone added a path is how alerts die.
+func TestPolicyAdd_ReplacePreservesHooks(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["nightly"] = config.PolicyConfig{
+		Paths:    []string{"/old"},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks: config.PolicyHooks{
+			Before:              "pg_dump > dump.sql",
+			OnFailureWebhookEnv: "SENTRA_ALERT_URL",
+		},
+	}
+	writePolicyConfigFile(t, dir, &cfg)
+
+	out := &bytes.Buffer{}
+	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"add", "nightly", "--path", "/new", "--schedule", "manual", "--replace"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	got, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := got.Policies["nightly"]
+	if len(p.Paths) != 1 || p.Paths[0] != "/new" {
+		t.Fatalf("replace did not apply: %+v", p.Paths)
+	}
+	if p.Hooks.Before != "pg_dump > dump.sql" || p.Hooks.OnFailureWebhookEnv != "SENTRA_ALERT_URL" {
+		t.Errorf("replace dropped the hand-authored hooks: %+v", p.Hooks)
+	}
+}
