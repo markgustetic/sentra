@@ -215,6 +215,108 @@ func TestWalk_DoesNotFollowSymlinks(t *testing.T) {
 	}
 }
 
+// TestWalk_IncludeNonRegular_EmitsSymlinksAndDirs: with the opt-in
+// set, the walker emits directory entries (so empty dirs and dir
+// modes survive a snapshot) and symlink entries carrying their target
+// — without following either.
+func TestWalk_IncludeNonRegular_EmitsSymlinksAndDirs(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "sub", "a.txt"), "a")
+	if err := os.Mkdir(filepath.Join(root, "emptyd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub/a.txt", filepath.Join(root, "ln")); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+
+	var mu sync.Mutex
+	byPath := map[string]Entry{}
+	err := Walk(context.Background(), root, Options{IncludeNonRegular: true}, func(e Entry) error {
+		mu.Lock()
+		byPath[e.RelPath] = e
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if e, ok := byPath["emptyd"]; !ok || e.Kind != KindDir {
+		t.Errorf("empty dir not emitted as KindDir: %+v", byPath["emptyd"])
+	} else if e.Mode.Perm() != 0o700 {
+		t.Errorf("dir mode: got %v, want 0700", e.Mode.Perm())
+	}
+	if e, ok := byPath["sub"]; !ok || e.Kind != KindDir {
+		t.Errorf("non-empty dir not emitted as KindDir: %+v", byPath["sub"])
+	}
+	if e, ok := byPath["ln"]; !ok || e.Kind != KindSymlink {
+		t.Errorf("symlink not emitted as KindSymlink: %+v", byPath["ln"])
+	} else if e.LinkTarget != "sub/a.txt" {
+		t.Errorf("symlink target: got %q, want %q", e.LinkTarget, "sub/a.txt")
+	}
+	if e, ok := byPath["sub/a.txt"]; !ok || e.Kind != KindFile {
+		t.Errorf("regular file must stay KindFile: %+v", byPath["sub/a.txt"])
+	}
+	if _, ok := byPath["."]; ok {
+		t.Error("the walk root itself must not be emitted")
+	}
+}
+
+// TestWalk_DefaultOmitsNonRegular pins the compatibility rule: without
+// the opt-in, callers see exactly what they always saw — regular files
+// only — so plan/heuristics flows are unaffected by the new kinds.
+func TestWalk_DefaultOmitsNonRegular(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "sub", "a.txt"), "a")
+	if err := os.Mkdir(filepath.Join(root, "emptyd"), 0o700); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("sub/a.txt", filepath.Join(root, "ln")); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	slices.Sort(got)
+	want := []string{"sub/a.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("default walk emitted %v, want %v", got, want)
+	}
+}
+
+// TestWalk_IncludeNonRegular_HonorsIgnore: ignore patterns apply to
+// symlinks and directories the same way they apply to files.
+func TestWalk_IncludeNonRegular_HonorsIgnore(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, ".sentraignore"), "ln\nskipd/\n")
+	writeFile(t, filepath.Join(root, "keep.txt"), "k")
+	if err := os.Mkdir(filepath.Join(root, "skipd"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink("keep.txt", filepath.Join(root, "ln")); err != nil {
+		t.Skipf("symlink unsupported on this filesystem: %v", err)
+	}
+	var mu sync.Mutex
+	byPath := map[string]Entry{}
+	err := Walk(context.Background(), root, Options{IncludeNonRegular: true}, func(e Entry) error {
+		mu.Lock()
+		byPath[e.RelPath] = e
+		mu.Unlock()
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := byPath["ln"]; ok {
+		t.Error("ignored symlink must not be emitted")
+	}
+	if _, ok := byPath["skipd"]; ok {
+		t.Error("ignored dir must not be emitted")
+	}
+}
+
 // TestWalk_RespectsContextCancel: cancelling the context mid-walk
 // should surface context.Canceled. We rig fn to cancel as soon as it
 // sees an entry, then assert the returned error.

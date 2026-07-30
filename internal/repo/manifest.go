@@ -22,24 +22,55 @@ import (
 // ManifestVersion is the wire-format version of the snapshot manifest
 // schema. Incremented when the JSON shape changes in an incompatible
 // way; loaders inspect the field after unmarshal and decide what to do.
-const ManifestVersion = 1
+//
+// v2 added Kind/LinkTarget entries (symlinks and directories). v1
+// manifests load cleanly under v2 rules — an absent kind is a regular
+// file — but a v2 manifest under a v1 reader would restore symlinks
+// as empty files, so the version was bumped and LoadSnapshot refuses
+// manifests newer than it understands.
+const ManifestVersion = 2
 
-// FileEntry is one file in a snapshot manifest. The path is stored
-// relative to Manifest.Root, in slash form regardless of host OS, so
-// the manifest is portable across platforms.
+// FileEntry kinds. The zero value (empty string) is a regular file so
+// v1 manifests — written before Kind existed — parse unchanged.
+const (
+	EntryKindFile    = ""
+	EntryKindDir     = "dir"
+	EntryKindSymlink = "symlink"
+)
+
+// FileEntry is one filesystem object in a snapshot manifest. The path
+// is stored relative to Manifest.Root, in slash form regardless of
+// host OS, so the manifest is portable across platforms.
 type FileEntry struct {
 	Path string `json:"path"`
 	Size int64  `json:"size"`
-	// Mode is the file's permission bits as observed at backup time.
+	// Mode is the object's permission bits as observed at backup time.
 	// Restore applies only the permission bits (Mode.Perm()) to avoid
 	// re-introducing setuid/setgid/sticky surprises.
 	Mode  os.FileMode `json:"mode"`
 	MTime time.Time   `json:"mtime"`
 	// Chunks is the ordered list of chunk hashes that, concatenated,
 	// reproduce the file content. Each entry is the hex-encoded SHA-256
-	// of the plaintext chunk.
+	// of the plaintext chunk. Empty for dirs and symlinks.
 	Chunks []string `json:"chunks"`
+	// Kind distinguishes regular files (empty, the v1 form), dirs,
+	// and symlinks. See the EntryKind* constants.
+	Kind string `json:"kind,omitempty"`
+	// LinkTarget is the symlink's target verbatim (relative or
+	// absolute, never resolved). Set only when Kind is
+	// EntryKindSymlink. It rides inside the encrypted manifest, so
+	// targets leak nothing to the bucket.
+	LinkTarget string `json:"link_target,omitempty"`
 }
+
+// IsFile reports whether the entry is a regular file (chunk-backed).
+func (fe FileEntry) IsFile() bool { return fe.Kind == EntryKindFile }
+
+// IsDir reports whether the entry records a directory.
+func (fe FileEntry) IsDir() bool { return fe.Kind == EntryKindDir }
+
+// IsSymlink reports whether the entry records a symlink.
+func (fe FileEntry) IsSymlink() bool { return fe.Kind == EntryKindSymlink }
 
 // SnapshotStats is the high-level summary persisted alongside the file
 // tree. Stored in the manifest so listing snapshots does not require

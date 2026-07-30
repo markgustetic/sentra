@@ -134,18 +134,22 @@ func TestCreateSnapshot_RoundTrip(t *testing.T) {
 	if loaded.Tag != "test" {
 		t.Errorf("loaded.Tag: got %q, want %q", loaded.Tag, "test")
 	}
-	if len(loaded.Tree) != 2 {
-		t.Fatalf("loaded.Tree: got %d entries, want 2", len(loaded.Tree))
+	// v2 manifests record the `sub` directory alongside the two files.
+	if len(loaded.Tree) != 3 {
+		t.Fatalf("loaded.Tree: got %d entries, want 3 (2 files + 1 dir)", len(loaded.Tree))
 	}
 	// Tree must be in stable (sorted) order.
 	if loaded.Tree[0].Path != "a.txt" {
 		t.Errorf("tree[0].Path: got %q, want a.txt", loaded.Tree[0].Path)
 	}
-	if loaded.Tree[1].Path != "sub/b.txt" {
-		t.Errorf("tree[1].Path: got %q, want sub/b.txt", loaded.Tree[1].Path)
+	if loaded.Tree[1].Path != "sub" || !loaded.Tree[1].IsDir() {
+		t.Errorf("tree[1]: got %q kind %q, want the sub directory entry", loaded.Tree[1].Path, loaded.Tree[1].Kind)
+	}
+	if loaded.Tree[2].Path != "sub/b.txt" {
+		t.Errorf("tree[2].Path: got %q, want sub/b.txt", loaded.Tree[2].Path)
 	}
 	for i, fe := range loaded.Tree {
-		if len(fe.Chunks) == 0 {
+		if fe.IsFile() && len(fe.Chunks) == 0 {
 			t.Errorf("tree[%d] %q: empty chunks", i, fe.Path)
 		}
 	}

@@ -9,6 +9,8 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"slices"
+	"strings"
 
 	"golang.org/x/sync/errgroup"
 
@@ -86,16 +88,55 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 		return err
 	}
 
-	// Resolve destDir to its absolute, symlink-cleaned form so that
-	// safeJoinPath comparisons are stable regardless of how the
-	// caller spells the path.
+	// Resolve destDir to its absolute, symlink-resolved form so
+	// containment checks compare like with like (macOS TempDirs live
+	// behind /var → /private/var, so the lexical form differs from
+	// what EvalSymlinks on a child will report). Dest exists by now
+	// (ensureDestDir), so EvalSymlinks cannot ENOENT.
 	absDest, err := filepath.Abs(destDir)
 	if err != nil {
 		return fmt.Errorf("repo: abs dest %s: %w", destDir, err)
 	}
-	absDest = filepath.Clean(absDest)
+	absDest, err = filepath.EvalSymlinks(filepath.Clean(absDest))
+	if err != nil {
+		return fmt.Errorf("repo: resolve dest %s: %w", destDir, err)
+	}
 
 	reporter.Total(m.Stats.Bytes)
+
+	// Partition the tree by kind. The phase ORDER is a security
+	// property, not a style choice:
+	//   1. directories — created first so modes/empty dirs exist;
+	//   2. regular files — while NO symlink from this manifest exists
+	//      yet, so a crafted manifest cannot route a file write
+	//      through a link it planted earlier (write-through-symlink
+	//      traversal);
+	//   3. symlinks — last, and creation refuses to replace an
+	//      existing path;
+	//   4. directory metadata (mode+mtime), deepest-first — files
+	//      touch parent mtimes, and a read-only dir mode applied
+	//      early would block writing its own children.
+	var dirs, files, links []FileEntry
+	for _, fe := range m.Tree {
+		switch {
+		case fe.IsDir():
+			dirs = append(dirs, fe)
+		case fe.IsSymlink():
+			links = append(links, fe)
+		default:
+			files = append(files, fe)
+		}
+	}
+
+	for _, fe := range dirs {
+		dst, err := safeJoinPath(absDest, fe.Path, "restore destination")
+		if err != nil {
+			return err
+		}
+		if err := os.MkdirAll(dst, 0o755); err != nil {
+			return fmt.Errorf("repo: mkdir %s: %w", dst, err)
+		}
+	}
 
 	// Bounded concurrency at the file level: each worker restores
 	// one file (fetch its chunks in order, write the destination
@@ -108,8 +149,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	g, gctx := errgroup.WithContext(ctx)
 	g.SetLimit(resolveConcurrency(opts.Concurrency))
 
-	for _, fe := range m.Tree {
-		fe := fe // capture by value for the goroutine closure
+	for _, fe := range files {
 		g.Go(func() error {
 			if err := gctx.Err(); err != nil {
 				return err
@@ -125,7 +165,79 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 			return nil
 		})
 	}
-	return g.Wait()
+	if err := g.Wait(); err != nil {
+		return err
+	}
+
+	for _, fe := range links {
+		if err := restoreSymlink(absDest, fe); err != nil {
+			return err
+		}
+	}
+
+	// Deepest-first so a parent's mtime is stamped after its children
+	// stop changing it, and a restrictive parent mode lands after the
+	// children were written.
+	slices.SortFunc(dirs, func(a, b FileEntry) int {
+		return strings.Count(b.Path, "/") - strings.Count(a.Path, "/")
+	})
+	for _, fe := range dirs {
+		dst, err := safeJoinPath(absDest, fe.Path, "restore destination")
+		if err != nil {
+			return err
+		}
+		if !fe.MTime.IsZero() {
+			if err := os.Chtimes(dst, fe.MTime, fe.MTime); err != nil {
+				return fmt.Errorf("repo: chtimes %s: %w", dst, err)
+			}
+		}
+		if err := os.Chmod(dst, fe.Mode.Perm()); err != nil {
+			return fmt.Errorf("repo: chmod %s: %w", dst, err)
+		}
+	}
+	return nil
+}
+
+// restoreSymlink recreates one symlink entry. The link path is
+// contained in dest (safeJoinPath + real-parent check); the TARGET is
+// restored verbatim — faithfully reproducing the source tree, dangling
+// or absolute targets included — because a symlink is data, not a
+// write through one. os.Symlink refuses to replace an existing path,
+// so a manifest can't overwrite a just-restored file with a link.
+func restoreSymlink(dest string, fe FileEntry) error {
+	dst, err := safeJoinPath(dest, fe.Path, "restore destination")
+	if err != nil {
+		return err
+	}
+	parent := filepath.Dir(dst)
+	if err := os.MkdirAll(parent, 0o755); err != nil {
+		return fmt.Errorf("repo: mkdir %s: %w", parent, err)
+	}
+	if err := ensureRealParentInDest(dest, parent); err != nil {
+		return err
+	}
+	if err := os.Symlink(fe.LinkTarget, dst); err != nil {
+		return fmt.Errorf("repo: symlink %s: %w", fe.Path, err)
+	}
+	return nil
+}
+
+// ensureRealParentInDest resolves parent through any symlinks and
+// requires the real path to remain inside dest (itself pre-resolved).
+// safeJoinPath is lexical and cannot see a symlink smuggled into the
+// parent chain — by this manifest or by anything else living in dest —
+// so every write re-checks the resolved parent. Symlink entries are
+// restored after all files precisely so this check has nothing to
+// race against within a single restore.
+func ensureRealParentInDest(dest, parent string) error {
+	real, err := filepath.EvalSymlinks(parent)
+	if err != nil {
+		return fmt.Errorf("repo: resolve %s: %w", parent, err)
+	}
+	if real != dest && !strings.HasPrefix(real, dest+string(filepath.Separator)) {
+		return fmt.Errorf("repo: refusing write outside restore destination: %s resolves to %s", parent, real)
+	}
+	return nil
 }
 
 // restoreFile writes a single FileEntry into dest, creating parent
@@ -144,6 +256,9 @@ func (r *Repo) restoreFile(ctx context.Context, repoKey []byte, dest string, fe 
 	parent := filepath.Dir(dst)
 	if err := os.MkdirAll(parent, 0o755); err != nil {
 		return fmt.Errorf("repo: mkdir %s: %w", parent, err)
+	}
+	if err := ensureRealParentInDest(dest, parent); err != nil {
+		return err
 	}
 
 	// Stage into a sibling temp file and rename into place only after the

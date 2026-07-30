@@ -49,12 +49,21 @@ func (r *Repo) Diff(ctx context.Context, idA, idB string) (DiffResult, error) {
 		return DiffResult{}, fmt.Errorf("repo: load snapshot B: %w", err)
 	}
 
+	// Directory entries are excluded from the diff surface entirely:
+	// they carry no content, and a v1-manifest vs v2-manifest diff
+	// would otherwise report every directory as "added".
 	indexA := make(map[string]FileEntry, len(manifestA.Tree))
 	for _, fe := range manifestA.Tree {
+		if fe.IsDir() {
+			continue
+		}
 		indexA[fe.Path] = fe
 	}
 	indexB := make(map[string]FileEntry, len(manifestB.Tree))
 	for _, fe := range manifestB.Tree {
+		if fe.IsDir() {
+			continue
+		}
 		indexB[fe.Path] = fe
 	}
 
@@ -93,10 +102,19 @@ func (r *Repo) Diff(ctx context.Context, idA, idB string) (DiffResult, error) {
 }
 
 // entriesDiffer reports whether two FileEntry values represent a
-// material change. Compares Size and MTime. Permission-only changes
-// are intentionally not flagged in v1 — see DiffResult.Changed for
-// the rationale.
+// material change. A kind flip (file became a symlink) is always
+// material. Two symlinks compare by target only — the link's own
+// lstat mtime changes whenever the link is recreated and restore
+// doesn't reproduce it, so it would be pure noise. Files compare by
+// Size and MTime. Permission-only changes are intentionally not
+// flagged in v1 — see DiffResult.Changed for the rationale.
 func entriesDiffer(a, b FileEntry) bool {
+	if a.Kind != b.Kind {
+		return true
+	}
+	if a.IsSymlink() {
+		return a.LinkTarget != b.LinkTarget
+	}
 	if a.Size != b.Size {
 		return true
 	}

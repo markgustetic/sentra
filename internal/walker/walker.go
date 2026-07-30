@@ -15,20 +15,39 @@ import (
 	"golang.org/x/sync/errgroup"
 )
 
-// Entry is the metadata for one regular file emitted by Walk. It is
-// the minimum a downstream chunker / encryption pipeline needs to do
-// its job: where the file lives on disk, what to call it relative to
-// the snapshot root, and the stat fields needed for change detection.
+// EntryKind distinguishes what an Entry describes. The zero value is
+// KindFile so pre-existing callers that never look at the field keep
+// their exact semantics (Walk only emits the other kinds behind the
+// Options.IncludeNonRegular opt-in).
+type EntryKind int
+
+const (
+	KindFile EntryKind = iota
+	KindDir
+	KindSymlink
+)
+
+// Entry is the metadata for one filesystem object emitted by Walk. It
+// is the minimum a downstream chunker / encryption pipeline needs to
+// do its job: where the object lives on disk, what to call it relative
+// to the snapshot root, and the stat fields needed for change
+// detection.
 type Entry struct {
+	Kind    EntryKind
 	AbsPath string
 	RelPath string
-	Size    int64
-	// Mode is the lstat mode of the file. In v1 the walker only emits
-	// regular files, so this is always a regular-file mode. The bits
-	// the manifest cares about are the permission bits (Mode.Perm());
-	// type bits are constant.
+	// Size is the file's byte length. Zero for dirs and symlinks —
+	// neither contributes content bytes to a snapshot.
+	Size int64
+	// Mode is the lstat mode. The bits the manifest cares about are
+	// the permission bits (Mode.Perm()); type bits are carried by
+	// Kind instead.
 	Mode  os.FileMode
 	MTime time.Time
+	// LinkTarget is the symlink's target exactly as stored on disk
+	// (os.Readlink output — relative or absolute, never resolved).
+	// Empty for every other kind.
+	LinkTarget string
 }
 
 // Options tunes the walk. Zero-value Options runs with sensible
@@ -48,6 +67,14 @@ type Options struct {
 	// invoke fn. Zero means GOMAXPROCS, which is the right default
 	// for stat-bound workloads on modern disks.
 	Concurrency int
+
+	// IncludeNonRegular additionally emits KindDir entries for every
+	// directory under root (the root itself excluded) and KindSymlink
+	// entries carrying LinkTarget. Neither is followed. Off by
+	// default so file-only consumers (backup plans, agent heuristics)
+	// keep their exact historical behavior; snapshot capture opts in
+	// for filesystem fidelity.
+	IncludeNonRegular bool
 }
 
 // defaultIgnoreFile is the filename used when Options.IgnoreFile is
@@ -173,6 +200,15 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 				if opts.ExcludeCaches && isCacheDir(path) {
 					return fs.SkipDir
 				}
+				if opts.IncludeNonRegular && relSlash != "." {
+					// Emit the directory itself so empty dirs and
+					// dir modes survive a snapshot. fn must be
+					// concurrency-safe anyway (worker pool), so
+					// calling it from the producer is fine.
+					if err := emitNonRegular(d, KindDir, path, relSlash, "", fn); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 
@@ -182,13 +218,22 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 				return nil
 			}
 
-			// Filter to regular files at producer time using the
-			// DirEntry's Type — avoids one Lstat per non-regular
-			// entry on the worker side. The worker still re-checks
-			// after a fresh Lstat for the size/mtime fields.
+			// Non-regular entries: symlinks are emitted (with their
+			// target, never followed) behind the opt-in; everything
+			// else — devices, FIFOs, sockets — is dropped.
 			if !d.Type().IsRegular() {
-				// Future: symlink policy. For v1 we just
-				// drop them.
+				if opts.IncludeNonRegular && d.Type()&fs.ModeSymlink != 0 {
+					target, err := os.Readlink(path)
+					if err != nil {
+						if errors.Is(err, fs.ErrNotExist) {
+							return nil // vanished mid-walk; skip like a vanished file
+						}
+						return fmt.Errorf("walker: readlink %q: %w", path, err)
+					}
+					if err := emitNonRegular(d, KindSymlink, path, relSlash, target, fn); err != nil {
+						return err
+					}
+				}
 				return nil
 			}
 
@@ -208,6 +253,27 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 	})
 
 	return g.Wait()
+}
+
+// emitNonRegular builds and emits a KindDir or KindSymlink Entry from
+// the producer goroutine. A vanished entry (Info returning not-exist)
+// is skipped silently, matching the vanished-file semantics elsewhere.
+func emitNonRegular(d fs.DirEntry, kind EntryKind, absPath, relSlash, linkTarget string, fn func(Entry) error) error {
+	info, err := d.Info()
+	if err != nil {
+		if errors.Is(err, fs.ErrNotExist) {
+			return nil
+		}
+		return fmt.Errorf("walker: info %q: %w", absPath, err)
+	}
+	return fn(Entry{
+		Kind:       kind,
+		AbsPath:    absPath,
+		RelPath:    relSlash,
+		Mode:       info.Mode(),
+		MTime:      info.ModTime(),
+		LinkTarget: linkTarget,
+	})
 }
 
 // isCacheDir reports whether dir contains a CACHEDIR.TAG file whose

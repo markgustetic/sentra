@@ -145,6 +145,25 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 		}
 		state.add(*fe, newBytes)
 	}
+
+	// Dirs and symlinks are captured fresh at apply time rather than
+	// carried in the plan: the plan's review surface is file CONTENT
+	// (what gets read and uploaded). Dirs and symlinks upload nothing,
+	// so re-walking them here keeps apply-created snapshots at the
+	// same tree fidelity as direct backups without changing what the
+	// operator reviewed.
+	wopts := plan.Options.toWalkerOptions()
+	wopts.IncludeNonRegular = true
+	if err := walker.Walk(ctx, plan.Root, wopts, func(e walker.Entry) error {
+		if e.Kind == walker.KindFile {
+			return nil
+		}
+		state.add(entryFromNonRegular(e), 0)
+		return nil
+	}); err != nil {
+		return SnapshotInfo{}, fmt.Errorf("repo: walk plan root for dirs/symlinks: %w", err)
+	}
+
 	return r.finishSnapshot(ctx, repoKey, plan.Root, plan.Tag, state)
 }
 

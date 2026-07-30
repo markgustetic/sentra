@@ -75,11 +75,16 @@ func TestCreateSnapshotFromPlan_RoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("load: %v", err)
 	}
-	if len(loaded.Tree) != 2 {
-		t.Fatalf("tree: got %d want 2", len(loaded.Tree))
+	// Apply-created snapshots carry the same tree fidelity as direct
+	// backups: the `sub` directory entry rides along with the files.
+	if len(loaded.Tree) != 3 {
+		t.Fatalf("tree: got %d want 3 (2 files + 1 dir)", len(loaded.Tree))
 	}
-	if loaded.Tree[0].Path != "a.txt" || loaded.Tree[1].Path != "sub/b.txt" {
+	if loaded.Tree[0].Path != "a.txt" || loaded.Tree[1].Path != "sub" || loaded.Tree[2].Path != "sub/b.txt" {
 		t.Fatalf("unexpected tree: %+v", loaded.Tree)
+	}
+	if !loaded.Tree[1].IsDir() {
+		t.Fatalf("tree[1] should be the sub directory entry: %+v", loaded.Tree[1])
 	}
 }
 

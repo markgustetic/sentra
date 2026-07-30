@@ -32,6 +32,13 @@ type dirNode struct {
 func buildDirTree(entries []repo.FileEntry) *dirNode {
 	root := &dirNode{name: "/", children: map[string]*dirNode{}}
 	for _, fe := range entries {
+		// Only chunk-backed files count as leaves. Dir entries (v2
+		// manifests) would otherwise register as zero-byte files at
+		// their own path; the directory structure they describe is
+		// already derived from the file paths below.
+		if !fe.IsFile() {
+			continue
+		}
 		p := strings.Trim(strings.ReplaceAll(fe.Path, "\\", "/"), "/")
 		node := root
 		if p != "" {

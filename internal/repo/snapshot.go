@@ -140,6 +140,10 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// non-zero values flow through untouched (this is how the CLI
 	// drives ignore_file / exclude_caches from sentra.yaml).
 	walkerOpts := resolveWalkerOptions(opts.Walker)
+	// Fidelity: snapshots record dirs (modes, empty dirs) and symlinks
+	// (targets), not just files. The opt-in is set here rather than in
+	// resolveWalkerOptions so plan/heuristic walks stay file-only.
+	walkerOpts.IncludeNonRegular = true
 
 	// We collect FileEntry values inside the walker callback and
 	// sort at the end. The walker's worker pool means callbacks fire
@@ -163,6 +167,12 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 
 	walkErr := walker.Walk(ctx, absRoot, walkerOpts,
 		func(e walker.Entry) error {
+			if e.Kind != walker.KindFile {
+				// Dirs and symlinks carry no content bytes — record
+				// their metadata entry and skip the chunk pipeline.
+				state.add(entryFromNonRegular(e), 0)
+				return nil
+			}
 			reporter.Total(estimated.Add(e.Size))
 
 			fe, newBytes, err := r.captureFile(ctx, repoKey, e, reporter)
@@ -226,6 +236,13 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	var m Manifest
 	if err := json.Unmarshal(raw, &m); err != nil {
 		return Manifest{}, fmt.Errorf("repo: unmarshal manifest %q: %w", id, err)
+	}
+	// Older versions load fine (absent fields keep zero values with
+	// the right meaning), but a NEWER manifest may carry entry kinds
+	// this binary would silently mis-restore — refuse instead.
+	if m.Version > ManifestVersion {
+		return Manifest{}, fmt.Errorf("repo: manifest %q is format v%d, newer than this binary supports (v%d) — upgrade sentra",
+			id, m.Version, ManifestVersion)
 	}
 	return m, nil
 }

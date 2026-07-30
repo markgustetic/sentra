@@ -121,7 +121,7 @@ func (r *Repo) finishSnapshot(
 ) (SnapshotInfo, error) {
 	tree := state.snapshotTree()
 	stats := SnapshotStats{
-		Files:    len(tree),
+		Files:    state.fileCount(),
 		Bytes:    state.totalBytes(),
 		NewBytes: state.newBytes(),
 	}
@@ -213,16 +213,44 @@ type snapState struct {
 	tree     []FileEntry
 	bytes    int64
 	uploaded int64
+	files    int
 }
 
-// add records a captured file and the size of the new (uploaded)
-// blobs that resulted. Safe for concurrent calls.
+// add records a captured entry and the size of the new (uploaded)
+// blobs that resulted. Safe for concurrent calls. Only regular files
+// count toward the Files stat — dirs and symlinks are tree fidelity,
+// not content.
 func (s *snapState) add(fe FileEntry, newBytes int64) {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	s.tree = append(s.tree, fe)
 	s.bytes += fe.Size
 	s.uploaded += newBytes
+	if fe.IsFile() {
+		s.files++
+	}
+}
+
+func (s *snapState) fileCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.files
+}
+
+// entryFromNonRegular converts a dir or symlink walker entry into its
+// manifest form. No chunks — neither kind carries content bytes.
+func entryFromNonRegular(e walker.Entry) FileEntry {
+	kind := EntryKindDir
+	if e.Kind == walker.KindSymlink {
+		kind = EntryKindSymlink
+	}
+	return FileEntry{
+		Path:       e.RelPath,
+		Mode:       e.Mode,
+		MTime:      e.MTime,
+		Kind:       kind,
+		LinkTarget: e.LinkTarget,
+	}
 }
 
 func (s *snapState) totalBytes() int64 {

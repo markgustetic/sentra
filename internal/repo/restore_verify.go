@@ -69,12 +69,17 @@ func (r *Repo) PlanRestore(ctx context.Context, snapID, destDir string) (Restore
 		return RestorePlan{}, err
 	}
 
+	// Every entry — dirs and symlinks included — is path-validated,
+	// but the preview lists regular files only, matching the plan's
+	// Files/Bytes stats (dirs and symlinks write no content).
 	paths := make([]string, 0, len(m.Tree))
 	for _, fe := range m.Tree {
 		if _, err := safeJoinPath(absDest, fe.Path, "restore destination"); err != nil {
 			return RestorePlan{}, err
 		}
-		paths = append(paths, fe.Path)
+		if fe.IsFile() {
+			paths = append(paths, fe.Path)
+		}
 	}
 	return RestorePlan{
 		SnapshotID:  m.ID,
@@ -162,6 +167,48 @@ func inspectDestDir(dest string) (exists bool, empty bool, err error) {
 	return statDestDir(dest)
 }
 
+// verifyRestoreNonRegular checks a dir or symlink entry: the path must
+// exist (by lstat — never following the link under test), be the
+// recorded kind, and a symlink must carry the exact recorded target.
+func verifyRestoreNonRegular(dst string, fe FileEntry) (*RestoreMismatch, error) {
+	info, err := os.Lstat(dst)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return &RestoreMismatch{Path: fe.Path, Reason: "missing " + kindLabel(fe), GotSize: -1}, nil
+		}
+		return nil, fmt.Errorf("repo: lstat restored %s %s: %w", kindLabel(fe), dst, err)
+	}
+	switch {
+	case fe.IsDir():
+		if !info.IsDir() {
+			return &RestoreMismatch{Path: fe.Path, Reason: "not a directory"}, nil
+		}
+	case fe.IsSymlink():
+		if info.Mode()&os.ModeSymlink == 0 {
+			return &RestoreMismatch{Path: fe.Path, Reason: "not a symlink"}, nil
+		}
+		target, err := os.Readlink(dst)
+		if err != nil {
+			return nil, fmt.Errorf("repo: readlink %s: %w", dst, err)
+		}
+		if target != fe.LinkTarget {
+			return &RestoreMismatch{Path: fe.Path, Reason: "symlink target mismatch"}, nil
+		}
+	}
+	return nil, nil
+}
+
+func kindLabel(fe FileEntry) string {
+	switch {
+	case fe.IsDir():
+		return "directory"
+	case fe.IsSymlink():
+		return "symlink"
+	default:
+		return "file"
+	}
+}
+
 func verifyRestoreFile(ctx context.Context, absDest string, fe FileEntry) (*RestoreMismatch, error) {
 	if err := ctx.Err(); err != nil {
 		return nil, err
@@ -169,6 +216,11 @@ func verifyRestoreFile(ctx context.Context, absDest string, fe FileEntry) (*Rest
 	dst, err := safeJoinPath(absDest, fe.Path, "restore destination")
 	if err != nil {
 		return nil, err
+	}
+	// Dir and symlink entries verify structurally — existence, kind,
+	// and (for links) the exact target. They carry no chunks to hash.
+	if fe.IsDir() || fe.IsSymlink() {
+		return verifyRestoreNonRegular(dst, fe)
 	}
 	info, err := os.Stat(dst)
 	if err != nil {
