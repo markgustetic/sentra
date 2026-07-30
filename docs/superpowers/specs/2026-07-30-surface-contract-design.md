@@ -135,18 +135,17 @@ so a real on-disk config always beats a caller-supplied seed. Without it, a futu
 force-setup path could silently prefer `sentra local`'s MinIO coordinates over the
 operator's actual config. The comment at `ui.go:68-77` needs updating to match.
 
-### TUI additions
+### TUI addition
 
-Both land in `internal/tui/setup_wizard.go`:
+One change in `internal/tui/setup_wizard.go`: the review stage renders an
+"overwrites `<path>`" line when `Reconfigure` is set.
 
-1. **Error advice (regression guard).** The `stageError` render at line 1154 must emit
-   `setup.ErrorAdvice(err, cfg)` beneath the raw error. The deleted CLI wizard printed
-   this classified guidance (`printSetupErrorDetail`); the TUI never has. Without this
-   the deletion silently drops operator-facing remediation. The view must retain the
-   error and config at that stage. `setup.ErrorAdvice` lives in `internal/setup`, below
-   both surfaces, so there is no import-direction problem.
-2. **Reconfigure warning.** The review stage renders an "overwrites `<path>`" line when
-   `Reconfigure` is set.
+**No error-advice work is needed.** An earlier draft of this spec claimed the TUI never
+surfaced `setup.ErrorAdvice` and that wiring it in was a required regression guard. That
+was wrong. `internal/tui/setup_wizard.go:1158` already renders it in the `stageError`
+view and `:1004` builds it into the error modal, covered by
+`TestSetupWizard_DoneMsgErrorRendersAdvice`. Deleting the CLI wizard's
+`printSetupErrorDetail` loses nothing.
 
 ## Deletion inventory
 
@@ -210,12 +209,19 @@ extraction that created `internal/setup`. Spot-checked and confirmed covered:
 | Review and summary text | `TestReviewText*`, `TestSummaryLines*` |
 | AWS CLI install, SSO probes | `TestDefaultEnsureAWSCLI_*`, `TestDefaultAWSSSOConfigured_*` |
 
-**Unresolved, and the plan must settle it:** `TestSetup_PreparesAWSBeforeWritingConfig`
-asserts the pipeline *ordering* (WriteDraft → PrepareAWS → WriteConfig → InitRepo) at
-the CLI level. Each stage has an engine test, but no engine test appears to assert
-their order. Ordering is a real invariant — a config written before a failed bucket
-prep records a bucket that does not exist. If no such test exists, write it in
-`internal/setup` before deleting the CLI one.
+**One genuine coverage gap, and it must be closed before the CLI test dies.**
+`TestSetup_PreparesAWSBeforeWritingConfig` asserts the pipeline *ordering* (WriteDraft →
+PrepareAWS → WriteConfig → InitRepo). That ordering is a real invariant: a config
+written before a failed bucket prep records a bucket that does not exist.
+
+The replacement belongs in `internal/tui`, not `internal/setup`. `setup.Engine` has no
+pipeline method — it exposes discrete steps and each caller sequences them
+(`internal/tui/setup_wizard.go:597-655` is the surviving sequencer). So there is nothing
+at the engine level to assert an order against.
+
+The existing `TestSetupWizard_ProvisionOpRunsEngineEndToEnd` covers only the success
+path. No test asserts that a *failed* `PrepareAWS` leaves no config file on disk, which
+is the half of the invariant that matters. That test is Task 1 of the plan.
 
 ### New tests
 
@@ -228,17 +234,17 @@ prep records a bucket that does not exist. If no such test exists, write it in
    with the on-disk config, not the seed.
 3. **Review warning** (tui view) — `Reconfigure` true renders the config path, false
    does not. Text assertion, safe under lipgloss's Ascii profile.
-4. **Error advice render** (tui view) — drive to `stageError` and assert the advice
-   lines appear. Guard against a vacuous pass by asserting
-   `len(setup.ErrorAdvice(err, cfg)) > 0` during arrangement; otherwise an empty advice
-   slice makes the test green while the view renders nothing.
+4. **Prepare-failure ordering** (tui view) — drive the wizard to a provisioning run
+   whose `PrepareAWS` fails, then assert no file exists at `ConfigPath`. This replaces
+   `TestSetup_PreparesAWSBeforeWritingConfig` and must be written and passing *before*
+   that CLI test is deleted.
 5. **`sentra setup --force`** returns an unknown-flag error, so the flag cannot quietly
    return.
 6. **`setup iam-policy`** is still registered under the launcher.
 
-Each test is written failing-first. For test 4 specifically, removing the
-`ErrorAdvice` call must break it — otherwise it does not guard the regression it
-exists for.
+Each test is written failing-first. Test 4 is the one that must be proved capable of
+failing: temporarily reordering the wizard's op so `WriteConfig` precedes `PrepareAWS`
+must break it.
 
 ### Gate
 
