@@ -334,8 +334,15 @@ func (v SetupWizardView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case stageProvision:
 		return nil
-	case stageDone, stageError:
+	case stageDone:
 		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "restart"))}
+	case stageError:
+		// enter retries (via passphrase re-entry) and esc is the restart, so the
+		// two terminal stages cannot share one binding.
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "retry")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "restart")),
+		}
 	default:
 		keys := []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "next")),
@@ -375,6 +382,14 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			v.stage = stageError
 			v.result = msg
+			// Drop the stash on the way to the failure screen. The op aliased
+			// v.pass and zeroized it on return, but crypto.Zeroize wipes IN
+			// PLACE without truncating — so what survives here is a full-length
+			// run of zero bytes, which review's len(v.pass) == 0 confirm guard
+			// happily accepts and would derive the repository key from. Nil it
+			// so that guard means what it says on every route out of a failure.
+			crypto.Zeroize(v.pass)
+			v.pass = nil
 			return v, nil
 		}
 		v.stage = stageDone
@@ -397,22 +412,14 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// deferred crypto.Zeroize(pass) never fired and v.pass still holds
 			// the plaintext. Route back through enterPassphraseStage: it wipes
 			// the stash (otherwise the secret stays resident indefinitely if the
-			// user abandons the wizard) and then re-establishes it from whichever
-			// source armed it in the first place. Re-entry is mandatory only when
-			// that source was the operator — a nil v.pass at review would let the
-			// confirm re-arm startProvision against an empty passphrase, and
-			// prompting someone whose passphrase came from the environment would
-			// invite them to type a different one.
+			// user abandons the wizard), re-establishes it from whichever source
+			// armed it in the first place, and truncates the history so esc
+			// cannot walk forward past the re-entry. Re-entry is mandatory only
+			// when that source was the operator — a nil v.pass at review would
+			// let the confirm re-arm startProvision against an empty passphrase,
+			// and prompting someone whose passphrase came from the environment
+			// would invite them to type a different one.
 			v = v.enterPassphraseStage()
-			// The forced route back is a stage DECREASE, which the Update
-			// wrapper never records — the history stack still ends with the
-			// entry pushed on review→provision. Truncate to the stages
-			// strictly behind passphrase, or esc would pop that stale entry
-			// and walk FORWARD, skipping the re-entry this handler just made
-			// mandatory and arming a confirm with a nil passphrase.
-			for len(v.history) > 0 && v.history[len(v.history)-1] >= stagePassphrase {
-				v.history = v.history[:len(v.history)-1]
-			}
 			v.notice = "another operation is in progress — try again when it finishes"
 		}
 		return v, nil
@@ -427,11 +434,17 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id != setupReviewConfirmID || v.stage != stageReview {
 			return v, nil
 		}
-		// Review must never arm provisioning without a verified passphrase
-		// in hand — an empty one would silently derive the repository key
-		// from "". Whatever path lands here with the stash wiped goes back
-		// through re-entry instead.
-		if len(v.pass) == 0 {
+		// Review must never arm repo initialization without a verified
+		// passphrase in hand — an empty one would silently derive the
+		// repository key from "". Whatever path lands here with the stash
+		// wiped goes back through re-entry instead.
+		//
+		// Scoped to InitRepo because that is the only consumer of the stash:
+		// a config-only plan (init-repo toggled off, or the skip auth method)
+		// legitimately reaches review having never visited stagePassphrase,
+		// and demanding one there would strand that path on a prompt whose
+		// answer provisioning never reads.
+		if v.plan.InitRepo && len(v.pass) == 0 {
 			v.stage = stagePassphrase
 			v.focusConf = false
 			v.newPass.Focus()
@@ -547,16 +560,20 @@ func (v SetupWizardView) goBack() SetupWizardView {
 func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
-		// Retry: return to review so the operator can re-confirm after
-		// fixing credentials or the bucket name.
-		v.stage = stageReview
-		v.notice = ""
+		// Retry: back to the passphrase, NOT straight to review. The failed op
+		// already consumed the stash (see enterPassphraseStage), so a retry that
+		// re-entered at review would let the very next keypress provision the
+		// repository under a run of zero bytes instead of the operator's
+		// passphrase. The masked fields keep what was typed, so re-confirming is
+		// one keypress once the credentials or bucket name are fixed.
+		v = v.enterPassphraseStage()
+		v.notice = "confirm the repository passphrase to retry"
 		return v, nil
 	case tea.KeyEsc:
-		// Abandon the wizard. The completed op already zeroized the shared
-		// passphrase array, so v.pass is incidentally wiped — but make it
-		// explicit so a future refactor of that aliasing can't silently
-		// resurrect a plaintext-residency leak.
+		// Abandon the wizard. Both the op's deferred zeroize and the failure
+		// handler have already wiped the stash by now — keep this explicit so a
+		// future refactor of either can't silently resurrect a plaintext-
+		// residency leak.
 		crypto.Zeroize(v.pass)
 		v.pass = nil
 		fresh := NewSetupWizardView(v.deps)
@@ -1033,11 +1050,12 @@ func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
-// enterPassphraseStage is the ONE way into the passphrase stage. It first asks
-// the non-interactive sources — --passphrase-file, then SENTRA_PASSPHRASE — and
-// when one answers it stashes that secret, records the source label for the
-// review screen, and goes straight to review without ever showing an entry
-// field.
+// enterPassphraseStage is the ONE way into the passphrase stage, forward
+// (advanceFromBackend, afterAuth) and backward (a rejected op, an error retry).
+// It first asks the non-interactive sources — --passphrase-file, then
+// SENTRA_PASSPHRASE — and when one answers it stashes that secret, records the
+// source label for the review screen, and goes straight to review without ever
+// showing an entry field.
 //
 // That skip is the point, not an optimization. `sentra setup` honored those
 // sources before the wizard became its only surface, and QUICKSTART still tells
@@ -1055,6 +1073,21 @@ func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 // The keyring choice is untouched by any of this — it is a separate decision
 // (the deleted huh wizard asked it independently of the passphrase source), so
 // the plan keeps whatever v.savePass holds and review states the outcome.
+//
+// Wiping first is also what makes review's len(v.pass) == 0 confirm guard mean
+// what it says on the failure routes. buildSetupOp aliases v.pass and zeroizes
+// it on return, and crypto.Zeroize wipes IN PLACE without truncating — so a
+// "used" stash is a full-length run of zero bytes, not an empty slice, which
+// would sail through that guard and derive the repository key (and, with saving
+// on, the keyring entry) from those zeros.
+//
+// The backward callers arrive with the history stack still ending at the entry
+// pushed on the way into provisioning, because a forced return is a stage
+// DECREASE and the Update wrapper only records increases. Truncating to the
+// stages strictly behind passphrase is what stops esc popping that stale entry
+// and walking FORWARD to review, skipping the re-entry this just made
+// mandatory. It is a no-op on the forward path, where nothing at or past
+// stagePassphrase has been pushed yet.
 func (v SetupWizardView) enterPassphraseStage() SetupWizardView {
 	// Any earlier stash is dead the moment we re-enter this stage (esc back to
 	// details, then forward again). Wipe before overwriting so an abandoned
@@ -1062,6 +1095,12 @@ func (v SetupWizardView) enterPassphraseStage() SetupWizardView {
 	crypto.Zeroize(v.pass)
 	v.pass = nil
 	v.plan.PassphraseSource = ""
+
+	// Ahead of the non-interactive branch, so BOTH exits — straight to review
+	// and the entry field — leave a history the back-stack can walk.
+	for len(v.history) > 0 && v.history[len(v.history)-1] >= stagePassphrase {
+		v.history = v.history[:len(v.history)-1]
+	}
 
 	pass, source, err := config.ResolveNonInteractive(v.deps.PassphraseFile)
 	switch {
@@ -1219,7 +1258,7 @@ func (v SetupWizardView) View() string {
 				fmt.Fprintf(&b, "\n%s", ui.Subtle.Render(line))
 			}
 		}
-		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("⏎ back to review · esc restart"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("⏎ retry (confirm passphrase) · esc restart"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
