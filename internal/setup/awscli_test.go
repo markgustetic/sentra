@@ -118,6 +118,14 @@ func TestDefaultEnsureAWSCLI_NoSupportedInstaller(t *testing.T) {
 // the TUI wizard and the huh-based CLI wizard is gone. So nil is the ONLY value
 // this ever sees in production, and it must return the actionable error rather
 // than dereference nil and take the whole wizard down.
+//
+// Having brew installed must not change WHAT the operator is told. The install
+// path is unreachable in production (see DefaultEnsureAWSCLI), so a machine with
+// brew gets the same missing-binary guidance as one without: install the AWS CLI
+// or rerun setup with existing credentials. The old brew-specific message named
+// the missing confirm hook — internal wiring nobody outside this package can act
+// on — and ErrorAdvice had no case for it, so the better-equipped machine got
+// the worse message.
 func TestDefaultEnsureAWSCLI_NilConfirm(t *testing.T) {
 	dir := t.TempDir()
 	// brew present + aws absent is the one arrangement that reaches the confirm.
@@ -128,8 +136,16 @@ func TestDefaultEnsureAWSCLI_NilConfirm(t *testing.T) {
 	if err == nil {
 		t.Fatal("a nil confirm must be an error, not an install attempt")
 	}
-	if !strings.Contains(err.Error(), "no install confirmation was configured") {
-		t.Fatalf("error = %v, want the missing-confirmation guard", err)
+	for _, want := range []string{
+		"AWS CLI is required for the selected AWS sign-in method",
+		"Install it, or rerun setup and choose Existing credentials",
+	} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("error = %v, want actionable guidance containing %q", err, want)
+		}
+	}
+	if strings.Contains(err.Error(), "install confirmation") {
+		t.Fatalf("error = %v, must not name the internal confirm hook", err)
 	}
 }
 

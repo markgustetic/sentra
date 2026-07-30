@@ -11,21 +11,32 @@ import (
 )
 
 // DefaultEnsureAWSCLI verifies that the AWS CLI is available. When it is
-// missing and Homebrew is available, it asks (via confirm) to run
-// `brew install awscli` and verifies the install before continuing. This
-// brew auto-install path is CLI-only; the TUI wizard must detect a missing
-// aws CLI and surface advice instead of driving this confirm.
+// missing and the caller supplied a confirm, it asks to run
+// `brew install awscli` and verifies the install before continuing.
+//
+// NO PRODUCTION CALLER SUPPLIES A CONFIRM. Engine.PrepareAWS passes nil, and
+// the TUI wizard passes nil by design (huh cannot run inside a live
+// tea.Program), so since the huh-based CLI wizard's deletion the install branch
+// below is reachable only from tests. It is kept rather than deleted because
+// re-enabling it is cheap: a TUI confirm modal whose "yes" runs the plan the way
+// interactiveAWSAuthCommand already suspends the program to run `aws login`
+// would restore brew auto-install without changing anything here. That is a
+// feature, not a fix, so it is tracked rather than built.
+//
+// A missing binary with no confirm and a missing binary with no supported
+// package manager are therefore the same situation from the operator's side —
+// nothing here can install it — so they share one actionable message. Naming the
+// absent confirm instead would describe internal wiring the operator cannot act
+// on, and ErrorAdvice has no case for it, so the TUI's modal would fall through
+// to its generic line and never say "install the AWS CLI".
 func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
 	if _, err := exec.LookPath("aws"); err == nil {
 		return AWSCLIInstallReport{AlreadyInstalled: true}, nil
 	}
 
 	plan, ok := DefaultAWSCLIInstallPlan()
-	if !ok {
+	if !ok || confirm == nil {
 		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for the selected AWS sign-in method but was not found in PATH. Install it, or rerun setup and choose Existing credentials")
-	}
-	if confirm == nil {
-		return AWSCLIInstallReport{}, fmt.Errorf("AWS CLI is required for the selected AWS sign-in method but no install confirmation was configured")
 	}
 	ok, err := confirm(plan)
 	if err != nil {
@@ -49,7 +60,9 @@ func DefaultEnsureAWSCLI(ctx context.Context, confirm AWSCLIInstallConfirm) (AWS
 }
 
 // DefaultAWSCLIInstallPlan returns the package-manager command Sentra would run
-// to install the AWS CLI, and whether a supported manager was found.
+// to install the AWS CLI, and whether a supported manager was found. Its result
+// only reaches an actual install through DefaultEnsureAWSCLI's confirm branch,
+// which no production caller currently arms — see the note there.
 func DefaultAWSCLIInstallPlan() (AWSCLIInstallPlan, bool) {
 	if _, err := exec.LookPath("brew"); err == nil {
 		return AWSCLIInstallPlan{
