@@ -120,6 +120,13 @@ type Deps struct {
 	// data, never a secret.
 	InitialView string
 
+	// Reconfigure tells the setup wizard it is opening over a sentra.yaml that
+	// already exists, so its review stage can warn that completing the wizard
+	// overwrites that file. Set by runUI only on the forced-setup path
+	// (`sentra setup`); the first-run path leaves it false because there is
+	// nothing to overwrite.
+	Reconfigure bool
+
 	// ShowSplash gates the launch splash. runUI sets it from the config's
 	// ui.hide_splash; the zero value (false) keeps it off, so tests that build
 	// a bare Deps{} render the normal frame.

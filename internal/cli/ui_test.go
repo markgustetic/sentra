@@ -511,3 +511,154 @@ func TestRunUI_FirstRunShowsSplash(t *testing.T) {
 		t.Error("first run (no config) must show the splash")
 	}
 }
+
+// TestRunUI_SetupRoutingMatrix drives the full cross product of
+// (ConfigExists x PassphraseAvailable x forceSetup) rather than only the new
+// forceSetup cases. The same class of bug — one launch condition silently
+// stealing another's route — has shipped here before, so the regression rows
+// (forceSetup=false) are as load-bearing as the new ones.
+func TestRunUI_SetupRoutingMatrix(t *testing.T) {
+	const passphrase = "hunter2"
+
+	tests := []struct {
+		name            string
+		configExists    bool
+		passphraseAvail bool
+		forceSetup      bool
+		wantInitialView string
+		wantReconfigure bool
+	}{
+		{"first run", false, false, false, "setup", false},
+		{"first run, forced", false, false, true, "setup", false},
+		{"configured and locked", true, false, false, "unlock", false},
+		{"configured and locked, forced", true, false, true, "setup", true},
+		{"configured and unlocked", true, true, false, "", false},
+		{"configured and unlocked, forced", true, true, true, "setup", true},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			chDir(t, dir)
+
+			var passFile string
+			if tc.configExists {
+				writeBackupConfigFile(t, ".") // keyring off, no env source
+			}
+			if tc.passphraseAvail {
+				passFile = filepath.Join(dir, "pass.txt")
+				if err := os.WriteFile(passFile, []byte(passphrase+"\n"), 0o600); err != nil {
+					t.Fatalf("write passphrase file: %v", err)
+				}
+			}
+
+			// Initialize whenever a passphrase source exists, not only for the
+			// dashboard row. Only that row opens the repo, but the launch probe
+			// resolves the passphrase on every configured row, and an
+			// uninitialized store is a needless way for an unrelated row to fail.
+			store := blobstore.NewMemory()
+			if tc.passphraseAvail {
+				r, err := repo.Init(context.Background(), store, []byte(passphrase))
+				if err != nil {
+					t.Fatalf("repo init: %v", err)
+				}
+				if err := r.Close(); err != nil {
+					t.Fatalf("close: %v", err)
+				}
+			}
+
+			var captured tui.App
+			deps := UIDeps{
+				RepoDeps: RepoDeps{
+					NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+						return store, nil
+					},
+					// probeLaunchState (the routing decision) resolves its own
+					// non-interactive passphrase via config.Resolve and never calls
+					// this hook — it is openRepoForConfig, reached only on the
+					// dashboard branch (configured+unlocked+!forceSetup, i.e. the
+					// "configured and unlocked" row), that calls it to actually open
+					// the repo. Model it the same non-interactive file source
+					// probeLaunchState used, so that row can open the repo it
+					// legitimately routes to; fatal only guards against ever falling
+					// through to a real interactive prompt when no file exists.
+					PassphraseWithConfig: func(cfg *config.Config) ([]byte, error) {
+						if passFile == "" {
+							t.Fatal("interactive passphrase resolver must not run on the launch path")
+							return nil, nil
+						}
+						return config.Resolve(config.ResolveOptions{PassphraseFile: passFile})
+					},
+				},
+				Run:            func(app tui.App) error { captured = app; return nil },
+				PassphraseFile: func() string { return passFile },
+			}
+
+			cmd := NewUI(deps)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			cmd.SetArgs([]string{})
+			// NewUI always passes forceSetup=false; exercise the forced path
+			// through runUI directly, which is what `sentra setup` will call.
+			var err error
+			if tc.forceSetup {
+				err = runUI(cmd, deps, configFileName, true)
+			} else {
+				err = cmd.Execute()
+			}
+			if err != nil {
+				t.Fatalf("launch: %v", err)
+			}
+
+			d := captured.Deps()
+			if d.InitialView != tc.wantInitialView {
+				t.Errorf("InitialView = %q, want %q", d.InitialView, tc.wantInitialView)
+			}
+			if d.Reconfigure != tc.wantReconfigure {
+				t.Errorf("Reconfigure = %v, want %v", d.Reconfigure, tc.wantReconfigure)
+			}
+		})
+	}
+}
+
+// TestRunUI_ForcedSetupPrefersOnDiskConfigOverSeed guards the seed condition.
+// forceSetup makes initial=="setup" reachable WITH a config present, so the
+// SetupSeedConfig override must additionally require !ConfigExists — otherwise
+// a seeded caller (sentra local's MinIO coordinates) would silently outrank the
+// operator's real config on a forced reconfigure.
+func TestRunUI_ForcedSetupPrefersOnDiskConfigOverSeed(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, ".")
+
+	// config.Config.Repo and .Repo.S3 are ANONYMOUS nested structs, so there is
+	// no config.RepoConfig/config.S3Config to compose a literal from. Build the
+	// seed by field assignment.
+	seed := &config.Config{}
+	seed.Repo.S3.Bucket = "seeded-not-wanted"
+
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return blobstore.NewMemory(), nil
+			},
+			PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
+				t.Fatal("interactive passphrase resolver must not run on the launch path")
+				return nil, nil
+			},
+		},
+		Run:             func(app tui.App) error { captured = app; return nil },
+		SetupSeedConfig: seed,
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := runUI(cmd, deps, configFileName, true); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	d := captured.Deps()
+	if d.Config.Repo.S3.Bucket == "seeded-not-wanted" {
+		t.Error("forced setup over an existing config must use the on-disk config, not SetupSeedConfig")
+	}
+}

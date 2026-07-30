@@ -85,7 +85,7 @@ func runLocal(cmd *cobra.Command, deps LocalDeps) error {
 	ui := deps.UI
 	ui.SetupSeedConfig = seed
 
-	return runUI(cmd, ui, localConfigFileName)
+	return runUI(cmd, ui, localConfigFileName, false)
 }
 
 // setEnvIfUnset sets key=value only when key is currently unset or empty,

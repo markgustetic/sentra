@@ -74,6 +74,10 @@ type UIDeps struct {
 	// completion. `sentra local` sets this to MinIO coordinates; every other
 	// caller (NewUI) leaves it nil for a blank wizard. Non-secret S3 coordinates
 	// only — never a passphrase or credentials.
+	//
+	// `sentra setup` forces the wizard with a config present, so the seed's
+	// first-run precondition is now an explicit !ConfigExists term in runUI
+	// rather than a property of the branch.
 	SetupSeedConfig *config.Config
 
 	// PassphraseFile resolves the --passphrase-file path (the root persistent
@@ -109,7 +113,7 @@ func NewUI(deps UIDeps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runUI(cmd, deps, cfgPath)
+			return runUI(cmd, deps, cfgPath, false)
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
@@ -119,7 +123,7 @@ func NewUI(deps UIDeps) *cobra.Command {
 
 // runUI is the body of `sentra ui`. Pulled out for grep-ability and
 // to keep the cobra closure shallow.
-func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
+func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) error {
 	cmd.SilenceUsage = true
 
 	passphraseFile := ""
@@ -148,22 +152,25 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 		showSplash = !st.Config.UI.HideSplash
 	}
 
-	// First run (no config) and configured-but-locked both launch the TUI
-	// WITHOUT opening a repo — the wizard / unlock view own the interactive
-	// path so huh never fires here. Repo is nil; the unlock view swaps a live
-	// repo in via repoReadyMsg once the user provides the passphrase.
-	if !st.ConfigExists || !st.PassphraseAvailable {
+	// First run (no config), configured-but-locked, and an explicit
+	// `sentra setup` all launch the TUI WITHOUT opening a repo — the wizard /
+	// unlock view own the interactive path so huh never fires here. Repo is
+	// nil; the unlock view swaps a live repo in via repoReadyMsg once the user
+	// provides the passphrase. forceSetup outranks the lock gate: reconfiguring
+	// must not demand the passphrase for a repo the operator may be replacing.
+	if forceSetup || !st.ConfigExists || !st.PassphraseAvailable {
 		initial := "setup"
-		if st.ConfigExists {
+		if st.ConfigExists && !forceSetup {
 			initial = "unlock"
 		}
 		// On the true first-run path (no config file), an optional seed config
-		// pre-fills the wizard's S3 fields. We only apply it when the wizard is
-		// what we're launching (initial == "setup"); a configured-but-locked
-		// launch keeps the real config so the unlock view names the right repo.
-		// Nothing is written to disk here — the wizard persists on completion.
+		// pre-fills the wizard's S3 fields. The !ConfigExists guard is load
+		// bearing now that forceSetup can reach initial=="setup" WITH a config
+		// present: a real on-disk config must always outrank a caller-supplied
+		// seed. Nothing is written to disk here — the wizard persists on
+		// completion.
 		launchCfg := st.Config
-		if initial == "setup" && deps.SetupSeedConfig != nil {
+		if initial == "setup" && !st.ConfigExists && deps.SetupSeedConfig != nil {
 			launchCfg = deps.SetupSeedConfig
 		}
 		repoName := launchCfg.Repo.S3.Bucket
@@ -179,6 +186,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string) error {
 			DeleteKeyringPassphrase: deps.DeletePassphrase,
 			SetupEffects:            setupEffectsForLaunch(deps),
 			InitialView:             initial,
+			Reconfigure:             forceSetup && st.ConfigExists,
 			ShowSplash:              showSplash,
 			Version:                 deps.Version,
 			Commit:                  deps.Commit,
