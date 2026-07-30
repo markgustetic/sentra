@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"encoding/json"
 	"testing"
-
 )
 
 func TestWriteIgnoreAdviceJSON_NilIsEmptyArray(t *testing.T) {

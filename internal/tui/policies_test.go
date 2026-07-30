@@ -421,8 +421,9 @@ func TestPoliciesForm_FullFieldSet(t *testing.T) {
 
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(PoliciesView)
-	m, _ = v.Update(confirmedMsg{id: policyAddConfirmID})
-	v = m.(PoliciesView)
+	// The confirm's side effect is the config write, which is what the rest of
+	// this test asserts against — the returned view is never inspected again.
+	v.Update(confirmedMsg{id: policyAddConfirmID})
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -483,8 +484,9 @@ func TestPoliciesForm_ReplaceGuardPreservesHooks(t *testing.T) {
 		t.Fatal("existing policy overwritten without the replace confirm")
 	}
 
-	m, _ = v.Update(confirmedMsg{id: policyReplaceConfirmID})
-	v = m.(PoliciesView)
+	// As above: the replace confirm's side effect is the config write, and the
+	// returned view is never inspected again.
+	v.Update(confirmedMsg{id: policyReplaceConfirmID})
 	cfg, err = config.Load(path)
 	if err != nil {
 		t.Fatal(err)
