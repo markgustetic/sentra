@@ -301,3 +301,53 @@ func slicesEqual(a, b []string) bool {
 	}
 	return true
 }
+
+// TestRestore_PartialByPath: RestoreOptions.Paths scopes the restore
+// to exact entries or whole subtrees; a selector that matches nothing
+// is an error (a typo'd path silently restoring nothing is how people
+// discover backups the bad way).
+func TestRestore_PartialByPath(t *testing.T) {
+	r, _ := newTestRepo(t)
+	ctx := context.Background()
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	writeFile(t, filepath.Join(src, "sub", "b.txt"), "bravo")
+	writeFile(t, filepath.Join(src, "sub", "deep", "c.txt"), "charlie")
+	writeFile(t, filepath.Join(src, "other", "d.txt"), "delta")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	// Subtree selector.
+	dest := filepath.Join(t.TempDir(), "sub-only")
+	if err := r.Restore(ctx, snap.ID, dest, RestoreOptions{Paths: []string{"sub"}}); err != nil {
+		t.Fatalf("subtree restore: %v", err)
+	}
+	for _, want := range []string{"sub/b.txt", "sub/deep/c.txt"} {
+		if _, err := os.Stat(filepath.Join(dest, filepath.FromSlash(want))); err != nil {
+			t.Errorf("missing %s: %v", want, err)
+		}
+	}
+	for _, absent := range []string{"a.txt", "other"} {
+		if _, err := os.Stat(filepath.Join(dest, absent)); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%s should not be restored (err=%v)", absent, err)
+		}
+	}
+
+	// Single-file selector.
+	dest2 := filepath.Join(t.TempDir(), "one-file")
+	if err := r.Restore(ctx, snap.ID, dest2, RestoreOptions{Paths: []string{"a.txt"}}); err != nil {
+		t.Fatalf("single-file restore: %v", err)
+	}
+	if body, err := os.ReadFile(filepath.Join(dest2, "a.txt")); err != nil || string(body) != "alpha" {
+		t.Errorf("a.txt: got %q err=%v", body, err)
+	}
+
+	// Typo'd selector must fail loudly, not restore nothing.
+	dest3 := filepath.Join(t.TempDir(), "typo")
+	if err := r.Restore(ctx, snap.ID, dest3, RestoreOptions{Paths: []string{"sub/missing.txt"}}); err == nil {
+		t.Error("selector matching nothing must be an error")
+	}
+}

@@ -53,8 +53,14 @@ func (v RestoreVerification) OK() bool {
 
 // PlanRestore loads a snapshot and validates that a restore into
 // destDir would be accepted, without creating or writing anything.
-func (r *Repo) PlanRestore(ctx context.Context, snapID, destDir string) (RestorePlan, error) {
+func (r *Repo) PlanRestore(ctx context.Context, snapID, destDir string, paths ...string) (RestorePlan, error) {
 	m, err := r.LoadSnapshot(ctx, snapID)
+	if err != nil {
+		return RestorePlan{}, err
+	}
+	// Scope the plan exactly the way Restore will scope the run, so
+	// the dry-run preview and the real thing agree on the file set.
+	tree, err := filterTreeByPaths(m.Tree, paths)
 	if err != nil {
 		return RestorePlan{}, err
 	}
@@ -72,13 +78,17 @@ func (r *Repo) PlanRestore(ctx context.Context, snapID, destDir string) (Restore
 	// Every entry — dirs and symlinks included — is path-validated,
 	// but the preview lists regular files only, matching the plan's
 	// Files/Bytes stats (dirs and symlinks write no content).
-	paths := make([]string, 0, len(m.Tree))
-	for _, fe := range m.Tree {
+	preview := make([]string, 0, len(tree))
+	files := 0
+	var bytes int64
+	for _, fe := range tree {
 		if _, err := safeJoinPath(absDest, fe.Path, "restore destination"); err != nil {
 			return RestorePlan{}, err
 		}
 		if fe.IsFile() {
-			paths = append(paths, fe.Path)
+			preview = append(preview, fe.Path)
+			files++
+			bytes += fe.Size
 		}
 	}
 	return RestorePlan{
@@ -86,9 +96,9 @@ func (r *Repo) PlanRestore(ctx context.Context, snapID, destDir string) (Restore
 		DestDir:     absDest,
 		DestExists:  destExists,
 		DestEmpty:   destEmpty,
-		Files:       m.Stats.Files,
-		Bytes:       m.Stats.Bytes,
-		Paths:       paths,
+		Files:       files,
+		Bytes:       bytes,
+		Paths:       preview,
 		CreatedAt:   m.CreatedAt.UTC().Format("2006-01-02 15:04:05 UTC"),
 		Description: "restore preview",
 	}, nil
@@ -98,7 +108,7 @@ func (r *Repo) PlanRestore(ctx context.Context, snapID, destDir string) (Restore
 // It reads local files only; it does not fetch chunk blobs from the
 // repository because the manifest's plaintext hashes are sufficient to
 // validate restored content.
-func (r *Repo) VerifyRestore(ctx context.Context, snapID, destDir string) (RestoreVerification, error) {
+func (r *Repo) VerifyRestore(ctx context.Context, snapID, destDir string, paths ...string) (RestoreVerification, error) {
 	m, err := r.LoadSnapshot(ctx, snapID)
 	if err != nil {
 		return RestoreVerification{}, err
@@ -116,14 +126,33 @@ func (r *Repo) VerifyRestore(ctx context.Context, snapID, destDir string) (Resto
 		return RestoreVerification{}, fmt.Errorf("repo: dest %s exists and is not a directory", absDest)
 	}
 
+	// Scope to the same file set a scoped Restore wrote, so verifying
+	// a partial restore doesn't flag every unselected file as missing.
+	tree, err := filterTreeByPaths(m.Tree, paths)
+	if err != nil {
+		return RestoreVerification{}, err
+	}
+
+	files := m.Stats.Files
+	bytes := m.Stats.Bytes
+	if len(paths) > 0 {
+		files = 0
+		bytes = 0
+		for _, fe := range tree {
+			if fe.IsFile() {
+				files++
+				bytes += fe.Size
+			}
+		}
+	}
 	report := RestoreVerification{
 		SnapshotID: m.ID,
 		DestDir:    absDest,
-		Files:      m.Stats.Files,
-		Bytes:      m.Stats.Bytes,
+		Files:      files,
+		Bytes:      bytes,
 	}
-	manifestPaths := make(map[string]struct{}, len(m.Tree))
-	for _, fe := range m.Tree {
+	manifestPaths := make(map[string]struct{}, len(tree))
+	for _, fe := range tree {
 		manifestPaths[fe.Path] = struct{}{}
 		matched, err := verifyRestoreFile(ctx, absDest, fe)
 		if err != nil {

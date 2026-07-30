@@ -46,6 +46,56 @@ type RestoreOptions struct {
 	//
 	// Negative values are clamped to 1.
 	Concurrency int
+
+	// Paths scopes the restore to the named entries: each selector
+	// matches its exact manifest path or an entire subtree
+	// ("sub" selects sub, sub/b.txt, sub/deep/…). Slash-form,
+	// relative to the snapshot root. Empty restores everything. A
+	// selector matching nothing is an error — a typo'd path silently
+	// restoring nothing is how people discover backups the bad way.
+	Paths []string
+}
+
+// filterTreeByPaths applies RestoreOptions.Paths-style selectors to a
+// manifest tree. Shared by Restore, PlanRestore, and VerifyRestore so
+// a scoped restore and its dry-run/verification agree on the file set.
+func filterTreeByPaths(tree []FileEntry, paths []string) ([]FileEntry, error) {
+	if len(paths) == 0 {
+		return tree, nil
+	}
+	selectors := make([]string, len(paths))
+	for i, p := range paths {
+		selectors[i] = strings.Trim(filepath.ToSlash(p), "/")
+	}
+	matched := make([]bool, len(selectors))
+	var out []FileEntry
+	for _, fe := range tree {
+		for i, p := range selectors {
+			if p != "" && (fe.Path == p || strings.HasPrefix(fe.Path, p+"/")) {
+				out = append(out, fe)
+				matched[i] = true
+				break
+			}
+		}
+	}
+	for i, ok := range matched {
+		if !ok {
+			return nil, fmt.Errorf("repo: path %q matches nothing in the snapshot", paths[i])
+		}
+	}
+	return out, nil
+}
+
+// treeFileBytes sums the plaintext bytes of the regular files in tree
+// — the progress denominator for a scoped restore.
+func treeFileBytes(tree []FileEntry) int64 {
+	var n int64
+	for _, fe := range tree {
+		if fe.IsFile() {
+			n += fe.Size
+		}
+	}
+	return n
 }
 
 // Restore writes every file in snapshot snapID into destDir. It
@@ -102,7 +152,15 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 		return fmt.Errorf("repo: resolve dest %s: %w", destDir, err)
 	}
 
-	reporter.Total(m.Stats.Bytes)
+	tree, err := filterTreeByPaths(m.Tree, opts.Paths)
+	if err != nil {
+		return err
+	}
+	if len(opts.Paths) == 0 {
+		reporter.Total(m.Stats.Bytes)
+	} else {
+		reporter.Total(treeFileBytes(tree))
+	}
 
 	// Partition the tree by kind. The phase ORDER is a security
 	// property, not a style choice:
@@ -117,7 +175,7 @@ func (r *Repo) Restore(ctx context.Context, snapID, destDir string, opts Restore
 	//      touch parent mtimes, and a read-only dir mode applied
 	//      early would block writing its own children.
 	var dirs, files, links []FileEntry
-	for _, fe := range m.Tree {
+	for _, fe := range tree {
 		switch {
 		case fe.IsDir():
 			dirs = append(dirs, fe)

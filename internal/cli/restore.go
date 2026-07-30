@@ -3,6 +3,7 @@ package cli
 import (
 	"fmt"
 	"io"
+	"strings"
 
 	"github.com/spf13/cobra"
 
@@ -35,16 +36,19 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 		verify  bool
 	)
 	cmd := &cobra.Command{
-		Use:   "restore <snap-id> <dest-dir>",
+		Use:   "restore <snap-id> <dest-dir> [path...]",
 		Short: "Restore a snapshot into a destination directory",
-		Long: "Decrypt and reassemble every file in the named snapshot, " +
-			"writing them under dest-dir. The destination must be empty (or " +
-			"not yet exist) — restore refuses to merge over a populated tree.",
-		Args:          cobra.ExactArgs(2),
+		Long: "Decrypt and reassemble the named snapshot under dest-dir. " +
+			"Extra path arguments scope the restore to those files or subtrees " +
+			"(paths relative to the snapshot root; see `sentra ls`). The " +
+			"destination must be empty (or not yet exist) — restore refuses to " +
+			"merge over a populated tree. The snapshot may be a full ID, " +
+			"\"latest\", a unique prefix, or the trailing hex from `sentra snapshots`.",
+		Args:          cobra.MinimumNArgs(2),
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRestore(cmd, deps, args[0], args[1], cfgPath, dryRun, verify)
+			return runRestore(cmd, deps, args[0], args[1], args[2:], cfgPath, dryRun, verify)
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
@@ -60,7 +64,9 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 func runRestore(
 	cmd *cobra.Command,
 	deps RestoreDeps,
-	snapID, destDir, cfgPath string,
+	snapID, destDir string,
+	paths []string,
+	cfgPath string,
 	dryRun, verify bool,
 ) error {
 	cmd.SilenceUsage = true
@@ -86,7 +92,7 @@ func runRestore(
 	stdout := cmdStdout(cmd, deps.Stdout)
 
 	if dryRun {
-		plan, err := r.PlanRestore(cmd.Context(), snapID, destDir)
+		plan, err := r.PlanRestore(cmd.Context(), snapID, destDir, paths...)
 		if err != nil {
 			return fmt.Errorf("plan restore: %w", err)
 		}
@@ -108,7 +114,10 @@ func runRestore(
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 
-	if err := r.Restore(cmd.Context(), snapID, destDir, repo.RestoreOptions{Progress: progress}); err != nil {
+	if err := r.Restore(cmd.Context(), snapID, destDir, repo.RestoreOptions{
+		Progress: progress,
+		Paths:    paths,
+	}); err != nil {
 		stop()
 		return fmt.Errorf("restore: %w", err)
 	}
@@ -117,10 +126,14 @@ func runRestore(
 	fmt.Fprintln(stdout, ui.Success.Render("Restore complete"))
 	fmt.Fprintf(stdout, "  snapshot:  %s\n", snapID)
 	fmt.Fprintf(stdout, "  dest:      %s\n", destDir)
-	fmt.Fprintf(stdout, "  files:     %d\n", m.Stats.Files)
-	fmt.Fprintf(stdout, "  bytes:     %s (%d)\n", ui.FormatBytes(m.Stats.Bytes), m.Stats.Bytes)
+	if len(paths) > 0 {
+		fmt.Fprintf(stdout, "  scope:     %s\n", strings.Join(paths, ", "))
+	} else {
+		fmt.Fprintf(stdout, "  files:     %d\n", m.Stats.Files)
+		fmt.Fprintf(stdout, "  bytes:     %s (%d)\n", ui.FormatBytes(m.Stats.Bytes), m.Stats.Bytes)
+	}
 	if verify {
-		report, err := r.VerifyRestore(cmd.Context(), snapID, destDir)
+		report, err := r.VerifyRestore(cmd.Context(), snapID, destDir, paths...)
 		if err != nil {
 			return fmt.Errorf("verify restore: %w", err)
 		}
