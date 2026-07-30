@@ -1477,6 +1477,13 @@ func TestSetupWizard_PrepareFailureWritesNoConfig(t *testing.T) {
 // the only confirmation gate before the file is rewritten, so it must name the
 // path it will overwrite. Asserted as text, not color — tests run under
 // lipgloss's Ascii profile, which emits no ANSI at all.
+//
+// The CONFIRM MODAL is asserted alongside the stage because the modal is the
+// gate, and it is strictly weaker than the huh confirm `--force` replaced: that
+// one initialized its value to false, so a bare Enter meant Cancel, while
+// ConfirmModal's Enter confirms. A body that reads identically on a first run
+// and on a reconfigure lets a reflexive Enter rewrite an existing config having
+// read only the identical part.
 func TestSetupWizard_ReviewWarnsOnReconfigure(t *testing.T) {
 	tests := []struct {
 		name        string
@@ -1506,6 +1513,31 @@ func TestSetupWizard_ReviewWarnsOnReconfigure(t *testing.T) {
 			}
 			if tc.wantWarning && !strings.Contains(out, cfgPath) {
 				t.Errorf("overwrite warning must name the config path %q; got:\n%s", cfgPath, out)
+			}
+
+			// Enter pushes the confirm modal; render it and hold it to the same
+			// rule, on the surface that actually takes the keystroke.
+			_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			var modal Modal
+			for _, msg := range execCmds(t, cmd) {
+				if pm, ok := msg.(pushModalMsg); ok {
+					modal = pm.modal
+				}
+			}
+			confirm, ok := modal.(ConfirmModal)
+			if !ok {
+				t.Fatalf("review enter must push a ConfirmModal, got %T", modal)
+			}
+			// Assert the authored body, not the rendered box: ModalBox hard-wraps
+			// a long absolute path across lines, which would make a substring
+			// check on the render fail for a purely cosmetic reason.
+			gotModal := strings.Contains(confirm.body, "overwrites")
+			if gotModal != tc.wantWarning {
+				t.Errorf("confirm modal overwrite warning present = %v, want %v; body:\n%s",
+					gotModal, tc.wantWarning, confirm.body)
+			}
+			if tc.wantWarning && !strings.Contains(confirm.body, cfgPath) {
+				t.Errorf("confirm modal must name the config path %q; body:\n%s", cfgPath, confirm.body)
 			}
 		})
 	}

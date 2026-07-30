@@ -574,9 +574,18 @@ func (v SetupWizardView) checklistLine(done bool, label string) string {
 	return "  " + mark + " " + label + "\n"
 }
 
+// pushReviewConfirm raises the gate that arms provisioning. On a reconfigure it
+// names the file about to be replaced IN THE MODAL, not only on the stage
+// behind it: ConfirmModal's enter confirms, so a bare Enter applies, where the
+// huh confirm this flow replaced initialized to false and a bare Enter meant
+// Cancel. A body identical on a first run and on a reconfigure would let that
+// reflex overwrite an existing config.
 func (v SetupWizardView) pushReviewConfirm() (tea.Model, tea.Cmd) {
 	body := "Apply this setup: prepare AWS (if selected), write the config, and initialize the repository.\n" +
 		"No secrets are written to sentra.yaml, logs, or the setup draft."
+	if v.deps.Reconfigure {
+		body += fmt.Sprintf("\nThis overwrites the existing config at %s.", v.deps.ConfigPath)
+	}
 	modal := NewConfirmModal("Review setup", body, setupReviewConfirmID, v.width, v.height)
 	return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 }
