@@ -363,42 +363,35 @@ func TestEnginePrepareAWSSSOFlowFailureStopsBeforePrepare(t *testing.T) {
 	}
 }
 
-// Engine.PrepareAWS's login/SSO auth paths call eff.EnsureAWSCLI(ctx, nil), so
-// the confirm an Effects implementation supplies is the only one that can ever
-// run. No production implementation supplies one any more — that was the
-// deleted huh wizard's decorator, and DefaultEnsureAWSCLI's nil guard is what
-// production hits (TestDefaultEnsureAWSCLI_NilConfirm). This test keeps the
-// seam itself honest: an Effects that DOES resolve the nil must find its
-// confirm actually invoked, so the parameter stays a live hook rather than
-// quietly becoming decoration the engine never reaches.
-func TestEnginePrepareAWSEnsureAWSCLIConfirmPathReachable(t *testing.T) {
-	confirmCalled := false
-	resolvingEff := fakeEffects{
-		ensureAWSCLI: func(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
-			// Stand in for an Effects decorator: substitute a real confirm
-			// when the engine passes nil, then invoke it.
-			if confirm == nil {
-				confirm = func(AWSCLIInstallPlan) (bool, error) {
-					confirmCalled = true
-					return true, nil
-				}
-			}
-			ok, err := confirm(AWSCLIInstallPlan{Manager: "Homebrew", Command: []string{"brew", "install", "awscli"}})
-			if err != nil {
-				return AWSCLIInstallReport{}, err
-			}
-			if !ok {
-				return AWSCLIInstallReport{}, errors.New("install declined")
-			}
-			return AWSCLIInstallReport{Installed: true, Manager: "Homebrew"}, nil
+// Engine.PrepareAWS's login/SSO auth paths must call eff.EnsureAWSCLI with a
+// NIL confirm. That is what keeps the engine huh-free: a real confirm here
+// would be a form fighting the running tea.Program for os.Stdin. The nil is
+// also what makes DefaultEnsureAWSCLI return its actionable missing-binary
+// error instead of attempting an install (TestDefaultEnsureAWSCLI_NilConfirm).
+//
+// The assertion is on the argument the engine passes, which is the only part a
+// change to the engine can break. An earlier version of this test had the fake
+// substitute its own confirm for the nil and then invoke it, asserting the
+// confirm ran — it would have passed just as happily if PrepareAWS dropped the
+// parameter altogether, since the fake supplied both sides.
+func TestEnginePrepareAWSPassesNilAWSCLIConfirm(t *testing.T) {
+	called := false
+	var got AWSCLIInstallConfirm
+	eff := fakeEffects{
+		ensureAWSCLI: func(_ context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
+			called, got = true, confirm
+			return AWSCLIInstallReport{AlreadyInstalled: true}, nil
 		},
 	}
 	p := awsPlan()
 	p.AWSAuthMethod = AWSAuthLogin
-	if _, _, err := NewEngine(resolvingEff).PrepareAWS(context.Background(), &p); err != nil {
+	if _, _, err := NewEngine(eff).PrepareAWS(context.Background(), &p); err != nil {
 		t.Fatalf("PrepareAWS: %v", err)
 	}
-	if !confirmCalled {
-		t.Fatal("confirm callback was never invoked — EnsureAWSCLI confirm path is not reachable from Engine.PrepareAWS")
+	if !called {
+		t.Fatal("login auth must preflight the AWS CLI")
+	}
+	if got != nil {
+		t.Fatal("the engine must pass a nil confirm — a real one would run a form inside the live tea.Program")
 	}
 }

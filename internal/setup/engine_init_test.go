@@ -135,15 +135,15 @@ func TestEngineInitRepoKeyringSaveFailureSurfacesError(t *testing.T) {
 	}
 }
 
-// save=true with no SavePassphrase effect wired must fail up front, not
-// after touching the store.
-func TestEngineInitRepoSaveWithoutSaverFails(t *testing.T) {
+func TestEngineInitRepoSaveWithoutOverrideSucceeds(t *testing.T) {
 	eff := fakeEffects{
 		newStore: func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },
-		savePass: nil, // fakeEffects returns nil (no-op); simulate "missing" by asserting the engine relies on Effects, not a nil-check
+		savePass: nil, // no override: fakeEffects.SavePassphrase is a no-op returning nil
 	}
-	// The engine relies on Effects.SavePassphrase always being present, so
-	// this documents that a fresh save succeeds even without an override.
+	// The engine relies on Effects.SavePassphrase always being present — it is a
+	// method on the interface, not an optional hook — so it never nil-checks.
+	// save=true therefore succeeds against an implementation that simply does
+	// nothing, which is what an Effects with no keyring wired looks like.
 	if _, err := NewEngine(eff).InitRepo(context.Background(), &config.Config{}, []byte("hunter2"), true); err != nil {
 		t.Fatalf("InitRepo: %v", err)
 	}
