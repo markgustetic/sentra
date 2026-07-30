@@ -33,6 +33,11 @@ type RetentionPolicy struct {
 	// KeepMonthly keeps the newest snapshot per calendar month for the
 	// last N months. Bucket key is "YYYY-MM" in UTC.
 	KeepMonthly int
+
+	// Pinned is the repo's pin set (Repo.Pins): snapshots kept
+	// unconditionally, with the explicit reason "pinned". Callers
+	// load it once and pass it in — planning stays pure.
+	Pinned map[string]struct{}
 }
 
 // RetentionDecision is one snapshot's retention outcome plus the
@@ -102,6 +107,11 @@ func PlanRetentionExplain(snaps []SnapshotInfo, policy RetentionPolicy) []Retent
 	// The walking helpers treat zero limits as no-ops, so we don't
 	// need to gate on policy.KeepLast > 0 here.
 	reasons := make(map[string][]string, len(sorted))
+	for _, s := range sorted {
+		if _, ok := policy.Pinned[s.ID]; ok {
+			addRetentionReason(reasons, s.ID, "pinned")
+		}
+	}
 	for _, group := range groups {
 		if policy.KeepLast > 0 {
 			for i := 0; i < len(group) && i < policy.KeepLast; i++ {

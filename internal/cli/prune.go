@@ -136,6 +136,12 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	defer r.Close()
 
 	policy := buildRetentionPolicy(cfg, flags)
+	// Pins keep snapshots unconditionally, with an explicit reason in
+	// the --explain output.
+	policy.Pinned, err = r.Pins(cmd.Context())
+	if err != nil {
+		return fmt.Errorf("load pins: %w", err)
+	}
 
 	snaps, err := r.ListSnapshots(cmd.Context())
 	if err != nil {

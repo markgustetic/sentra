@@ -73,6 +73,12 @@ func NewPruneView(deps Deps) PruneView {
 			KeepMonthly: deps.Config.Retention.KeepMonthly,
 		}
 	}
+	// Pins keep snapshots unconditionally; a load failure degrades to
+	// planning without them — DeleteSnapshot still refuses pinned IDs
+	// at apply time, so the guard holds either way.
+	if pins, err := deps.Repo.Pins(ctxOrBackground(deps.Ctx)); err == nil {
+		policy.Pinned = pins
+	}
 	v.decisions = repo.PlanRetentionExplain(snaps, policy)
 	for _, d := range v.decisions {
 		if d.Keep {

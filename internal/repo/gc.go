@@ -69,6 +69,18 @@ func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 	}
 	defer crypto.Zeroize(repoKey)
 
+	// Pin check at the choke point: CLI prune, the TUI, and the
+	// agent's prune action all delete through here, so none of them
+	// can drop a pinned snapshot even if their own planning missed
+	// the pin set.
+	pins, err := r.loadPins(ctx, repoKey)
+	if err != nil {
+		return err
+	}
+	if slices.Contains(pins.IDs, id) {
+		return fmt.Errorf("%w: %s (use `sentra unpin` first)", ErrSnapshotPinned, id)
+	}
+
 	if err := r.store.Delete(ctx, snapshotPrefix+id); err != nil {
 		if errors.Is(err, blobstore.ErrNotFound) {
 			return err

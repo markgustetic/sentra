@@ -51,6 +51,15 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 			Stdout:               os.Stdout,
 		},
 	}))
+	pinDeps := cli.PinDeps{
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+	}
+	root.AddCommand(cli.NewPin(pinDeps))
+	root.AddCommand(cli.NewUnpin(pinDeps))
 	root.AddCommand(cli.NewCheck(cli.CheckDeps{
 		RepoDeps: cli.RepoDeps{
 			NewStore:             newS3Store,
