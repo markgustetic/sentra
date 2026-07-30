@@ -370,9 +370,9 @@ func TestRestore_OverlappingSelectors(t *testing.T) {
 	}
 
 	for _, paths := range [][]string{
-		{"sub", "sub/b.txt"},   // narrower selector swallowed by broader
-		{"sub/b.txt", "sub"},   // same, reversed
-		{"sub", "sub"},         // duplicated selector
+		{"sub", "sub/b.txt"}, // narrower selector swallowed by broader
+		{"sub/b.txt", "sub"}, // same, reversed
+		{"sub", "sub"},       // duplicated selector
 	} {
 		dest := filepath.Join(t.TempDir(), "out")
 		if err := r.Restore(ctx, snap.ID, dest, RestoreOptions{Paths: paths}); err != nil {

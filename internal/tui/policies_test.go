@@ -422,7 +422,7 @@ func TestPoliciesForm_FullFieldSet(t *testing.T) {
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(PoliciesView)
 	m, _ = v.Update(confirmedMsg{id: policyAddConfirmID})
-	v = m.(PoliciesView)
+	_ = m.(PoliciesView) // type check only; what this test asserts is the config write below
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -484,7 +484,7 @@ func TestPoliciesForm_ReplaceGuardPreservesHooks(t *testing.T) {
 	}
 
 	m, _ = v.Update(confirmedMsg{id: policyReplaceConfirmID})
-	v = m.(PoliciesView)
+	_ = m.(PoliciesView) // type check only; what this test asserts is the config write below
 	cfg, err = config.Load(path)
 	if err != nil {
 		t.Fatal(err)
