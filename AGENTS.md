@@ -17,7 +17,7 @@ Sentra code, docs, CI, or release workflow changes.
 - Agent heuristics/orchestration live in `internal/agent`.
 - Bubbletea views live in `internal/tui`. The TUI is the default surface: bare
   `sentra` falls through to `sentra ui`, and every CLI capability is also a view
-  (18 in all), fronted by a first-run setup wizard.
+  (19 in all), fronted by a first-run setup wizard.
 - The headless setup engine — a pure state model plus an `Effects` seam for
   AWS/keyring and a stepwise `Engine` — lives in `internal/setup`; both the CLI
   and TUI wizards drive it, so setup logic is never duplicated between them.

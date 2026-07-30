@@ -488,3 +488,27 @@ func TestBackupStartButtonFooterSaysStart(t *testing.T) {
 		t.Errorf("footer must say %q:\n%s", "Press enter to "+want, v.View())
 	}
 }
+
+// TestBackupFlow_RescanToggle: ctrl+r on the configure stage arms a
+// full re-read (incremental reuse off), visible in the view and
+// carried into the snapshot options.
+func TestBackupFlow_RescanToggle(t *testing.T) {
+	r := newFlowRepo(t)
+	v := backupAtRepo(t, r, t.TempDir())
+	if v.rescan {
+		t.Fatal("rescan must default off — incremental is the point")
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	v = m.(BackupView)
+	if !v.rescan {
+		t.Fatal("ctrl+r should arm rescan")
+	}
+	if !strings.Contains(strings.ToLower(v.View()), "rescan") {
+		t.Errorf("configure view should surface the rescan state:\n%s", v.View())
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	v = m.(BackupView)
+	if v.rescan {
+		t.Error("second ctrl+r should disarm rescan")
+	}
+}

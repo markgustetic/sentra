@@ -88,7 +88,9 @@ func TestSyncFlow_ConfirmStartsOpAndSyncsBlobs(t *testing.T) {
 	v = typeIntoSync(v, dstPath)
 	// Enable --init-dest so the empty dest is bootstrapped rather than
 	// refused with ErrEmptyDest.
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // focus init-dest toggle
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → snapshots field
+	v = m.(SyncView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → init-dest toggle
 	v = m.(SyncView)
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}}) // toggle on
 	v = m.(SyncView)
@@ -265,5 +267,74 @@ func TestSyncFlow_OpRejectedResetsStage(t *testing.T) {
 	}
 	if !strings.Contains(v.View(), "in progress") {
 		t.Errorf("rejection notice should be shown:\n%s", v.View())
+	}
+}
+
+// TestSyncFlow_SelectedSnapshotOnly: the configure stage's snapshot
+// field (tab-reachable) narrows the copy to the named refs — the TUI
+// face of `sync --snapshot`.
+func TestSyncFlow_SelectedSnapshotOnly(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "one.txt"), []byte(strings.Repeat("one-", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	s1, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "two.txt"), []byte(strings.Repeat("two-", 100)), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	dstPath := writeDestConfig(t, "dest-bucket")
+	dst := blobstore.NewMemory()
+	v := NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)})
+	v = typeIntoSync(v, dstPath)
+
+	// tab to the snapshot field and type a suffix ref for s1.
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → snapshots field
+	v = m.(SyncView)
+	suffix := s1.ID[len(s1.ID)-8:]
+	for _, ch := range suffix {
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		v = m.(SyncView)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → init-dest toggle
+	v = m.(SyncView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{' '}})
+	v = m.(SyncView)
+
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SyncView)
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatalf("expected confirm modal, got %#v", cmd())
+	}
+	_, cmd = v.Update(confirmedMsg{id: syncConfirmID})
+	var start startOpMsg
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok {
+			start = s
+		}
+	}
+	res := start.run(context.Background())
+	if done, ok := res.(syncDoneMsg); !ok || done.err != nil {
+		t.Fatalf("sync op: %#v", res)
+	}
+
+	dstRepo, err := repo.Open(context.Background(), dst, []byte("flow-test-pass"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dstRepo.Close()
+	infos, err := dstRepo.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 1 || infos[0].ID != s1.ID {
+		t.Fatalf("dest snapshots: got %+v, want only %s", infos, s1.ID)
 	}
 }

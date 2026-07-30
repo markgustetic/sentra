@@ -12,7 +12,7 @@
 
 <img src="docs/screenshots/dashboard.png" width="840" alt="Sentra TUI dashboard: a synthwave sun banner over an activity sparkline, storage savings, tags, retention, and a recent-snapshots table.">
 
-<sub>The default surface is a full-screen TUI — 19 views, a first-run wizard, and every CLI capability at your fingertips.</sub>
+<sub>The default surface is a full-screen TUI — 20 views, a first-run wizard, and every CLI capability at your fingertips.</sub>
 
 </div>
 
@@ -211,7 +211,7 @@ The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 
 Bare `sentra` falls through to `sentra ui`. Where it lands depends on your state:
 **no `sentra.yaml` → first-run wizard**, **configured but locked → unlock gate**,
-otherwise **the dashboard**. Every CLI capability is also a view — 18 in all.
+otherwise **the dashboard**. Every CLI capability is also a view — 19 in all.
 
 Handy keys (the status bar always shows what's live):
 

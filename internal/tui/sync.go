@@ -38,6 +38,7 @@ type syncField int
 
 const (
 	syncFieldPath syncField = iota
+	syncFieldSnapshots
 	syncFieldInitDest
 	syncFieldDryRun
 	syncFieldCount // sentinel: number of focusable fields
@@ -68,6 +69,7 @@ type SyncView struct {
 	stage syncStage
 
 	dstPath  textinput.Model
+	snapRefs textinput.Model
 	field    syncField
 	initDest bool
 	dryRun   bool
@@ -90,10 +92,14 @@ func NewSyncView(deps Deps) SyncView {
 	path.Prompt = "dst>  "
 	path.Placeholder = "path to the destination's sentra.yaml"
 	path.Focus()
+	refs := textinput.New()
+	refs.Prompt = "snap> "
+	refs.Placeholder = "optional snapshot refs, space-separated (blank = everything)"
 	return SyncView{
-		deps:    deps,
-		dstPath: path,
-		bar:     progress.New(progress.WithDefaultGradient()),
+		deps:     deps,
+		dstPath:  path,
+		snapRefs: refs,
+		bar:      progress.New(progress.WithDefaultGradient()),
 	}
 }
 
@@ -202,10 +208,13 @@ func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.Type == tea.KeyTab:
 			v.field = (v.field + 1) % syncFieldCount
-			if v.field == syncFieldPath {
+			v.dstPath.Blur()
+			v.snapRefs.Blur()
+			switch v.field {
+			case syncFieldPath:
 				v.dstPath.Focus()
-			} else {
-				v.dstPath.Blur()
+			case syncFieldSnapshots:
+				v.snapRefs.Focus()
 			}
 			return v, nil
 		case msg.Type == tea.KeyEnter:
@@ -223,6 +232,12 @@ func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			var cmd tea.Cmd
 			v.dstPath, cmd = v.dstPath.Update(msg)
 			v.pathErr = "" // typing clears the last validation error
+			return v, cmd
+		}
+		if v.field == syncFieldSnapshots {
+			var cmd tea.Cmd
+			v.snapRefs, cmd = v.snapRefs.Update(msg)
+			v.pathErr = ""
 			return v, cmd
 		}
 		return v, nil
@@ -297,6 +312,7 @@ func (v SyncView) startSync() (tea.Model, tea.Cmd) {
 	r := v.deps.Repo
 	reporter := v.reporter
 	dest := v.dstStore // blobstore.Store, resolved during validation
+	refs := strings.Fields(v.snapRefs.Value())
 	opts := repo.SyncOptions{
 		InitDest: v.initDest,
 		DryRun:   v.dryRun,
@@ -305,6 +321,16 @@ func (v SyncView) startSync() (tea.Model, tea.Cmd) {
 	start := startOpMsg{
 		name: "sync",
 		run: func(ctx context.Context) tea.Msg {
+			// Refs resolve inside the op (they read the index) so the
+			// UI goroutine never blocks; latest/prefix/suffix all work,
+			// matching the CLI.
+			for _, ref := range refs {
+				id, err := r.ResolveSnapshotID(ctx, ref)
+				if err != nil {
+					return syncDoneMsg{err: err}
+				}
+				opts.Snapshots = append(opts.Snapshots, id)
+			}
 			stats, err := r.SyncTo(ctx, dest, opts)
 			return syncDoneMsg{stats: stats, err: err}
 		},
@@ -356,6 +382,7 @@ func (v SyncView) View() string {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
 		fmt.Fprintf(&b, "\n\n%s", v.dstPath.View())
+		fmt.Fprintf(&b, "\n%s", v.snapRefs.View())
 		fmt.Fprintf(&b, "\n\n%s", v.toggleLine(syncFieldInitDest, "init-dest", v.initDest,
 			"bootstrap an empty destination"))
 		fmt.Fprintf(&b, "\n%s", v.toggleLine(syncFieldDryRun, "dry-run", v.dryRun,

@@ -426,3 +426,24 @@ func TestSnapshots_PinToggleSubmitsOp(t *testing.T) {
 		t.Fatalf("second toggle should unpin, pins=%v", pins)
 	}
 }
+
+// TestSnapshots_DetailShowsSymlinks: v2 manifests carry symlink
+// entries; the detail page must show them (they're invisible in the
+// dir tree, which folds only chunk-backed files).
+func TestSnapshots_DetailShowsSymlinks(t *testing.T) {
+	man := sampleManifest()
+	man.Tree = append(man.Tree, repo.FileEntry{
+		Path: "ln", Kind: repo.EntryKindSymlink, LinkTarget: "src/a.go",
+	})
+	s := NewSnapshotsWithLoader(Deps{}, func(string) (repo.Manifest, error) {
+		return man, nil
+	})
+	s = s.SetSnapshots(sampleSnaps())
+	m, cmd := s.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	s = m.(Snapshots)
+	m, _ = s.Update(cmd())
+	s = m.(Snapshots)
+	if !strings.Contains(s.View(), "ln -> src/a.go") {
+		t.Errorf("detail should list symlinks with targets:\n%s", s.View())
+	}
+}

@@ -405,12 +405,17 @@ func postPolicyFailureWebhook(ctx context.Context, url, name string, cause error
 	}
 	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
 	defer cancel()
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	// gosec flags the variable URL as SSRF. Posting to an
+	// operator-chosen endpoint IS the feature: the URL comes from an
+	// environment variable the operator set on their own machine (only
+	// its NAME lives in sentra.yaml), the same trust level as the hook
+	// commands themselves — nothing attacker-reachable feeds it.
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload)) //nolint:gosec // G704: operator-configured webhook URL from their own environment
 	if err != nil {
 		return err
 	}
 	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req)
+	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: same operator-configured URL as above
 	if err != nil {
 		return err
 	}

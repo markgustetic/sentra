@@ -601,6 +601,26 @@ func (s Snapshots) viewDetail() string {
 	for _, line := range renderDirTree(buildDirTree(s.detailMan.Tree), textW) {
 		fmt.Fprintf(&sb, "%s\n", ui.Subtle.Render(line))
 	}
+	// Symlinks don't fold into the dir tree (only chunk-backed files
+	// do), so list them explicitly — a v2-manifest snapshot of a home
+	// dir can carry plenty, and invisible entries read as data loss.
+	links := 0
+	for _, fe := range s.detailMan.Tree {
+		if !fe.IsSymlink() {
+			continue
+		}
+		if links == 0 {
+			sb.WriteString("\n")
+		}
+		links++
+		if links > 20 {
+			continue
+		}
+		fmt.Fprintf(&sb, "%s\n", ui.Subtle.Render(fmt.Sprintf("  %s -> %s", fe.Path, fe.LinkTarget)))
+	}
+	if links > 20 {
+		fmt.Fprintf(&sb, "%s\n", ui.Muted.Render(fmt.Sprintf("  … %d more symlinks", links-20)))
+	}
 	return ui.Panel.Render(sb.String()) + "\n" + ui.Subtle.Render("esc back") + "\n"
 }
 

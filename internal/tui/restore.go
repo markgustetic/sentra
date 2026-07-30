@@ -44,6 +44,12 @@ type RestoreView struct {
 
 	dest    textinput.Model
 	destErr string
+	// scope optionally narrows the restore to space-separated paths or
+	// subtrees (the TUI face of `restore <snap> <dest> [path...]`).
+	// Blank restores everything. tab moves between dest and scope.
+	scope      textinput.Model
+	focusScope bool
+	paths      []string
 
 	plan   repo.RestorePlan
 	verify bool
@@ -66,6 +72,10 @@ func NewRestoreView(deps Deps) RestoreView {
 	ti.Prompt = "dest> "
 	ti.Placeholder = "empty or new directory"
 	v.dest = ti
+	sc := textinput.New()
+	sc.Prompt = "scope> "
+	sc.Placeholder = "optional paths/subtrees, space-separated (blank = everything)"
+	v.scope = sc
 
 	// Hydrate from the App's shared snapshot load. Nil repo (or an error)
 	// renders a placeholder.
@@ -192,9 +202,23 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return v, nil
 		case tea.KeyEnter:
 			return v.planIt()
+		case tea.KeyTab:
+			v.focusScope = !v.focusScope
+			if v.focusScope {
+				v.dest.Blur()
+				v.scope.Focus()
+			} else {
+				v.scope.Blur()
+				v.dest.Focus()
+			}
+			return v, nil
 		}
 		var cmd tea.Cmd
-		v.dest, cmd = v.dest.Update(msg)
+		if v.focusScope {
+			v.scope, cmd = v.scope.Update(msg)
+		} else {
+			v.dest, cmd = v.dest.Update(msg)
+		}
 		v.destErr = ""
 		return v, cmd
 
@@ -235,7 +259,8 @@ func (v RestoreView) planIt() (tea.Model, tea.Cmd) {
 	}
 	ctx, cancel := context.WithTimeout(ctxOrBackground(v.deps.Ctx), hydrateTimeout)
 	defer cancel()
-	plan, err := v.deps.Repo.PlanRestore(ctx, v.snapID, dest)
+	paths := strings.Fields(v.scope.Value())
+	plan, err := v.deps.Repo.PlanRestore(ctx, v.snapID, dest, paths...)
 	if err != nil {
 		v.destErr = err.Error()
 		return v, nil
@@ -245,6 +270,7 @@ func (v RestoreView) planIt() (tea.Model, tea.Cmd) {
 		return v, nil
 	}
 	v.plan = plan
+	v.paths = paths
 	v.stage = restoreConfirm
 	return v, nil
 }
@@ -256,14 +282,15 @@ func (v RestoreView) startRestore() (tea.Model, tea.Cmd) {
 	r := v.deps.Repo
 	reporter := v.reporter
 	snapID, dest, doVerify := v.snapID, v.plan.DestDir, v.verify
+	paths := v.paths
 	start := startOpMsg{
 		name: "restore",
 		run: func(ctx context.Context) tea.Msg {
-			if err := r.Restore(ctx, snapID, dest, repo.RestoreOptions{Progress: reporter}); err != nil {
+			if err := r.Restore(ctx, snapID, dest, repo.RestoreOptions{Progress: reporter, Paths: paths}); err != nil {
 				return restoreDoneMsg{err: err}
 			}
 			if doVerify {
-				rep, err := r.VerifyRestore(ctx, snapID, dest)
+				rep, err := r.VerifyRestore(ctx, snapID, dest, paths...)
 				if err != nil {
 					return restoreDoneMsg{err: err}
 				}
@@ -290,7 +317,9 @@ func (v RestoreView) View() string {
 		fmt.Fprintf(&b, "\n\n%s", v.tbl.View())
 	case restoreDest:
 		b.WriteString(ui.Primary.Render("Restore " + v.snapID))
-		fmt.Fprintf(&b, "\n\n%s", v.dest.View())
+		fmt.Fprintf(&b, "\n\n%s\n%s", v.dest.View(), v.scope.View())
+		b.WriteString("\n")
+		b.WriteString(ui.Muted.Render("  tab switches fields; scope narrows the restore to those paths"))
 		if v.destErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.destErr))
 		}
@@ -301,6 +330,9 @@ func (v RestoreView) View() string {
 		}
 		fmt.Fprintf(&b, "\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  dest      %s",
 			v.plan.SnapshotID, v.plan.Files, ui.FormatBytes(v.plan.Bytes), v.plan.DestDir)
+		if len(v.paths) > 0 {
+			fmt.Fprintf(&b, "\n  scope     %s", strings.Join(v.paths, " "))
+		}
 		mark := "off"
 		if v.verify {
 			mark = "on"

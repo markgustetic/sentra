@@ -63,6 +63,12 @@ type BackupView struct {
 	focus   backupFocus
 	pathErr string
 
+	// rescan arms ForceRescan for the next snapshot: every file is
+	// re-read even when size+mtime match the parent. ctrl+r toggles it
+	// — a chord, because both the picker and the tag field own plain
+	// runes on this stage.
+	rescan bool
+
 	reporter *opReporter
 	bar      progress.Model
 	result   backupDoneMsg
@@ -206,6 +212,10 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	default: // backupConfigure
 		v.notice = "" // any interaction dismisses the rejection banner
 
+		if msg.Type == tea.KeyCtrlR {
+			v.rescan = !v.rescan
+			return v, nil
+		}
 		if msg.Type == tea.KeyTab {
 			if v.focus == focusPicker {
 				v.focus = focusTagField
@@ -307,6 +317,7 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	r := v.deps.Repo
 	reporter := v.reporter
 	tag := strings.TrimSpace(v.tag.Value())
+	rescan := v.rescan
 	var wopts walker.Options
 	if v.deps.Config != nil {
 		wopts = walker.Options{
@@ -318,9 +329,10 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 		name: "backup",
 		run: func(ctx context.Context) tea.Msg {
 			info, err := r.CreateSnapshot(ctx, root, repo.SnapshotOptions{
-				Tag:      tag,
-				Progress: reporter,
-				Walker:   wopts,
+				Tag:         tag,
+				Progress:    reporter,
+				Walker:      wopts,
+				ForceRescan: rescan,
 			})
 			return backupDoneMsg{info: info, err: err}
 		},
@@ -370,6 +382,11 @@ func (v BackupView) View() string {
 		}
 		fmt.Fprintf(&b, "\n\n%s", v.picker.View(v.focus == focusPicker))
 		fmt.Fprintf(&b, "\n%s", v.tag.View())
+		if v.rescan {
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  rescan armed — every file will be re-read (ctrl+r to disarm)"))
+		} else {
+			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("  incremental scan on (ctrl+r to force a full rescan)"))
+		}
 		if v.pathErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.pathErr))
 		}

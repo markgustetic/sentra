@@ -131,3 +131,71 @@ func TestRestoreFlow_NonEmptyDestSurfacedBeforeStart(t *testing.T) {
 		t.Errorf("view should explain the non-empty destination:\n%s", v.View())
 	}
 }
+
+// TestRestoreFlow_ScopedRestore: the dest stage carries an optional
+// scope field (tab to reach it) that narrows the restore to the named
+// paths — the TUI face of `restore <snap> <dest> [path...]`.
+func TestRestoreFlow_ScopedRestore(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(src, "sub"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "keep.txt"), []byte("keep"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "sub", "skip.txt"), []byte("skip"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewRestoreView(Deps{Repo: r})
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick
+	v = m.(RestoreView)
+
+	dest := filepath.Join(t.TempDir(), "out")
+	for _, ch := range dest {
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		v = m.(RestoreView)
+	}
+	// tab → scope field, type the selector.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(RestoreView)
+	for _, ch := range "keep.txt" {
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		v = m.(RestoreView)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // plan
+	v = m.(RestoreView)
+	if v.stage != restoreConfirm {
+		t.Fatalf("stage = %v, want restoreConfirm (destErr=%q)", v.stage, v.destErr)
+	}
+
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirm
+	v = m.(RestoreView)
+	var start startOpMsg
+	found := false
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok {
+			start = s
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("confirm must emit the restore op")
+	}
+	if res := start.run(context.Background()); res == nil {
+		t.Fatal("op returned nil")
+	} else if done, ok := res.(restoreDoneMsg); !ok || done.err != nil {
+		t.Fatalf("restore op: %+v", res)
+	}
+
+	if _, err := os.Stat(filepath.Join(dest, "keep.txt")); err != nil {
+		t.Errorf("scoped file missing: %v", err)
+	}
+	if _, err := os.Stat(filepath.Join(dest, "sub")); !os.IsNotExist(err) {
+		t.Errorf("out-of-scope subtree restored (err=%v)", err)
+	}
+}

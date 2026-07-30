@@ -13,7 +13,7 @@ content-addressed** snapshots. Go 1.25, module `github.com/markgustetic/sentra`.
 The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
 it lands on the unlock gate; otherwise the dashboard. Every CLI capability is
-also operable from the TUI (19 views).
+also operable from the TUI (20 views).
 
 `sentra local` is the dev flow: it starts MinIO, exports the `minioadmin`
 credentials **only if you have not set AWS credentials yourself**, and opens the
