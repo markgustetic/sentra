@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
 	"fmt"
@@ -36,9 +37,10 @@ const (
 // use the simple ConfirmModal (config-only, reversible edits); RUN uses the
 // simple or TYPED confirm depending on the policy's prune mode.
 const (
-	policyAddConfirmID    = "policy-add"
-	policyRemoveConfirmID = "policy-remove"
-	policyRunConfirmID    = "policy-run"
+	policyAddConfirmID     = "policy-add"
+	policyReplaceConfirmID = "policy-replace"
+	policyRemoveConfirmID  = "policy-remove"
+	policyRunConfirmID     = "policy-run"
 )
 
 // PoliciesView lists the named backup policies from sentra.yaml, shows the
@@ -198,7 +200,9 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case policyRemoveConfirmID:
 			return v.removeSelected()
 		case policyAddConfirmID:
-			return v.addFromForm()
+			return v.addFromForm(false)
+		case policyReplaceConfirmID:
+			return v.addFromForm(true)
 		case policyRunConfirmID:
 			return v.startRun()
 		}
@@ -233,9 +237,10 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		v.stage = policiesList
 		return v, nil
 	case tea.KeyTab:
-		v.form.focus = (v.form.focus + 1) % 3
+		v.form.focus = (v.form.focus + 1) % policyFormFields
 		v.form.name.Blur()
 		v.form.path.Blur()
+		v.form.tags.Blur()
 		v.form.schedule.Blur()
 		switch v.form.focus {
 		case 0:
@@ -243,6 +248,8 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 1:
 			v.form.path.Focus()
 		case 2:
+			v.form.tags.Focus()
+		case 3:
 			v.form.schedule.Focus()
 		}
 		return v, nil
@@ -256,6 +263,25 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		modal := NewConfirmModal("Confirm add", body, policyAddConfirmID, 80, 24)
 		return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 	}
+	isSpace := msg.Type == tea.KeySpace ||
+		(msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ')
+	if isSpace && v.form.focus >= 4 {
+		switch v.form.focus {
+		case 4:
+			v.form.check = !v.form.check
+		case 5:
+			// Cycle the prune mode the way `policy add --prune` enumerates it.
+			switch v.form.prune {
+			case policycfg.PruneOff:
+				v.form.prune = policycfg.PruneDryRun
+			case policycfg.PruneDryRun:
+				v.form.prune = policycfg.PruneApply
+			default:
+				v.form.prune = policycfg.PruneOff
+			}
+		}
+		return v, nil
+	}
 	var cmd tea.Cmd
 	switch v.form.focus {
 	case 0:
@@ -263,15 +289,25 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case 1:
 		v.form.path, cmd = v.form.path.Update(msg)
 	case 2:
+		v.form.tags, cmd = v.form.tags.Update(msg)
+	case 3:
 		v.form.schedule, cmd = v.form.schedule.Update(msg)
 	}
 	v.form.err = "" // typing clears the last validation error
 	return v, cmd
 }
 
+// errPolicyExists signals the replace-confirm gate from inside the
+// config.Update closure: the duplicate check runs against the on-disk
+// map, the same base `policy add` checks.
+var errPolicyExists = errors.New("policy exists")
+
 // addFromForm rebuilds + revalidates the form, writes the new policy into
 // sentra.yaml, and reloads. Config-only: no repo lock, no op guard.
-func (v PoliciesView) addFromForm() (tea.Model, tea.Cmd) {
+// replace=false refuses an existing name (pushing the replace confirm);
+// replace=true overwrites while carrying the existing policy's
+// config-authored Hooks forward, matching `policy add --replace`.
+func (v PoliciesView) addFromForm(replace bool) (tea.Model, tea.Cmd) {
 	name, p, err := v.form.build()
 	if err != nil {
 		v.stage = policiesForm
@@ -284,9 +320,20 @@ func (v PoliciesView) addFromForm() (tea.Model, tea.Cmd) {
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
 		}
+		if existing, exists := cfg.Policies[name]; exists {
+			if !replace {
+				return errPolicyExists
+			}
+			p.Hooks = existing.Hooks
+		}
 		cfg.Policies[name] = p
 		return nil
 	})
+	if errors.Is(err, errPolicyExists) {
+		body := fmt.Sprintf("Policy %q already exists.\nReplace it? Config-authored hooks are preserved.", name)
+		modal := NewConfirmModal("Replace policy", body, policyReplaceConfirmID, 80, 24)
+		return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+	}
 	if err != nil {
 		// Covers both a bad on-disk base and a failed write; the wrapped
 		// error names which.
@@ -361,6 +408,7 @@ func (v PoliciesView) startRun() (tea.Model, tea.Cmd) {
 		wopts = walker.Options{
 			IgnoreFile:    v.deps.Config.Backup.IgnoreFile,
 			ExcludeCaches: v.deps.Config.Backup.ExcludeCaches,
+			Concurrency:   v.deps.Config.Backup.Concurrency,
 		}
 		retention = repo.RetentionPolicy{
 			KeepLast:    v.deps.Config.Retention.KeepLast,
@@ -373,32 +421,56 @@ func (v PoliciesView) startRun() (tea.Model, tea.Cmd) {
 	tag := policyRunTag(name, p.Tags)
 	doCheck := p.AfterBackup.Check
 	pruneMode := policyPruneModeOrOff(p.AfterBackup.Prune)
+	hooks := p.Hooks
 
 	start := startOpMsg{
 		name: "policy-run",
 		run: func(ctx context.Context) tea.Msg {
+			// Hooks run exactly as the CLI's `policy run` runs them
+			// (internal/policy owns the execution, below both surfaces)
+			// — a TUI run that skipped an operator's pg_dump before
+			// hook would back up different data. Hook output goes to a
+			// buffer whose tail rides along on failure.
+			var hookOut bytes.Buffer
 			count := 0
-			for _, path := range paths {
-				if _, err := r.CreateSnapshot(ctx, path, repo.SnapshotOptions{
-					Tag:      tag,
-					Progress: reporter,
-					Walker:   wopts,
-				}); err != nil {
-					return policyRunDoneMsg{name: name, snapshots: count, err: fmt.Errorf("snapshot %s: %w", path, err)}
+			runErr := func() error {
+				if hooks.Before != "" {
+					if err := policycfg.RunHook(ctx, &hookOut, "before", hooks.Before); err != nil {
+						return err
+					}
 				}
-				count++
-			}
-			if doCheck {
-				report, err := r.Check(ctx, repo.CheckOptions{StaleLockAfter: 24 * time.Hour})
-				if err != nil {
-					return policyRunDoneMsg{name: name, snapshots: count, err: fmt.Errorf("check: %w", err)}
+				for _, path := range paths {
+					if _, err := r.CreateSnapshot(ctx, path, repo.SnapshotOptions{
+						Tag:      tag,
+						Progress: reporter,
+						Walker:   wopts,
+					}); err != nil {
+						return fmt.Errorf("snapshot %s: %w", path, err)
+					}
+					count++
 				}
-				if !report.Healthy() {
-					return policyRunDoneMsg{name: name, snapshots: count, err: errors.New("post-backup check found integrity issues")}
+				if doCheck {
+					report, err := r.Check(ctx, repo.CheckOptions{StaleLockAfter: 24 * time.Hour})
+					if err != nil {
+						return fmt.Errorf("check: %w", err)
+					}
+					if !report.Healthy() {
+						return errors.New("post-backup check found integrity issues")
+					}
 				}
-			}
-			if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
-				return policyRunDoneMsg{name: name, snapshots: count, err: err}
+				if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
+					return err
+				}
+				if hooks.After != "" {
+					if err := policycfg.RunHook(ctx, &hookOut, "after", hooks.After); err != nil {
+						return err
+					}
+				}
+				return nil
+			}()
+			if runErr != nil {
+				policycfg.FireFailureHooks(ctx, &hookOut, name, hooks, runErr)
+				return policyRunDoneMsg{name: name, snapshots: count, err: runErr}
 			}
 			return policyRunDoneMsg{name: name, snapshots: count}
 		},
@@ -504,7 +576,17 @@ func (v PoliciesView) View() string {
 		fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("New policy"))
 		fmt.Fprintf(&b, "%s\n", v.form.name.View())
 		fmt.Fprintf(&b, "%s\n", v.form.path.View())
+		fmt.Fprintf(&b, "%s\n", v.form.tags.View())
 		fmt.Fprintf(&b, "%s\n", v.form.schedule.View())
+		checkMark, pruneMark := "[ ]", "  "
+		if v.form.check {
+			checkMark = "[x]"
+		}
+		checkRow := fmt.Sprintf("%s check after backup", checkMark)
+		pruneRow := fmt.Sprintf("%s prune after backup: %s", pruneMark, v.form.prune)
+		checkRow = ui.SelectRow(v.form.focus == 4, checkRow)
+		pruneRow = ui.SelectRow(v.form.focus == 5, pruneRow)
+		fmt.Fprintf(&b, "%s\n%s\n", checkRow, pruneRow)
 		if v.form.err != "" {
 			fmt.Fprintf(&b, "\n%s\n", ui.Danger.Render(v.form.err))
 		}
@@ -605,10 +687,19 @@ func policyPruneModeOrOff(mode string) string {
 type policyForm struct {
 	name     textinput.Model
 	path     textinput.Model
+	tags     textinput.Model
 	schedule textinput.Model
-	focus    int // 0=name, 1=path, 2=schedule
-	err      string
+	// check and prune mirror `policy add`'s --check / --prune so the
+	// TUI form carries the same policy shape as the CLI.
+	check bool
+	prune string // off | dry-run | apply
+	focus int    // 0=name, 1=path, 2=tags, 3=schedule, 4=check, 5=prune
+	err   string
 }
+
+// policyFormFields is the tab cycle length: four text inputs plus the
+// check toggle and the prune-mode cycle.
+const policyFormFields = 6
 
 func newPolicyForm() policyForm {
 	name := textinput.New()
@@ -616,19 +707,33 @@ func newPolicyForm() policyForm {
 	name.Placeholder = "policy name"
 	name.Focus()
 	path := textinput.New()
-	path.Prompt = "path>     "
-	path.Placeholder = "directory to back up"
+	path.Prompt = "paths>    "
+	path.Placeholder = "directories to back up, comma-separated"
+	tags := textinput.New()
+	tags.Prompt = "tags>     "
+	tags.Placeholder = "optional tags, comma-separated"
 	schedule := textinput.New()
 	schedule.Prompt = "schedule> "
 	schedule.Placeholder = "manual | daily@03:00 | weekly@mon:03:00"
-	return policyForm{name: name, path: path, schedule: schedule}
+	return policyForm{name: name, path: path, tags: tags, schedule: schedule, prune: policycfg.PruneOff}
+}
+
+// splitCommaList turns a comma-separated field into trimmed entries,
+// dropping empties — "a, b," parses as ["a", "b"].
+func splitCommaList(s string) []string {
+	var out []string
+	for _, part := range strings.Split(s, ",") {
+		if p := strings.TrimSpace(part); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
 }
 
 // build assembles a config.PolicyConfig from the form and validates it.
 // Returns the built name + policy, or a non-nil error to display inline.
 func (f policyForm) build() (string, config.PolicyConfig, error) {
 	name := strings.TrimSpace(f.name.Value())
-	path := strings.TrimSpace(f.path.Value())
 	spec := strings.TrimSpace(f.schedule.Value())
 	if spec == "" {
 		spec = policycfg.CadenceManual
@@ -637,13 +742,14 @@ func (f policyForm) build() (string, config.PolicyConfig, error) {
 	if err != nil {
 		return "", config.PolicyConfig{}, err
 	}
-	var paths []string
-	if path != "" {
-		paths = []string{path}
-	}
 	p := config.PolicyConfig{
-		Paths:    paths,
+		Paths:    splitCommaList(f.path.Value()),
+		Tags:     splitCommaList(f.tags.Value()),
 		Schedule: sched,
+		AfterBackup: config.PolicyAfterBackup{
+			Check: f.check,
+			Prune: f.prune,
+		},
 	}
 	if err := policycfg.Validate(name, p); err != nil {
 		return "", config.PolicyConfig{}, err

@@ -390,3 +390,209 @@ func TestRunPolicyRetentionPrune_UnknownModeIsFailClosed(t *testing.T) {
 		t.Fatalf("unknown prune mode deleted snapshots: have %d, want 2 (fail-closed)", len(snaps))
 	}
 }
+
+// TestPoliciesForm_FullFieldSet: the TUI add form carries the same
+// policy shape as `policy add` — multiple comma-separated paths, tags,
+// the post-backup check toggle, and the prune mode.
+func TestPoliciesForm_FullFieldSet(t *testing.T) {
+	deps, path := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+
+	v = typeIntoPolicies(t, v, "gamma")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → path
+	v = m.(PoliciesView)
+	v = typeIntoPolicies(t, v, "/data/one, /data/two")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → tags
+	v = m.(PoliciesView)
+	v = typeIntoPolicies(t, v, "nightly, offsite")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → schedule
+	v = m.(PoliciesView)
+	v = typeIntoPolicies(t, v, "daily@04:00")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → check toggle
+	v = m.(PoliciesView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeySpace}) // check on
+	v = m.(PoliciesView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → prune mode
+	v = m.(PoliciesView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeySpace}) // off → dry-run
+	v = m.(PoliciesView)
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(PoliciesView)
+	m, _ = v.Update(confirmedMsg{id: policyAddConfirmID})
+	v = m.(PoliciesView)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := cfg.Policies["gamma"]
+	if !ok {
+		t.Fatalf("gamma not written: %+v", cfg.Policies)
+	}
+	if len(p.Paths) != 2 || p.Paths[0] != "/data/one" || p.Paths[1] != "/data/two" {
+		t.Errorf("paths: %+v, want the two comma-separated entries", p.Paths)
+	}
+	if len(p.Tags) != 2 || p.Tags[0] != "nightly" || p.Tags[1] != "offsite" {
+		t.Errorf("tags: %+v", p.Tags)
+	}
+	if p.Schedule.Cadence != "daily" || p.Schedule.At != "04:00" {
+		t.Errorf("schedule: %+v", p.Schedule)
+	}
+	if !p.AfterBackup.Check || p.AfterBackup.Prune != "dry-run" {
+		t.Errorf("after_backup: %+v", p.AfterBackup)
+	}
+}
+
+// TestPoliciesForm_ReplaceGuardPreservesHooks: adding a policy whose
+// name exists must NOT silently overwrite — it pushes a replace
+// confirm, and confirming preserves the existing policy's
+// config-authored hooks, exactly like `policy add --replace`.
+func TestPoliciesForm_ReplaceGuardPreservesHooks(t *testing.T) {
+	deps, path := policiesDeps(t, nil)
+	// Give alpha a hand-authored hook the form can't express.
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.Hooks = config.PolicyHooks{OnFailureWebhookEnv: "SENTRA_ALERT_URL"}
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+	v = typeIntoPolicies(t, v, "alpha")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(PoliciesView)
+	v = typeIntoPolicies(t, v, "/data/alpha-new")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(PoliciesView)
+	m, _ = v.Update(confirmedMsg{id: policyAddConfirmID})
+	v = m.(PoliciesView)
+
+	// The write must NOT have happened yet — a replace confirm is up.
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policies["alpha"].Paths[0] == "/data/alpha-new" {
+		t.Fatal("existing policy overwritten without the replace confirm")
+	}
+
+	m, _ = v.Update(confirmedMsg{id: policyReplaceConfirmID})
+	v = m.(PoliciesView)
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Policies["alpha"]
+	if len(p.Paths) != 1 || p.Paths[0] != "/data/alpha-new" {
+		t.Fatalf("replace did not apply: %+v", p.Paths)
+	}
+	if p.Hooks.OnFailureWebhookEnv != "SENTRA_ALERT_URL" {
+		t.Errorf("replace dropped the config-authored hooks: %+v", p.Hooks)
+	}
+}
+
+// TestPoliciesRun_ExecutesHooks: a TUI policy run executes the same
+// hooks the CLI run does — a before hook lands its output in the
+// snapshot, and a failing before hook aborts the run and fires
+// on_failure. Skipping hooks would make TUI runs back up different
+// data than CLI runs of the same policy.
+func TestPoliciesRun_ExecutesHooks(t *testing.T) {
+	r := newFlowRepo(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "failed.marker")
+
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Policies["hooked"] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks: config.PolicyHooks{
+			Before: "echo dumped > " + filepath.Join(src, "dump.txt"),
+		},
+	}
+	cfg.Policies["failing"] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks: config.PolicyHooks{
+			Before:    "exit 7",
+			OnFailure: "touch " + marker,
+		},
+	}
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deps := Deps{Repo: r, Config: &cfg, ConfigPath: path}
+
+	runPolicyByName := func(name string) policyRunDoneMsg {
+		t.Helper()
+		v := NewPoliciesView(deps)
+		for i, n := range v.names {
+			if n == name {
+				v.selected = i
+			}
+		}
+		m, cmd := v.startRun()
+		_ = m
+		var start startOpMsg
+		for _, msg := range execCmds(t, cmd) {
+			if s, ok := msg.(startOpMsg); ok {
+				start = s
+			}
+		}
+		if start.run == nil {
+			t.Fatal("startRun emitted no op")
+		}
+		done, ok := start.run(context.Background()).(policyRunDoneMsg)
+		if !ok {
+			t.Fatal("op did not return policyRunDoneMsg")
+		}
+		return done
+	}
+
+	if done := runPolicyByName("hooked"); done.err != nil {
+		t.Fatalf("hooked run: %v", done.err)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("snapshots: %v err=%v", snaps, err)
+	}
+	man, err := r.LoadSnapshot(context.Background(), snaps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, fe := range man.Tree {
+		if fe.Path == "dump.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("before-hook output missing from the TUI-run snapshot")
+	}
+
+	if done := runPolicyByName("failing"); done.err == nil {
+		t.Fatal("failing before hook must fail the TUI run")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("on_failure hook did not run from the TUI path: %v", err)
+	}
+	snaps, _ = r.ListSnapshots(context.Background())
+	if len(snaps) != 1 {
+		t.Errorf("aborted run must not snapshot; got %d", len(snaps))
+	}
+}

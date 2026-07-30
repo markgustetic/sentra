@@ -1,15 +1,9 @@
 package cli
 
 import (
-	"bytes"
-	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
-	"net/http"
-	"os"
-	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -359,77 +353,15 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, na
 	return nil
 }
 
-// runPolicyHook executes one hook command via `sh -c`, streaming its
-// output into the policy run's stdout. The command comes from the
-// operator's own sentra.yaml — running what the operator wrote is the
-// feature, not an injection surface.
+// runPolicyHook and firePolicyFailureHooks delegate to internal/policy
+// so a policy run behaves identically from the CLI and the TUI — hook
+// execution lives below both surfaces.
 func runPolicyHook(cmd *cobra.Command, deps PolicyDeps, label, script string) error {
-	out := policyStdout(cmd, deps)
-	fmt.Fprintf(out, "  hook %s: %s\n", label, script)
-	hook := exec.CommandContext(cmd.Context(), "sh", "-c", script) //nolint:gosec // operator-authored command from their own config
-	hook.Stdout = out
-	hook.Stderr = out
-	if err := hook.Run(); err != nil {
-		return fmt.Errorf("policy hook %s: %w", label, err)
-	}
-	return nil
+	return policycfg.RunHook(cmd.Context(), policyStdout(cmd, deps), label, script)
 }
 
-// firePolicyFailureHooks runs the on_failure command and/or webhook.
-// Both are best-effort: the run's own error is what the caller
-// returns, and a broken notifier must not mask it.
 func firePolicyFailureHooks(cmd *cobra.Command, deps PolicyDeps, name string, hooks config.PolicyHooks, cause error) {
-	out := policyStdout(cmd, deps)
-	if hooks.OnFailure != "" {
-		if err := runPolicyHook(cmd, deps, "on_failure", hooks.OnFailure); err != nil {
-			fmt.Fprintf(out, "  hook on_failure failed: %v\n", err)
-		}
-	}
-	if hooks.OnFailureWebhookEnv == "" {
-		return
-	}
-	// Only the env var NAME lives in sentra.yaml; the URL (which
-	// often embeds a token) stays in the environment.
-	url := os.Getenv(hooks.OnFailureWebhookEnv)
-	if url == "" {
-		fmt.Fprintf(out, "  webhook skipped: env %s is unset\n", hooks.OnFailureWebhookEnv)
-		return
-	}
-	if err := postPolicyFailureWebhook(cmd.Context(), url, name, cause); err != nil {
-		fmt.Fprintf(out, "  webhook failed: %v\n", err)
-	}
-}
-
-func postPolicyFailureWebhook(ctx context.Context, url, name string, cause error) error {
-	payload, err := json.Marshal(map[string]string{
-		"policy": name,
-		"status": "failed",
-		"error":  cause.Error(),
-	})
-	if err != nil {
-		return err
-	}
-	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
-	defer cancel()
-	// gosec flags the variable URL as SSRF. Posting to an
-	// operator-chosen endpoint IS the feature: the URL comes from an
-	// environment variable the operator set on their own machine (only
-	// its NAME lives in sentra.yaml), the same trust level as the hook
-	// commands themselves — nothing attacker-reachable feeds it.
-	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload)) //nolint:gosec // G704: operator-configured webhook URL from their own environment
-	if err != nil {
-		return err
-	}
-	req.Header.Set("Content-Type", "application/json")
-	resp, err := http.DefaultClient.Do(req) //nolint:gosec // G704: same operator-configured URL as above
-	if err != nil {
-		return err
-	}
-	defer resp.Body.Close()
-	if resp.StatusCode >= 300 {
-		return fmt.Errorf("webhook returned %s", resp.Status)
-	}
-	return nil
+	policycfg.FireFailureHooks(cmd.Context(), policyStdout(cmd, deps), name, hooks, cause)
 }
 
 func runPolicyCheck(cmd *cobra.Command, out io.Writer, r *repo.Repo) error {
