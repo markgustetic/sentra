@@ -19,9 +19,10 @@ const bucketExistsWaitTimeout = 2 * time.Minute
 
 // DefaultAWSPrepare performs the deterministic AWS S3 setup work chosen in
 // the wizard. It intentionally does not create or manage IAM users. Moved
-// verbatim from internal/cli/setup_awss3.go:30-85; it must build its own
-// *S3 store because it needs the concrete *s3.Client (Store does not expose
-// Client()), so it cannot use Effects.NewStore.
+// verbatim from the old internal/cli/setup_awss3.go (that file has since
+// been trimmed to identity-check and inspect wrappers only); it must build
+// its own *S3 store because it needs the concrete *s3.Client (Store does not
+// expose Client()), so it cannot use Effects.NewStore.
 func DefaultAWSPrepare(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error) {
 	if cfg.Repo.S3.Region == "" {
 		return AWSPrepareReport{}, fmt.Errorf("repo.s3.region is required for AWS setup")

@@ -18,9 +18,10 @@ func emptyDash(s string) string {
 }
 
 // printSetupStep and printSetupOK are the CLI's step/success line printers.
-// They outlived `sentra setup`'s huh wizard — doctor and the AWS auth helpers
-// still use them for progress output — so they live here with the other output
-// helpers rather than in a setup-specific file.
+// They outlived `sentra setup`'s huh wizard — setup_spinner.go (whose only
+// caller is doctor.go) and doctor.go itself still use them for progress
+// output — so they live here with the other output helpers rather than in a
+// setup-specific file.
 func printSetupStep(out io.Writer, label string) {
 	fmt.Fprintf(out, "%s %s\n", ui.Subtle.Render("..."), label)
 }

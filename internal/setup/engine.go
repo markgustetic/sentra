@@ -2,9 +2,9 @@ package setup
 
 // Engine sequences the side-effecting steps of setup — AWS auth + bucket
 // prep, config write, repo init — over an injected Effects seam. It contains
-// NO huh forms, NO stdout writes, and NO cobra: the cli driver adds progress
-// printing/huh repair prompts around it, and the TUI wizard drives it from
-// tea messages. This is the shared behavior contract both front ends reuse.
+// NO huh forms, NO stdout writes, and NO cobra: the TUI wizard is the only
+// sequencer, driving it from tea messages. `sentra setup` is a thin CLI
+// launcher for that same wizard, not a second driver of the engine.
 type Engine struct {
 	eff Effects
 }

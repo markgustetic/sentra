@@ -155,7 +155,7 @@ func TestEnginePrepareAWSLoginRunsWhenIdentityMissing(t *testing.T) {
 // Failure classification: PrepareAWS returning a missing-credentials error
 // must be wrapped via WrapAWSPrepareError (substring-detectable), and the
 // engine must NOT prompt/repair — it returns the classified error so the
-// caller (cli driver or TUI) owns the repair decision.
+// caller (the TUI wizard) owns the repair decision.
 func TestEnginePrepareAWSClassifiesPrepareError(t *testing.T) {
 	eff := fakeEffects{
 		prepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {

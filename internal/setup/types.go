@@ -22,9 +22,9 @@ const (
 	AWSRepairCancel   AWSRepairChoice = "cancel"
 )
 
-// Plan is the complete set of actions the setup wizard selected. Both the
-// CLI wizard (thin huh driver) and the TUI wizard build this and hand it to
-// the engine; the engine never re-reads the terminal.
+// Plan is the complete set of actions the setup wizard selected. The TUI
+// wizard builds this and hands it to the engine; the engine never re-reads
+// the terminal.
 type Plan struct {
 	Config            config.Config
 	Backend           Backend

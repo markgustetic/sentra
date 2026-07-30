@@ -36,7 +36,7 @@ func TestDefaultEffectsCheckIdentityDelegates(t *testing.T) {
 }
 
 // DefaultAWSPrepare must reject a config with no region before touching AWS,
-// preserving the guard moved from internal/cli/setup_awss3.go:33-35.
+// preserving the guard moved from the old internal/cli/setup_awss3.go.
 func TestDefaultAWSPrepareRequiresRegion(t *testing.T) {
 	cfg := &config.Config{}
 	cfg.Repo.S3.Bucket = "example-bucket"
