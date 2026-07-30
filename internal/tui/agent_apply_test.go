@@ -2,6 +2,8 @@ package tui
 
 import (
 	"context"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -493,5 +495,39 @@ func TestAgentApply_WipeRailAllowsConfirmedEmptyingPrune(t *testing.T) {
 		if s.ID == snapID {
 			t.Fatalf("snapshot %s still present after confirmed wipe", snapID)
 		}
+	}
+}
+
+// TestAgentView_IgnoreAdvice: 'i' collects local-heuristic ignore
+// suggestions — the TUI face of `agent advise-ignore` — with no LLM
+// involved, so it works without a Provider.
+func TestAgentView_IgnoreAdvice(t *testing.T) {
+	dir := t.TempDir()
+	if err := os.MkdirAll(filepath.Join(dir, "node_modules", "dep"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(dir, "node_modules", "dep", "x.js"), []byte("js"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+
+	v := NewAgentViewWithRunner(Deps{}, nil)
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("i")})
+	v = m.(AgentView)
+	if cmd == nil {
+		t.Fatal("'i' must return the advice command")
+	}
+	msg := cmd()
+	done, ok := msg.(adviceDoneMsg)
+	if !ok {
+		t.Fatalf("expected adviceDoneMsg, got %T", msg)
+	}
+	if done.err != nil {
+		t.Fatalf("advice: %v", done.err)
+	}
+	m, _ = v.Update(done)
+	v = m.(AgentView)
+	if !strings.Contains(v.View(), "node_modules/") {
+		t.Errorf("advice pane should suggest the cache dir:\n%s", v.View())
 	}
 }

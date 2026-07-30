@@ -15,7 +15,9 @@ import (
 	"github.com/markgustetic/sentra/internal/agent"
 	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // applyStage tracks the agent-apply state machine, which is layered on
@@ -55,6 +57,13 @@ type tokenMsg string
 type agentDoneMsg struct {
 	recs []agent.Recommendation
 	err  error
+}
+
+// adviceDoneMsg carries the local-heuristics ignore suggestions back
+// to the view — the TUI face of `agent advise-ignore`, no LLM involved.
+type adviceDoneMsg struct {
+	advice []heuristics.IgnoreAdvice
+	err    error
 }
 
 // agentApplyDoneMsg is the terminal message of the agent-apply flow. It
@@ -175,11 +184,27 @@ func NewAgentView(deps Deps) AgentView {
 		// from cmd/sentra would create a cycle; this duplication is
 		// minor and acceptable for v1.
 		hs := heuristics.NewRegistry(productionHeuristics()...)
+		// Mirror the CLI's agent.Config construction: the operator's
+		// configured model, LLM budget, and retention feed the scan.
+		// A TUI scan that ignored cfg.Agent.Model would quietly use a
+		// different (and differently-priced) model than `agent scan`.
+		agentCfg := agent.Config{}.Defaults()
+		if deps.Config != nil {
+			agentCfg.Model = deps.Config.Agent.Model
+			agentCfg.MaxFindingsToLLM = deps.Config.Agent.MaxFindingsToLLM
+			agentCfg.InputConfig.Retention = repo.RetentionPolicy{
+				KeepLast:    deps.Config.Retention.KeepLast,
+				KeepDaily:   deps.Config.Retention.KeepDaily,
+				KeepWeekly:  deps.Config.Retention.KeepWeekly,
+				KeepMonthly: deps.Config.Retention.KeepMonthly,
+			}
+			agentCfg = agentCfg.Defaults() // re-default any zero fields the config left unset
+		}
 		a := &agent.Agent{
 			Repo:       deps.Repo,
 			Heuristics: hs,
 			Provider:   deps.Provider,
-			Config:     agent.Config{}.Defaults(),
+			Config:     agentCfg,
 		}
 		return a.Scan(ctx, ".", stream)
 	}
@@ -213,7 +238,10 @@ func (a AgentView) ShortHelp() []key.Binding {
 			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel")),
 		}
 	default:
-		binds := []key.Binding{key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scan"))}
+		binds := []key.Binding{
+			key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scan")),
+			key.NewBinding(key.WithKeys("i"), key.WithHelp("i", "ignore advice")),
+		}
 		if len(a.recs) > 0 && !a.busy {
 			binds = append(binds, key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "apply")))
 		}
@@ -302,6 +330,30 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		a.doneCh = nil
 		return a, nil
 
+	case adviceDoneMsg:
+		a.busy = false
+		if msg.err != nil {
+			a.streamBuf = ui.Danger.Render("ignore advice failed: ") + msg.err.Error()
+		} else if len(msg.advice) == 0 {
+			a.streamBuf = ui.Subtle.Render("no ignore suggestions — the tree looks clean")
+		} else {
+			var b strings.Builder
+			b.WriteString(ui.Primary.Render("Suggested .sentraignore patterns") + "\n\n")
+			for _, ad := range msg.advice {
+				size := ""
+				if ad.Size > 0 {
+					size = "  " + ui.FormatBytes(ad.Size)
+				}
+				fmt.Fprintf(&b, "  %s%s\n", ad.Pattern, size)
+				fmt.Fprintf(&b, "    %s\n", ui.Muted.Render(ad.Reason))
+			}
+			b.WriteString("\n" + ui.Muted.Render("read-only — add the patterns you want to .sentraignore"))
+			a.streamBuf = b.String()
+		}
+		a.viewport.SetContent(a.streamBuf)
+		a.viewport.GotoTop()
+		return a, nil
+
 	case confirmedMsg:
 		if a.applyStage != agentConfirming {
 			return a, nil
@@ -378,6 +430,30 @@ func (a AgentView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			a.doneErr = nil
 			cmd := a.spawnScan()
 			return a, cmd
+		}
+
+		// Ignore advice ('i'): the TUI face of `agent advise-ignore`.
+		// Local heuristics only — no LLM — so it works even without a
+		// configured Provider, exactly like the CLI command.
+		if a.applyStage == agentIdle && msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'i' {
+			if a.busy {
+				return a, nil
+			}
+			a.busy = true
+			a.streamBuf = ui.Subtle.Render("[collecting ignore advice...]\n")
+			a.viewport.SetContent(a.streamBuf)
+			deps := a.deps
+			return a, func() tea.Msg {
+				wopts := walker.Options{}
+				if deps.Config != nil {
+					wopts.IgnoreFile = deps.Config.Backup.IgnoreFile
+					wopts.ExcludeCaches = deps.Config.Backup.ExcludeCaches
+					wopts.Concurrency = deps.Config.Backup.Concurrency
+				}
+				advice, err := heuristics.CollectIgnoreAdvice(
+					ctxOrBackground(deps.Ctx), ".", wopts, heuristics.DefaultLargeFileBytes)
+				return adviceDoneMsg{advice: advice, err: err}
+			}
 		}
 
 		// Enter review on `a` when a finished scan produced recs.
@@ -723,9 +799,13 @@ func (a AgentView) View() string {
 		return a.viewApplyDone()
 	}
 
-	if a.run == nil {
+	// Without a Provider the LLM scan is unavailable — but the local
+	// ignore-advice pane ('i') still works, so only show the API-key
+	// hint while there is nothing collected to display.
+	if a.run == nil && a.streamBuf == "" && !a.busy {
 		body := ui.Subtle.Render("agent") + "\n" +
-			ui.Muted.Render("configure ANTHROPIC_API_KEY and re-run sentra to enable the agent")
+			ui.Muted.Render("configure ANTHROPIC_API_KEY and re-run sentra to enable the LLM scan") + "\n" +
+			ui.Muted.Render("press i for local .sentraignore advice (no API key needed)")
 		return ui.Panel.Render(body) + "\n"
 	}
 
