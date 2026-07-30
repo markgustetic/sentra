@@ -7,9 +7,8 @@ import (
 )
 
 func TestConstValuesMatchLegacyStrings(t *testing.T) {
-	// A slice (not a map) because AWSAuthMethod and AWSRepairChoice share
-	// several string values ("login", "sso", "existing"); a map keyed on the
-	// string value would collide.
+	// A slice (not a map) because these values are not all distinct; a map
+	// keyed on the string value would collide.
 	cases := []struct {
 		got  string
 		want string
@@ -20,11 +19,6 @@ func TestConstValuesMatchLegacyStrings(t *testing.T) {
 		{string(AWSAuthSSO), "sso"},
 		{string(AWSAuthExisting), "existing"},
 		{string(AWSAuthSkip), "skip"},
-		{string(AWSRepairLogin), "login"},
-		{string(AWSRepairSSO), "sso"},
-		{string(AWSRepairExisting), "existing"},
-		{string(AWSRepairConfig), "config"},
-		{string(AWSRepairCancel), "cancel"},
 	}
 	for _, c := range cases {
 		if c.got != c.want {

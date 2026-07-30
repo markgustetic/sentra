@@ -811,8 +811,8 @@ func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 }
 
 // detailFieldCount is 5 for S3-compatible (endpoint shown) and 4 for AWS
-// (endpoint suppressed — AWS setup rejects endpoint_url; see
-// setup.ValidatePlan's endpoint guard).
+// (endpoint suppressed — AWS setup rejects endpoint_url, so the field would be
+// an invitation to enter something commitDetails must then clear).
 func (v SetupWizardView) detailFieldCount() int {
 	if v.plan.Backend == setup.BackendAWS {
 		return setupFieldEndpoint // 4: bucket..profile
@@ -869,9 +869,9 @@ func (v SetupWizardView) handleDetailsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 // commitDetails validates the bucket, writes the S3 fields into the plan
 // config, and routes to the next stage. Its bucket-required +
-// setup.ValidateBucketName pair is the ONLY live bucket gate in the product
-// (setup.ValidatePlan has no production caller), so neither branch may be
-// dropped on the assumption that something downstream re-checks.
+// setup.ValidateBucketName pair is the ONLY bucket gate in the product, so
+// neither branch may be dropped on the assumption that something downstream
+// re-checks — nothing does.
 func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 	bucket := strings.TrimSpace(v.fields[setupFieldBucket].Value())
 	if bucket == "" {

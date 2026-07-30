@@ -62,9 +62,8 @@ func TestSetupWizard_BackendEnterOpensDetails(t *testing.T) {
 }
 
 // TestSetupWizard_DetailsRejectsEmptyBucket covers commitDetails' FIRST guard.
-// This is the only live empty-bucket check in the product — setup.ValidatePlan
-// has no production callers — so without it an Enter on a blank form could
-// advance and provision a plan with no bucket.
+// This is the only empty-bucket check in the product, so without it an Enter on
+// a blank form could advance and provision a plan with no bucket.
 //
 // The assertion is on the exact message, not merely that some error was set.
 // Deleting the branch does NOT make a blank submit succeed: it falls through to

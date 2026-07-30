@@ -10,18 +10,6 @@ const (
 	BackendS3Compatible Backend = "s3-compatible"
 )
 
-// AWSRepairChoice is the recovery path chosen after AWS auth or bucket
-// preparation fails.
-type AWSRepairChoice string
-
-const (
-	AWSRepairLogin    AWSRepairChoice = "login"
-	AWSRepairSSO      AWSRepairChoice = "sso"
-	AWSRepairExisting AWSRepairChoice = "existing"
-	AWSRepairConfig   AWSRepairChoice = "config"
-	AWSRepairCancel   AWSRepairChoice = "cancel"
-)
-
 // Plan is the complete set of actions the setup wizard selected. The TUI
 // wizard builds this and hands it to the engine; the engine never re-reads
 // the terminal.

@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"fmt"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -178,50 +177,10 @@ func ResolveAWSAuthMethod(p *Plan) AWSAuthMethod {
 	return AWSAuthSkip
 }
 
-// DefaultAWSRepairChoice picks the pre-selected recovery option after AWS auth
-// or bucket preparation fails. A non-credential failure (e.g. AccessDenied on
-// an existing bucket) suggests switching to existing credentials; a missing-
-// credential failure keeps the plan's chosen sign-in method.
-func DefaultAWSRepairChoice(p Plan, cause error) AWSRepairChoice {
-	if cause != nil && !IsAWSMissingCredentialsError(cause) {
-		return AWSRepairExisting
-	}
-	switch p.AWSAuthMethod {
-	case AWSAuthSSO:
-		return AWSRepairSSO
-	case AWSAuthExisting:
-		return AWSRepairExisting
-	case AWSAuthSkip:
-		return AWSRepairConfig
-	default:
-		return AWSRepairLogin
-	}
-}
-
-// ValidatePlan enforces the pre-write guards the deleted CLI wizard applied
-// inline: a bucket is required, its name must be valid, and AWS preparation is
-// incompatible with a custom endpoint_url.
-//
-// NOTE: it currently has no production caller. The live equivalents are the
-// TUI wizard's own inline checks in commitDetails. Either route the wizard
-// through here or drop it — a validator nothing calls will drift from the
-// checks that actually run.
-func ValidatePlan(p Plan) error {
-	if strings.TrimSpace(p.Config.Repo.S3.Bucket) == "" {
-		return fmt.Errorf("repo.s3.bucket not set - enter a bucket name")
-	}
-	if err := diag.ValidateBucketName(p.Config.Repo.S3.Bucket); err != nil {
-		return err
-	}
-	if p.PrepareAWS && p.Config.Repo.S3.EndpointURL != "" {
-		return fmt.Errorf("AWS setup does not support endpoint_url - choose S3-compatible/manual setup for MinIO or LocalStack")
-	}
-	return nil
-}
-
-// ValidateBucketName re-exports diag's bucket-name validation so both
-// ValidatePlan and the TUI wizard's inline field validation share one rule
-// set without the TUI importing internal/diag directly.
+// ValidateBucketName re-exports diag's bucket-name validation so the TUI
+// wizard's inline field validation (commitDetails) shares one rule set with
+// doctor's probes without internal/tui importing internal/diag directly. It is
+// the only live bucket-name gate in the product.
 func ValidateBucketName(bucket string) error {
 	return diag.ValidateBucketName(bucket)
 }

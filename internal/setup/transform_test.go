@@ -1,7 +1,6 @@
 package setup
 
 import (
-	"errors"
 	"fmt"
 	"testing"
 
@@ -168,61 +167,6 @@ func TestResolveAWSAuthMethod(t *testing.T) {
 	if got := ResolveAWSAuthMethod(&Plan{}); got != AWSAuthSkip {
 		t.Fatalf("no prepare, empty method: got %q, want skip", got)
 	}
-}
-
-func TestDefaultAWSRepairChoice(t *testing.T) {
-	// Non-credential failure → existing.
-	prep := errors.New(`prepare AWS S3: head bucket "b": AccessDenied`)
-	if got := DefaultAWSRepairChoice(Plan{AWSAuthMethod: AWSAuthLogin}, prep); got != AWSRepairExisting {
-		t.Fatalf("bucket-prep failure: got %q, want existing", got)
-	}
-	// Missing-credential failure keeps the plan's method.
-	cred := errors.New("failed to refresh cached credentials: no EC2 IMDS role found")
-	if got := DefaultAWSRepairChoice(Plan{AWSAuthMethod: AWSAuthLogin}, cred); got != AWSRepairLogin {
-		t.Fatalf("missing creds w/ login: got %q, want login", got)
-	}
-	if got := DefaultAWSRepairChoice(Plan{AWSAuthMethod: AWSAuthSSO}, nil); got != AWSRepairSSO {
-		t.Fatalf("sso plan: got %q, want sso", got)
-	}
-	if got := DefaultAWSRepairChoice(Plan{AWSAuthMethod: AWSAuthExisting}, nil); got != AWSRepairExisting {
-		t.Fatalf("existing plan: got %q, want existing", got)
-	}
-	if got := DefaultAWSRepairChoice(Plan{AWSAuthMethod: AWSAuthSkip}, nil); got != AWSRepairConfig {
-		t.Fatalf("skip plan: got %q, want config", got)
-	}
-}
-
-func TestValidatePlan(t *testing.T) {
-	base := func() Plan {
-		var p Plan
-		p.Config.Repo.S3.Bucket = "good-bucket"
-		return p
-	}
-	if err := ValidatePlan(base()); err != nil {
-		t.Fatalf("valid plan rejected: %v", err)
-	}
-
-	empty := Plan{}
-	if err := ValidatePlan(empty); err == nil || !errIsBucketNotSet(err) {
-		t.Fatalf("empty bucket: got %v, want bucket-not-set error", err)
-	}
-
-	bad := base()
-	bad.Config.Repo.S3.Bucket = "Bad_Bucket"
-	if err := ValidatePlan(bad); err == nil {
-		t.Fatal("invalid bucket name should error")
-	}
-
-	ep := base()
-	ep.PrepareAWS = true
-	ep.Config.Repo.S3.EndpointURL = "http://localhost:9000"
-	if err := ValidatePlan(ep); err == nil {
-		t.Fatal("PrepareAWS with endpoint_url should error")
-	}
-}
-
-func errIsBucketNotSet(err error) bool {
-	return err != nil && err.Error() == "repo.s3.bucket not set - enter a bucket name"
 }
 
 // TestDefaultPlanS3CompatibleDoesNotInheritDiscoveredProfile pins the bug that
