@@ -81,3 +81,20 @@ func TestNewS3_NoEndpoint(t *testing.T) {
 		t.Fatalf("NewS3: %v", err)
 	}
 }
+
+// TestNewS3_RefusesAsyncStorageClasses: GLACIER and DEEP_ARCHIVE
+// answer GetObject with InvalidObjectState until a restore-object job
+// completes — sentra's synchronous chunk reads can never work there,
+// so the config is refused up front with the fix named.
+func TestNewS3_RefusesAsyncStorageClasses(t *testing.T) {
+	for _, class := range []string{"GLACIER", "DEEP_ARCHIVE"} {
+		_, err := NewS3(context.Background(), S3Config{Bucket: "b", StorageClass: class})
+		if err == nil {
+			t.Errorf("NewS3 with %s should be refused", class)
+		}
+	}
+	// GLACIER_IR reads synchronously; construction must succeed.
+	if _, err := NewS3(context.Background(), S3Config{Bucket: "b", StorageClass: "GLACIER_IR"}); err != nil {
+		t.Errorf("GLACIER_IR should be accepted: %v", err)
+	}
+}

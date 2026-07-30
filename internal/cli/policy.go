@@ -1,9 +1,15 @@
 package cli
 
 import (
+	"bytes"
+	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
+	"net/http"
+	"os"
+	"os/exec"
 	"sort"
 	"strings"
 	"time"
@@ -262,6 +268,34 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error 
 	if err := policycfg.Validate(name, p); err != nil {
 		return err
 	}
+
+	// Hooks wrap the run: before → stages → after, with on_failure
+	// (command and/or webhook) firing when ANY of them fails.
+	// Config-shape errors above don't count as a run failure — the
+	// run never started.
+	runErr := func() error {
+		if p.Hooks.Before != "" {
+			if err := runPolicyHook(cmd, deps, "before", p.Hooks.Before); err != nil {
+				return err
+			}
+		}
+		if err := runPolicyStages(cmd, deps, cfg, name, p); err != nil {
+			return err
+		}
+		if p.Hooks.After != "" {
+			if err := runPolicyHook(cmd, deps, "after", p.Hooks.After); err != nil {
+				return err
+			}
+		}
+		return nil
+	}()
+	if runErr != nil {
+		firePolicyFailureHooks(cmd, deps, name, p.Hooks, runErr)
+	}
+	return runErr
+}
+
+func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig) error {
 	if deps.NewStore == nil {
 		return errors.New("policy run: blobstore factory is not configured")
 	}
@@ -315,6 +349,74 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error 
 	}
 	if err := runPolicyPrune(cmd, out, r, cfg, policyPruneMode(p.AfterBackup.Prune)); err != nil {
 		return err
+	}
+	return nil
+}
+
+// runPolicyHook executes one hook command via `sh -c`, streaming its
+// output into the policy run's stdout. The command comes from the
+// operator's own sentra.yaml — running what the operator wrote is the
+// feature, not an injection surface.
+func runPolicyHook(cmd *cobra.Command, deps PolicyDeps, label, script string) error {
+	out := policyStdout(cmd, deps)
+	fmt.Fprintf(out, "  hook %s: %s\n", label, script)
+	hook := exec.CommandContext(cmd.Context(), "sh", "-c", script) //nolint:gosec // operator-authored command from their own config
+	hook.Stdout = out
+	hook.Stderr = out
+	if err := hook.Run(); err != nil {
+		return fmt.Errorf("policy hook %s: %w", label, err)
+	}
+	return nil
+}
+
+// firePolicyFailureHooks runs the on_failure command and/or webhook.
+// Both are best-effort: the run's own error is what the caller
+// returns, and a broken notifier must not mask it.
+func firePolicyFailureHooks(cmd *cobra.Command, deps PolicyDeps, name string, hooks config.PolicyHooks, cause error) {
+	out := policyStdout(cmd, deps)
+	if hooks.OnFailure != "" {
+		if err := runPolicyHook(cmd, deps, "on_failure", hooks.OnFailure); err != nil {
+			fmt.Fprintf(out, "  hook on_failure failed: %v\n", err)
+		}
+	}
+	if hooks.OnFailureWebhookEnv == "" {
+		return
+	}
+	// Only the env var NAME lives in sentra.yaml; the URL (which
+	// often embeds a token) stays in the environment.
+	url := os.Getenv(hooks.OnFailureWebhookEnv)
+	if url == "" {
+		fmt.Fprintf(out, "  webhook skipped: env %s is unset\n", hooks.OnFailureWebhookEnv)
+		return
+	}
+	if err := postPolicyFailureWebhook(cmd.Context(), url, name, cause); err != nil {
+		fmt.Fprintf(out, "  webhook failed: %v\n", err)
+	}
+}
+
+func postPolicyFailureWebhook(ctx context.Context, url, name string, cause error) error {
+	payload, err := json.Marshal(map[string]string{
+		"policy": name,
+		"status": "failed",
+		"error":  cause.Error(),
+	})
+	if err != nil {
+		return err
+	}
+	ctx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, url, bytes.NewReader(payload))
+	if err != nil {
+		return err
+	}
+	req.Header.Set("Content-Type", "application/json")
+	resp, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return err
+	}
+	defer resp.Body.Close()
+	if resp.StatusCode >= 300 {
+		return fmt.Errorf("webhook returned %s", resp.Status)
 	}
 	return nil
 }

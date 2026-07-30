@@ -4,9 +4,12 @@ import (
 	"bytes"
 	"context"
 	"io"
+	"net/http"
+	"net/http/httptest"
 	"os"
 	"path/filepath"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -270,5 +273,151 @@ func TestPolicyRun_CreatesTaggedSnapshot(t *testing.T) {
 	got := out.String()
 	if !strings.Contains(got, "Policy run complete") || !strings.Contains(got, "check: healthy") {
 		t.Fatalf("output missing run summary: %q", got)
+	}
+}
+
+// policyHookFixture builds a runnable policy named "hooked". hooks
+// receives the test dir so hook commands can reference paths inside
+// it. Returns (deps, the shared store, the test dir).
+func policyHookFixture(t *testing.T, hooks func(dir string) config.PolicyHooks) (PolicyDeps, *blobstore.Memory, string) {
+	t.Helper()
+	dir := t.TempDir()
+	chDir(t, dir)
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["hooked"] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks:    hooks(dir),
+	}
+	writePolicyConfigFile(t, dir, &cfg)
+
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+
+	deps := PolicyDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+			Stdout:     &bytes.Buffer{},
+		},
+	}
+	return deps, store, dir
+}
+
+// TestPolicyRun_BeforeHookOutputIsCaptured: the before hook completes
+// before any snapshot is taken — a dump written by the hook into the
+// source tree is part of the snapshot.
+func TestPolicyRun_BeforeHookOutputIsCaptured(t *testing.T) {
+	deps, store, _ := policyHookFixture(t, func(dir string) config.PolicyHooks {
+		return config.PolicyHooks{
+			Before: "echo hook-output > " + filepath.Join(dir, "src", "dump.txt"),
+		}
+	})
+	cmd := NewPolicy(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"run", "hooked"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("snapshots: %v err=%v", snaps, err)
+	}
+	m, err := r.LoadSnapshot(context.Background(), snaps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, fe := range m.Tree {
+		if fe.Path == "dump.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("before-hook output missing from snapshot tree: %+v", m.Tree)
+	}
+}
+
+// TestPolicyRun_FailingBeforeHookAbortsAndFiresOnFailure: a failing
+// before hook must abort the run (no snapshot — the hook exists so
+// the backup captures its output) and fire the on_failure hook.
+func TestPolicyRun_FailingBeforeHookAbortsAndFiresOnFailure(t *testing.T) {
+	var marker string
+	deps, store, _ := policyHookFixture(t, func(dir string) config.PolicyHooks {
+		marker = filepath.Join(dir, "failed.marker")
+		return config.PolicyHooks{
+			Before:    "exit 7",
+			OnFailure: "touch " + marker,
+		}
+	})
+	cmd := NewPolicy(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"run", "hooked"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("failing before hook must fail the run")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("on_failure hook did not run: %v", err)
+	}
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 0 {
+		t.Errorf("no snapshot should exist after an aborted run, got %d", len(snaps))
+	}
+}
+
+// TestPolicyRun_FailureWebhookPostsFromEnvURL: the webhook URL lives
+// in an ENV VAR (only its NAME is in sentra.yaml — no secrets in
+// config); on failure the run POSTs a {policy, status, error} JSON.
+func TestPolicyRun_FailureWebhookPostsFromEnvURL(t *testing.T) {
+	var got atomic.Value
+	srv := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		body, _ := io.ReadAll(r.Body)
+		got.Store(string(body))
+	}))
+	defer srv.Close()
+	t.Setenv("SENTRA_TEST_WEBHOOK", srv.URL)
+
+	deps, _, _ := policyHookFixture(t, func(string) config.PolicyHooks {
+		return config.PolicyHooks{
+			Before:              "exit 3",
+			OnFailureWebhookEnv: "SENTRA_TEST_WEBHOOK",
+		}
+	})
+	cmd := NewPolicy(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"run", "hooked"})
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("run must fail")
+	}
+	body, _ := got.Load().(string)
+	if !strings.Contains(body, `"hooked"`) || !strings.Contains(body, `"failed"`) {
+		t.Errorf("webhook payload missing policy/status: %q", body)
 	}
 }

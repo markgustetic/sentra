@@ -29,6 +29,12 @@ type Config struct {
 			Region      string `koanf:"region"`
 			Profile     string `koanf:"profile"`
 			EndpointURL string `koanf:"endpoint_url"`
+			// StorageClass is passed through to S3 PutObject for new
+			// blobs (e.g. STANDARD_IA, INTELLIGENT_TIERING). Empty
+			// means the bucket default. Asynchronous-retrieval classes
+			// (GLACIER, DEEP_ARCHIVE) are refused — restore fetches
+			// chunks synchronously.
+			StorageClass string `koanf:"storage_class"`
 		} `koanf:"s3"`
 	} `koanf:"repo"`
 
@@ -87,6 +93,26 @@ type PolicyConfig struct {
 	Tags        []string          `koanf:"tags"`
 	Schedule    PolicySchedule    `koanf:"schedule"`
 	AfterBackup PolicyAfterBackup `koanf:"after_backup"`
+	Hooks       PolicyHooks       `koanf:"hooks"`
+}
+
+// PolicyHooks are optional commands run around a policy execution.
+// Commands run via `sh -c` with the policy run's stdout/stderr.
+// OnFailureWebhookEnv names an ENVIRONMENT VARIABLE holding a webhook
+// URL — the URL itself (which often embeds a token) never lands in
+// sentra.yaml, honoring the no-secrets-in-config invariant.
+type PolicyHooks struct {
+	// Before runs before any snapshot; a failure aborts the run
+	// (database-dump hooks exist precisely so the backup captures
+	// their output).
+	Before string `koanf:"before"`
+	// After runs only after a fully successful run.
+	After string `koanf:"after"`
+	// OnFailure runs when any stage — Before included — fails.
+	OnFailure string `koanf:"on_failure"`
+	// OnFailureWebhookEnv names the env var carrying a URL to POST a
+	// {policy, status, error} JSON document to on failure.
+	OnFailureWebhookEnv string `koanf:"on_failure_webhook_env"`
 }
 
 // PolicySchedule describes when a named policy should run. Validation

@@ -50,6 +50,7 @@ repo:
     region: %q              # AWS region; e.g. us-west-2
     profile: %q             # AWS shared-config profile, optional
     endpoint_url: %q        # MinIO/LocalStack support; empty for AWS
+    storage_class: %q       # S3 storage class for new blobs; empty = bucket default
 
 agent:
   provider: %q
@@ -79,6 +80,7 @@ ui:
 		cfg.Repo.S3.Region,
 		cfg.Repo.S3.Profile,
 		cfg.Repo.S3.EndpointURL,
+		cfg.Repo.S3.StorageClass,
 		agentProvider,
 		agentModel,
 		cfg.Agent.MaxFindingsToLLM,
@@ -124,6 +126,21 @@ func renderPoliciesYAML(policies map[string]PolicyConfig) string {
 		fmt.Fprintln(&b, "    after_backup:")
 		fmt.Fprintf(&b, "      check: %t\n", p.AfterBackup.Check)
 		fmt.Fprintf(&b, "      prune: %q\n", p.AfterBackup.Prune)
+		if p.Hooks != (PolicyHooks{}) {
+			fmt.Fprintln(&b, "    hooks:")
+			if p.Hooks.Before != "" {
+				fmt.Fprintf(&b, "      before: %q\n", p.Hooks.Before)
+			}
+			if p.Hooks.After != "" {
+				fmt.Fprintf(&b, "      after: %q\n", p.Hooks.After)
+			}
+			if p.Hooks.OnFailure != "" {
+				fmt.Fprintf(&b, "      on_failure: %q\n", p.Hooks.OnFailure)
+			}
+			if p.Hooks.OnFailureWebhookEnv != "" {
+				fmt.Fprintf(&b, "      on_failure_webhook_env: %q\n", p.Hooks.OnFailureWebhookEnv)
+			}
+		}
 	}
 	return b.String()
 }

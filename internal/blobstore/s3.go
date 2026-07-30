@@ -24,6 +24,11 @@ type S3Config struct {
 	Region      string
 	Profile     string
 	EndpointURL string
+
+	// StorageClass, when non-empty, is applied to every PutObject.
+	// Validated by NewS3: asynchronous-retrieval classes would break
+	// the synchronous chunk-fetch restore path.
+	StorageClass string
 }
 
 // S3 is a Store implementation against S3 (or any S3-compatible
@@ -36,11 +41,30 @@ type S3 struct {
 // Compile-time assertion that *S3 implements Store.
 var _ Store = (*S3)(nil)
 
+// validateStorageClass refuses the asynchronous-retrieval classes:
+// restore fetches chunks with a synchronous GetObject, and an object
+// in GLACIER or DEEP_ARCHIVE answers that with InvalidObjectState
+// until a restore-object job completes hours later. GLACIER_IR
+// (instant retrieval) reads synchronously and passes. An empty class
+// means the bucket default and is always fine; unknown strings are
+// left for S3 itself to reject, so new classes don't need a sentra
+// release.
+func validateStorageClass(class string) error {
+	switch class {
+	case "GLACIER", "DEEP_ARCHIVE":
+		return fmt.Errorf("blobstore/s3: storage class %s requires asynchronous restore-object retrieval, which sentra's synchronous chunk reads cannot use — pick GLACIER_IR or STANDARD_IA instead", class)
+	}
+	return nil
+}
+
 // NewS3 builds an S3-backed Store from cfg. It loads default AWS
 // configuration (env, shared config, IAM role, etc.) and overlays the
 // region/profile/endpoint from cfg. No network calls are issued here;
 // failures will surface on first request.
 func NewS3(ctx context.Context, cfg S3Config) (*S3, error) {
+	if err := validateStorageClass(cfg.StorageClass); err != nil {
+		return nil, err
+	}
 	loadOpts := []func(*awsconfig.LoadOptions) error{}
 	if cfg.Region != "" {
 		loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Region))
@@ -126,9 +150,10 @@ func (s *S3) listPrefix(prefix string) string {
 // here so that contract is the only place SSE policy lives.
 func (s *S3) Put(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket: aws.String(s.cfg.Bucket),
-		Key:    aws.String(s.fullKey(key)),
-		Body:   r,
+		Bucket:       aws.String(s.cfg.Bucket),
+		Key:          aws.String(s.fullKey(key)),
+		Body:         r,
+		StorageClass: types.StorageClass(s.cfg.StorageClass),
 	})
 	if err != nil {
 		return fmt.Errorf("blobstore/s3: put %q: %w", key, err)
@@ -244,10 +269,11 @@ func (s *S3) Delete(ctx context.Context, key string) error {
 // (s3_integration_test.go).
 func (s *S3) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
 	_, err := s.client.PutObject(ctx, &s3.PutObjectInput{
-		Bucket:      aws.String(s.cfg.Bucket),
-		Key:         aws.String(s.fullKey(key)),
-		Body:        r,
-		IfNoneMatch: aws.String("*"),
+		Bucket:       aws.String(s.cfg.Bucket),
+		Key:          aws.String(s.fullKey(key)),
+		Body:         r,
+		IfNoneMatch:  aws.String("*"),
+		StorageClass: types.StorageClass(s.cfg.StorageClass),
 		// SSE policy lives on the bucket (see Put's docstring).
 	})
 	if err != nil {

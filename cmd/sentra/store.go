@@ -16,11 +16,12 @@ func newS3Store(ctx context.Context, cfg *config.Config) (blobstore.Store, error
 		return nil, fmt.Errorf("repo.s3.bucket not set in sentra.yaml — edit the file and re-run")
 	}
 	s3, err := blobstore.NewS3(ctx, blobstore.S3Config{
-		Bucket:      cfg.Repo.S3.Bucket,
-		Prefix:      cfg.Repo.S3.Prefix,
-		Region:      cfg.Repo.S3.Region,
-		Profile:     cfg.Repo.S3.Profile,
-		EndpointURL: cfg.Repo.S3.EndpointURL,
+		Bucket:       cfg.Repo.S3.Bucket,
+		Prefix:       cfg.Repo.S3.Prefix,
+		Region:       cfg.Repo.S3.Region,
+		Profile:      cfg.Repo.S3.Profile,
+		EndpointURL:  cfg.Repo.S3.EndpointURL,
+		StorageClass: cfg.Repo.S3.StorageClass,
 	})
 	if err != nil {
 		return nil, err
