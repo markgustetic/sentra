@@ -42,7 +42,7 @@ const (
 // setupReviewConfirmID ties the review ConfirmModal result back to this
 // flow. Provisioning is gated behind it: the App broadcasts
 // confirmedMsg{setupReviewConfirmID} on enter, and only then does the
-// wizard emit its startOpMsg. Mirrors HuhSetupReviewConfirm.
+// wizard emit its startOpMsg.
 const setupReviewConfirmID = "setup-apply"
 
 // setupProgress tracks which provisioning checklist items completed, for
@@ -83,9 +83,9 @@ func (setupDoneMsg) opResult() {}
 // the wizard resumes the pre-auth flow (→ passphrase or review).
 type awsAuthDoneMsg struct{ err error }
 
-// SetupWizardView drives the in-TUI setup wizard. It is the TUI-native
-// re-expression of the huh cli wizard (internal/cli/setup_wizard.go):
-// every huh step becomes an inline bubbles control because huh.Form.Run
+// SetupWizardView drives the in-TUI setup wizard. It began as the TUI-native
+// re-expression of the deleted huh cli wizard, and is now the only one:
+// every huh step became an inline bubbles control because huh.Form.Run
 // owns os.Stdin and cannot run inside a live tea.Program. The pure
 // decisions and the provisioning sequence live in internal/setup; this
 // view only collects input, gates on a review confirm, and drives the
@@ -179,8 +179,7 @@ const (
 )
 
 // setupAuthOrder lists the auth methods in stageActions cursor order,
-// matching the cli wizard's option order
-// (internal/cli/setup_wizard.go:386-393).
+// recommended-first: browser login is the easiest local path.
 var setupAuthOrder = []setup.AWSAuthMethod{
 	setup.AWSAuthLogin, setup.AWSAuthSSO, setup.AWSAuthExisting, setup.AWSAuthSkip,
 }
@@ -713,9 +712,8 @@ func (v SetupWizardView) handlePassphraseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 // commitPassphrase validates length and constant-time equality (mirroring
 // password.go:187-205), stashes the verified secret on v.pass for the
 // provisioning op, and records the keyring choice into the plan via
-// setup.ApplyPassphraseConfig (mirrors promptSetupPassphraseStorage,
-// internal/cli/setup_wizard.go:515-538). The two throwaway compare copies
-// are zeroized on return.
+// setup.ApplyPassphraseConfig. The two throwaway compare copies are zeroized
+// on return.
 func (v SetupWizardView) commitPassphrase() (tea.Model, tea.Cmd) {
 	newVal := []byte(v.newPass.Value())
 	confVal := []byte(v.confirmPass.Value())
@@ -769,22 +767,20 @@ func (v SetupWizardView) handleBackendKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
-// advanceFromBackend records the chosen backend into the plan and seeds
-// details defaults, mirroring the cli wizard's runHuhAWSSetup /
-// runHuhCompatibleSetup entry (internal/cli/setup_wizard.go:202-206).
+// advanceFromBackend records the chosen backend into the plan and seeds the
+// details defaults for that branch.
 func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 	backend := setup.BackendS3Compatible
 	if !v.backendLocked && v.backendCursor == 0 {
 		backend = setup.BackendAWS
 	}
 	// The backend's field hygiene — AWS forbids endpoint_url, S3-compatible
-	// forbids an inferred AWS profile — lives in one place that the CLI wizard
-	// calls too, so the two wizards cannot disagree.
+	// forbids an inferred AWS profile — lives in setup.ApplyBackendChoice, which
+	// DefaultPlan's inference path calls too, so the two cannot disagree.
 	setup.ApplyBackendChoice(&v.plan, backend, v.configuredProfile)
 
 	if backend == setup.BackendAWS {
-		// AWS defaults: sentra/ prefix, us-east-1 region if unset
-		// (internal/cli/setup_wizard.go:296-304).
+		// AWS defaults: sentra/ prefix, us-east-1 region if unset.
 		if strings.TrimSpace(v.fields[setupFieldRegion].Value()) == "" {
 			v.fields[setupFieldRegion].SetValue("us-east-1")
 		}
@@ -803,8 +799,8 @@ func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 }
 
 // detailFieldCount is 5 for S3-compatible (endpoint shown) and 4 for AWS
-// (endpoint suppressed — AWS setup rejects endpoint_url,
-// internal/cli/setup.go:227-229).
+// (endpoint suppressed — AWS setup rejects endpoint_url; see
+// setup.ValidatePlan's endpoint guard).
 func (v SetupWizardView) detailFieldCount() int {
 	if v.plan.Backend == setup.BackendAWS {
 		return setupFieldEndpoint // 4: bucket..profile
@@ -860,9 +856,10 @@ func (v SetupWizardView) handleDetailsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // commitDetails validates the bucket, writes the S3 fields into the plan
-// config, and routes to the next stage. It mirrors the cli wizard's
-// bucket-required + validateSetupBucketName gate
-// (internal/cli/setup_wizard.go:319-324) via setup.ValidateBucketName.
+// config, and routes to the next stage. Its bucket-required +
+// setup.ValidateBucketName pair is the ONLY live bucket gate in the product
+// (setup.ValidatePlan has no production caller), so neither branch may be
+// dropped on the assumption that something downstream re-checks.
 func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 	bucket := strings.TrimSpace(v.fields[setupFieldBucket].Value())
 	if bucket == "" {
@@ -902,8 +899,7 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 		return v, nil
 	}
 	if v.plan.Backend == setup.BackendS3Compatible {
-		// S3-compatible never touches AWS: config-only + no actions stage
-		// (internal/cli/setup_wizard.go:502-507).
+		// S3-compatible never touches AWS: config-only + no actions stage.
 		v.plan.PrepareAWS = false
 		v.plan.AWSAuthMethod = setup.AWSAuthSkip
 		v.plan.CreateBucket = false
@@ -957,9 +953,8 @@ func (v SetupWizardView) handleActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 }
 
 // advanceFromActions records the selected auth method and toggles into the
-// plan and routes onward. It mirrors runHuhAWSSetup's tail
-// (internal/cli/setup_wizard.go:423-434): skip → config-only, otherwise
-// PrepareAWS with the chosen actions.
+// plan and routes onward: skip → config-only, otherwise PrepareAWS with the
+// chosen actions.
 func (v SetupWizardView) advanceFromActions() (tea.Model, tea.Cmd) {
 	method := setupAuthOrder[v.authCursor]
 	v.plan.AWSAuthMethod = method
@@ -1034,9 +1029,9 @@ func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 
 // interactiveAWSAuthCommand builds the `aws` subprocess for browser login
 // or SSO login. It mirrors the effect layer's argument construction
-// (internal/cli/setup_awscli.go DefaultAWSLogin / DefaultAWSSSOLogin) so
-// tea.ExecProcess can own the terminal for the child directly — the effect
-// funcs run the child themselves and cannot be suspended by the program.
+// (setup.DefaultAWSLogin / setup.DefaultAWSSSOLogin) so tea.ExecProcess can own
+// the terminal for the child directly — the effect funcs run the child
+// themselves and cannot be suspended by the program.
 func interactiveAWSAuthCommand(ctx context.Context, _ setup.Effects, method setup.AWSAuthMethod, profile, region string) *exec.Cmd {
 	var args []string
 	switch method {
@@ -1314,8 +1309,9 @@ func (v SetupWizardView) passRow(f textinput.Model, focused bool) string {
 	return ui.SelectRow(focused, "") + f.View()
 }
 
-// setupAuthMethodLabel mirrors setupAWSAuthMethodLabel
-// (internal/cli/setup_summary.go:132) for the TUI select row.
+// setupAuthMethodLabel is the TUI select row's label for an auth method.
+// Deliberately not setup.AWSAuthMethodLabel: these strings carry the
+// "(Recommended)" hint and the row's own phrasing.
 func setupAuthMethodLabel(m setup.AWSAuthMethod) string {
 	switch m {
 	case setup.AWSAuthLogin:

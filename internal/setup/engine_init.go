@@ -11,11 +11,9 @@ import (
 
 // InitRepo initializes (or, if already present, verifies) the encrypted
 // repository for cfg using pass, optionally saving pass to the OS keyring.
-// The caller owns pass and its zeroization (the cli driver resolves it via
-// the passphrase resolver and defers crypto.Zeroize; the TUI wizard zeroizes
-// its masked-input buffer). Headless port of runSetupInit
-// (internal/cli/setup_init.go:19-78) minus the optional-dep nil guards —
-// Effects methods are always present.
+// The caller owns pass and its zeroization — the TUI wizard zeroizes its
+// masked-input buffer. Headless port of the deleted CLI wizard's runSetupInit,
+// minus its optional-dep nil guards: Effects methods are always present.
 func (e *Engine) InitRepo(ctx context.Context, cfg *config.Config, pass []byte, save bool) (InitResult, error) {
 	store, err := e.eff.NewStore(ctx, cfg)
 	if err != nil {

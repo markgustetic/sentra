@@ -9,10 +9,9 @@ import (
 )
 
 // DefaultPlan builds the wizard's starting plan from the current config and
-// the ambient AWS environment. Ported from the CLI wizard's
-// defaultSetupPlan + applySetupSmartDefaults (internal/cli/setup_wizard.go:208-237);
-// the os.Getenv / ~/.aws/config reads now go through probe so the transform is
-// testable without touching the real environment.
+// the ambient AWS environment. Ported from the CLI wizard's defaultSetupPlan
+// + applySetupSmartDefaults; the os.Getenv / ~/.aws/config reads now go through
+// probe so the transform is testable without touching the real environment.
 func DefaultPlan(cfg config.Config, probe EnvProbe) Plan {
 	p := Plan{
 		Config:            cfg,
@@ -131,7 +130,7 @@ func firstNonEmpty(probe EnvProbe, keys ...string) string {
 }
 
 // NormalizeConfig trims the S3 fields so equal-but-padded values compare and
-// serialize identically. Ported from internal/cli/setup_wizard.go:580-586.
+// serialize identically.
 func NormalizeConfig(cfg *config.Config) {
 	cfg.Repo.S3.Bucket = strings.TrimSpace(cfg.Repo.S3.Bucket)
 	cfg.Repo.S3.Prefix = strings.TrimSpace(cfg.Repo.S3.Prefix)
@@ -141,8 +140,7 @@ func NormalizeConfig(cfg *config.Config) {
 }
 
 // ApplyAWSConfigOnly turns a plan into a write-config-only plan: no AWS side
-// effects, no repo init, no keyring save. Ported from
-// internal/cli/setup.go:419-427.
+// effects, no repo init, no keyring save.
 func ApplyAWSConfigOnly(p *Plan) {
 	p.PrepareAWS = false
 	p.InitRepo = false
@@ -154,8 +152,7 @@ func ApplyAWSConfigOnly(p *Plan) {
 }
 
 // ApplyPassphraseConfig mirrors the SavePassphrase decision into the persisted
-// use_keyring flag, but only when the repo is being initialized. Ported from
-// internal/cli/setup.go:429-433.
+// use_keyring flag, but only when the repo is being initialized.
 func ApplyPassphraseConfig(p *Plan) {
 	if p.InitRepo {
 		p.Config.Passphrase.UseKeyring = p.SavePassphrase
@@ -164,7 +161,6 @@ func ApplyPassphraseConfig(p *Plan) {
 
 // ResolveAWSAuthMethod picks the effective auth method for a plan, defaulting
 // an empty method to existing credentials (when preparing AWS) or skip.
-// Ported from internal/cli/setup.go:435-446.
 func ResolveAWSAuthMethod(p *Plan) AWSAuthMethod {
 	if p == nil {
 		return AWSAuthExisting
@@ -181,8 +177,7 @@ func ResolveAWSAuthMethod(p *Plan) AWSAuthMethod {
 // DefaultAWSRepairChoice picks the pre-selected recovery option after AWS auth
 // or bucket preparation fails. A non-credential failure (e.g. AccessDenied on
 // an existing bucket) suggests switching to existing credentials; a missing-
-// credential failure keeps the plan's chosen sign-in method. Ported from
-// internal/cli/setup_wizard.go:158-172.
+// credential failure keeps the plan's chosen sign-in method.
 func DefaultAWSRepairChoice(p Plan, cause error) AWSRepairChoice {
 	if cause != nil && !IsAWSMissingCredentialsError(cause) {
 		return AWSRepairExisting
@@ -199,10 +194,14 @@ func DefaultAWSRepairChoice(p Plan, cause error) AWSRepairChoice {
 	}
 }
 
-// ValidatePlan enforces the guards runSetup applied inline before writing
-// anything: a bucket is required, its name must be valid, and AWS preparation
-// is incompatible with a custom endpoint_url. Ported from
-// internal/cli/setup.go:210-228.
+// ValidatePlan enforces the pre-write guards the deleted CLI wizard applied
+// inline: a bucket is required, its name must be valid, and AWS preparation is
+// incompatible with a custom endpoint_url.
+//
+// NOTE: it currently has no production caller. The live equivalents are the
+// TUI wizard's own inline checks in commitDetails. Either route the wizard
+// through here or drop it — a validator nothing calls will drift from the
+// checks that actually run.
 func ValidatePlan(p Plan) error {
 	if strings.TrimSpace(p.Config.Repo.S3.Bucket) == "" {
 		return fmt.Errorf("repo.s3.bucket not set - enter a bucket name")

@@ -91,9 +91,7 @@ func awsPlan() Plan {
 }
 
 // Existing-credentials happy path: identity verifies, prepare runs, both
-// reports returned, no error. Mirrors runSetupAWSExistingAuth
-// (internal/cli/setup_auth.go:117-124) + the loop success path
-// (internal/cli/setup.go:288-291).
+// reports returned, no error.
 func TestEnginePrepareAWSExistingSuccess(t *testing.T) {
 	var gotOpts AWSPrepareOptions
 	eff := fakeEffects{
@@ -123,7 +121,7 @@ func TestEnginePrepareAWSExistingSuccess(t *testing.T) {
 }
 
 // Login sub-machine: identity fails first, login runs, identity then
-// verifies. Mirrors runSetupAWSLoginAuth (internal/cli/setup_auth.go:30-59).
+// verifies.
 func TestEnginePrepareAWSLoginRunsWhenIdentityMissing(t *testing.T) {
 	calls := 0
 	loginRan := false
@@ -190,8 +188,13 @@ func ssoPlan() Plan {
 // browser and re-run `aws sso login` for credentials it already has.
 func TestEnginePrepareAWSSSOSkipsFlowWhenIdentityVerifies(t *testing.T) {
 	checks := 0
+	prepareCalled := false
 	eff := fakeEffects{
 		checkIdentity: func(context.Context, *config.Config) error { checks++; return nil },
+		prepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+			prepareCalled = true
+			return AWSPrepareReport{BucketExisted: true}, nil
+		},
 		ssoConfigured: func(context.Context, string) (bool, error) {
 			t.Fatal("SSO profile check must not run when the identity check succeeds")
 			return false, nil
@@ -212,6 +215,9 @@ func TestEnginePrepareAWSSSOSkipsFlowWhenIdentityVerifies(t *testing.T) {
 	}
 	if checks != 1 {
 		t.Fatalf("identity checks = %d, want exactly 1 (no re-check after a skipped flow)", checks)
+	}
+	if !prepareCalled {
+		t.Fatal("skipping the SSO flow must still run bucket work, not short-circuit PrepareAWS")
 	}
 	if !auth.IdentityVerified || auth.SSOLoginRan || auth.SSOConfigureRan {
 		t.Fatalf("auth = %+v, want IdentityVerified only", auth)

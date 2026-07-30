@@ -163,15 +163,24 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		if st.ConfigExists && !forceSetup {
 			initial = "unlock"
 		}
-		// On the true first-run path (no config file), an optional seed config
-		// pre-fills the wizard's S3 fields. The !ConfigExists guard is load
-		// bearing now that forceSetup can reach initial=="setup" WITH a config
-		// present: a real on-disk config must always outrank a caller-supplied
-		// seed. Nothing is written to disk here — the wizard persists on
-		// completion.
+		// Pick what pre-fills the wizard, highest priority first:
+		//
+		//	1. a real on-disk config       (st.Config, when st.ConfigExists)
+		//	2. the setup draft             (a previous run that never finished)
+		//	3. deps.SetupSeedConfig        (`sentra local`'s MinIO coordinates)
+		//	4. the blank/default config
+		//
+		// The !ConfigExists guard on both 2 and 3 is load bearing now that
+		// forceSetup can reach initial=="setup" WITH a config present: a real
+		// on-disk config must always outrank anything reconstructed or supplied.
+		// Nothing is written to disk here — the wizard persists on completion.
 		launchCfg := st.Config
-		if initial == "setup" && !st.ConfigExists && deps.SetupSeedConfig != nil {
-			launchCfg = deps.SetupSeedConfig
+		if initial == "setup" && !st.ConfigExists {
+			if draft := loadSetupDraft(cfgPath); draft != nil {
+				launchCfg = draft
+			} else if deps.SetupSeedConfig != nil {
+				launchCfg = deps.SetupSeedConfig
+			}
 		}
 		repoName := launchCfg.Repo.S3.Bucket
 		app := tui.NewApp(tui.Deps{
@@ -247,6 +256,27 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		return fmt.Errorf("ui: no Run hook configured")
 	}
 	return deps.Run(app)
+}
+
+// loadSetupDraft reads the setup draft beside cfgPath, or returns nil when
+// there isn't a usable one. It is what makes an interrupted `sentra setup`
+// resumable: the wizard writes the draft before provisioning and removes it
+// only on success, so a draft on disk means a previous run got as far as the
+// review gate and then failed. Without a reader the draft would be litter.
+//
+// Every failure degrades to nil rather than propagating. A corrupt or
+// unreadable draft is a stale convenience artifact, and refusing to launch the
+// wizard over one would strand the operator with no in-product way to clear it.
+func loadSetupDraft(cfgPath string) *config.Config {
+	draftPath := setup.NewEngine(nil).DraftPath(cfgPath)
+	if info, err := os.Stat(draftPath); err != nil || info.IsDir() {
+		return nil
+	}
+	cfg, err := config.Load(draftPath)
+	if err != nil {
+		return nil
+	}
+	return cfg
 }
 
 // setupEffectsForLaunch returns the UIDeps override or the production default.

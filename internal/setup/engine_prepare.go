@@ -9,9 +9,9 @@ import (
 
 // PrepareAWS runs one pass of the AWS auth + bucket-prep sequence for p and
 // returns the auth report, the prepare report, and any error. It is the
-// headless body of the cli loop at internal/cli/setup.go:244-292 MINUS the
-// huh repair prompt and stdout progress: on failure it classifies and
-// returns the error rather than prompting. Callers own the retry decision
+// headless body of the deleted CLI wizard's auth+prepare loop MINUS the huh
+// repair prompt and stdout progress: on failure it classifies and returns the
+// error rather than prompting. Callers own the retry decision
 // (the cli driver keeps its huh repair loop; the TUI wizard mutates the plan
 // and calls PrepareAWS again).
 func (e *Engine) PrepareAWS(ctx context.Context, p *Plan) (AWSAuthReport, AWSPrepareReport, error) {
@@ -32,8 +32,7 @@ func (e *Engine) PrepareAWS(ctx context.Context, p *Plan) (AWSAuthReport, AWSPre
 	return auth, prep, nil
 }
 
-// runAWSAuth dispatches the selected sign-in method. Headless port of
-// runSetupAWSAuth (internal/cli/setup_auth.go:11-28).
+// runAWSAuth dispatches the selected sign-in method.
 func (e *Engine) runAWSAuth(ctx context.Context, method AWSAuthMethod, cfg *config.Config) (AWSAuthReport, error) {
 	switch method {
 	case AWSAuthLogin:
@@ -130,8 +129,7 @@ func (e *Engine) runAWSSSOAuth(ctx context.Context, cfg *config.Config) (AWSAuth
 	return report, nil
 }
 
-// runAWSExistingAuth is the headless port of runSetupAWSExistingAuth
-// (internal/cli/setup_auth.go:117-124).
+// runAWSExistingAuth verifies the ambient credential chain and nothing else.
 func (e *Engine) runAWSExistingAuth(ctx context.Context, cfg *config.Config) (AWSAuthReport, error) {
 	report := AWSAuthReport{Method: AWSAuthExisting}
 	if err := e.eff.CheckAWSSDKIdentity(ctx, cfg); err != nil {

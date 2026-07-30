@@ -9,9 +9,8 @@ import (
 )
 
 // Effects is the side-effecting seam of the setup engine. Its method set
-// mirrors the func fields of the former cli.SetupDeps
-// (internal/cli/setup.go:80-97) so the cli driver and the TUI wizard can
-// share one sequencing engine. Tests inject a fake Effects; production uses
+// mirrors the func fields of the former cli.SetupDeps, the injection seam of
+// the deleted huh wizard. Tests inject a fake Effects; production uses
 // DefaultEffects.
 type Effects interface {
 	// EnsureAWSCLI verifies the AWS CLI is installed, optionally installing

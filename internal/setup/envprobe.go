@@ -28,7 +28,7 @@ func (osEnvProbe) Getenv(key string) string {
 
 // HasEnvCredentials reports whether static or web-identity AWS credentials are
 // present in the environment. Ported from the CLI wizard's
-// hasAWSEnvironmentCredentials (internal/cli/setup_wizard.go:248-258).
+// hasAWSEnvironmentCredentials.
 func (osEnvProbe) HasEnvCredentials() bool {
 	if strings.TrimSpace(os.Getenv("AWS_ROLE_ARN")) != "" &&
 		strings.TrimSpace(os.Getenv("AWS_WEB_IDENTITY_TOKEN_FILE")) != "" {
@@ -43,10 +43,9 @@ func (osEnvProbe) HasEnvCredentials() bool {
 
 // DefaultProfileFromConfig picks a sensible default AWS profile from
 // ~/.aws/config, preferring "sentra" then "default", else the first profile.
-// Ported from the CLI wizard's defaultAWSProfileFromConfig
-// (internal/cli/setup_wizard.go:260-287). Reuses this package's exported
-// LoadAWSCLIConfig/AWSProfileSection (defined in awscli.go) rather than
-// duplicating the parser.
+// Ported from the CLI wizard's defaultAWSProfileFromConfig. Reuses this
+// package's exported LoadAWSCLIConfig/AWSProfileSection (defined in awscli.go)
+// rather than duplicating the parser.
 func (osEnvProbe) DefaultProfileFromConfig() string {
 	cfg, err := LoadAWSCLIConfig()
 	if err != nil || cfg == nil {

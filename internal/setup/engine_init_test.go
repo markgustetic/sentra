@@ -12,8 +12,7 @@ import (
 )
 
 // Fresh init: repo initialized, and with save=true the passphrase is saved
-// to the keyring. Mirrors runSetupInit fresh path
-// (internal/cli/setup_init.go:70-77).
+// to the keyring.
 func TestEngineInitRepoFreshSavesPassphrase(t *testing.T) {
 	store := blobstore.NewMemory()
 	saved := false
@@ -38,7 +37,7 @@ func TestEngineInitRepoFreshSavesPassphrase(t *testing.T) {
 
 // SAFETY-CRITICAL: already-initialized + save=true must repo.Open-verify the
 // passphrase BEFORE calling SavePassphrase. A WRONG passphrase must surface
-// an error and MUST NOT call SavePassphrase. Guards internal/cli/setup_init.go:43-64.
+// an error and MUST NOT call SavePassphrase.
 func TestEngineInitRepoAlreadyInitializedWrongPassphraseDoesNotSaveKeyring(t *testing.T) {
 	store := blobstore.NewMemory()
 	// Pre-initialize the repo under the correct passphrase.
@@ -67,7 +66,7 @@ func TestEngineInitRepoAlreadyInitializedWrongPassphraseDoesNotSaveKeyring(t *te
 
 // Already-initialized + correct passphrase + save=true: repo.Open verifies,
 // THEN SavePassphrase runs; result reports AlreadyInitialized and the saved
-// keyring. Mirrors internal/cli/setup_init.go:52-63.
+// keyring.
 func TestEngineInitRepoAlreadyInitializedCorrectPassphraseSaves(t *testing.T) {
 	store := blobstore.NewMemory()
 	r, err := repo.Init(context.Background(), store, []byte("correct-horse"))
@@ -137,7 +136,7 @@ func TestEngineInitRepoKeyringSaveFailureSurfacesError(t *testing.T) {
 }
 
 // save=true with no SavePassphrase effect wired must fail up front, not
-// after touching the store. Mirrors the guard at internal/cli/setup_init.go:26-28.
+// after touching the store.
 func TestEngineInitRepoSaveWithoutSaverFails(t *testing.T) {
 	eff := fakeEffects{
 		newStore: func(context.Context, *config.Config) (blobstore.Store, error) { return blobstore.NewMemory(), nil },

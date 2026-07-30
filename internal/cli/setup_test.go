@@ -5,6 +5,8 @@ import (
 	"context"
 	"encoding/json"
 	"io"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
@@ -49,6 +51,46 @@ func TestSetup_LaunchesWizardOnFirstRun(t *testing.T) {
 	}
 	if got := captured.Deps().InitialView; got != "setup" {
 		t.Errorf("InitialView = %q, want setup", got)
+	}
+}
+
+// TestSetup_ForcesWizardOverExistingConfig is the launcher's ONE distinguishing
+// behavior: it passes forceSetup=true. With a config on disk and no resolvable
+// passphrase, `sentra ui` routes to the unlock gate; `sentra setup` must reach
+// the wizard anyway, because reconfiguring must not demand the passphrase for a
+// repo the operator may be replacing. Every other launcher test runs in an empty
+// dir, where both values of forceSetup land on "setup" — only this one fails if
+// the flag flips.
+func TestSetup_ForcesWizardOverExistingConfig(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	// Keyring off and no env/file source, so probeLaunchState reports the repo
+	// as locked. `sentra ui` would show the unlock view here.
+	body := []byte("repo:\n  s3:\n    bucket: existing-bucket\n")
+	if err := os.WriteFile(filepath.Join(dir, configFileName), body, 0o600); err != nil {
+		t.Fatalf("write existing config: %v", err)
+	}
+	t.Setenv("SENTRA_PASSPHRASE", "")
+
+	var captured tui.App
+	cmd := NewSetup(launcherDeps(t, &captured))
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	if d.InitialView != "setup" {
+		t.Errorf("InitialView = %q, want setup — the launcher must force the wizard "+
+			"past the unlock gate", d.InitialView)
+	}
+	if !d.Reconfigure {
+		t.Error("Reconfigure = false; forcing the wizard over an existing config must " +
+			"arm the review stage's overwrite warning")
+	}
+	if got := d.Config.Repo.S3.Bucket; got != "existing-bucket" {
+		t.Errorf("wizard seeded with bucket %q, want the on-disk config's existing-bucket", got)
 	}
 }
 

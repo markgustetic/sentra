@@ -61,6 +61,47 @@ func TestSetupWizard_BackendEnterOpensDetails(t *testing.T) {
 	}
 }
 
+// TestSetupWizard_DetailsRejectsEmptyBucket covers commitDetails' FIRST guard.
+// This is the only live empty-bucket check in the product — setup.ValidatePlan
+// has no production callers — so without it an Enter on a blank form could
+// advance and provision a plan with no bucket.
+//
+// The assertion is on the exact message, not merely that some error was set.
+// Deleting the branch does NOT make a blank submit succeed: it falls through to
+// ValidateBucketName, which rejects "" with `repo.s3.bucket "" is invalid: S3
+// bucket names must be 3-63 characters`. So a detailErr != "" check passes
+// either way and pins nothing. What the branch actually buys is the message: an
+// operator who has not typed yet has not entered an invalid name, and telling
+// them about the 3-63 character rule sends them looking for a mistake they did
+// not make.
+func TestSetupWizard_DetailsRejectsEmptyBucket(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		typed string
+	}{
+		{"never typed", ""},
+		{"whitespace only", "   "},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := setupAtDetails(t, 0) // AWS backend
+			v = setupTypeField(v, tc.typed)
+			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			v = m.(SetupWizardView)
+			if v.stage != stageDetails {
+				t.Fatalf("an empty bucket must keep the view on details, got stage %v", v.stage)
+			}
+			if v.detailErr != "bucket is required" {
+				t.Errorf("detailErr = %q, want \"bucket is required\" — a blank field is a "+
+					"missing entry, not an invalid name", v.detailErr)
+			}
+			if v.plan.Config.Repo.S3.Bucket != "" {
+				t.Errorf("a rejected submit must not write the bucket into the plan, got %q",
+					v.plan.Config.Repo.S3.Bucket)
+			}
+		})
+	}
+}
+
 func TestSetupWizard_DetailsRejectsInvalidBucket(t *testing.T) {
 	v := setupAtDetails(t, 0)           // AWS backend
 	v = setupTypeField(v, "UPPER_CASE") // invalid: not DNS-compatible

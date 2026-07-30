@@ -8,8 +8,7 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 )
 
-// WriteConfig writes the plan's config to cfgPath via config.Write. Headless
-// port of internal/cli/setup.go:294-298 (stdout progress dropped).
+// WriteConfig writes the plan's config to cfgPath via config.Write.
 func TestEngineWriteConfig(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sentra.yaml")
@@ -28,8 +27,7 @@ func TestEngineWriteConfig(t *testing.T) {
 	}
 }
 
-// DraftPath mirrors setupDraftPath (internal/cli/setup.go:413-417): a
-// dotfile sibling of cfgPath suffixed .setup-draft.
+// DraftPath is a dotfile sibling of cfgPath suffixed .setup-draft.
 func TestEngineDraftPath(t *testing.T) {
 	got := NewEngine(fakeEffects{}).DraftPath("/tmp/sub/sentra.yaml")
 	want := filepath.Join("/tmp/sub", ".sentra.yaml.setup-draft")
@@ -39,7 +37,7 @@ func TestEngineDraftPath(t *testing.T) {
 }
 
 // WriteDraft then RemoveDraft round-trips; RemoveDraft on a missing draft is
-// a best-effort no-op (internal/cli/setup.go:405-411).
+// a best-effort no-op.
 func TestEngineWriteAndRemoveDraft(t *testing.T) {
 	dir := t.TempDir()
 	cfgPath := filepath.Join(dir, "sentra.yaml")

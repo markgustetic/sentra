@@ -6,9 +6,9 @@ import (
 )
 
 // ReviewText renders the non-secret setup plan shown before any AWS or repo
-// side effects run. Ported verbatim (behavior) from
-// internal/cli/setup_wizard.go:540-578; the trailing no-secrets assertion is
-// load-bearing and must not be removed.
+// side effects run. Behavior-preserving port of the deleted CLI wizard's
+// review text; the trailing no-secrets assertion is load-bearing and must not
+// be removed.
 func ReviewText(cfgPath string, p Plan) string {
 	var b strings.Builder
 	fmt.Fprintf(&b, "Config: %s\n", cfgPath)
@@ -57,7 +57,6 @@ func emptyDash(s string) string {
 }
 
 // BackendLabel is the human-readable storage-backend name.
-// Ported from internal/cli/setup_summary.go:121-130.
 func BackendLabel(b Backend) string {
 	switch b {
 	case BackendAWS:
@@ -70,7 +69,6 @@ func BackendLabel(b Backend) string {
 }
 
 // AWSAuthMethodLabel is the human-readable sign-in method name.
-// Ported from internal/cli/setup_summary.go:132-145.
 func AWSAuthMethodLabel(m AWSAuthMethod) string {
 	switch m {
 	case AWSAuthLogin:
@@ -87,7 +85,6 @@ func AWSAuthMethodLabel(m AWSAuthMethod) string {
 }
 
 // AWSPreparedLabel is the one-line success label for the bucket-prep step.
-// Ported from internal/cli/setup_summary.go:147-158.
 func AWSPreparedLabel(report *AWSPrepareReport) string {
 	switch {
 	case report == nil:
@@ -104,8 +101,7 @@ func AWSPreparedLabel(report *AWSPrepareReport) string {
 // SummaryLines returns the body content lines of the final setup summary,
 // grouped by "Configuration", "AWS authentication", "AWS bucket", and either
 // "Repository" or "Next". Section headers are emitted as plain strings so the
-// CLI can re-style the known headers with ui.Subtle; no ANSI escapes appear
-// here. Split out of internal/cli/setup_summary.go:19-84.
+// caller can re-style the known headers; no ANSI escapes appear here.
 func SummaryLines(cfgPath string, p Plan, auth *AWSAuthReport, prep *AWSPrepareReport, init *InitResult) []string {
 	var lines []string
 	add := func(s string) { lines = append(lines, s) }

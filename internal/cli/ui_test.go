@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"io"
 	"os"
 	"path/filepath"
@@ -17,6 +18,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/tui"
 )
 
@@ -630,6 +632,126 @@ func TestRunUI_SetupRoutingMatrix(t *testing.T) {
 				t.Errorf("Repo = %v, want nil for a non-dashboard launch (InitialView %q)", d.Repo, d.InitialView)
 			}
 		})
+	}
+}
+
+// TestRunUI_SetupPrefillPrecedence is a RULE, not a case: it sweeps every
+// combination of the three optional pre-fill sources and asserts one ordering
+// throughout — on-disk config > setup draft > seed > blank.
+//
+// Testing the rule matters because the sources were added one at a time and
+// each arrived with a guard of its own. The draft is the newest: `sentra setup`
+// used to read it in the deleted CLI wizard's loadSetupConfigForWizard, and
+// without a reader here a failed provision leaves a .setup-draft on disk that
+// nothing ever consumes. It slots BELOW a real config (an operator's committed
+// file always wins) and ABOVE the seed (a resumable in-progress run is more
+// specific than `sentra local`'s generic MinIO coordinates).
+func TestRunUI_SetupPrefillPrecedence(t *testing.T) {
+	for _, cfgExists := range []bool{false, true} {
+		for _, draftExists := range []bool{false, true} {
+			for _, seedSet := range []bool{false, true} {
+				name := fmt.Sprintf("config=%v/draft=%v/seed=%v", cfgExists, draftExists, seedSet)
+				t.Run(name, func(t *testing.T) {
+					dir := t.TempDir()
+					chDir(t, dir)
+
+					// Every source carries a distinct bucket, so the winner is
+					// identifiable from tui.Deps.Config alone.
+					want := "" // blank config → zero-value bucket
+					if seedSet {
+						want = "from-seed"
+					}
+					if draftExists {
+						want = "from-draft"
+						draft := &config.Config{}
+						draft.Repo.S3.Bucket = "from-draft"
+						if err := setup.NewEngine(nil).WriteDraft(configFileName, draft); err != nil {
+							t.Fatalf("write draft: %v", err)
+						}
+					}
+					if cfgExists {
+						want = "from-config"
+						body := "repo:\n  s3:\n    bucket: from-config\n"
+						if err := os.WriteFile(filepath.Join(dir, configFileName), []byte(body), 0o600); err != nil {
+							t.Fatalf("write config: %v", err)
+						}
+					}
+
+					var seed *config.Config
+					if seedSet {
+						seed = &config.Config{}
+						seed.Repo.S3.Bucket = "from-seed"
+					}
+
+					var captured tui.App
+					deps := UIDeps{
+						RepoDeps: RepoDeps{
+							NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+								return blobstore.NewMemory(), nil
+							},
+							PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
+								t.Fatal("interactive passphrase resolver must not run on the launch path")
+								return nil, nil
+							},
+						},
+						Run:             func(app tui.App) error { captured = app; return nil },
+						SetupSeedConfig: seed,
+					}
+					cmd := NewUI(deps)
+					cmd.SetOut(io.Discard)
+					cmd.SetErr(io.Discard)
+					// forceSetup so the config-present rows reach the wizard
+					// instead of the unlock gate.
+					if err := runUI(cmd, deps, configFileName, true); err != nil {
+						t.Fatalf("launch: %v", err)
+					}
+
+					d := captured.Deps()
+					if d.InitialView != "setup" {
+						t.Fatalf("InitialView = %q, want setup", d.InitialView)
+					}
+					if got := d.Config.Repo.S3.Bucket; got != want {
+						t.Errorf("wizard pre-filled from bucket %q, want %q "+
+							"(config > draft > seed > blank)", got, want)
+					}
+				})
+			}
+		}
+	}
+}
+
+// TestRunUI_UnreadableSetupDraftDegradesToNextSource: a corrupt draft is a
+// stale convenience artifact, not a reason to refuse the wizard. If it were
+// fatal the operator would be stranded — the only in-product way to clear the
+// draft is to finish a setup run, which is exactly what the error would block.
+func TestRunUI_UnreadableSetupDraftDegradesToNextSource(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	draftPath := setup.NewEngine(nil).DraftPath(configFileName)
+	if err := os.WriteFile(draftPath, []byte("repo:\n  s3:\n   :::not yaml\n"), 0o600); err != nil {
+		t.Fatalf("write corrupt draft: %v", err)
+	}
+	seed := &config.Config{}
+	seed.Repo.S3.Bucket = "from-seed"
+
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return blobstore.NewMemory(), nil
+			},
+		},
+		Run:             func(app tui.App) error { captured = app; return nil },
+		SetupSeedConfig: seed,
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := runUI(cmd, deps, configFileName, true); err != nil {
+		t.Fatalf("a corrupt setup draft must not fail the launch: %v", err)
+	}
+	if got := captured.Deps().Config.Repo.S3.Bucket; got != "from-seed" {
+		t.Errorf("pre-filled from %q, want from-seed — a bad draft must fall through", got)
 	}
 }
 
