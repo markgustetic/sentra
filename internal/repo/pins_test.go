@@ -88,3 +88,30 @@ func TestPin_UnknownSnapshotRefused(t *testing.T) {
 		t.Error("pinning a nonexistent snapshot must error")
 	}
 }
+
+// TestDeleteSnapshot_SerializesOnRepoLock: the pin check is only a
+// guarantee if the check and the delete are one critical section. An
+// unlocked DeleteSnapshot could read "not pinned", lose the CPU to a
+// concurrent Pin (which locks, validates, commits), then delete the
+// snapshot the user just protected — leaving a dangling pin forever.
+func TestDeleteSnapshot_SerializesOnRepoLock(t *testing.T) {
+	r, store := newTestRepo(t)
+	ctx := context.Background()
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "alpha")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := acquireLock(ctx, store, "external")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer releaseLock(ctx, store, held)
+
+	if err := r.DeleteSnapshot(ctx, snap.ID); !errors.Is(err, ErrRepoLocked) {
+		t.Fatalf("DeleteSnapshot under a held lock = %v, want ErrRepoLocked (pin check + delete must be one critical section)", err)
+	}
+}

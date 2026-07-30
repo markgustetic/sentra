@@ -69,6 +69,17 @@ func (r *Repo) DeleteSnapshot(ctx context.Context, id string) error {
 	}
 	defer crypto.Zeroize(repoKey)
 
+	// The pin check below is only a guarantee if the check and the
+	// delete form one critical section: unlocked, a concurrent Pin
+	// could commit between our read and the Delete, and the snapshot
+	// the user just protected would vanish (leaving its pin entry
+	// dangling forever). Pin/Unpin serialize on the same lock.
+	heldLock, err := acquireLock(ctx, r.store, "delete-snapshot")
+	if err != nil {
+		return err
+	}
+	defer releaseLock(ctx, r.store, heldLock)
+
 	// Pin check at the choke point: CLI prune, the TUI, and the
 	// agent's prune action all delete through here, so none of them
 	// can drop a pinned snapshot even if their own planning missed
