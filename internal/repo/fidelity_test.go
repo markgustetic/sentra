@@ -187,3 +187,117 @@ func containsPath(s []string, v string) bool {
 	}
 	return false
 }
+
+// TestCreateSnapshot_ReusesUnchangedParentEntries proves the
+// incremental scan behaviorally: after the first snapshot, the file is
+// made unreadable (chmod 000). A full re-scan would fail at open; the
+// incremental path never opens an unchanged file — it reuses the
+// parent manifest's chunk list off size+mtime — so the second snapshot
+// succeeds with identical chunks and zero new bytes.
+func TestCreateSnapshot_ReusesUnchangedParentEntries(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("chmod 000 does not block reads for root")
+	}
+	r, _ := newTestRepo(t)
+	ctx := context.Background()
+
+	src := t.TempDir()
+	path := filepath.Join(src, "a.txt")
+	writeFile(t, path, "unchanged-content")
+	snap1, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot 1: %v", err)
+	}
+	m1, err := r.LoadSnapshot(ctx, snap1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	snap2, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot 2 should reuse the parent entry without opening the file: %v", err)
+	}
+	if snap2.Stats.NewBytes != 0 {
+		t.Errorf("unchanged tree uploaded %d new bytes, want 0", snap2.Stats.NewBytes)
+	}
+	m2, err := r.LoadSnapshot(ctx, snap2.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var e1, e2 *FileEntry
+	for i := range m1.Tree {
+		if m1.Tree[i].Path == "a.txt" {
+			e1 = &m1.Tree[i]
+		}
+	}
+	for i := range m2.Tree {
+		if m2.Tree[i].Path == "a.txt" {
+			e2 = &m2.Tree[i]
+		}
+	}
+	if e1 == nil || e2 == nil {
+		t.Fatalf("a.txt missing from a manifest: %v / %v", e1, e2)
+	}
+	if len(e2.Chunks) == 0 || !slicesEqual(e1.Chunks, e2.Chunks) {
+		t.Errorf("reused entry must carry the parent's chunk list: %v vs %v", e1.Chunks, e2.Chunks)
+	}
+	// The reused entry records the CURRENT mode (chmod doesn't touch
+	// mtime, so reuse still fires — but metadata must not go stale).
+	if e2.Mode.Perm() != 0o000 {
+		t.Errorf("reused entry mode: got %v, want 000 (current lstat, not the parent's)", e2.Mode.Perm())
+	}
+
+	// ForceRescan must actually re-read — which the 000 mode blocks.
+	if _, err := r.CreateSnapshot(ctx, src, SnapshotOptions{ForceRescan: true}); err == nil {
+		t.Error("ForceRescan must open every file; expected an error on the unreadable file")
+	}
+}
+
+// TestCreateSnapshot_ChangedFileIsRechunked: touching content (and so
+// mtime) must defeat reuse — the changed file gets fresh chunks.
+func TestCreateSnapshot_ChangedFileIsRechunked(t *testing.T) {
+	r, _ := newTestRepo(t)
+	ctx := context.Background()
+
+	src := t.TempDir()
+	path := filepath.Join(src, "a.txt")
+	writeFile(t, path, "version-one")
+	if _, err := r.CreateSnapshot(ctx, src, SnapshotOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	// Same byte length, different content, and a firmly later mtime
+	// (explicit Chtimes guards against coarse filesystem clocks).
+	writeFile(t, path, "version-two")
+	if err := os.Chtimes(path, time.Now().Add(2*time.Second), time.Now().Add(2*time.Second)); err != nil {
+		t.Fatal(err)
+	}
+	snap2, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := r.Restore(ctx, snap2.ID, dest, RestoreOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	body, err := os.ReadFile(filepath.Join(dest, "a.txt"))
+	if err != nil || string(body) != "version-two" {
+		t.Errorf("changed file must restore its new content: got %q err=%v", body, err)
+	}
+}
+
+func slicesEqual(a, b []string) bool {
+	if len(a) != len(b) {
+		return false
+	}
+	for i := range a {
+		if a[i] != b[i] {
+			return false
+		}
+	}
+	return true
+}

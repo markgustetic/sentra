@@ -8,6 +8,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"log/slog"
 	"path/filepath"
 	"regexp"
 	"strings"
@@ -35,6 +36,13 @@ type SnapshotOptions struct {
 	// Nil is treated as a NopReporter, so callers that don't care
 	// about progress can leave it unset.
 	Progress progress.Reporter
+
+	// ForceRescan disables the incremental scan: every file is read
+	// and re-chunked even when its size+mtime match the parent
+	// snapshot's entry. The escape hatch for the incremental scan's
+	// one blind spot — content rewritten without the mtime moving
+	// (clock skew, deliberate timestomping, sub-granularity writes).
+	ForceRescan bool
 
 	// Walker tunes the directory walk: ignore-file name and the
 	// CACHEDIR.TAG opt-in. The zero value preserves the previous
@@ -157,6 +165,20 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// second Stat will already see the blob the first one Put.
 	state := &snapState{}
 
+	// Incremental scan: files whose size AND mtime match the newest
+	// prior snapshot of the same root reuse that snapshot's chunk
+	// list without being opened — re-backups of a quiet tree read
+	// ~zero bytes. Safe under the repo lock held above: GC can't run
+	// concurrently, and every chunk a present manifest references is
+	// live by the GC invariant, so reused chunk lists always point at
+	// existing blobs. The mtime check is equality on the lstat
+	// timestamp; content rewritten without the mtime moving is the
+	// classic blind spot, covered by ForceRescan.
+	var parent map[string]FileEntry
+	if !opts.ForceRescan {
+		parent = r.parentFileEntries(ctx, absRoot)
+	}
+
 	// Single-walk progress: as each file is discovered, add its
 	// plaintext size to the running total and update reporter.Total.
 	// Add()s for uploaded chunks happen later in captureFile, so
@@ -179,6 +201,20 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 			}
 			reporter.Total(estimated.Add(e.Size))
 
+			if pe, ok := parent[e.RelPath]; ok && pe.Size == e.Size && pe.MTime.Equal(e.MTime) {
+				// Unchanged since the parent: reuse its chunks, but
+				// record the CURRENT mode — a chmod doesn't move the
+				// mtime and must not go stale in the new manifest.
+				state.add(FileEntry{
+					Path:   e.RelPath,
+					Size:   e.Size,
+					Mode:   e.Mode,
+					MTime:  e.MTime,
+					Chunks: pe.Chunks,
+				}, 0)
+				return nil
+			}
+
 			fe, newBytes, err := r.captureFile(ctx, repoKey, e, reporter)
 			if err != nil {
 				return err
@@ -196,6 +232,40 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	}
 
 	return r.finishSnapshot(ctx, repoKey, absRoot, opts.Tag, state)
+}
+
+// parentFileEntries returns the regular-file entries of the newest
+// snapshot whose Root matches absRoot, keyed by path — the incremental
+// scan's reuse source. Any failure (no parent, unreadable index or
+// manifest) degrades to a full scan: nil is always a correct answer,
+// just a slower one.
+func (r *Repo) parentFileEntries(ctx context.Context, absRoot string) map[string]FileEntry {
+	snaps, err := r.ListSnapshots(ctx)
+	if err != nil {
+		slog.LogAttrs(ctx, slog.LevelWarn, "incremental scan disabled: list snapshots failed",
+			slog.String("error", err.Error()))
+		return nil
+	}
+	for _, s := range snaps { // newest-first
+		if s.Root != absRoot {
+			continue
+		}
+		m, err := r.LoadSnapshot(ctx, s.ID)
+		if err != nil {
+			slog.LogAttrs(ctx, slog.LevelWarn, "incremental scan disabled: parent manifest unreadable",
+				slog.String("snapshot_id", s.ID),
+				slog.String("error", err.Error()))
+			return nil
+		}
+		out := make(map[string]FileEntry, len(m.Tree))
+		for _, fe := range m.Tree {
+			if fe.IsFile() {
+				out[fe.Path] = fe
+			}
+		}
+		return out
+	}
+	return nil
 }
 
 // LoadSnapshot fetches the manifest at snapshots/<id>, decrypts and

@@ -49,21 +49,25 @@ func NewBackup(deps BackupDeps) *cobra.Command {
 	var (
 		tag     string
 		cfgPath string
+		rescan  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "backup <path>",
 		Short: "Snapshot a directory into the configured repository",
 		Long: "Walk the given path, chunk and encrypt new content, and write a " +
-			"sealed manifest. Re-runs share unchanged chunks via content-addressed " +
-			"deduplication, so the second backup of an unchanged tree uploads almost nothing.",
+			"sealed manifest. Files whose size and mtime match the previous snapshot " +
+			"reuse its chunks without being read; re-runs of a quiet tree read and " +
+			"upload almost nothing. --rescan forces every file to be re-read.",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBackup(cmd, deps, args[0], tag, cfgPath)
+			return runBackup(cmd, deps, args[0], tag, cfgPath, rescan)
 		},
 	}
 	cmd.Flags().StringVar(&tag, "tag", "", "optional human-readable tag for the snapshot")
+	cmd.Flags().BoolVar(&rescan, "rescan", false,
+		"read and re-chunk every file even when size+mtime match the previous snapshot")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	cmd.AddCommand(newBackupPlan(deps))
@@ -123,7 +127,7 @@ func newBackupApply(deps BackupDeps) *cobra.Command {
 
 // runBackup is the body of `sentra backup`, factored out so it's
 // independently testable and easy to grep.
-func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) error {
+func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, rescan bool) error {
 	cmd.SilenceUsage = true
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
@@ -157,9 +161,10 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string) e
 	normalizeBackupWalkerOptions(&walkerOpts)
 
 	snap, snapErr := r.CreateSnapshot(cmd.Context(), path, repo.SnapshotOptions{
-		Tag:      tag,
-		Progress: progress,
-		Walker:   walkerOpts,
+		Tag:         tag,
+		Progress:    progress,
+		Walker:      walkerOpts,
+		ForceRescan: rescan,
 	})
 	stop()
 	if snapErr != nil {
