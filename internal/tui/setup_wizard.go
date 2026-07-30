@@ -429,11 +429,17 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id != setupReviewConfirmID || v.stage != stageReview {
 			return v, nil
 		}
-		// Review must never arm provisioning without a verified passphrase
-		// in hand — an empty one would silently derive the repository key
-		// from "". Whatever path lands here with the stash wiped goes back
-		// through re-entry instead.
-		if len(v.pass) == 0 {
+		// Review must never arm repo initialization without a verified
+		// passphrase in hand — an empty one would silently derive the
+		// repository key from "". Whatever path lands here with the stash
+		// wiped goes back through re-entry instead.
+		//
+		// Scoped to InitRepo because that is the only consumer of the stash:
+		// a config-only plan (init-repo toggled off, or the skip auth method)
+		// legitimately reaches review having never visited stagePassphrase,
+		// and demanding one there would strand that path on a prompt whose
+		// answer provisioning never reads.
+		if v.plan.InitRepo && len(v.pass) == 0 {
 			v.stage = stagePassphrase
 			v.focusConf = false
 			v.newPass.Focus()

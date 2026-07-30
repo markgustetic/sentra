@@ -917,6 +917,9 @@ func TestSetupWizard_OpRejected_EscCannotSkipPassphraseReentry(t *testing.T) {
 // repository key from "".
 func TestSetupWizard_ConfirmWithEmptyPassphraseDoesNotProvision(t *testing.T) {
 	v := setupAtReview(t)
+	if !v.plan.InitRepo {
+		t.Fatal("precondition: this guard only applies to a plan that initializes the repo")
+	}
 	crypto.Zeroize(v.pass)
 	v.pass = nil
 
@@ -927,6 +930,50 @@ func TestSetupWizard_ConfirmWithEmptyPassphraseDoesNotProvision(t *testing.T) {
 	}
 	if v.stage != stagePassphrase {
 		t.Fatalf("confirm with empty passphrase should route to re-entry, got %v", v.stage)
+	}
+}
+
+// TestSetupWizard_ConfirmWithInitOffProvisions pins the other side of that
+// guard. A plan with init-repo off never derives a repository key, so there is
+// no passphrase to demand — and demanding one strands the config-only setup
+// path entirely (see TestSetupWizard_ActionsInitOffGoesToReview): the operator
+// is sent to a prompt whose answer provisioning then ignores, with no way
+// forward. The empty stash is only dangerous when InitRepo is true.
+func TestSetupWizard_ConfirmWithInitOffProvisions(t *testing.T) {
+	v := setupAtActions(t)
+	// Drive the toggle the way an operator does: walk the cursor to the
+	// init-repo row and press space.
+	for i := 0; i < actionRowCount && v.actionCursor != actionRowInit; i++ {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SetupWizardView)
+	}
+	if v.actionCursor != actionRowInit {
+		t.Fatalf("precondition: cursor never reached the init-repo row, got %d", v.actionCursor)
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeySpace})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageReview || v.plan.InitRepo {
+		t.Fatalf("precondition: want review with init-repo off, got stage=%v InitRepo=%v", v.stage, v.plan.InitRepo)
+	}
+	if len(v.pass) != 0 {
+		t.Fatalf("precondition: the init-off route skips passphrase entry, got %d stashed bytes", len(v.pass))
+	}
+
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+	if v.stage != stageProvision {
+		t.Fatalf("confirm with init-repo off must provision, got stage %v", v.stage)
+	}
+	var foundStart bool
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok && s.name == "setup" {
+			foundStart = true
+		}
+	}
+	if !foundStart {
+		t.Fatal("confirm with init-repo off must emit startOpMsg{name:setup}")
 	}
 }
 
