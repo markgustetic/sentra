@@ -85,9 +85,13 @@ func inferS3CompatibleFromEndpoint(p *Plan, probe EnvProbe) {
 	p.AWSAuthMethod = AWSAuthSkip
 }
 
-// ApplyBackendChoice settles a plan once the backend is chosen — by inference
-// or by the TUI wizard's selector. Both call it, so the field hygiene below
-// cannot drift apart between them.
+// ApplyBackendChoice settles a plan once the operator picks a backend by hand
+// in the TUI wizard — its only production caller. DefaultPlan's inference
+// path (inferS3CompatibleFromEndpoint, above) does not call it: it upholds
+// the same invariant its own way, by settling the backend before inferring a
+// profile and inferring none for S3-compatible targets. Both mechanisms must
+// keep agreeing on what they drop — only an *inferred* profile, never one
+// the operator wrote into their own config.
 //
 // Two invariants:
 //

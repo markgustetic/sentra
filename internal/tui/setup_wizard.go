@@ -775,8 +775,12 @@ func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 		backend = setup.BackendAWS
 	}
 	// The backend's field hygiene — AWS forbids endpoint_url, S3-compatible
-	// forbids an inferred AWS profile — lives in setup.ApplyBackendChoice, which
-	// DefaultPlan's inference path calls too, so the two cannot disagree.
+	// drops an inferred AWS profile — lives in setup.ApplyBackendChoice. This
+	// is its only production caller: DefaultPlan's inference path upholds the
+	// same invariant a different way, by settling the backend before
+	// inferring a profile and inferring none for S3-compatible targets. Both
+	// mechanisms drop only an *inferred* profile — one the operator wrote
+	// into their own config still stands.
 	setup.ApplyBackendChoice(&v.plan, backend, v.configuredProfile)
 
 	if backend == setup.BackendAWS {

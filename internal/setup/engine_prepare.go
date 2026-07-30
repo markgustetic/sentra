@@ -11,9 +11,8 @@ import (
 // returns the auth report, the prepare report, and any error. It is the
 // headless body of the deleted CLI wizard's auth+prepare loop MINUS the huh
 // repair prompt and stdout progress: on failure it classifies and returns the
-// error rather than prompting. Callers own the retry decision
-// (the cli driver keeps its huh repair loop; the TUI wizard mutates the plan
-// and calls PrepareAWS again).
+// error rather than prompting. Callers own the retry decision (the TUI
+// wizard mutates the plan and calls PrepareAWS again).
 func (e *Engine) PrepareAWS(ctx context.Context, p *Plan) (AWSAuthReport, AWSPrepareReport, error) {
 	method := ResolveAWSAuthMethod(p)
 	auth, err := e.runAWSAuth(ctx, method, &p.Config)
