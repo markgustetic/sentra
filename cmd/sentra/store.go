@@ -25,5 +25,8 @@ func newS3Store(ctx context.Context, cfg *config.Config) (blobstore.Store, error
 	if err != nil {
 		return nil, err
 	}
-	return blobstore.NewRetryStore(s3, blobstore.DefaultRetryPolicy()), nil
+	// Upload cap wraps BELOW retry so each retry attempt pays for its
+	// bytes; a zero rate is a pass-through.
+	limited := blobstore.NewRateLimitedStore(s3, cfg.Backup.MaxUploadRate)
+	return blobstore.NewRetryStore(limited, blobstore.DefaultRetryPolicy()), nil
 }

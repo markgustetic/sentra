@@ -285,6 +285,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error 
 	walkerOpts := walker.Options{
 		IgnoreFile:    cfg.Backup.IgnoreFile,
 		ExcludeCaches: cfg.Backup.ExcludeCaches,
+		Concurrency:   cfg.Backup.Concurrency,
 	}
 	normalizeBackupWalkerOptions(&walkerOpts)
 

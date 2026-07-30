@@ -59,6 +59,8 @@ agent:
 backup:
   ignore_file: %q
   exclude_caches: %t
+  concurrency: %d
+  max_upload_rate: %d
 
 retention:
   keep_last: %d
@@ -82,6 +84,8 @@ ui:
 		cfg.Agent.MaxFindingsToLLM,
 		cfg.Backup.IgnoreFile,
 		cfg.Backup.ExcludeCaches,
+		cfg.Backup.Concurrency,
+		cfg.Backup.MaxUploadRate,
 		cfg.Retention.KeepLast,
 		cfg.Retention.KeepDaily,
 		cfg.Retention.KeepWeekly,

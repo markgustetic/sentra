@@ -41,6 +41,12 @@ type Config struct {
 	Backup struct {
 		IgnoreFile    string `koanf:"ignore_file"`
 		ExcludeCaches bool   `koanf:"exclude_caches"`
+		// Concurrency caps the walker/upload worker count during
+		// backup. 0 means one worker per logical CPU.
+		Concurrency int `koanf:"concurrency"`
+		// MaxUploadRate caps backup upload bandwidth in bytes per
+		// second (paced at the blobstore layer). 0 means unlimited.
+		MaxUploadRate int64 `koanf:"max_upload_rate"`
 	} `koanf:"backup"`
 
 	Retention struct {

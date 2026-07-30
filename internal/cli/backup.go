@@ -160,6 +160,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 	walkerOpts := walker.Options{
 		IgnoreFile:    cfg.Backup.IgnoreFile,
 		ExcludeCaches: cfg.Backup.ExcludeCaches,
+		Concurrency:   cfg.Backup.Concurrency,
 	}
 	normalizeBackupWalkerOptions(&walkerOpts)
 
@@ -211,6 +212,7 @@ func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outP
 	walkerOpts := walker.Options{
 		IgnoreFile:    cfg.Backup.IgnoreFile,
 		ExcludeCaches: cfg.Backup.ExcludeCaches,
+		Concurrency:   cfg.Backup.Concurrency,
 	}
 	normalizeBackupWalkerOptions(&walkerOpts)
 

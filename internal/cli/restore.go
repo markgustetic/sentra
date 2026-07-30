@@ -32,10 +32,11 @@ type RestoreDeps struct {
 // the backup command.
 func NewRestore(deps RestoreDeps) *cobra.Command {
 	var (
-		cfgPath string
-		dryRun  bool
-		verify  bool
-		asJSON  bool
+		cfgPath     string
+		dryRun      bool
+		verify      bool
+		asJSON      bool
+		concurrency int
 	)
 	cmd := &cobra.Command{
 		Use:   "restore <snap-id> <dest-dir> [path...]",
@@ -50,7 +51,7 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRestore(cmd, deps, args[0], args[1], args[2:], cfgPath, dryRun, verify, asJSON)
+			return runRestore(cmd, deps, args[0], args[1], args[2:], cfgPath, dryRun, verify, asJSON, concurrency)
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
@@ -59,6 +60,8 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 		"verify destination files against the snapshot after restore")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
 		"emit the restore summary (or dry-run plan) as JSON")
+	cmd.Flags().IntVar(&concurrency, "concurrency", 0,
+		"files restored in parallel (0 = one per logical CPU)")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	return cmd
@@ -72,6 +75,7 @@ func runRestore(
 	paths []string,
 	cfgPath string,
 	dryRun, verify, asJSON bool,
+	concurrency int,
 ) error {
 	cmd.SilenceUsage = true
 	if dryRun && verify {
@@ -129,8 +133,9 @@ func runRestore(
 	}
 
 	if err := r.Restore(cmd.Context(), snapID, destDir, repo.RestoreOptions{
-		Progress: progress,
-		Paths:    paths,
+		Progress:    progress,
+		Paths:       paths,
+		Concurrency: concurrency,
 	}); err != nil {
 		stop()
 		return fmt.Errorf("restore: %w", err)
