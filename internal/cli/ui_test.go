@@ -587,7 +587,11 @@ func TestRunUI_SetupRoutingMatrix(t *testing.T) {
 					// must fail loudly here, not resolve quietly because a file
 					// happened to be present.
 					PassphraseWithConfig: func(_ *config.Config) ([]byte, error) {
-						if !(tc.configExists && tc.passphraseAvail && !tc.forceSetup) {
+						// Naming the condition keeps the guard readable: the
+						// De Morgan'd inverse (!a || !b || c) obscures which
+						// single row is the legitimate caller.
+						dashboardRow := tc.configExists && tc.passphraseAvail && !tc.forceSetup
+						if !dashboardRow {
 							t.Fatal("interactive passphrase resolver must not run on the launch path")
 							return nil, nil
 						}
