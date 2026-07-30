@@ -335,8 +335,15 @@ func (v SetupWizardView) ShortHelp() []key.Binding {
 	switch v.stage {
 	case stageProvision:
 		return nil
-	case stageDone, stageError:
+	case stageDone:
 		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "restart"))}
+	case stageError:
+		// enter retries (via passphrase re-entry) and esc is the restart, so the
+		// two terminal stages cannot share one binding.
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "retry")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "restart")),
+		}
 	default:
 		keys := []key.Binding{
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "next")),
@@ -376,6 +383,14 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			v.stage = stageError
 			v.result = msg
+			// Drop the stash on the way to the failure screen. The op aliased
+			// v.pass and zeroized it on return, but crypto.Zeroize wipes IN
+			// PLACE without truncating — so what survives here is a full-length
+			// run of zero bytes, which review's len(v.pass) == 0 confirm guard
+			// happily accepts and would derive the repository key from. Nil it
+			// so that guard means what it says on every route out of a failure.
+			crypto.Zeroize(v.pass)
+			v.pass = nil
 			return v, nil
 		}
 		v.stage = stageDone
@@ -396,25 +411,10 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == stageProvision && msg.name == "setup" {
 			// The App dropped our start closure without running it, so its
 			// deferred crypto.Zeroize(pass) never fired and v.pass still holds
-			// the plaintext. Wipe it here — otherwise the secret stays resident
-			// indefinitely if the user abandons the wizard. Route back to
-			// passphrase (NOT review): a nil v.pass at review would let the
-			// confirm re-arm startProvision against an empty passphrase, so we
-			// require re-entry to re-populate v.pass via commitPassphrase.
-			crypto.Zeroize(v.pass)
-			v.pass = nil
-			v.stage = stagePassphrase
-			// The forced route back is a stage DECREASE, which the Update
-			// wrapper never records — the history stack still ends with the
-			// entry pushed on review→provision. Truncate to the stages
-			// strictly behind passphrase, or esc would pop that stale entry
-			// and walk FORWARD to review, skipping the re-entry this handler
-			// just made mandatory and arming a confirm with a nil passphrase.
-			for len(v.history) > 0 && v.history[len(v.history)-1] >= stagePassphrase {
-				v.history = v.history[:len(v.history)-1]
-			}
-			v.newPass.Focus()
-			v.confirmPass.Blur()
+			// the plaintext. enterPassphraseStage wipes it — otherwise the
+			// secret stays resident indefinitely if the user abandons the
+			// wizard — and forces re-entry.
+			v = v.enterPassphraseStage()
 			v.notice = "another operation is in progress — try again when it finishes"
 		}
 		return v, nil
@@ -546,19 +546,51 @@ func (v SetupWizardView) goBack() SetupWizardView {
 	return v
 }
 
+// enterPassphraseStage forces re-entry of the repository passphrase: it wipes
+// any stash first, then routes to the passphrase stage with the new-password
+// field focused. Every path that abandons or fails a provisioning attempt lands
+// here, because no stash survives one intact. buildSetupOp aliases v.pass and
+// zeroizes it on return, and crypto.Zeroize wipes IN PLACE without truncating —
+// so a "used" stash is a full-length run of zero bytes, not an empty slice. That
+// sails through review's len(v.pass) == 0 confirm guard and would derive the
+// repository key (and, with saving on, the keyring entry) from those zeros.
+// Re-entry through commitPassphrase is the only thing that re-arms review.
+//
+// The route back is a stage DECREASE, which the Update wrapper never records, so
+// the history stack still ends with the entry pushed on the way into
+// provisioning. Truncate to the stages strictly behind passphrase, or esc would
+// pop that stale entry and walk FORWARD to review, skipping the re-entry this
+// just made mandatory.
+func (v SetupWizardView) enterPassphraseStage() SetupWizardView {
+	crypto.Zeroize(v.pass)
+	v.pass = nil
+	v.stage = stagePassphrase
+	for len(v.history) > 0 && v.history[len(v.history)-1] >= stagePassphrase {
+		v.history = v.history[:len(v.history)-1]
+	}
+	v.focusConf = false
+	v.newPass.Focus()
+	v.confirmPass.Blur()
+	return v
+}
+
 func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
-		// Retry: return to review so the operator can re-confirm after
-		// fixing credentials or the bucket name.
-		v.stage = stageReview
-		v.notice = ""
+		// Retry: back to the passphrase, NOT straight to review. The failed op
+		// already consumed the stash (see enterPassphraseStage), so a retry that
+		// re-entered at review would let the very next keypress provision the
+		// repository under a run of zero bytes instead of the operator's
+		// passphrase. The masked fields keep what was typed, so re-confirming is
+		// one keypress once the credentials or bucket name are fixed.
+		v = v.enterPassphraseStage()
+		v.notice = "confirm the repository passphrase to retry"
 		return v, nil
 	case tea.KeyEsc:
-		// Abandon the wizard. The completed op already zeroized the shared
-		// passphrase array, so v.pass is incidentally wiped — but make it
-		// explicit so a future refactor of that aliasing can't silently
-		// resurrect a plaintext-residency leak.
+		// Abandon the wizard. Both the op's deferred zeroize and the failure
+		// handler have already wiped the stash by now — keep this explicit so a
+		// future refactor of either can't silently resurrect a plaintext-
+		// residency leak.
 		crypto.Zeroize(v.pass)
 		v.pass = nil
 		fresh := NewSetupWizardView(v.deps)
@@ -1159,7 +1191,7 @@ func (v SetupWizardView) View() string {
 				fmt.Fprintf(&b, "\n%s", ui.Subtle.Render(line))
 			}
 		}
-		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("⏎ back to review · esc restart"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("⏎ retry (confirm passphrase) · esc restart"))
 	default:
 		b.WriteString(ui.Muted.Render("setup"))
 	}
