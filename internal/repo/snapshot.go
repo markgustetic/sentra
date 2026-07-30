@@ -165,7 +165,7 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 		func(e walker.Entry) error {
 			reporter.Total(estimated.Add(e.Size))
 
-			fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, reporter)
+			fe, newBytes, err := r.captureFile(ctx, repoKey, e, reporter)
 			if err != nil {
 				return err
 			}

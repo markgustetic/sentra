@@ -136,7 +136,7 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 		if err := ctx.Err(); err != nil {
 			return SnapshotInfo{}, err
 		}
-		fe, newBytes, err := r.captureFile(ctx, repoKey, e, state, reporter)
+		fe, newBytes, err := r.captureFile(ctx, repoKey, e, reporter)
 		if err != nil {
 			return SnapshotInfo{}, err
 		}

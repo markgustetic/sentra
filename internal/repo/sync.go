@@ -390,7 +390,6 @@ func runSyncPhase(
 	var skippedAtomic atomic.Int64
 
 	for _, info := range plan.srcEntries {
-		info := info
 		if _, has := plan.dstSet[info.Key]; has {
 			skippedAtomic.Add(1)
 			continue

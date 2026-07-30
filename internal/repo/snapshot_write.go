@@ -33,7 +33,6 @@ func (r *Repo) captureFile(
 	ctx context.Context,
 	repoKey []byte,
 	e walker.Entry,
-	state *snapState,
 	reporter progress.Reporter,
 ) (*FileEntry, int64, error) {
 	// Streaming chunker: each chunk is hashed + sealed + uploaded
