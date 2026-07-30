@@ -14,19 +14,12 @@ import (
 // that touches S3, huh, the OS keyring, and the real LLM provider.
 func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, version, commit string) {
 	initPassphrase := promptInitPassphrase(rootFlags)
-	setupPassphrase := promptSetupPassphrase(rootFlags)
 	openPassphrase := promptOpenPassphraseWithConfig(rootFlags)
 
 	root.AddCommand(cli.NewInit(cli.InitDeps{
 		NewStore:   newS3Store,
 		Passphrase: initPassphrase,
 		Stdout:     os.Stdout,
-	}))
-	root.AddCommand(cli.NewSetup(cli.SetupDeps{
-		NewStore:       newS3Store,
-		Passphrase:     setupPassphrase,
-		SavePassphrase: saveRepoPassphraseToKeyring,
-		Stdout:         os.Stdout,
 	}))
 	root.AddCommand(cli.NewBackup(cli.BackupDeps{
 		RepoDeps: cli.RepoDeps{
@@ -166,6 +159,9 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 	}
 	root.AddCommand(cli.NewUI(uiDeps))
 	cli.SetUIAsDefault(root, uiDeps)
+	// `sentra setup` is a launcher for the same TUI wizard, so it takes the
+	// very same deps — it differs only in forcing the wizard route.
+	root.AddCommand(cli.NewSetup(uiDeps))
 
 	// `sentra local` reuses the very same uiDeps (SetupSeedConfig stays nil here
 	// — the local command sets its own MinIO seed at run time) and wires the

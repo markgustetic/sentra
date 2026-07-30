@@ -65,17 +65,6 @@ func promptInitPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
 	}
 }
 
-func promptSetupPassphrase(rootFlags *cli.RootFlags) func() ([]byte, error) {
-	return func() ([]byte, error) {
-		return config.Resolve(config.ResolveOptions{
-			PassphraseFile: rootFlags.PassphraseFile,
-			Prompt: func() ([]byte, error) {
-				return ui.PromptPassphraseWithConfirm("Set repository passphrase", minPassphraseLen)
-			},
-		})
-	}
-}
-
 func promptOpenPassphraseWithConfig(rootFlags *cli.RootFlags) func(*config.Config) ([]byte, error) {
 	return func(cfg *config.Config) ([]byte, error) {
 		return config.Resolve(buildResolveOptsFromConfig(rootFlags, cfg, func() ([]byte, error) {

@@ -10,13 +10,10 @@ import (
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
-// setupIAMPolicyDocument/Statement keep their historical cli names as aliases
-// of the setup engine's exported policy types so the oracle can json.Unmarshal
-// into them. internal/cli/setup_test.go (the 1863-line behavior-preservation
-// oracle, unchanged) unmarshals the `setup iam-policy` command's JSON output
-// into setupIAMPolicyDocument directly, so the alias — not a cli-local struct —
-// keeps that assertion compiling and semantically identical while the real
-// type now lives in internal/setup.
+// setupIAMPolicyDocument/Statement are aliases of the setup engine's exported
+// policy types, so setup_test.go can json.Unmarshal the `setup iam-policy`
+// command's output into them and be checking the shape the engine actually
+// emits. A cli-local struct would let the two drift silently.
 type setupIAMPolicyDocument = setup.IAMPolicyDocument
 
 type setupIAMPolicyStatement = setup.IAMPolicyStatement

@@ -8,9 +8,9 @@ import (
 
 // wantSetupPlan/Backend/etc. take the setup.* types; passing the cli aliases
 // to them is the compile-time proof the cli names are identity aliases of the
-// setup package, so the oracle's field access and const comparisons keep
-// meaning the same thing. Identity aliases make an explicit conversion
-// unnecessary (that is the point), so these helpers accept the value directly.
+// setup package rather than parallel declarations that could drift. Identity
+// aliases make an explicit conversion unnecessary (that is the point), so
+// these helpers accept the value directly.
 func wantSetupPlan(setup.Plan)                          {}
 func wantSetupBackend(setup.Backend)                    {}
 func wantSetupAuthMethod(setup.AWSAuthMethod)           {}

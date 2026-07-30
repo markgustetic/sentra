@@ -1,14 +1,14 @@
 package cli
 
 import (
-	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/setup"
 )
 
-// The setup engine lives in internal/setup so both the CLI wizard (this
-// package) and the TUI wizard can drive identical logic. These identity
-// aliases keep the historical cli names — and the behavior-preservation
-// oracle in setup_test.go — meaning exactly the same types and values.
+// The setup engine lives in internal/setup, and since `sentra setup` became a
+// launcher for the TUI wizard the engine has exactly one driver. These identity
+// aliases keep the historical cli names pointing at the same types and values,
+// so anything still written against them cannot silently diverge from the
+// engine's own definitions.
 
 type (
 	// SetupBackend names the storage target chosen in the setup wizard.
@@ -38,22 +38,3 @@ const (
 	SetupAWSAuthExisting = setup.AWSAuthExisting
 	SetupAWSAuthSkip     = setup.AWSAuthSkip
 )
-
-// The remaining callback types stay cli-only: they are the huh-facing
-// injection seam. Production leaves them nil and falls back to the Huh* forms;
-// tests inject deterministic callbacks.
-
-// SetupPrompt collects an updated setup plan from the operator.
-type SetupPrompt func(current config.Config) (SetupPlan, error)
-
-// SetupOverwriteConfirm asks whether an existing config file may be overwritten.
-type SetupOverwriteConfirm func(path string) (bool, error)
-
-// SetupReviewConfirm asks whether the final non-secret setup plan should apply.
-type SetupReviewConfirm func(cfgPath string, plan SetupPlan) (bool, error)
-
-// SetupAWSAuthRepairPrompt asks what to do after AWS auth or bucket prep fails.
-type SetupAWSAuthRepairPrompt func(plan SetupPlan, cause error) (SetupPlan, bool, error)
-
-// AWSCLIInstallConfirm asks whether Sentra may run the detected installer.
-type AWSCLIInstallConfirm = setup.AWSCLIInstallConfirm

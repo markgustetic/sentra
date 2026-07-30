@@ -99,10 +99,10 @@ func TestDefaultPlanInfersS3CompatibleFromEndpointWithEnvCredentials(t *testing.
 
 func TestDefaultPlanEndpointWithoutCredentialsKeepsAWSBackend(t *testing.T) {
 	// A bare endpoint_url with NO ambient credentials stays on the AWS backend:
-	// the CLI wizard seeds the endpoint field but the interactive backend select
-	// still defaults to AWS S3. This guards the internal/cli oracle
-	// (TestDefaultSetupPlanKeepsAWSBackendForEndpointConfig), which delegates to
-	// DefaultPlan, from the endpoint→S3-compatible inference.
+	// an endpoint the operator named but cannot yet reach is not evidence that
+	// AWS provisioning should be skipped, so the wizard's backend stage decides.
+	// This guards DefaultPlan against widening the endpoint→S3-compatible
+	// inference to fire on the endpoint alone.
 	var cfg config.Config
 	cfg.Repo.S3.EndpointURL = "http://localhost:9000"
 	probe := fakeProbe{env: map[string]string{}}

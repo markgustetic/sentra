@@ -8,8 +8,9 @@ import (
 
 // wantIAMDoc/Statement take the setup.* policy types; passing the cli aliases
 // to them proves the cli names are identity aliases of the setup package, so
-// the oracle can json.Unmarshal into them. Identity aliases make an explicit
-// conversion unnecessary, so the helpers accept the value directly.
+// setup_test.go's json.Unmarshal is checking the engine's own shape. Identity
+// aliases make an explicit conversion unnecessary, so the helpers accept the
+// value directly.
 func wantIAMDoc(setup.IAMPolicyDocument)        {}
 func wantIAMStatement(setup.IAMPolicyStatement) {}
 

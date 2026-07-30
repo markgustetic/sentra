@@ -10,7 +10,7 @@ import (
 // DefaultEffects must satisfy the Effects interface and wire the moved
 // Default* drivers. We only assert the wiring is complete (non-nil,
 // implements Effects) — the subprocess/AWS bodies are exercised by the
-// existing cli oracle and by AWS integration tests, not unit tests.
+// Default* unit tests in awscli_test.go and by AWS integration tests.
 func TestDefaultEffectsImplementsInterface(t *testing.T) {
 	eff := DefaultEffects()
 	if eff == nil {

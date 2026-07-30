@@ -112,6 +112,27 @@ func TestDefaultEnsureAWSCLI_NoSupportedInstaller(t *testing.T) {
 	}
 }
 
+// TestDefaultEnsureAWSCLI_NilConfirm pins the nil-confirm guard. Engine.PrepareAWS
+// always calls EnsureAWSCLI(ctx, nil) — no production Effects decorator
+// substitutes a real prompt any more, now that `sentra setup` is a launcher for
+// the TUI wizard and the huh-based CLI wizard is gone. So nil is the ONLY value
+// this ever sees in production, and it must return the actionable error rather
+// than dereference nil and take the whole wizard down.
+func TestDefaultEnsureAWSCLI_NilConfirm(t *testing.T) {
+	dir := t.TempDir()
+	// brew present + aws absent is the one arrangement that reaches the confirm.
+	writeExecutable(t, filepath.Join(dir, "brew"), "#!/bin/sh\nexit 99\n")
+	t.Setenv("PATH", dir)
+
+	_, err := DefaultEnsureAWSCLI(context.Background(), nil)
+	if err == nil {
+		t.Fatal("a nil confirm must be an error, not an install attempt")
+	}
+	if !strings.Contains(err.Error(), "no install confirmation was configured") {
+		t.Fatalf("error = %v, want the missing-confirmation guard", err)
+	}
+}
+
 func TestDefaultAWSSSOConfigured_ModernSessionProfile(t *testing.T) {
 	cfgPath := writeAWSConfig(t, `
 [profile sentra]

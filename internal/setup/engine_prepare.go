@@ -47,14 +47,15 @@ func (e *Engine) runAWSAuth(ctx context.Context, method AWSAuthMethod, cfg *conf
 	}
 }
 
-// runAWSLoginAuth is the headless port of runSetupAWSLoginAuth
-// (internal/cli/setup_auth.go:30-59). The EnsureAWSCLI confirm passed here is
-// nil: per plan correction C5, resolving a nil confirm into a real
-// callback (deps.ConfirmAWSCLIInstall, falling back to the huh prompt) is the
-// responsibility of the Effects implementation the cli driver injects
-// (cliSetupEffects.EnsureAWSCLI in Part 4), so the engine stays huh-free and
-// the same call works unchanged for the TUI, which never installs the CLI
-// and instead surfaces an ErrorAdvice modal for a missing binary.
+// runAWSLoginAuth is the headless port of the CLI wizard's browser-login
+// sub-machine. The EnsureAWSCLI confirm passed here is nil, and now that
+// `sentra setup` is a launcher for the TUI wizard, nil is the only value it
+// ever takes in production: substituting a real prompt was the job of the
+// deleted huh wizard's Effects decorator. Keeping it nil is what makes the
+// engine huh-free — a huh form here would fight the running tea.Program for
+// os.Stdin. DefaultEnsureAWSCLI therefore treats nil as "cannot install" and
+// returns actionable guidance, which the wizard surfaces as an ErrorAdvice
+// modal (TestDefaultEnsureAWSCLI_NilConfirm).
 func (e *Engine) runAWSLoginAuth(ctx context.Context, cfg *config.Config) (AWSAuthReport, error) {
 	report := AWSAuthReport{Method: AWSAuthLogin}
 	installReport, err := e.eff.EnsureAWSCLI(ctx, nil)
@@ -81,9 +82,14 @@ func (e *Engine) runAWSLoginAuth(ctx context.Context, cfg *config.Config) (AWSAu
 	return report, nil
 }
 
-// runAWSSSOAuth is the headless port of runSetupAWSSSOAuth
-// (internal/cli/setup_auth.go:61-115). See runAWSLoginAuth's doc comment for
-// why the EnsureAWSCLI confirm is nil here (C5).
+// runAWSSSOAuth is the headless port of the CLI wizard's SSO sub-machine. See
+// runAWSLoginAuth's doc comment for why the EnsureAWSCLI confirm is nil here.
+//
+// The two short-circuits are load bearing. A working credential chain returns
+// before any AWS CLI call, so a healthy SSO profile is not made to re-open a
+// browser on every run; and an already-configured profile skips `aws configure
+// sso`, which would otherwise walk the operator back through a start URL and
+// region they already have.
 func (e *Engine) runAWSSSOAuth(ctx context.Context, cfg *config.Config) (AWSAuthReport, error) {
 	profile := cfg.Repo.S3.Profile
 	report := AWSAuthReport{Method: AWSAuthSSO}

@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -93,6 +94,45 @@ func TestEngineInitRepoAlreadyInitializedCorrectPassphraseSaves(t *testing.T) {
 	}
 	if !res.PassphraseSavedToKeyring || !saved {
 		t.Fatalf("passphrase not saved after verified open: res=%+v saved=%v", res, saved)
+	}
+}
+
+// TestEngineInitRepoKeyringSaveFailureSurfacesError: a locked or unavailable
+// keyring must abort with the keyring named, on both the fresh and the
+// already-initialized branch. Swallowing it would leave sentra.yaml claiming
+// use_keyring:true over an empty keyring — every later non-interactive or
+// scheduled run then fails with a passphrase error far from the cause.
+func TestEngineInitRepoKeyringSaveFailureSurfacesError(t *testing.T) {
+	wantErr := errors.New("keyring locked")
+	tests := []struct {
+		name    string
+		preInit bool
+	}{
+		{"fresh repo", false},
+		{"already initialized", true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			store := blobstore.NewMemory()
+			if tc.preInit {
+				r, err := repo.Init(context.Background(), store, []byte("hunter22"))
+				if err != nil {
+					t.Fatalf("pre-init: %v", err)
+				}
+				r.Close()
+			}
+			eff := fakeEffects{
+				newStore: func(context.Context, *config.Config) (blobstore.Store, error) { return store, nil },
+				savePass: func(*config.Config, []byte) error { return wantErr },
+			}
+			_, err := NewEngine(eff).InitRepo(context.Background(), &config.Config{}, []byte("hunter22"), true)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("InitRepo error = %v, want the keyring cause wrapped", err)
+			}
+			if !strings.Contains(err.Error(), "save passphrase to keyring") {
+				t.Errorf("error must name the failing step, got %v", err)
+			}
+		})
 	}
 }
 

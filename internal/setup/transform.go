@@ -70,10 +70,10 @@ func applySmartDefaults(p *Plan, probe EnvProbe) {
 // the environment before the wizard builds its plan.
 //
 // The credential guard is deliberate: a bare endpoint_url with no credentials
-// (e.g. the CLI wizard's seeded-but-unchosen endpoint field) stays on the AWS
-// backend so the interactive backend select still defaults to AWS S3. Without
-// it, the internal/cli oracle — which delegates to DefaultPlan and expects a
-// bare-endpoint config to keep the AWS backend — would regress.
+// is a target the operator has named but not made reachable, so the plan stays
+// on the AWS backend and lets the wizard's own backend stage decide. Inferring
+// S3-compatible from the endpoint alone would clear every AWS provisioning flag
+// for a config that still needs them.
 func inferS3CompatibleFromEndpoint(p *Plan, probe EnvProbe) {
 	if strings.TrimSpace(p.Config.Repo.S3.EndpointURL) == "" || !probe.HasEnvCredentials() {
 		return
@@ -86,9 +86,9 @@ func inferS3CompatibleFromEndpoint(p *Plan, probe EnvProbe) {
 	p.AWSAuthMethod = AWSAuthSkip
 }
 
-// ApplyBackendChoice settles a plan once the backend is chosen — by inference,
-// by the TUI wizard's selector, or by the CLI wizard's huh form. All three call
-// it, so the field hygiene below cannot drift apart between them.
+// ApplyBackendChoice settles a plan once the backend is chosen — by inference
+// or by the TUI wizard's selector. Both call it, so the field hygiene below
+// cannot drift apart between them.
 //
 // Two invariants:
 //

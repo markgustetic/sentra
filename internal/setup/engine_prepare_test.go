@@ -3,6 +3,7 @@ package setup
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -174,20 +175,202 @@ func TestEnginePrepareAWSClassifiesPrepareError(t *testing.T) {
 	}
 }
 
-// C5: Engine.PrepareAWS's login/SSO auth paths call eff.EnsureAWSCLI(ctx,
-// nil) — resolving that nil confirm into a real callback is the Effects
-// implementation's job (Part 4's cliSetupEffects.EnsureAWSCLI substitutes
-// deps.ConfirmAWSCLIInstall, falling back to the huh prompt, before calling
-// the real DefaultEnsureAWSCLI). This test stands in for that Part 4
-// decorator with a fake Effects that resolves a nil confirm itself, and
-// asserts the engine's call reaches it: the confirm path is reachable end to
-// end through Engine.PrepareAWS, not just callable in isolation.
+// ssoPlan is an SSO-auth plan carrying the named profile the SSO sub-machine
+// threads through CheckAWSSSOConfigured / AWSConfigureSSO / AWSSSOLogin.
+func ssoPlan() Plan {
+	p := awsPlan()
+	p.AWSAuthMethod = AWSAuthSSO
+	p.Config.Repo.S3.Profile = "sentra"
+	return p
+}
+
+// TestEnginePrepareAWSSSOSkipsFlowWhenIdentityVerifies: the SSO sub-machine
+// must short-circuit the moment the SDK credential chain already works. If it
+// did not, every `sentra setup` run on a healthy SSO profile would re-open a
+// browser and re-run `aws sso login` for credentials it already has.
+func TestEnginePrepareAWSSSOSkipsFlowWhenIdentityVerifies(t *testing.T) {
+	checks := 0
+	eff := fakeEffects{
+		checkIdentity: func(context.Context, *config.Config) error { checks++; return nil },
+		ssoConfigured: func(context.Context, string) (bool, error) {
+			t.Fatal("SSO profile check must not run when the identity check succeeds")
+			return false, nil
+		},
+		configureSSO: func(context.Context, string) error {
+			t.Fatal("aws configure sso must not run when the identity check succeeds")
+			return nil
+		},
+		ssoLogin: func(context.Context, string) error {
+			t.Fatal("aws sso login must not run when the identity check succeeds")
+			return nil
+		},
+	}
+	p := ssoPlan()
+	auth, _, err := NewEngine(eff).PrepareAWS(context.Background(), &p)
+	if err != nil {
+		t.Fatalf("PrepareAWS: %v", err)
+	}
+	if checks != 1 {
+		t.Fatalf("identity checks = %d, want exactly 1 (no re-check after a skipped flow)", checks)
+	}
+	if !auth.IdentityVerified || auth.SSOLoginRan || auth.SSOConfigureRan {
+		t.Fatalf("auth = %+v, want IdentityVerified only", auth)
+	}
+}
+
+// TestEnginePrepareAWSSSOLoginRunsWhenProfileConfigured: identity fails but the
+// profile already has a complete SSO block, so only `aws sso login` runs — an
+// `aws configure sso` here would walk the operator through re-entering a
+// start URL and region they already have.
+func TestEnginePrepareAWSSSOLoginRunsWhenProfileConfigured(t *testing.T) {
+	checks := 0
+	configuredChecks := 0
+	loginProfile := ""
+	eff := fakeEffects{
+		checkIdentity: func(context.Context, *config.Config) error {
+			checks++
+			if checks == 1 {
+				return errors.New("expired sso token")
+			}
+			return nil
+		},
+		ssoConfigured: func(context.Context, string) (bool, error) { configuredChecks++; return true, nil },
+		configureSSO: func(context.Context, string) error {
+			t.Fatal("aws configure sso must not run for an already-configured profile")
+			return nil
+		},
+		ssoLogin: func(_ context.Context, profile string) error { loginProfile = profile; return nil },
+	}
+	p := ssoPlan()
+	auth, _, err := NewEngine(eff).PrepareAWS(context.Background(), &p)
+	if err != nil {
+		t.Fatalf("PrepareAWS: %v", err)
+	}
+	if checks != 2 {
+		t.Fatalf("identity checks = %d, want 2 (once before the flow, once to confirm it worked)", checks)
+	}
+	if configuredChecks != 1 {
+		t.Fatalf("SSO profile checks = %d, want 1", configuredChecks)
+	}
+	if loginProfile != "sentra" {
+		t.Fatalf("sso login profile = %q, want sentra", loginProfile)
+	}
+	if !auth.SSOLoginRan || auth.SSOConfigureRan || !auth.IdentityVerified {
+		t.Fatalf("auth = %+v, want SSOLoginRan && IdentityVerified without SSOConfigureRan", auth)
+	}
+}
+
+// TestEnginePrepareAWSSSOConfiguresProfileWhenMissing: with no SSO block on the
+// profile, `aws configure sso` must run first and `aws sso login` second — the
+// login alone would fail with an unhelpful AWS CLI error.
+func TestEnginePrepareAWSSSOConfiguresProfileWhenMissing(t *testing.T) {
+	checks := 0
+	var order []string
+	eff := fakeEffects{
+		checkIdentity: func(context.Context, *config.Config) error {
+			checks++
+			if checks == 1 {
+				return errors.New("profile not ready")
+			}
+			return nil
+		},
+		ssoConfigured: func(context.Context, string) (bool, error) { return false, nil },
+		configureSSO: func(_ context.Context, profile string) error {
+			order = append(order, "configure:"+profile)
+			return nil
+		},
+		ssoLogin: func(_ context.Context, profile string) error {
+			order = append(order, "login:"+profile)
+			return nil
+		},
+	}
+	p := ssoPlan()
+	auth, _, err := NewEngine(eff).PrepareAWS(context.Background(), &p)
+	if err != nil {
+		t.Fatalf("PrepareAWS: %v", err)
+	}
+	if len(order) != 2 || order[0] != "configure:sentra" || order[1] != "login:sentra" {
+		t.Fatalf("SSO call order = %v, want [configure:sentra login:sentra]", order)
+	}
+	if !auth.SSOConfigureRan || !auth.SSOConfigured || !auth.SSOLoginRan || !auth.IdentityVerified {
+		t.Fatalf("auth = %+v, want the full configure+login+verify report", auth)
+	}
+}
+
+// TestEnginePrepareAWSSSOFlowFailureStopsBeforePrepare: neither SSO step may
+// fall through to bucket work. PrepareAWS touching S3 after a failed sign-in
+// would report a credential problem as a bucket problem, and the caller would
+// go on to write a config for a repo it never reached.
+func TestEnginePrepareAWSSSOFlowFailureStopsBeforePrepare(t *testing.T) {
+	wantErr := errors.New("flow failed")
+	tests := []struct {
+		name string
+		eff  func(*bool) fakeEffects
+	}{
+		{
+			name: "configure fails",
+			eff: func(prepared *bool) fakeEffects {
+				return fakeEffects{
+					checkIdentity: func(context.Context, *config.Config) error { return errors.New("identity missing") },
+					ssoConfigured: func(context.Context, string) (bool, error) { return false, nil },
+					configureSSO:  func(context.Context, string) error { return wantErr },
+					prepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+						*prepared = true
+						return AWSPrepareReport{}, nil
+					},
+				}
+			},
+		},
+		{
+			name: "login fails",
+			eff: func(prepared *bool) fakeEffects {
+				return fakeEffects{
+					checkIdentity: func(context.Context, *config.Config) error { return errors.New("identity missing") },
+					ssoConfigured: func(context.Context, string) (bool, error) { return true, nil },
+					ssoLogin:      func(context.Context, string) error { return wantErr },
+					prepareAWS: func(context.Context, *config.Config, AWSPrepareOptions) (AWSPrepareReport, error) {
+						*prepared = true
+						return AWSPrepareReport{}, nil
+					},
+				}
+			},
+		},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			prepared := false
+			p := ssoPlan()
+			_, _, err := NewEngine(tc.eff(&prepared)).PrepareAWS(context.Background(), &p)
+			if !errors.Is(err, wantErr) {
+				t.Fatalf("PrepareAWS error = %v, want the SSO flow cause wrapped", err)
+			}
+			if prepared {
+				t.Fatal("PrepareAWS ran bucket work after a failed SSO sign-in")
+			}
+			// The wrap must keep the operator's recovery paths attached.
+			for _, want := range []string{"IAM Identity Center / SSO", "Existing credentials", "profile sentra"} {
+				if !strings.Contains(err.Error(), want) {
+					t.Errorf("SSO flow error missing %q:\n%v", want, err)
+				}
+			}
+		})
+	}
+}
+
+// Engine.PrepareAWS's login/SSO auth paths call eff.EnsureAWSCLI(ctx, nil), so
+// the confirm an Effects implementation supplies is the only one that can ever
+// run. No production implementation supplies one any more — that was the
+// deleted huh wizard's decorator, and DefaultEnsureAWSCLI's nil guard is what
+// production hits (TestDefaultEnsureAWSCLI_NilConfirm). This test keeps the
+// seam itself honest: an Effects that DOES resolve the nil must find its
+// confirm actually invoked, so the parameter stays a live hook rather than
+// quietly becoming decoration the engine never reaches.
 func TestEnginePrepareAWSEnsureAWSCLIConfirmPathReachable(t *testing.T) {
 	confirmCalled := false
 	resolvingEff := fakeEffects{
 		ensureAWSCLI: func(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
-			// Stand-in for cliSetupEffects.EnsureAWSCLI (Part 4): substitute a
-			// real confirm when the engine passes nil, then invoke it.
+			// Stand in for an Effects decorator: substitute a real confirm
+			// when the engine passes nil, then invoke it.
 			if confirm == nil {
 				confirm = func(AWSCLIInstallPlan) (bool, error) {
 					confirmCalled = true
