@@ -794,7 +794,9 @@ func TestRunUI_ThreadsPassphraseFileToTUI(t *testing.T) {
 	for _, forceSetup := range []bool{false, true} {
 		t.Run(fmt.Sprintf("forceSetup=%v", forceSetup), func(t *testing.T) {
 			chDir(t, t.TempDir())
-			const passFile = "/tmp/does-not-need-to-exist"
+			// Named for the path it is, not the secret it is not: `passFile`
+			// trips gosec's G101 hardcoded-credential heuristic.
+			const wantPath = "/tmp/does-not-need-to-exist"
 
 			var captured tui.App
 			deps := UIDeps{
@@ -804,7 +806,7 @@ func TestRunUI_ThreadsPassphraseFileToTUI(t *testing.T) {
 					},
 				},
 				Run:            func(app tui.App) error { captured = app; return nil },
-				PassphraseFile: func() string { return passFile },
+				PassphraseFile: func() string { return wantPath },
 			}
 			cmd := NewUI(deps)
 			cmd.SetOut(io.Discard)
@@ -812,8 +814,8 @@ func TestRunUI_ThreadsPassphraseFileToTUI(t *testing.T) {
 			if err := runUI(cmd, deps, configFileName, forceSetup); err != nil {
 				t.Fatalf("launch: %v", err)
 			}
-			if got := captured.Deps().PassphraseFile; got != passFile {
-				t.Errorf("tui.Deps.PassphraseFile = %q, want %q", got, passFile)
+			if got := captured.Deps().PassphraseFile; got != wantPath {
+				t.Errorf("tui.Deps.PassphraseFile = %q, want %q", got, wantPath)
 			}
 		})
 	}

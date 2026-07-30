@@ -87,7 +87,8 @@ type StoreKeyringOptions struct {
 // command fails to decrypt.
 const (
 	PassphraseSourceFile = "--passphrase-file"
-	PassphraseSourceEnv  = "SENTRA_PASSPHRASE"
+	//nolint:gosec // G101: the flag/env NAME, displayed to the operator; not a credential.
+	PassphraseSourceEnv = envPassphrase
 )
 
 // ResolveNonInteractive resolves the passphrase from the non-interactive

@@ -99,4 +99,3 @@ func AWSAuthMethodLabel(m AWSAuthMethod) string {
 		return string(m)
 	}
 }
-
