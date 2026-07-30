@@ -129,8 +129,8 @@ func TestApp_SetupAndSettingsRegistered(t *testing.T) {
 			t.Errorf("view %q not registered", id)
 		}
 	}
-	if got := len(app.views); got != 19 {
-		t.Fatalf("views = %d, want 19 (15 Phase 2c+unlock + setup + settings + files + help)", got)
+	if got := len(app.views); got != 20 {
+		t.Fatalf("views = %d, want 20 (15 Phase 2c+unlock + setup + settings + files + stats + help)", got)
 	}
 }
 

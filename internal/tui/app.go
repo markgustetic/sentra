@@ -271,6 +271,7 @@ func NewApp(deps Deps) App {
 		{id: "files", model: NewFilesView(deps)},
 		{id: "diff", model: NewDiff(deps)},
 		{id: "check", model: NewCheckView(deps)},
+		{id: "stats", model: NewStatsView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
 		{id: "recovery-kit", model: NewRecoveryKitView(deps)},
 		{id: "policies", model: NewPoliciesView(deps)},

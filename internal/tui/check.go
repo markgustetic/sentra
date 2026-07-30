@@ -38,6 +38,10 @@ type CheckView struct {
 	spin   spinner.Model
 	result checkDoneMsg
 	width  int
+	// deep arms --read-data mode for the next run: every referenced
+	// chunk is downloaded and re-hashed, not just Stat'ed. Costs S3
+	// egress, so it's an explicit toggle rather than the default.
+	deep bool
 }
 
 func NewCheckView(deps Deps) CheckView {
@@ -55,7 +59,10 @@ func (v CheckView) ShortHelp() []key.Binding {
 	case checkRunning:
 		return nil
 	default:
-		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "run check"))}
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "run check")),
+			key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "toggle deep verify")),
+		}
 	}
 }
 
@@ -79,12 +86,17 @@ func (v CheckView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case tea.KeyMsg:
+		if msg.String() == "d" && v.stage != checkRunning {
+			v.deep = !v.deep
+			return v, nil
+		}
 		if msg.Type == tea.KeyEnter && v.stage != checkRunning && v.deps.Repo != nil {
 			v.stage = checkRunning
 			r := v.deps.Repo
+			deep := v.deep
 			ctx := ctxOrBackground(v.deps.Ctx)
 			run := func() tea.Msg {
-				report, err := r.Check(ctx, repo.CheckOptions{})
+				report, err := r.Check(ctx, repo.CheckOptions{ReadData: deep})
 				return checkDoneMsg{report: report, err: err}
 			}
 			return v, tea.Batch(v.spin.Tick, run)
@@ -104,7 +116,12 @@ func (v CheckView) View() string {
 	case checkDone:
 		return v.renderReport()
 	default:
-		return ui.Primary.Render("Repository integrity check") + "\n\n" +
+		mode := "presence check (fast; d for deep verify)"
+		if v.deep {
+			mode = "deep verify armed — chunks will be downloaded and re-hashed"
+		}
+		return ui.Primary.Render("Repository integrity check") + "\n" +
+			ui.Muted.Render("  mode: "+mode) + "\n\n" +
 			ui.ActionLine("run the integrity check", "")
 	}
 }
@@ -115,8 +132,10 @@ func (v CheckView) renderReport() string {
 	}
 	rep := v.result.report
 	var b strings.Builder
-	healthy := len(rep.MissingBlobs) == 0 && len(rep.ManifestIssues) == 0 &&
-		(rep.Lock == nil || (!rep.Lock.Stale && !rep.Lock.Unreadable))
+	// Healthy() is the repo's own verdict — it already folds in
+	// missing blobs, manifest issues, deep-verify corruption, and
+	// lock state, so the view can't drift from the CLI's judgment.
+	healthy := rep.Healthy()
 	status := ui.Success.Render("● healthy")
 	if !healthy {
 		status = ui.Danger.Render("● issues found")
@@ -127,6 +146,12 @@ func (v CheckView) renderReport() string {
 	fmt.Fprintf(&b, "  data blobs       %d  (%s)\n", rep.DataBlobs, ui.FormatBytes(rep.DataBytes))
 	fmt.Fprintf(&b, "  referenced blobs %d\n", rep.ReferencedBlobs)
 	fmt.Fprintf(&b, "  orphan bytes     %s\n", ui.FormatBytes(rep.OrphanBytes))
+	if rep.ReadDataBlobs > 0 {
+		fmt.Fprintf(&b, "  deep-verified    %d chunk(s)\n", rep.ReadDataBlobs)
+	}
+	if n := len(rep.CorruptBlobs); n > 0 {
+		fmt.Fprintf(&b, "\n  %s  %d corrupt blob(s)\n", ui.Danger.Render("✗"), n)
+	}
 	if n := len(rep.MissingBlobs); n > 0 {
 		fmt.Fprintf(&b, "\n  %s  %d missing blob(s)\n", ui.Danger.Render("✗"), n)
 	}

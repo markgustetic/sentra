@@ -116,8 +116,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 19 {
-		t.Fatalf("views = %d, want 19 (3 read-only + files + check + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock + settings + setup + help)", got)
+	if got := len(app.views); got != 20 {
+		t.Fatalf("views = %d, want 20 (3 read-only + files + check + stats + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock + settings + setup + help)", got)
 	}
 }
 
@@ -950,8 +950,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 19 {
-		t.Fatalf("views = %d, want 19 (Phase 2c end-state + files + the unlock gate + settings + setup + help)", got)
+	if got := len(app.views); got != 20 {
+		t.Fatalf("views = %d, want 20 (Phase 2c end-state + files + stats + the unlock gate + settings + setup + help)", got)
 	}
 }
 
@@ -1032,9 +1032,9 @@ func TestApp_Phase2cViewsRegistered(t *testing.T) {
 	app := newTestApp(t)
 
 	want := []string{
-		"dashboard", "snapshots", "files", "diff", "check", "doctor", "recovery-kit",
-		"policies", "schedule", "agent", "backup", "restore", "prune",
-		"sync", "password", "unlock", "settings", "setup", "help",
+		"dashboard", "snapshots", "files", "diff", "check", "stats", "doctor",
+		"recovery-kit", "policies", "schedule", "agent", "backup", "restore",
+		"prune", "sync", "password", "unlock", "settings", "setup", "help",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {
@@ -1067,9 +1067,9 @@ func TestApp_Phase3ViewsRegistered(t *testing.T) {
 	app := newTestApp(t)
 
 	want := []string{
-		"dashboard", "snapshots", "files", "diff", "check", "doctor", "recovery-kit",
-		"policies", "schedule", "agent", "backup", "restore", "prune",
-		"sync", "password", "setup", "settings", "unlock", "help",
+		"dashboard", "snapshots", "files", "diff", "check", "stats", "doctor",
+		"recovery-kit", "policies", "schedule", "agent", "backup", "restore",
+		"prune", "sync", "password", "setup", "settings", "unlock", "help",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {

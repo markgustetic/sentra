@@ -1,7 +1,10 @@
 package tui
 
 import (
+	"context"
 	"errors"
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -360,5 +363,66 @@ func TestApp_SharesOneSnapshotLoad(t *testing.T) {
 	}
 	if got := len(app.views[indexOf(app, "snapshots")].model.(Snapshots).snaps); got != 2 {
 		t.Errorf("snapshots view did not use the shared load: %d", got)
+	}
+}
+
+// TestSnapshots_PinToggleSubmitsOp: 'p' on a row submits a pin op
+// through the one-op guard (mutating — it takes the repo lock), and
+// the completed op's broadcast reload repaints the pin marker.
+func TestSnapshots_PinToggleSubmitsOp(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	snap, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	s := NewSnapshots(Deps{Repo: r})
+	s = s.SetSnapshots(loadSnapshotsBestEffort(Deps{Repo: r}))
+	m, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	s = m.(Snapshots)
+	if cmd == nil {
+		t.Fatal("p should emit a command carrying the pin op")
+	}
+	start, ok := cmd().(startOpMsg)
+	if !ok {
+		t.Fatal("pin must go through the one-op guard (startOpMsg)")
+	}
+	result := start.run(context.Background())
+	if _, ok := result.(opResultMsg); !ok {
+		t.Fatalf("pin op must resolve to an opResultMsg, got %T", result)
+	}
+
+	pins, err := r.Pins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := pins[snap.ID]; !ok {
+		t.Fatal("pin op did not pin the snapshot")
+	}
+
+	// The op broadcast reloads the table; the pinned row is marked.
+	m, _ = s.Update(result)
+	s = m.(Snapshots)
+	if !strings.Contains(s.View(), "*") {
+		t.Errorf("pinned row should carry the pin marker:\n%s", s.View())
+	}
+
+	// A second toggle unpins.
+	m, cmd = s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("p")})
+	_ = m
+	start = cmd().(startOpMsg)
+	if res := start.run(context.Background()); res == nil {
+		t.Fatal("unpin op returned nil")
+	}
+	pins, err = r.Pins(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(pins) != 0 {
+		t.Fatalf("second toggle should unpin, pins=%v", pins)
 	}
 }

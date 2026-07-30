@@ -87,6 +87,38 @@ type Snapshots struct {
 	// copyFn writes text to the system clipboard. Overridable so tests don't
 	// touch the real clipboard (and so CI without xclip stays green).
 	copyFn func(string) error
+
+	// pins is the repo's pin set, loaded with the snapshot list and
+	// refreshed after every completed op. Pinned rows carry a marker
+	// glyph — a glyph, not a color, per the NO_COLOR/testability rule.
+	pins map[string]struct{}
+
+	// shownIDs mirrors the visible table rows: shownIDs[i] is the
+	// snapshot ID behind row i. The ID cell itself may carry the pin
+	// marker, so code that needs the real ID (copy, detail open, pin
+	// toggle) reads it from here, never by parsing the cell text.
+	shownIDs []string
+}
+
+// pinDoneMsg reports a pin/unpin op back through the one-op guard.
+type pinDoneMsg struct{ err error }
+
+func (pinDoneMsg) opResult() {}
+
+// loadPinsBestEffort mirrors loadSnapshotsBestEffort: failures render
+// as "no pins" rather than blocking the view — DeleteSnapshot still
+// enforces pins at the repo layer regardless of what the table shows.
+func loadPinsBestEffort(deps Deps) map[string]struct{} {
+	if deps.Repo == nil {
+		return nil
+	}
+	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 10*time.Second)
+	defer cancel()
+	pins, err := deps.Repo.Pins(ctx)
+	if err != nil {
+		return nil
+	}
+	return pins
 }
 
 // NewSnapshots constructs the view with the production loader
@@ -148,6 +180,7 @@ func NewSnapshotsWithLoader(deps Deps, loader detailLoader) Snapshots {
 		loader: loader,
 		filter: fi,
 		copyFn: clipboard.WriteAll,
+		pins:   loadPinsBestEffort(deps),
 	}
 	if deps.Repo != nil {
 		snaps, _ := initialSnapshots(deps) // shared load; empty on error
@@ -255,13 +288,21 @@ func (s Snapshots) rebuild() Snapshots {
 	sortSnaps(shown, s.sortMode)
 
 	rows := make([]table.Row, 0, len(shown))
+	s.shownIDs = make([]string, 0, len(shown))
 	for _, sn := range shown {
 		tag := sn.Tag
 		if tag == "" {
 			tag = "-"
 		}
+		// The marker leads the cell — the ID column truncates on the
+		// right, so a trailing marker would be the first thing cut.
+		id := sn.ID
+		if _, pinned := s.pins[sn.ID]; pinned {
+			id = "* " + id
+		}
+		s.shownIDs = append(s.shownIDs, sn.ID)
 		rows = append(rows, table.Row{
-			sn.ID,
+			id,
 			sn.CreatedAt.UTC().Format(time.RFC3339),
 			tag,
 			fmt.Sprintf("%d", sn.Stats.Files),
@@ -355,19 +396,57 @@ func (s Snapshots) handleFilterKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // a transient notice with the outcome. Uses OSC-52-free clipboard tools, so it
 // works locally; over SSH the copy may not reach the client (a known limit).
 func (s Snapshots) copySelectedID() Snapshots {
-	row := s.tbl.SelectedRow()
-	if len(row) == 0 {
+	id, ok := s.selectedID()
+	if !ok {
 		return s
 	}
-	if err := s.copyFn(row[0]); err != nil {
+	if err := s.copyFn(id); err != nil {
 		s.notice = "copy failed: " + err.Error()
 		return s
 	}
-	s.notice = "copied " + row[0]
+	s.notice = "copied " + id
 	return s
 }
 
+// selectedID returns the snapshot ID behind the highlighted row. The
+// table cell may carry a pin marker, so this reads the parallel
+// shownIDs slice instead of the rendered text.
+func (s Snapshots) selectedID() (string, bool) {
+	i := s.tbl.Cursor()
+	if i < 0 || i >= len(s.shownIDs) {
+		return "", false
+	}
+	return s.shownIDs[i], true
+}
+
 func (s Snapshots) cursor() int { return s.tbl.Cursor() }
+
+// togglePinSelected pins (or unpins) the highlighted snapshot. Pinning
+// mutates the repo — it takes the advisory lock and rewrites meta/pins
+// — so it goes through the App's one-op guard like every other
+// mutation, not a bare tea.Cmd.
+func (s Snapshots) togglePinSelected() (tea.Model, tea.Cmd) {
+	id, ok := s.selectedID()
+	if !ok || s.deps.Repo == nil {
+		return s, nil
+	}
+	r := s.deps.Repo
+	_, pinned := s.pins[id]
+	name := "pin"
+	if pinned {
+		name = "unpin"
+	}
+	start := startOpMsg{
+		name: name,
+		run: func(ctx context.Context) tea.Msg {
+			if pinned {
+				return pinDoneMsg{err: r.Unpin(ctx, id)}
+			}
+			return pinDoneMsg{err: r.Pin(ctx, id)}
+		},
+	}
+	return s, func() tea.Msg { return start }
+}
 
 // snapDetailLoadedMsg carries a finished manifest load back to the view.
 // id echoes the request so Update can drop results the operator has
@@ -430,13 +509,14 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return s.rebuild(), nil
 		case "y":
 			return s.copySelectedID(), nil
+		case "p":
+			return s.togglePinSelected()
 		}
 		if msg.Type == tea.KeyEnter {
-			row := s.tbl.SelectedRow()
-			if len(row) == 0 {
+			id, ok := s.selectedID()
+			if !ok {
 				return s, nil
 			}
-			id := row[0]
 			s.detailOpen = true
 			s.detailLoading = true
 			s.detailID = id
@@ -449,11 +529,13 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 		}
 	}
-	// A completed operation (backup, prune, sync, …) is broadcast to every
-	// view as an opResultMsg. The list is hydrated once at launch, so without
-	// this reload a snapshot taken this session never appears until restart.
+	// A completed operation (backup, prune, sync, pin, …) is broadcast to
+	// every view as an opResultMsg. The list is hydrated once at launch, so
+	// without this reload a snapshot taken this session never appears until
+	// restart — and a pin toggled this session wouldn't repaint its marker.
 	// Keying off the marker interface refreshes for any op, present or future.
 	if _, ok := msg.(opResultMsg); ok {
+		s.pins = loadPinsBestEffort(s.deps)
 		return s.SetSnapshots(loadSnapshotsBestEffort(s.deps)), nil
 	}
 	// Forward other messages (notably arrow keys) to the table.

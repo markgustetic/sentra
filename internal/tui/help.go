@@ -51,6 +51,7 @@ var viewDescriptions = map[string]string{
 	"files":        "Latest snapshot's directory layout as a graph",
 	"diff":         "Compare two snapshots file by file",
 	"check":        "Verify repository integrity end to end",
+	"stats":        "Storage usage and deduplication efficiency",
 	"doctor":       "Diagnose config, AWS access, and repo health",
 	"recovery-kit": "Print a non-secret kit for disaster recovery",
 	"policies":     "Manage named backup policies and run them",
