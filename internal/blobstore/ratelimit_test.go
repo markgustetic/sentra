@@ -57,3 +57,36 @@ func TestRateLimitedStore_PacesUploads(t *testing.T) {
 		t.Errorf("Get must not be paced (upload cap only), waited %d", w.waited.Load())
 	}
 }
+
+// TestRateLimitedStore_PreservesSeekability: the paced wrapper must not
+// hide the body's io.Seeker. The AWS SDK type-asserts the stream for
+// Seek at request-build time; a Read-only wrapper forces the
+// unseekable-stream path, which plain-HTTP endpoints (MinIO without
+// TLS) reject outright — every upload would fail the moment a rate
+// cap is set.
+func TestRateLimitedStore_PreservesSeekability(t *testing.T) {
+	w := &fakeWaiter{}
+	inner := &captureStore{Store: NewMemory()}
+	s := newRateLimitedStore(inner, w)
+	if err := s.Put(context.Background(), "data/aa/k", bytes.NewReader([]byte("body-bytes"))); err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := inner.lastBody.(io.Seeker); !ok {
+		t.Fatalf("paced body lost io.Seeker (got %T); the SDK needs it for content-length and HTTP endpoints", inner.lastBody)
+	}
+	if w.waited.Load() != int64(len("body-bytes")) {
+		t.Errorf("pacing lost: waited %d, want %d", w.waited.Load(), len("body-bytes"))
+	}
+}
+
+// captureStore records the reader handed to Put so tests can inspect
+// the wrapper type the limiter produced.
+type captureStore struct {
+	Store
+	lastBody io.Reader
+}
+
+func (c *captureStore) Put(ctx context.Context, key string, r io.Reader) error {
+	c.lastBody = r
+	return c.Store.Put(ctx, key, r)
+}

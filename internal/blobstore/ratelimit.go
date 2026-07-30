@@ -49,11 +49,28 @@ func newRateLimitedStore(inner Store, limiter uploadWaiter) Store {
 }
 
 func (s *rateLimitedStore) Put(ctx context.Context, key string, r io.Reader) error {
-	return s.Store.Put(ctx, key, &pacedReader{ctx: ctx, r: r, limiter: s.limiter})
+	return s.Store.Put(ctx, key, paceBody(ctx, r, s.limiter))
 }
 
 func (s *rateLimitedStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
-	return s.Store.PutIfAbsent(ctx, key, &pacedReader{ctx: ctx, r: r, limiter: s.limiter})
+	return s.Store.PutIfAbsent(ctx, key, paceBody(ctx, r, s.limiter))
+}
+
+// paceBody wraps r with token pacing, PRESERVING io.Seeker when r has
+// it. The AWS SDK type-asserts the body for Seek at request-build
+// time: a Read-only wrapper forces the unseekable-stream path, which
+// loses the content length and — on plain-HTTP endpoints (MinIO
+// without TLS), where trailing checksums are unavailable — fails
+// every upload outright. RetryStore always hands a *bytes.Reader, so
+// the seekable branch is the one production takes; a rewind after
+// admitted bytes simply pays for them again on the re-read, matching
+// the documented "a retried upload really does transfer twice".
+func paceBody(ctx context.Context, r io.Reader, limiter uploadWaiter) io.Reader {
+	paced := &pacedReader{ctx: ctx, r: r, limiter: limiter}
+	if s, ok := r.(io.Seeker); ok {
+		return &pacedReadSeeker{pacedReader: paced, s: s}
+	}
+	return paced
 }
 
 // pacedReader waits for limiter tokens AFTER each read, sized to the
@@ -73,4 +90,15 @@ func (p *pacedReader) Read(b []byte) (int, error) {
 		}
 	}
 	return n, err
+}
+
+// pacedReadSeeker is pacedReader plus a delegated Seek, so wrapping a
+// seekable body doesn't strip the capability the SDK depends on.
+type pacedReadSeeker struct {
+	*pacedReader
+	s io.Seeker
+}
+
+func (p *pacedReadSeeker) Seek(offset int64, whence int) (int64, error) {
+	return p.s.Seek(offset, whence)
 }
