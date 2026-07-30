@@ -16,11 +16,13 @@ Sentra code, docs, CI, or release workflow changes.
 - Named policy validation lives in `internal/policy`.
 - Agent heuristics/orchestration live in `internal/agent`.
 - Bubbletea views live in `internal/tui`. The TUI is the default surface: bare
-  `sentra` falls through to `sentra ui`, and every CLI capability is also a view
-  (19 in all), fronted by a first-run setup wizard.
+  `sentra` falls through to `sentra ui`, fronted by a first-run setup wizard. It
+  owes the CLI no flag-for-flag coverage — see the surface contract in Feature
+  Notes below.
 - The headless setup engine — a pure state model plus an `Effects` seam for
-  AWS/keyring and a stepwise `Engine` — lives in `internal/setup`; both the CLI
-  and TUI wizards drive it, so setup logic is never duplicated between them.
+  AWS/keyring and a stepwise `Engine` — lives in `internal/setup`; the TUI
+  wizard drives it directly, and `sentra setup` is a thin CLI launcher for that
+  same wizard, so setup logic is never duplicated between them.
 - Vendored FastCDC source lives under `third_party/fastcdc-go`.
 
 ## Working Rules
@@ -141,17 +143,22 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   `internal/policy` (below both surfaces) and MUST run identically from
   `sentra policy run` and the TUI's policy run — a surface that skips hooks
   backs up different data.
-- TUI parity: every operational CLI capability has a TUI affordance. Known,
-  deliberate CLI-only surfaces: `--json`/`--config`/logging flags and exit
-  codes (scripting-inherent), `backup plan`/`apply` (file-based review is the
-  point; the TUI's confirm gate is its equivalent), `init --force`
-  re-bootstrap, standalone `setup iam-policy` for an arbitrary bucket, setup
-  draft resume, AWS CLI auto-install, `password --new-passphrase-file`, and
-  per-run knob overrides (`prune --keep-*`, `--concurrency`,
-  `--stale-lock-after`, agent `--root/--categories/--local-only/
-  --max-tool-calls`) — those knobs come from config in the TUI. Do not let
-  new CLI capabilities ship without either a TUI affordance or an entry in
-  this list.
+- Surface contract — the obligation between the two surfaces runs ONE WAY.
+  The CLI is the machine and recovery surface: every capability lands in the
+  core layer plus a CLI verb, always. Three consumers depend on that and none
+  of them can press a key — `internal/scheduler` emits systemd/cron units whose
+  `ExecStart` invokes this binary, the recovery kit prints commands to type when
+  the machine is gone, and the test suite drives the CLI. A mutating capability
+  with no CLI verb is a defect, not a style choice.
+  The TUI is the human surface and the default one, and it owes the CLI no
+  flag-for-flag coverage. It owes a floor instead: setup/reconfigure, unlock,
+  backup, run a named policy, restore, browse snapshots, check, prune, and
+  recovery kit must each be completable start to finish without leaving the
+  TUI. A gap inside the floor is a bug; anything outside it is CLI-at-will,
+  needing no TUI affordance and no entry in any list. Per-run knobs
+  (`prune --keep-*`, `--concurrency`, `--stale-lock-after`, agent
+  `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come from config
+  in the TUI by design.
 - `repo.s3.storage_class` passes through to PutObject; GLACIER and
   DEEP_ARCHIVE must stay refused (synchronous chunk reads cannot retrieve
   them). `backup.max_upload_rate` paces uploads only — never throttle

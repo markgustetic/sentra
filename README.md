@@ -12,7 +12,7 @@
 
 <img src="docs/screenshots/dashboard.png" width="840" alt="Sentra TUI dashboard: a synthwave sun banner over an activity sparkline, storage savings, tags, retention, and a recent-snapshots table.">
 
-<sub>The default surface is a full-screen TUI — 20 views, a first-run wizard, and every CLI capability at your fingertips.</sub>
+<sub>The default surface is a full-screen TUI — 20 views, a first-run wizard, and every human workflow at your fingertips.</sub>
 
 </div>
 

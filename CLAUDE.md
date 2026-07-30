@@ -12,8 +12,9 @@ content-addressed** snapshots. Go 1.25, module `github.com/markgustetic/sentra`.
 
 The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
-it lands on the unlock gate; otherwise the dashboard. Every CLI capability is
-also operable from the TUI (20 views).
+it lands on the unlock gate; otherwise the dashboard. The TUI covers every job
+a human does; the CLI is the machine and recovery surface (see the surface
+contract in AGENTS.md).
 
 `sentra local` is the dev flow: it starts MinIO, exports the `minioadmin`
 credentials **only if you have not set AWS credentials yourself**, and opens the
@@ -149,7 +150,8 @@ below both.
 
 - **`huh` cannot run inside a live `tea.Program`** — it owns `os.Stdin` and
   fights the running program. Every in-TUI form is built from inline `bubbles`
-  widgets. `huh` survives only in the CLI wizard.
+  widgets. `huh` survives only in the CLI's confirmation gates
+  (`internal/cli/confirm.go`: `backup apply` / `prune --apply` / `agent apply`).
 - **Selection is a glyph, not a color.** Selected rows render through
   `ui.SelectRow`, which prepends `▍`. Unit tests run under lipgloss's Ascii
   color profile, which emits **no ANSI at all**, so a color-only affordance is
