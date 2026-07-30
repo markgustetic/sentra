@@ -277,3 +277,68 @@ func containsReason(reasons []string, needle string) bool {
 	}
 	return false
 }
+
+// TestPlanRetention_GroupsBySourceRoot pins the multi-source rule: two
+// directories backed up into one repo must each get the policy's full
+// budget. Ungrouped, keep-daily keeps only the newest snapshot per
+// calendar day ACROSS sources — so the earlier-in-the-day source's
+// dailies get pruned out from under it, silently thinning real
+// backups.
+func TestPlanRetention_GroupsBySourceRoot(t *testing.T) {
+	mk := func(id, root string, day, hour int) SnapshotInfo {
+		return SnapshotInfo{
+			ID:        id,
+			Root:      root,
+			CreatedAt: time.Date(2026, 7, day, hour, 0, 0, 0, time.UTC),
+		}
+	}
+	// /work always runs an hour before /home, so ungrouped bucketing
+	// would sacrifice every /work daily to /home's newer snapshot.
+	snaps := []SnapshotInfo{
+		mk("snap-a1", "/home", 1, 10),
+		mk("snap-b1", "/work", 1, 9),
+		mk("snap-a2", "/home", 2, 10),
+		mk("snap-b2", "/work", 2, 9),
+	}
+	keep, drop := PlanRetention(snaps, RetentionPolicy{KeepDaily: 2})
+	if len(drop) != 0 || len(keep) != 4 {
+		t.Fatalf("grouped keep-daily must retain each source's dailies: keep=%v drop=%v", keep, drop)
+	}
+}
+
+// TestPlanRetention_KeepLastIsPerGroup: keep-last N means "N per
+// source", matching restic's group-then-apply semantics — otherwise a
+// chatty source starves a quiet one out of the keep-last window.
+func TestPlanRetention_KeepLastIsPerGroup(t *testing.T) {
+	mk := func(id, root string, day int) SnapshotInfo {
+		return SnapshotInfo{
+			ID:        id,
+			Root:      root,
+			CreatedAt: time.Date(2026, 7, day, 12, 0, 0, 0, time.UTC),
+		}
+	}
+	snaps := []SnapshotInfo{
+		mk("snap-a1", "/home", 1), mk("snap-a2", "/home", 2),
+		mk("snap-a3", "/home", 3), mk("snap-a4", "/home", 4),
+		mk("snap-b1", "/work", 1),
+	}
+	keep, _ := PlanRetention(snaps, RetentionPolicy{KeepLast: 2})
+	if !slicesContains(keep, "snap-b1") {
+		t.Errorf("the quiet source's only snapshot must survive keep-last: keep=%v", keep)
+	}
+	if !slicesContains(keep, "snap-a4") || !slicesContains(keep, "snap-a3") {
+		t.Errorf("the busy source keeps its own newest 2: keep=%v", keep)
+	}
+	if slicesContains(keep, "snap-a1") || slicesContains(keep, "snap-a2") {
+		t.Errorf("keep-last budget is still 2 within a source: keep=%v", keep)
+	}
+}
+
+func slicesContains(s []string, v string) bool {
+	for _, x := range s {
+		if x == v {
+			return true
+		}
+	}
+	return false
+}

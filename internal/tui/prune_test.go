@@ -14,11 +14,19 @@ import (
 )
 
 // seedTwoSnapshots creates two snapshots with distinct content so a
-// KeepLast=1 policy drops exactly one.
+// KeepLast=1 policy drops exactly one. Both snapshots come from the
+// SAME source dir — retention groups by root, so two roots would each
+// keep their own snapshot and the policy would drop nothing.
 func seedTwoSnapshots(t *testing.T, r *repo.Repo) {
 	t.Helper()
+	src := t.TempDir()
+	prev := ""
 	for _, name := range []string{"one", "two"} {
-		src := t.TempDir()
+		if prev != "" {
+			if err := os.Remove(filepath.Join(src, prev+".txt")); err != nil {
+				t.Fatal(err)
+			}
+		}
 		if err := os.WriteFile(filepath.Join(src, name+".txt"),
 			[]byte(strings.Repeat(name, 200)), 0o600); err != nil {
 			t.Fatal(err)
@@ -26,6 +34,7 @@ func seedTwoSnapshots(t *testing.T, r *repo.Repo) {
 		if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
 			t.Fatalf("seed %s: %v", name, err)
 		}
+		prev = name
 	}
 }
 

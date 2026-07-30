@@ -76,6 +76,14 @@ func PlanRetention(snaps []SnapshotInfo, policy RetentionPolicy) (keep, drop []s
 // snapshot. It applies the same borg-style union policy as
 // PlanRetention, but preserves the rule names and buckets that explain
 // why a snapshot was kept.
+//
+// Snapshots are grouped by source Root and the whole policy applies
+// PER GROUP (restic's group-then-apply semantics). Ungrouped, two
+// sources backed up into one repo would compete for the same buckets:
+// keep-daily keeps the newest snapshot per calendar day across ALL
+// sources, so whichever source runs later in the day silently prunes
+// the other's dailies. Snapshots from before roots were recorded
+// (empty Root) form their own group and age out naturally.
 func PlanRetentionExplain(snaps []SnapshotInfo, policy RetentionPolicy) []RetentionDecision {
 	// Defensive copy so callers don't see their slice reordered. Cheap
 	// — SnapshotInfo is a small struct.
@@ -83,20 +91,28 @@ func PlanRetentionExplain(snaps []SnapshotInfo, policy RetentionPolicy) []Retent
 	copy(sorted, snaps)
 	sortNewestFirst(sorted)
 
-	// reasons collects IDs from all rules' picks. The walking helpers
-	// below treat zero limits as no-ops, so we don't need to gate on
-	// policy.KeepLast > 0 here — the helper just returns nothing.
-	reasons := make(map[string][]string, len(sorted))
-
-	if policy.KeepLast > 0 {
-		for i := 0; i < len(sorted) && i < policy.KeepLast; i++ {
-			addRetentionReason(reasons, sorted[i].ID,
-				fmt.Sprintf("keep-last #%d of %d", i+1, policy.KeepLast))
-		}
+	// Partition into per-root groups. Order within each group stays
+	// newest-first because the source slice is already sorted.
+	groups := make(map[string][]SnapshotInfo)
+	for _, s := range sorted {
+		groups[s.Root] = append(groups[s.Root], s)
 	}
-	collectByBucketReason(sorted, policy.KeepDaily, dayBucket, "keep-daily", reasons)
-	collectByBucketReason(sorted, policy.KeepWeekly, isoWeekBucket, "keep-weekly", reasons)
-	collectByBucketReason(sorted, policy.KeepMonthly, monthBucket, "keep-monthly", reasons)
+
+	// reasons collects IDs from all rules' picks across all groups.
+	// The walking helpers treat zero limits as no-ops, so we don't
+	// need to gate on policy.KeepLast > 0 here.
+	reasons := make(map[string][]string, len(sorted))
+	for _, group := range groups {
+		if policy.KeepLast > 0 {
+			for i := 0; i < len(group) && i < policy.KeepLast; i++ {
+				addRetentionReason(reasons, group[i].ID,
+					fmt.Sprintf("keep-last #%d of %d", i+1, policy.KeepLast))
+			}
+		}
+		collectByBucketReason(group, policy.KeepDaily, dayBucket, "keep-daily", reasons)
+		collectByBucketReason(group, policy.KeepWeekly, isoWeekBucket, "keep-weekly", reasons)
+		collectByBucketReason(group, policy.KeepMonthly, monthBucket, "keep-monthly", reasons)
+	}
 
 	out := make([]RetentionDecision, 0, len(sorted))
 	for _, s := range sorted {

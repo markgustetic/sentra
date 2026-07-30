@@ -150,6 +150,7 @@ func (r *Repo) finishSnapshot(
 		ID:        m.ID,
 		CreatedAt: m.CreatedAt,
 		Tag:       m.Tag,
+		Root:      m.Root,
 		Stats:     m.Stats,
 	}
 

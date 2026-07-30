@@ -15,15 +15,12 @@ import (
 )
 
 // pruneFixture builds PruneDeps backed by a memory store with N
-// snapshots already created. Each snapshot has its OWN root tree
-// containing one unique file, so dropping a snapshot means GC has
-// work to do (the unique file's chunks become orphaned).
-//
-// We use distinct root dirs rather than mutating a shared dir because
-// snapshot N+1 would otherwise include snapshot N's file (cumulative
-// trees), which means even after dropping the older snapshot the
-// blobs survive — making it impossible to assert "blob count went
-// down" for the apply test.
+// snapshots already created. Every snapshot comes from the SAME root
+// — retention groups by source root, so distinct roots would each get
+// their own keep budget and nothing would ever prune. Each snapshot
+// still owns one unique file (the previous snapshot's file is
+// replaced before the next run), so dropping a snapshot means GC has
+// work to do: the replaced file's chunks become orphaned.
 //
 // Returns the deps, the IDs in creation order (oldest-first), and a
 // stdout buffer wired into deps.
@@ -36,13 +33,19 @@ func pruneFixture(t *testing.T, passphrase string, n int) (PruneDeps, *blobstore
 	}
 	defer r.Close()
 
+	root := t.TempDir()
 	ids := make([]string, 0, n)
 	for i := 0; i < n; i++ {
-		// Fresh per-snapshot root with one unique file. The chunker
-		// dedupes across snapshots, but distinct content means each
-		// snapshot's chunks are unique to it — exactly what GC needs
-		// to reap something interesting.
-		root := t.TempDir()
+		// Swap in this snapshot's unique file. The chunker dedupes
+		// across snapshots, but distinct content means each snapshot's
+		// chunks are unique to it — exactly what GC needs to reap
+		// something interesting once the snapshot drops.
+		if i > 0 {
+			prev := filepath.Join(root, "f"+string(rune('a'+i-1))+".txt")
+			if err := os.Remove(prev); err != nil {
+				t.Fatalf("remove prev: %v", err)
+			}
+		}
 		fname := filepath.Join(root, "f"+string(rune('a'+i))+".txt")
 		body := strings.Repeat("body-"+string(rune('a'+i))+"-", 200)
 		if err := os.WriteFile(fname, []byte(body), 0o600); err != nil {

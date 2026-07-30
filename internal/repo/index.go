@@ -28,7 +28,12 @@ const snapshotIndexKey = "meta/snapshots"
 // index. Bumped only when the wire format changes incompatibly.
 // loadSnapshotIndex returns an error on version mismatch so an older
 // build doesn't silently mis-read a newer index.
-const snapshotIndexVersion = 1
+//
+// v2 added SnapshotInfo.Root, which retention grouping depends on. A
+// v1 index would read cleanly but with every Root empty — collapsing
+// all sources into one retention group — so the bump forces the
+// self-healing manifest fan-out to rebuild it with roots populated.
+const snapshotIndexVersion = 2
 
 // snapshotIndex is the wire shape of the encrypted snapshot summary
 // index. The full file tree per snapshot is NOT kept here — callers

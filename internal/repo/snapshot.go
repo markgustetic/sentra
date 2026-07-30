@@ -69,7 +69,11 @@ type SnapshotInfo struct {
 	ID        string
 	CreatedAt time.Time
 	Tag       string
-	Stats     SnapshotStats
+	// Root is the absolute source directory the snapshot captured
+	// (Manifest.Root). Retention groups by it so multiple sources
+	// backed up into one repo each get the policy's full budget.
+	Root  string
+	Stats SnapshotStats
 }
 
 // snapshotPrefix is the blobstore key prefix under which manifests

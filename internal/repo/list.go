@@ -92,6 +92,7 @@ func (r *Repo) listSnapshotsFromManifests(ctx context.Context) ([]SnapshotInfo, 
 			ID:        m.ID,
 			CreatedAt: m.CreatedAt,
 			Tag:       m.Tag,
+			Root:      m.Root,
 			Stats:     m.Stats,
 		})
 	}
