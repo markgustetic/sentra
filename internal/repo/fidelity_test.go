@@ -351,3 +351,40 @@ func TestRestore_PartialByPath(t *testing.T) {
 		t.Error("selector matching nothing must be an error")
 	}
 }
+
+// TestRestore_OverlappingSelectors: a selector subsumed by an earlier,
+// broader one (or duplicated outright) is still "matched" — the
+// per-selector accounting must credit every selector an entry
+// satisfies, not just the first. The regression: ["sub",
+// "sub/b.txt"] failed with `path "sub/b.txt" matches nothing`.
+func TestRestore_OverlappingSelectors(t *testing.T) {
+	r, _ := newTestRepo(t)
+	ctx := context.Background()
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "sub", "b.txt"), "bravo")
+	writeFile(t, filepath.Join(src, "other.txt"), "other")
+	snap, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	for _, paths := range [][]string{
+		{"sub", "sub/b.txt"},   // narrower selector swallowed by broader
+		{"sub/b.txt", "sub"},   // same, reversed
+		{"sub", "sub"},         // duplicated selector
+	} {
+		dest := filepath.Join(t.TempDir(), "out")
+		if err := r.Restore(ctx, snap.ID, dest, RestoreOptions{Paths: paths}); err != nil {
+			t.Errorf("overlapping selectors %v must restore, got: %v", paths, err)
+			continue
+		}
+		if body, err := os.ReadFile(filepath.Join(dest, "sub", "b.txt")); err != nil || string(body) != "bravo" {
+			t.Errorf("%v: content wrong: %q err=%v", paths, body, err)
+		}
+		// The file must land exactly once — no duplicate-entry effects.
+		if _, err := os.Stat(filepath.Join(dest, "other.txt")); !errors.Is(err, os.ErrNotExist) {
+			t.Errorf("%v: out-of-scope file restored", paths)
+		}
+	}
+}

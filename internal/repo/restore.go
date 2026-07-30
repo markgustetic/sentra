@@ -67,15 +67,22 @@ func filterTreeByPaths(tree []FileEntry, paths []string) ([]FileEntry, error) {
 	for i, p := range paths {
 		selectors[i] = strings.Trim(filepath.ToSlash(p), "/")
 	}
+	// Every entry credits EVERY selector it satisfies — breaking on
+	// the first match would leave a selector subsumed by an earlier,
+	// broader one (["sub", "sub/b.txt"]) falsely reported as matching
+	// nothing. The entry itself is included at most once.
 	matched := make([]bool, len(selectors))
 	var out []FileEntry
 	for _, fe := range tree {
+		included := false
 		for i, p := range selectors {
 			if p != "" && (fe.Path == p || strings.HasPrefix(fe.Path, p+"/")) {
-				out = append(out, fe)
 				matched[i] = true
-				break
+				included = true
 			}
+		}
+		if included {
+			out = append(out, fe)
 		}
 	}
 	for i, ok := range matched {
@@ -96,6 +103,25 @@ func treeFileBytes(tree []FileEntry) int64 {
 		}
 	}
 	return n
+}
+
+// ScopedTreeStats reports how many regular files (and how many bytes)
+// the given selectors cover in m — the numbers a scoped restore
+// summary should show instead of the whole manifest's stats. Shares
+// filterTreeByPaths with Restore/PlanRestore/VerifyRestore so every
+// surface agrees on what a selector matches.
+func ScopedTreeStats(m Manifest, paths []string) (files int, bytes int64, err error) {
+	tree, err := filterTreeByPaths(m.Tree, paths)
+	if err != nil {
+		return 0, 0, err
+	}
+	for _, fe := range tree {
+		if fe.IsFile() {
+			files++
+			bytes += fe.Size
+		}
+	}
+	return files, bytes, nil
 }
 
 // Restore writes every file in snapshot snapID into destDir. It
