@@ -724,6 +724,64 @@ func TestRunUI_SetupPrefillPrecedence(t *testing.T) {
 	}
 }
 
+// TestDefaultUIRunner_NonTTYNamesANonInteractiveAlternative: `go test` runs
+// with a non-TTY stdout, so this exercises the real refusal path.
+//
+// The message reaches `sentra setup` too, not just `sentra ui` — setup is a
+// launcher for the same TUI — and someone who typed `setup` is trying to
+// configure a repository. Pointing them at `sentra ui` restates the thing that
+// just refused to run; `sentra init` is the flow that actually does the job
+// without a terminal.
+func TestDefaultUIRunner_NonTTYNamesANonInteractiveAlternative(t *testing.T) {
+	err := DefaultUIRunner(tui.NewApp(tui.Deps{}))
+	if err == nil {
+		t.Fatal("a non-TTY stdout must refuse to launch the TUI")
+	}
+	if !strings.Contains(err.Error(), "sentra init") {
+		t.Errorf("refusal must name a non-interactive alternative, got: %v", err)
+	}
+	if !strings.Contains(err.Error(), "requires a terminal") {
+		t.Errorf("refusal must still say why, got: %v", err)
+	}
+}
+
+// TestRunUI_EmptyConfigPathNormalizes: `--config ""` must mean the default
+// sentra.yaml, not the current directory. The deleted runSetup opened with
+// `if cfgPath == "" { cfgPath = configFileName }`; runUI never had the
+// equivalent, so filepath.Abs("") resolves to the cwd and the wizard would hand
+// a DIRECTORY to every config-writing flow. Fixing it in runUI covers
+// `sentra ui` too.
+func TestRunUI_EmptyConfigPathNormalizes(t *testing.T) {
+	chDir(t, t.TempDir())
+	// Derive the expectation from the process cwd, not from t.TempDir(): on
+	// macOS the temp dir is reached through a /var -> /private/var symlink, so
+	// the two spellings differ and only the cwd matches what Abs produces.
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatalf("getwd: %v", err)
+	}
+
+	var captured tui.App
+	deps := UIDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+				return blobstore.NewMemory(), nil
+			},
+		},
+		Run: func(app tui.App) error { captured = app; return nil },
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := runUI(cmd, deps, "", false); err != nil {
+		t.Fatalf("launch: %v", err)
+	}
+	want := filepath.Join(cwd, configFileName)
+	if got := captured.Deps().ConfigPath; got != want {
+		t.Errorf("ConfigPath = %q, want %q — an empty --config must mean the default file", got, want)
+	}
+}
+
 // TestRunUI_ThreadsPassphraseFileToTUI: the setup wizard resolves
 // --passphrase-file itself (then SENTRA_PASSPHRASE) so it can skip its entry
 // stage rather than prompt for a secret the operator already configured. That

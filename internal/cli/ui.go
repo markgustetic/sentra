@@ -126,6 +126,15 @@ func NewUI(deps UIDeps) *cobra.Command {
 func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) error {
 	cmd.SilenceUsage = true
 
+	// An explicit `--config ""` means the default file, not the current
+	// directory. Without this, filepath.Abs("") below resolves to the cwd and
+	// every config-writing flow the TUI hosts (setup, policy, schedule) is handed
+	// a DIRECTORY to write to. The deleted runSetup normalized this on entry;
+	// doing it here covers `sentra ui` as well as `sentra setup`.
+	if cfgPath == "" {
+		cfgPath = configFileName
+	}
+
 	passphraseFile := ""
 	if deps.PassphraseFile != nil {
 		passphraseFile = deps.PassphraseFile()
@@ -311,9 +320,14 @@ func providerForLaunch(deps UIDeps, cfg *config.Config) llm.Provider {
 // the consumer's stdout with no useful output. Scripts piping
 // `sentra` should call a JSON-emitting subcommand (`snapshots --json`,
 // `agent scan --json`) instead.
+//
+// The message names both non-interactive routes because `sentra setup` reaches
+// this same refusal — setup is a launcher for this TUI. Telling someone who
+// typed `setup` to run `sentra ui` restates the thing that just refused;
+// `sentra init` is the flow that configures a repository without a terminal.
 func DefaultUIRunner(app tui.App) error {
 	if !term.IsTerminal(os.Stdout.Fd()) {
-		return errors.New("sentra ui requires a terminal; pipe to a subcommand like `sentra snapshots --json` for non-interactive use")
+		return errors.New("sentra requires a terminal for the TUI; run `sentra init` to configure a repository without one, or call a JSON-emitting subcommand like `sentra snapshots --json` from scripts")
 	}
 	p := tea.NewProgram(app, tea.WithAltScreen())
 	_, err := p.Run()
