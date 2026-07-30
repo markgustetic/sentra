@@ -2,6 +2,7 @@ package cli
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"io"
 
@@ -42,6 +43,7 @@ type syncFlags struct {
 	initDest    bool
 	concurrency int
 	dryRun      bool
+	asJSON      bool
 }
 
 // NewSync returns the cobra command for `sentra sync`. The
@@ -86,6 +88,8 @@ func NewSync(deps SyncDeps) *cobra.Command {
 		"parallel transfers per phase (0 = GOMAXPROCS)")
 	cmd.Flags().BoolVar(&flags.dryRun, "dry-run", false,
 		"list what would be copied without writing to the destination")
+	cmd.Flags().BoolVar(&flags.asJSON, "json", false,
+		"emit the sync stats as JSON instead of the text summary")
 	return cmd
 }
 
@@ -159,6 +163,9 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 	}
 
 	// 9. Print summary.
+	if flags.asJSON {
+		return writeSyncJSON(out, stats)
+	}
 	if flags.dryRun {
 		fmt.Fprintln(out, "Dry-run plan (no writes performed):")
 	} else {
@@ -170,6 +177,32 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 	fmt.Fprintf(out, "  copied:     %d blobs (%d bytes)\n", stats.CopiedBlobs, stats.CopiedBytes)
 	fmt.Fprintf(out, "  skipped:    %d (already on destination)\n", stats.SkippedBlobs)
 	fmt.Fprintf(out, "  elapsed:    %s\n", stats.Elapsed)
+	return nil
+}
+
+// syncJSONRow is the stable machine-readable schema for `sync --json`.
+type syncJSONRow struct {
+	Bootstrapped bool  `json:"bootstrapped"`
+	CopiedBlobs  int   `json:"copied_blobs"`
+	CopiedBytes  int64 `json:"copied_bytes"`
+	SkippedBlobs int   `json:"skipped_blobs"`
+	DryRun       bool  `json:"dry_run"`
+	ElapsedMS    int64 `json:"elapsed_ms"`
+}
+
+func writeSyncJSON(w io.Writer, stats repo.SyncStats) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(syncJSONRow{
+		Bootstrapped: stats.Bootstrapped,
+		CopiedBlobs:  stats.CopiedBlobs,
+		CopiedBytes:  stats.CopiedBytes,
+		SkippedBlobs: stats.SkippedBlobs,
+		DryRun:       stats.DryRun,
+		ElapsedMS:    stats.Elapsed.Milliseconds(),
+	}); err != nil {
+		return fmt.Errorf("encode json: %w", err)
+	}
 	return nil
 }
 

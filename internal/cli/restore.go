@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -34,6 +35,7 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 		cfgPath string
 		dryRun  bool
 		verify  bool
+		asJSON  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "restore <snap-id> <dest-dir> [path...]",
@@ -48,13 +50,15 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runRestore(cmd, deps, args[0], args[1], args[2:], cfgPath, dryRun, verify)
+			return runRestore(cmd, deps, args[0], args[1], args[2:], cfgPath, dryRun, verify, asJSON)
 		},
 	}
 	cmd.Flags().BoolVar(&dryRun, "dry-run", false,
 		"preview the restore without creating or writing the destination")
 	cmd.Flags().BoolVar(&verify, "verify", false,
 		"verify destination files against the snapshot after restore")
+	cmd.Flags().BoolVar(&asJSON, "json", false,
+		"emit the restore summary (or dry-run plan) as JSON")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	return cmd
@@ -67,7 +71,7 @@ func runRestore(
 	snapID, destDir string,
 	paths []string,
 	cfgPath string,
-	dryRun, verify bool,
+	dryRun, verify, asJSON bool,
 ) error {
 	cmd.SilenceUsage = true
 	if dryRun && verify {
@@ -96,6 +100,16 @@ func runRestore(
 		if err != nil {
 			return fmt.Errorf("plan restore: %w", err)
 		}
+		if asJSON {
+			return encodeJSON(stdout, restoreJSONRow{
+				SnapshotID: plan.SnapshotID,
+				Dest:       plan.DestDir,
+				Files:      plan.Files,
+				Bytes:      plan.Bytes,
+				Scope:      paths,
+				DryRun:     true,
+			})
+		}
 		writeRestorePlan(stdout, plan)
 		return nil
 	}
@@ -123,6 +137,34 @@ func runRestore(
 	}
 	stop()
 
+	if asJSON {
+		row := restoreJSONRow{
+			SnapshotID: snapID,
+			Dest:       destDir,
+			Files:      m.Stats.Files,
+			Bytes:      m.Stats.Bytes,
+			Scope:      paths,
+		}
+		if verify {
+			report, err := r.VerifyRestore(cmd.Context(), snapID, destDir, paths...)
+			if err != nil {
+				return fmt.Errorf("verify restore: %w", err)
+			}
+			row.Verify = &restoreJSONVerify{
+				VerifiedFiles: report.VerifiedFiles,
+				Mismatches:    len(report.Mismatches),
+			}
+			if err := encodeJSON(stdout, row); err != nil {
+				return err
+			}
+			if !report.OK() {
+				return fmt.Errorf("restore verification failed: %d mismatches", len(report.Mismatches))
+			}
+			return nil
+		}
+		return encodeJSON(stdout, row)
+	}
+
 	fmt.Fprintln(stdout, ui.Success.Render("Restore complete"))
 	fmt.Fprintf(stdout, "  snapshot:  %s\n", snapID)
 	fmt.Fprintf(stdout, "  dest:      %s\n", destDir)
@@ -141,6 +183,32 @@ func runRestore(
 		if !report.OK() {
 			return fmt.Errorf("restore verification failed: %d mismatches", len(report.Mismatches))
 		}
+	}
+	return nil
+}
+
+// restoreJSONRow is the stable machine-readable schema for
+// `restore --json` (and its dry-run form).
+type restoreJSONRow struct {
+	SnapshotID string             `json:"snapshot_id"`
+	Dest       string             `json:"dest"`
+	Files      int                `json:"files"`
+	Bytes      int64              `json:"bytes"`
+	Scope      []string           `json:"scope,omitempty"`
+	DryRun     bool               `json:"dry_run,omitempty"`
+	Verify     *restoreJSONVerify `json:"verify,omitempty"`
+}
+
+type restoreJSONVerify struct {
+	VerifiedFiles int `json:"verified_files"`
+	Mismatches    int `json:"mismatches"`
+}
+
+func encodeJSON(w io.Writer, v any) error {
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(v); err != nil {
+		return fmt.Errorf("encode json: %w", err)
 	}
 	return nil
 }

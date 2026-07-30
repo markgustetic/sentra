@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -394,5 +395,36 @@ func TestPrune_ConfirmDecline(t *testing.T) {
 	}
 	if len(snaps) != 2 {
 		t.Errorf("declined confirm should leave snapshots intact, got %d", len(snaps))
+	}
+}
+
+// TestPrune_JSON: --json emits the plan (and apply outcome) as a
+// stable schema.
+func TestPrune_JSON(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, _, ids, out := pruneFixture(t, "hunter2", 3)
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "1", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var plan struct {
+		DryRun bool `json:"dry_run"`
+		Keep   []struct {
+			ID      string   `json:"id"`
+			Reasons []string `json:"reasons"`
+		} `json:"keep"`
+		Drop    []string `json:"drop"`
+		Deleted int      `json:"deleted"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &plan); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if !plan.DryRun || len(plan.Keep) != 1 || len(plan.Drop) != 2 || plan.Deleted != 0 {
+		t.Errorf("unexpected plan: %+v (ids %v)", plan, ids)
 	}
 }

@@ -406,3 +406,38 @@ func TestBackup_RequiresPath(t *testing.T) {
 		t.Fatal("expected error for missing path argument, got nil")
 	}
 }
+
+// TestBackup_JSON: --json emits the snapshot summary as a stable
+// schema on stdout (progress goes to stderr), for scripted backups.
+func TestBackup_JSON(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, dir)
+	src := filepath.Join(dir, "data")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	deps, _, out, _ := backupFixture(t, "hunter2")
+	cmd := NewBackup(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{src, "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var row struct {
+		ID    string `json:"id"`
+		Files int    `json:"files"`
+		Bytes int64  `json:"bytes"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &row); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if row.ID == "" || row.Files != 1 || row.Bytes != 5 {
+		t.Errorf("unexpected row: %+v", row)
+	}
+}

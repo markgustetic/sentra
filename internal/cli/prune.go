@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -54,6 +55,7 @@ type pruneFlags struct {
 
 	apply   bool
 	yes     bool
+	asJSON  bool
 	all     bool
 	explain bool
 	cfgPath string
@@ -116,6 +118,8 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 		"skip the interactive confirm prompt (use with --apply for scripts)")
 	cmd.Flags().BoolVar(&flags.all, "all", false,
 		"required when the policy would drop every snapshot (safety rail)")
+	cmd.Flags().BoolVar(&flags.asJSON, "json", false,
+		"emit the prune plan (and apply outcome) as JSON")
 	cmd.Flags().BoolVar(&flags.explain, "explain", false,
 		"print the retention decision and reason for every snapshot")
 	cmd.Flags().StringVar(&flags.cfgPath, "config", configFileName,
@@ -174,8 +178,18 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 		freedEstimate += infoByID[id].Stats.NewBytes
 	}
 
+	// JSON mode replaces every text branch below. The dry-run form
+	// carries the plan; the apply form re-emits it after deletion with
+	// the outcome counts filled in.
+	if flags.asJSON && !flags.apply {
+		return writePruneJSON(out, decisions, drop, true, 0, nil)
+	}
+
 	// Print the dry-run / what-would-happen summary unconditionally.
 	// In apply-mode this doubles as the prompt context.
+	if len(drop) == 0 && flags.asJSON {
+		return writePruneJSON(out, decisions, drop, false, 0, nil)
+	}
 	if len(drop) == 0 {
 		fmt.Fprintln(out, ui.Subtle.Render("Nothing to delete; current snapshots match retention policy."))
 		fmt.Fprintf(out, "  keep: %d\n", len(keep))
@@ -187,7 +201,7 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 
 	if !flags.apply {
 		fmt.Fprintln(out, ui.Primary.Render("Dry-run: would prune snapshots"))
-	} else {
+	} else if !flags.asJSON {
 		fmt.Fprintln(out, ui.Warn.Render("Will prune snapshots"))
 	}
 	fmt.Fprintf(out, "  keep:  %d snapshots\n", len(keep))
@@ -254,12 +268,66 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 		return fmt.Errorf("gc: %w", err)
 	}
 
+	if flags.asJSON {
+		return writePruneJSON(out, decisions, drop, false, deletedCount, &stats)
+	}
 	fmt.Fprintln(out, ui.Success.Render("Prune complete"))
 	fmt.Fprintf(out, "  deleted snapshots: %d\n", deletedCount)
 	fmt.Fprintf(out, "  reclaimed blobs:   %d\n", stats.DeletedBlobs)
 	fmt.Fprintf(out, "  reclaimed bytes:   %s (%d)\n",
 		ui.FormatBytes(stats.DeletedBytes), stats.DeletedBytes)
 	fmt.Fprintf(out, "  live blobs:        %d\n", stats.LiveBlobs)
+	return nil
+}
+
+// pruneJSONReport is the stable machine-readable schema for
+// `prune --json`: the keep set with its reasons, the drop set, and —
+// after --apply — the deletion/GC outcome.
+type pruneJSONReport struct {
+	DryRun  bool            `json:"dry_run"`
+	Keep    []pruneJSONKeep `json:"keep"`
+	Drop    []string        `json:"drop"`
+	Deleted int             `json:"deleted"`
+	GC      *pruneJSONGC    `json:"gc,omitempty"`
+}
+
+type pruneJSONKeep struct {
+	ID      string   `json:"id"`
+	Reasons []string `json:"reasons"`
+}
+
+type pruneJSONGC struct {
+	DeletedBlobs int   `json:"deleted_blobs"`
+	DeletedBytes int64 `json:"deleted_bytes"`
+	LiveBlobs    int   `json:"live_blobs"`
+}
+
+func writePruneJSON(w io.Writer, decisions []repo.RetentionDecision, drop []string, dryRun bool, deleted int, gc *repo.GCStats) error {
+	report := pruneJSONReport{
+		DryRun:  dryRun,
+		Drop:    drop,
+		Deleted: deleted,
+	}
+	if report.Drop == nil {
+		report.Drop = []string{}
+	}
+	for _, d := range decisions {
+		if d.Keep {
+			report.Keep = append(report.Keep, pruneJSONKeep{ID: d.Snapshot.ID, Reasons: d.Reasons})
+		}
+	}
+	if gc != nil {
+		report.GC = &pruneJSONGC{
+			DeletedBlobs: gc.DeletedBlobs,
+			DeletedBytes: gc.DeletedBytes,
+			LiveBlobs:    gc.LiveBlobs,
+		}
+	}
+	enc := json.NewEncoder(w)
+	enc.SetIndent("", "  ")
+	if err := enc.Encode(report); err != nil {
+		return fmt.Errorf("encode json: %w", err)
+	}
 	return nil
 }
 

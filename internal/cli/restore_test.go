@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"io"
 	"os"
 	"path/filepath"
@@ -190,4 +191,37 @@ func readTree(t *testing.T, root string) map[string][]byte {
 		t.Fatalf("walk %s: %v", root, err)
 	}
 	return out
+}
+
+// TestRestore_JSON: --json emits the restore summary as a stable
+// schema (and folds in the verification report when --verify ran).
+func TestRestore_JSON(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	writeBackupConfigFile(t, dir)
+
+	deps, snapID, _, out := restoreFixture(t, "hunter2")
+	dest := filepath.Join(dir, "out")
+	cmd := NewRestore(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{snapID, dest, "--verify", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var row struct {
+		SnapshotID string `json:"snapshot_id"`
+		Dest       string `json:"dest"`
+		Files      int    `json:"files"`
+		Verify     *struct {
+			VerifiedFiles int `json:"verified_files"`
+			Mismatches    int `json:"mismatches"`
+		} `json:"verify"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &row); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if row.SnapshotID != snapID || row.Verify == nil || row.Verify.Mismatches != 0 {
+		t.Errorf("unexpected row: %+v", row)
+	}
 }

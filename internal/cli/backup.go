@@ -50,6 +50,7 @@ func NewBackup(deps BackupDeps) *cobra.Command {
 		tag     string
 		cfgPath string
 		rescan  bool
+		asJSON  bool
 	)
 	cmd := &cobra.Command{
 		Use:   "backup <path>",
@@ -62,12 +63,14 @@ func NewBackup(deps BackupDeps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runBackup(cmd, deps, args[0], tag, cfgPath, rescan)
+			return runBackup(cmd, deps, args[0], tag, cfgPath, rescan, asJSON)
 		},
 	}
 	cmd.Flags().StringVar(&tag, "tag", "", "optional human-readable tag for the snapshot")
 	cmd.Flags().BoolVar(&rescan, "rescan", false,
 		"read and re-chunk every file even when size+mtime match the previous snapshot")
+	cmd.Flags().BoolVar(&asJSON, "json", false,
+		"emit the snapshot summary as JSON instead of the styled text")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	cmd.AddCommand(newBackupPlan(deps))
@@ -127,7 +130,7 @@ func newBackupApply(deps BackupDeps) *cobra.Command {
 
 // runBackup is the body of `sentra backup`, factored out so it's
 // independently testable and easy to grep.
-func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, rescan bool) error {
+func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, rescan, asJSON bool) error {
 	cmd.SilenceUsage = true
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
@@ -172,6 +175,21 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 	}
 
 	// Final summary on stdout — parseable, no animation chars.
+	if asJSON {
+		enc := json.NewEncoder(stdout)
+		enc.SetIndent("", "  ")
+		if err := enc.Encode(snapshotJSONRow{
+			ID:        snap.ID,
+			CreatedAt: snap.CreatedAt,
+			Tag:       snap.Tag,
+			Files:     snap.Stats.Files,
+			Bytes:     snap.Stats.Bytes,
+			NewBytes:  snap.Stats.NewBytes,
+		}); err != nil {
+			return fmt.Errorf("encode json: %w", err)
+		}
+		return nil
+	}
 	fmt.Fprintln(stdout, ui.Success.Render("Snapshot created"))
 	fmt.Fprintf(stdout, "  id:        %s\n", snap.ID)
 	fmt.Fprintf(stdout, "  tag:       %s\n", emptyDash(snap.Tag))

@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"path/filepath"
@@ -154,5 +155,51 @@ func TestDoctor_RegisteredOnRoot(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("doctor command not registered on root")
+	}
+}
+
+// TestDoctor_JSON: --json emits the summary schema; probe prose stays
+// off stdout so the output parses.
+func TestDoctor_JSON(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "sentra-prod"
+	cfg.Repo.S3.Region = "us-east-1"
+	if err := config.Write(filepath.Join(dir, "sentra.yaml"), &cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	r.Close()
+	out := &bytes.Buffer{}
+	deps := DoctorDeps{
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error { return nil },
+		InspectAWS: func(context.Context, *config.Config) (AWSInspectReport, error) {
+			return AWSInspectReport{BucketAccessible: true}, nil
+		},
+		NewStore:             func(context.Context, *config.Config) (blobstore.Store, error) { return store, nil },
+		PassphraseWithConfig: func(*config.Config) ([]byte, error) { return []byte("hunter2"), nil },
+		Stdout:               out,
+	}
+	cmd := NewDoctor(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var report struct {
+		Status string `json:"status"`
+		Issues int    `json:"issues"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &report); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if report.Status != "healthy" || report.Issues != 0 {
+		t.Errorf("unexpected report: %+v", report)
 	}
 }

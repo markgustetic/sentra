@@ -33,6 +33,7 @@ type DoctorDeps struct {
 func NewDoctor(deps DoctorDeps) *cobra.Command {
 	var cfgPath string
 	var skipRepo bool
+	var asJSON bool
 	cmd := &cobra.Command{
 		Use:   "doctor",
 		Short: "Check Sentra setup without changing anything",
@@ -42,18 +43,26 @@ func NewDoctor(deps DoctorDeps) *cobra.Command {
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runDoctor(cmd, deps, cfgPath, skipRepo)
+			return runDoctor(cmd, deps, cfgPath, skipRepo, asJSON)
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	cmd.Flags().BoolVar(&skipRepo, "skip-repo", false,
 		"skip encrypted repository open/check")
+	cmd.Flags().BoolVar(&asJSON, "json", false,
+		"emit a summary schema {status, issues} instead of probe prose")
 	return cmd
 }
 
-func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo bool) error {
-	out := cmdStdout(cmd, deps.Stdout)
+func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo, asJSON bool) error {
+	stdout := cmdStdout(cmd, deps.Stdout)
+	out := stdout
+	if asJSON {
+		// Probe prose would corrupt the JSON document; the summary
+		// schema carries the outcome and the exit code carries failure.
+		out = io.Discard
+	}
 	fmt.Fprintln(out, ui.Primary.Render("Sentra doctor"))
 
 	failures := 0
@@ -91,12 +100,32 @@ func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo boo
 		failures += runDoctorRepo(cmd.Context(), deps, cfg, out)
 	}
 
+	if asJSON {
+		status := "healthy"
+		if failures > 0 {
+			status = "failed"
+		}
+		if err := encodeJSON(stdout, doctorJSONReport{Status: status, Issues: failures}); err != nil {
+			return err
+		}
+		if failures > 0 {
+			return fmt.Errorf("%w: %d issue(s)", ErrDoctorFailed, failures)
+		}
+		return nil
+	}
 	if failures > 0 {
 		fmt.Fprintf(out, "%s Doctor found %d issue(s)\n", ui.Danger.Render("error"), failures)
 		return fmt.Errorf("%w: %d issue(s)", ErrDoctorFailed, failures)
 	}
 	fmt.Fprintln(out, ui.Success.Render("Doctor: healthy"))
 	return nil
+}
+
+// doctorJSONReport is the summary schema for `doctor --json`. Probe
+// detail stays on the text surface; automation needs the verdict.
+type doctorJSONReport struct {
+	Status string `json:"status"`
+	Issues int    `json:"issues"`
 }
 
 func runDoctorAWS(ctx context.Context, deps DoctorDeps, cfg *config.Config, out io.Writer) int {

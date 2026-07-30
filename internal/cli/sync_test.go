@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"encoding/json"
 	"errors"
 	"io"
 	"os"
@@ -252,5 +253,32 @@ func TestSync_CLI_RegisteredOnRoot(t *testing.T) {
 	}
 	if !found {
 		t.Fatal("sync command not registered on root")
+	}
+}
+
+// TestSync_JSON: --json emits SyncStats as a stable schema.
+func TestSync_JSON(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	deps, _, out := syncFixture(t, dir, "hunter2")
+
+	cmd := NewSync(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--dst-config", filepath.Join(dir, "dst.yaml"), "--init-dest", "--json"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	var stats struct {
+		Bootstrapped bool  `json:"bootstrapped"`
+		CopiedBlobs  int   `json:"copied_blobs"`
+		CopiedBytes  int64 `json:"copied_bytes"`
+		DryRun       bool  `json:"dry_run"`
+	}
+	if err := json.Unmarshal(out.Bytes(), &stats); err != nil {
+		t.Fatalf("unmarshal: %v\n%s", err, out.String())
+	}
+	if !stats.Bootstrapped || stats.CopiedBlobs == 0 {
+		t.Errorf("unexpected stats: %+v", stats)
 	}
 }
