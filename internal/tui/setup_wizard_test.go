@@ -1253,3 +1253,60 @@ func TestSetupWizard_AdvertisesBackOnPassphrase(t *testing.T) {
 	}
 	t.Error("passphrase stage must advertise esc back in ShortHelp")
 }
+
+// TestSetupWizard_PrepareFailureWritesNoConfig pins the pipeline ordering
+// invariant: PrepareAWS runs BEFORE WriteConfig, so a failed bucket prep must
+// leave no sentra.yaml behind. A config written first would record a bucket
+// that does not exist, and the operator's next command would fail against it.
+// This replaces the CLI wizard's TestSetup_PreparesAWSBeforeWritingConfig,
+// whose runSetup sequencer is deleted; the wizard is now the only sequencer.
+func TestSetupWizard_PrepareFailureWritesNoConfig(t *testing.T) {
+	dir := t.TempDir()
+	cfgPath := filepath.Join(dir, "sentra.yaml")
+	deps := Deps{
+		Config:       &config.Config{},
+		ConfigPath:   cfgPath,
+		SetupEffects: stubEffects{prepareErr: errors.New("AccessDenied: s3:CreateBucket")},
+	}
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+
+	// Drive to review: backend → details → actions → passphrase → review.
+	v.backendCursor = 0
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push confirm modal
+	v = m.(SetupWizardView)
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+
+	var op startOpMsg
+	for _, msg := range execCmds(t, cmd) {
+		if s, ok := msg.(startOpMsg); ok {
+			op = s
+		}
+	}
+	if op.run == nil {
+		t.Fatal("no startOpMsg with a run closure")
+	}
+	res := op.run(context.Background())
+	done, ok := res.(setupDoneMsg)
+	if !ok {
+		t.Fatalf("op must return setupDoneMsg, got %T", res)
+	}
+	if done.err == nil {
+		t.Fatal("PrepareAWS failure must surface as setupDoneMsg.err")
+	}
+	if _, statErr := os.Stat(cfgPath); !os.IsNotExist(statErr) {
+		t.Fatalf("PrepareAWS failed, so no config may be written; stat err = %v", statErr)
+	}
+}
