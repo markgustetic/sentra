@@ -29,22 +29,39 @@ func NewCheck(deps CheckDeps) *cobra.Command {
 		asJSON         bool
 		staleLockAfter time.Duration
 		cfgPath        string
+		readData       bool
+		readDataSubset float64
 	)
 	cmd := &cobra.Command{
 		Use:   "check",
 		Short: "Audit repository integrity and operational health",
 		Long: "Load every snapshot manifest, verify that referenced chunks " +
-			"exist, report unreferenced data blobs, and flag stale advisory locks.",
+			"exist, report unreferenced data blobs, and flag stale advisory locks. " +
+			"--read-data additionally downloads, decrypts, and re-hashes referenced " +
+			"chunks — the only check that proves the repo is restorable. On large " +
+			"repos, bound the S3 egress with --read-data-subset (percent).",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, _ []string) error {
-			return runCheck(cmd, deps, asJSON, staleLockAfter, cfgPath)
+			// A subset percentage only makes sense for a deep check;
+			// setting it implies --read-data rather than erroring.
+			if cmd.Flags().Changed("read-data-subset") {
+				readData = true
+			}
+			if readDataSubset < 0 || readDataSubset > 100 {
+				return fmt.Errorf("--read-data-subset must be between 0 and 100, got %v", readDataSubset)
+			}
+			return runCheck(cmd, deps, asJSON, staleLockAfter, cfgPath, readData, readDataSubset/100)
 		},
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a text report")
 	cmd.Flags().DurationVar(&staleLockAfter, "stale-lock-after", 24*time.Hour,
 		"age after which meta/lock is treated as stale")
+	cmd.Flags().BoolVar(&readData, "read-data", false,
+		"download and re-hash referenced chunks (deep verify; costs S3 egress)")
+	cmd.Flags().Float64Var(&readDataSubset, "read-data-subset", 0,
+		"deep-verify only this percent of chunks (implies --read-data)")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
 		"path to sentra.yaml (defaults to ./sentra.yaml)")
 	return cmd
@@ -56,6 +73,8 @@ func runCheck(
 	asJSON bool,
 	staleLockAfter time.Duration,
 	cfgPath string,
+	readData bool,
+	readDataSubset float64,
 ) error {
 	cmd.SilenceUsage = true
 
@@ -66,7 +85,11 @@ func runCheck(
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
-	report, err := r.Check(cmd.Context(), repo.CheckOptions{StaleLockAfter: staleLockAfter})
+	report, err := r.Check(cmd.Context(), repo.CheckOptions{
+		StaleLockAfter: staleLockAfter,
+		ReadData:       readData,
+		ReadDataSubset: readDataSubset,
+	})
 	if err != nil {
 		return fmt.Errorf("check repo: %w", err)
 	}
@@ -146,6 +169,15 @@ func writeCheckText(w io.Writer, report repo.CheckReport) error {
 		for _, missing := range report.MissingBlobs {
 			fmt.Fprintf(w, "    - %s  snapshot=%s path=%s\n",
 				missing.Key, missing.SnapshotID, missing.Path)
+		}
+	}
+	if report.ReadDataBlobs > 0 {
+		fmt.Fprintf(w, "  deep-verified:    %d chunk(s)\n", report.ReadDataBlobs)
+	}
+	if len(report.CorruptBlobs) > 0 {
+		fmt.Fprintf(w, "  corrupt blobs:    %d\n", len(report.CorruptBlobs))
+		for _, corrupt := range report.CorruptBlobs {
+			fmt.Fprintf(w, "    - %s  %s\n", corrupt.Key, corrupt.Error)
 		}
 	}
 	if report.Lock != nil {

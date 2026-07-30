@@ -7,9 +7,13 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"math"
 	"slices"
 	"strings"
+	"sync"
 	"time"
+
+	"golang.org/x/sync/errgroup"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/crypto"
@@ -23,6 +27,21 @@ type CheckOptions struct {
 	// StaleLockAfter is the age at which an advisory lock becomes a
 	// health issue. Zero uses a conservative 24-hour default.
 	StaleLockAfter time.Duration
+
+	// ReadData additionally downloads, decrypts, decompresses, and
+	// re-hashes referenced chunks instead of only Stat-ing presence —
+	// the only check that proves the repo is actually restorable.
+	// Costs one GET per verified chunk (S3 egress); bound it with
+	// ReadDataSubset on large repos.
+	ReadData bool
+
+	// ReadDataSubset caps the deep verify at a fraction (0, 1) of the
+	// referenced chunks, chosen deterministically (sorted-hash
+	// stride) so repeated runs verify the same spread rather than a
+	// random sample that can miss the same corrupt blob forever or
+	// double-bill overlapping ones. Zero (or >= 1) verifies
+	// everything. Ignored unless ReadData is set.
+	ReadDataSubset float64
 }
 
 // BlobIssue describes a blobstore object that check classified as
@@ -82,12 +101,29 @@ type CheckReport struct {
 	OrphanBlobs     []BlobIssue     `json:"orphan_blobs"`
 	ManifestIssues  []ManifestIssue `json:"manifest_issues"`
 	Lock            *LockReport     `json:"lock,omitempty"`
+
+	// ReadDataBlobs is how many referenced chunks the deep verify
+	// downloaded and re-hashed (0 when ReadData was off).
+	ReadDataBlobs int `json:"read_data_blobs,omitempty"`
+	// CorruptBlobs are referenced chunks that exist but failed the
+	// deep verify — undecryptable, undecompressable, or hashing to a
+	// different address than they're stored under. Restore of any
+	// snapshot referencing one WILL fail; a health failure.
+	CorruptBlobs []CorruptBlob `json:"corrupt_blobs,omitempty"`
+}
+
+// CorruptBlob is one deep-verify failure: the chunk is present but its
+// content cannot be trusted.
+type CorruptBlob struct {
+	Key   string `json:"key"`
+	Hash  string `json:"hash"`
+	Error string `json:"error"`
 }
 
 // Healthy reports whether the repo can be trusted for restore and
 // mutation based on the issues Check found.
 func (r CheckReport) Healthy() bool {
-	if len(r.MissingBlobs) > 0 || len(r.ManifestIssues) > 0 {
+	if len(r.MissingBlobs) > 0 || len(r.ManifestIssues) > 0 || len(r.CorruptBlobs) > 0 {
 		return false
 	}
 	if r.Lock != nil && (r.Lock.Stale || r.Lock.Unreadable) {
@@ -100,11 +136,14 @@ func (r CheckReport) Healthy() bool {
 // referenced data blob exists, detects unreferenced data blobs, and
 // reports an advisory lock that appears stale.
 func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error) {
+	// The key stays alive for the whole call (deferred zeroize, not
+	// immediate): the deep verify decrypts chunk bodies. Presence-only
+	// runs never touch it after the manifest loads.
 	repoKey, err := r.keyOrErr()
 	if err != nil {
 		return CheckReport{}, err
 	}
-	crypto.Zeroize(repoKey)
+	defer crypto.Zeroize(repoKey)
 
 	now := opts.Now
 	if now.IsZero() {
@@ -132,6 +171,7 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 
 	referenced := make(map[string]struct{})
 	missingSeen := make(map[string]struct{})
+	var hashes []string // unique referenced chunk hashes, for --read-data
 	for _, obj := range snapshotObjects {
 		id := strings.TrimPrefix(obj.Key, snapshotPrefix)
 		if id == "" || id == obj.Key {
@@ -167,6 +207,9 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 		for _, fe := range m.Tree {
 			for _, hash := range fe.Chunks {
 				key := ChunkKey(hash)
+				if _, seen := referenced[key]; !seen {
+					hashes = append(hashes, hash)
+				}
 				referenced[key] = struct{}{}
 				if _, dup := missingSeen[key]; dup {
 					continue
@@ -188,6 +231,12 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 		}
 	}
 	report.ReferencedBlobs = len(referenced)
+
+	if opts.ReadData {
+		if err := r.checkReadData(ctx, repoKey, hashes, missingSeen, opts.ReadDataSubset, &report); err != nil {
+			return CheckReport{}, err
+		}
+	}
 
 	dataObjects, err := r.store.List(ctx, DataPrefix)
 	if err != nil {
@@ -213,6 +262,73 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 	}
 
 	return report, nil
+}
+
+// checkReadData deep-verifies referenced chunks: download, decrypt,
+// decompress, re-hash (fetchChunk — the exact read path restore
+// uses). A failing chunk is recorded as a finding, never an abort, so
+// one bad blob doesn't hide the rest of the report. Already-missing
+// chunks are skipped; they're reported separately.
+//
+// Sampling is a stride over the SORTED hash list: deterministic, so
+// repeated subset runs verify the same spread — a random sample could
+// miss the same corrupt blob forever while re-billing overlapping
+// reads.
+func (r *Repo) checkReadData(
+	ctx context.Context,
+	repoKey []byte,
+	hashes []string,
+	missing map[string]struct{},
+	subset float64,
+	report *CheckReport,
+) error {
+	slices.Sort(hashes)
+	selected := hashes
+	if subset > 0 && subset < 1 && len(hashes) > 0 {
+		n := int(math.Ceil(float64(len(hashes)) * subset))
+		if n < 1 {
+			n = 1
+		}
+		stride := float64(len(hashes)) / float64(n)
+		sel := make([]string, 0, n)
+		for i := 0; i < n; i++ {
+			sel = append(sel, hashes[int(float64(i)*stride)])
+		}
+		selected = sel
+	}
+
+	var mu sync.Mutex
+	g, gctx := errgroup.WithContext(ctx)
+	g.SetLimit(resolveConcurrency(0))
+	for _, hash := range selected {
+		if _, gone := missing[ChunkKey(hash)]; gone {
+			continue
+		}
+		g.Go(func() error {
+			if err := gctx.Err(); err != nil {
+				return err
+			}
+			_, err := r.fetchChunk(gctx, repoKey, hash)
+			mu.Lock()
+			defer mu.Unlock()
+			report.ReadDataBlobs++
+			if err != nil {
+				report.CorruptBlobs = append(report.CorruptBlobs, CorruptBlob{
+					Key:   ChunkKey(hash),
+					Hash:  hash,
+					Error: err.Error(),
+				})
+			}
+			return nil
+		})
+	}
+	if err := g.Wait(); err != nil {
+		return err
+	}
+	slices.SortFunc(report.CorruptBlobs, func(a, b CorruptBlob) int {
+		return cmp.Compare(a.Key, b.Key)
+	})
+	return nil
 }
 
 func (r *Repo) checkLock(ctx context.Context, now time.Time, staleAfter time.Duration) (*LockReport, error) {

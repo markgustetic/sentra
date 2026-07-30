@@ -185,3 +185,47 @@ func TestWriteCheckText_FailedReportIncludesIssueSections(t *testing.T) {
 		}
 	}
 }
+
+// TestCheck_ReadDataFlagDetectsCorruption: --read-data must catch a
+// chunk overwritten with garbage (present, plausible size — invisible
+// to the presence-only default) and exit non-zero via ErrCheckFailed.
+func TestCheck_ReadDataFlagDetectsCorruption(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, store, out, snapID := checkFixture(t, "hunter2")
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	m, err := r.LoadSnapshot(context.Background(), snapID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+	var hash string
+	for _, fe := range m.Tree {
+		if len(fe.Chunks) > 0 {
+			hash = fe.Chunks[0]
+			break
+		}
+	}
+	if err := store.Put(context.Background(), repo.ChunkKey(hash), bytes.NewReader([]byte("garbage"))); err != nil {
+		t.Fatal(err)
+	}
+
+	cmd := NewCheck(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--read-data"})
+	err = cmd.Execute()
+	if err == nil {
+		t.Fatalf("check --read-data should fail on a corrupt chunk; output: %s", out.String())
+	}
+	if !errors.Is(err, ErrCheckFailed) {
+		t.Errorf("error should wrap ErrCheckFailed, got %v", err)
+	}
+	if !strings.Contains(strings.ToLower(out.String()), "corrupt") {
+		t.Errorf("report should name the corruption: %q", out.String())
+	}
+}
