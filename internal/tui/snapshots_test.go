@@ -210,7 +210,12 @@ func TestSnapshots_ReloadsAfterOpCompletes(t *testing.T) {
 
 	seedTaggedSnaps(t, r, "nightly") // a backup lands in the repo
 
-	m, _ := s.Update(backupDoneMsg{})
+	m, cmd := s.Update(backupDoneMsg{})
+	s = m.(Snapshots)
+	if cmd == nil {
+		t.Fatal("op completion must return the reload command")
+	}
+	m, _ = s.Update(cmd()) // run the reload, as the runtime would
 	s = m.(Snapshots)
 	if len(s.snaps) != 1 {
 		t.Fatalf("snapshots must reload after an op completes: want 1, got %d", len(s.snaps))
@@ -404,8 +409,11 @@ func TestSnapshots_PinToggleSubmitsOp(t *testing.T) {
 		t.Fatal("pin op did not pin the snapshot")
 	}
 
-	// The op broadcast reloads the table; the pinned row is marked.
-	m, _ = s.Update(result)
+	// The op broadcast reloads the table (async — drive the returned
+	// command); the pinned row is marked.
+	m, reload := s.Update(result)
+	s = m.(Snapshots)
+	m, _ = s.Update(reload())
 	s = m.(Snapshots)
 	if !strings.Contains(s.View(), "*") {
 		t.Errorf("pinned row should carry the pin marker:\n%s", s.View())
@@ -445,5 +453,31 @@ func TestSnapshots_DetailShowsSymlinks(t *testing.T) {
 	s = m.(Snapshots)
 	if !strings.Contains(s.View(), "ln -> src/a.go") {
 		t.Errorf("detail should list symlinks with targets:\n%s", s.View())
+	}
+}
+
+// TestSnapshots_OpReloadIsAsync pins the same rule the detail loader
+// obeys: the post-op reload hits the blobstore (snapshot list + pin
+// set — two network reads), so it must run in the returned tea.Cmd,
+// never inline in Update, which would freeze the whole TUI after
+// EVERY completed operation app-wide.
+func TestSnapshots_OpReloadIsAsync(t *testing.T) {
+	r := newFlowRepo(t)
+	s := NewSnapshots(Deps{Repo: r}) // constructed against an empty repo
+
+	seedTaggedSnaps(t, r, "nightly") // an op lands a snapshot
+
+	m, cmd := s.Update(backupDoneMsg{})
+	s = m.(Snapshots)
+	if len(s.snaps) != 0 {
+		t.Fatal("reload ran synchronously inside Update; it must run in the returned tea.Cmd")
+	}
+	if cmd == nil {
+		t.Fatal("opResultMsg must return the reload command")
+	}
+	m, _ = s.Update(cmd())
+	s = m.(Snapshots)
+	if len(s.snaps) != 1 {
+		t.Fatalf("applying the reload message should refresh the list, got %d snapshots", len(s.snaps))
 	}
 }

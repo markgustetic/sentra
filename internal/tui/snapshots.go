@@ -164,6 +164,7 @@ func (s Snapshots) ShortHelp() []key.Binding {
 		key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "sort")),
 		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy id")),
+		key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pin/unpin")),
 	}
 }
 
@@ -448,6 +449,14 @@ func (s Snapshots) togglePinSelected() (tea.Model, tea.Cmd) {
 	return s, func() tea.Msg { return start }
 }
 
+// snapshotsReloadedMsg carries the post-op refresh (snapshot list +
+// pin set) back to the view, keeping the blobstore reads off the UI
+// goroutine.
+type snapshotsReloadedMsg struct {
+	snaps []repo.SnapshotInfo
+	pins  map[string]struct{}
+}
+
 // snapDetailLoadedMsg carries a finished manifest load back to the view.
 // id echoes the request so Update can drop results the operator has
 // since navigated away from.
@@ -474,6 +483,10 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Leave room for the parent's top/bottom bars.
 		s.tbl.SetHeight(maxInt(5, msg.Height-8))
 		return s, nil
+	case snapshotsReloadedMsg:
+		s.pins = msg.pins
+		return s.SetSnapshots(msg.snaps), nil
+
 	case snapDetailLoadedMsg:
 		// Apply only the load the operator is still waiting on: esc
 		// clears detailID, and opening another row changes it.
@@ -534,9 +547,17 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	// without this reload a snapshot taken this session never appears until
 	// restart — and a pin toggled this session wouldn't repaint its marker.
 	// Keying off the marker interface refreshes for any op, present or future.
+	// The reload itself is two blobstore reads (snapshot list + pin set), so
+	// it runs in a tea.Cmd — inline in Update it would freeze the whole TUI
+	// after every completed op, the same rule the detail loader obeys.
 	if _, ok := msg.(opResultMsg); ok {
-		s.pins = loadPinsBestEffort(s.deps)
-		return s.SetSnapshots(loadSnapshotsBestEffort(s.deps)), nil
+		deps := s.deps
+		return s, func() tea.Msg {
+			return snapshotsReloadedMsg{
+				snaps: loadSnapshotsBestEffort(deps),
+				pins:  loadPinsBestEffort(deps),
+			}
+		}
 	}
 	// Forward other messages (notably arrow keys) to the table.
 	var cmd tea.Cmd
@@ -568,7 +589,7 @@ func (s Snapshots) View() string {
 		status = ui.Muted.Render("sort: "+s.sortMode.label()) + "  " +
 			ui.Subtle.Render("filter: "+s.filter.Value())
 	}
-	footer := ui.ActionLine("view this snapshot", "↑↓ move · s sort · / filter · y copy id · esc back")
+	footer := ui.ActionLine("view this snapshot", "↑↓ move · s sort · / filter · y copy id · p pin · esc back")
 	return s.tbl.View() + "\n" + status + "\n" + footer + "\n"
 }
 

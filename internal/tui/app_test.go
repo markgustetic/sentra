@@ -2119,8 +2119,12 @@ func TestApp_DataViewsRefreshAfterBackup(t *testing.T) {
 
 	seedTaggedSnaps(t, r, "nightly") // a backup lands in the repo
 
-	m, _ = app.Update(backupDoneMsg{}) // the flow's terminal op result
+	m, cmd := app.Update(backupDoneMsg{}) // the flow's terminal op result
 	app = m.(App)
+	for _, msg := range execCmds(t, cmd) { // run the async view reloads
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
 
 	var dash Dashboard
 	var snaps Snapshots

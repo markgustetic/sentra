@@ -188,6 +188,12 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyEnter && len(v.snaps) > 0 {
 			v.snapID = v.snaps[v.tbl.Cursor()].ID
 			v.stage = restoreDest
+			// Reset the two-field focus state: a previous visit may
+			// have tabbed to the scope field before esc'ing out, and a
+			// stale focusScope would route keystrokes into the blurred
+			// scope input.
+			v.focusScope = false
+			v.scope.Blur()
 			v.dest.Focus()
 			return v, nil
 		}

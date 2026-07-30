@@ -199,3 +199,31 @@ func TestRestoreFlow_ScopedRestore(t *testing.T) {
 		t.Errorf("out-of-scope subtree restored (err=%v)", err)
 	}
 }
+
+// TestRestoreFlow_ScopeFocusResetOnReentry: tab to the scope field,
+// esc back to the picker, re-enter the dest stage — typing must land
+// in the DEST field again. The stale focusScope flag routed keys into
+// the blurred scope field.
+func TestRestoreFlow_ScopeFocusResetOnReentry(t *testing.T) {
+	r := newFlowRepo(t)
+	seedSnapshotReal(t, r)
+
+	v := NewRestoreView(Deps{Repo: r})
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick → dest
+	v = m.(RestoreView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // → scope
+	v = m.(RestoreView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // back to pick
+	v = m.(RestoreView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick again → dest
+	v = m.(RestoreView)
+
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("x")})
+	v = m.(RestoreView)
+	if v.dest.Value() != "x" {
+		t.Errorf("typed rune should land in dest (got dest=%q scope=%q)", v.dest.Value(), v.scope.Value())
+	}
+	if v.focusScope {
+		t.Error("focusScope must reset when re-entering the dest stage")
+	}
+}
