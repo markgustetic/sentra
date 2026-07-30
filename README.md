@@ -239,14 +239,17 @@ Handy keys (the status bar always shows what's live):
 | `sentra init` | Non-interactively create `sentra.yaml` and the encrypted repo config. |
 | `sentra backup <path>` | Snapshot a directory now. `--tag` labels it. `plan`/`apply` for reviewed runs. |
 | `sentra snapshots` | List snapshots, newest first. `--json` for scripting. |
-| `sentra restore <snap> <dest>` | Restore a snapshot. `--dry-run` previews; `--verify` validates output. |
+| `sentra ls <snap>` | List a snapshot's tree: files, dirs, symlink targets. |
+| `sentra restore <snap> <dest> [path…]` | Restore a snapshot — or just the named files/subtrees. `--dry-run` previews; `--verify` validates output. |
 | `sentra diff <a> <b>` | Show added / removed / changed paths between two snapshots. |
-| `sentra check` | Audit manifests, chunk references, orphan blobs, and stale locks. |
+| `sentra check` | Audit manifests, chunk references, orphan blobs, and stale locks. `--read-data` re-downloads and re-hashes chunks. |
+| `sentra stats` | Dedup factor, logical vs stored bytes, per-snapshot unique footprint. |
+| `sentra pin` / `unpin` | Protect a snapshot from prune and deletion. |
 | `sentra prune` | Dry-run retention by default; `--apply` reclaims, `--explain` shows reasons. |
 | `sentra policy …` | Manage named backup policies (`add`/`list`/`show`/`remove`/`run`). |
 | `sentra schedule …` | Install user-level OS schedules for named policies. |
 | `sentra password` | Rotate or forget the repository passphrase (`passwd` is an alias). |
-| `sentra sync --dst-config` | Replicate this repo to a clone destination (additive; share the passphrase). |
+| `sentra sync --dst-config` | Replicate this repo to a clone destination (additive; `--snapshot` selects a subset). |
 | `sentra recovery-kit` | Export non-secret recovery notes and restore commands. |
 | `sentra agent advise-ignore` | Suggest first-run `.sentraignore` patterns without editing files. |
 | `sentra agent scan` | Heuristics + optional LLM. `--local-only`, `--root`, `--categories`, `--apply`. |

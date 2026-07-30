@@ -92,6 +92,16 @@ below both.
 - **Content addressing.** A chunk's key is the SHA-256 of its **raw
   (decompressed) plaintext**. Restore re-derives and checks this hash on read
   (`ErrChunkHashMismatch`); restore is exact-byte by construction.
+- **Restore phase order is a security property.** Dirs, then files, then
+  symlinks LAST, then dir metadata: no manifest symlink exists while file
+  writes happen, so a crafted manifest can't route a write through a planted
+  link — and every write re-checks its `EvalSymlinks`-resolved parent stays
+  inside the destination. Manifests are v2 (Kind/LinkTarget entries; loaders
+  refuse newer versions).
+- **Retention groups by source root.** The whole policy (keep-last included)
+  applies per root, and pinned snapshots (`meta/pins`) are always kept —
+  `DeleteSnapshot` refuses them at the choke point. Flat global bucketing
+  lets multiple sources prune each other's dailies; never regress to it.
 - **GC safety.** GC computes its live set from the snapshots **present in the
   store, listed under the repo lock** — never from a caller-supplied ID set. A
   blob referenced by any present manifest must never be reaped, including one

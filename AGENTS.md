@@ -99,6 +99,49 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
+- `sentra restore <snap> <dest> [path...]` scopes the restore to the named
+  files or subtrees; a selector matching nothing is an error, and the
+  dry-run/verify forms must scope identically to the real run. Restore is
+  phased — dirs, then files, then symlinks LAST, then dir metadata — and the
+  order is a security property: no manifest symlink may exist while file
+  writes happen, and every write re-checks its resolved parent stays inside
+  the destination.
+- Snapshot manifests are format v2: entries carry Kind/LinkTarget so symlinks
+  (never followed) and directories (modes, empty dirs) round-trip. Loaders
+  must refuse manifests newer than they understand. `Stats.Files` counts
+  regular files only.
+- Snapshot references: everywhere a snapshot ID is accepted, "latest", a
+  unique prefix, and a unique suffix resolve via `ResolveSnapshotID`;
+  ambiguity is refused with candidates named, never first-match.
+- `sentra ls <snapshot>` lists a snapshot's tree read-only (`--json` uses
+  explicit kinds: file/dir/symlink).
+- `sentra pin` / `sentra unpin` protect snapshots: retention always keeps a
+  pinned snapshot (reason "pinned") and `DeleteSnapshot` — the choke point
+  for prune, the TUI, and the agent's prune action — refuses with
+  `ErrSnapshotPinned`. Pinning a nonexistent snapshot is an error.
+- Retention groups by source root (restic-style group-then-apply): each
+  backed-up directory gets the policy's full budget. Never regress to flat
+  global bucketing — multiple sources in one repo would prune each other.
+- Backups are incremental by default: files whose size+mtime match the
+  newest prior snapshot of the same root reuse its chunk list unread.
+  `backup --rescan` forces a full re-read.
+- `sentra check --read-data[-subset]` deep-verifies chunks through the same
+  read path restore uses; corrupt blobs are findings (health failures), not
+  aborts. Subset sampling must be deterministic.
+- `sentra stats` is read-only reporting: dedup factor and per-snapshot
+  unique bytes.
+- `sentra sync --snapshot <ref>` (repeatable) copies only the selected
+  snapshots' manifests plus their chunk closure; unknown selections fail
+  before any dest write. SyncTo lists `snapshots/` BEFORE `data/` — the
+  unlocked source means the reverse order can copy a manifest whose chunks
+  the frozen data listing never saw.
+- Policy hooks (`hooks.before/after/on_failure`) run via `sh -c`; a failing
+  before-hook aborts the run. The failure webhook URL lives in an env var —
+  only the variable NAME may appear in `sentra.yaml`.
+- `repo.s3.storage_class` passes through to PutObject; GLACIER and
+  DEEP_ARCHIVE must stay refused (synchronous chunk reads cannot retrieve
+  them). `backup.max_upload_rate` paces uploads only — never throttle
+  restore.
 - `sentra password` rotates the wrapping passphrase. If
   `passphrase.use_keyring` is true, it rotates the repo passphrase FIRST, then
   overwrites the OS-keyring entry with the new passphrase. The entry is keyed by
