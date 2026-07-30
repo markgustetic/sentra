@@ -36,6 +36,14 @@ type Plan struct {
 	PrintIAMPolicy    bool
 	SavePassphrase    bool
 	InitRepo          bool
+
+	// PassphraseSource names where a non-interactive passphrase came from
+	// (config.PassphraseSourceFile / config.PassphraseSourceEnv), empty when the
+	// operator typed it into the wizard. It is a LABEL for the review screen —
+	// never the passphrase, never a file's contents, and never a path, so it is
+	// safe everywhere a plan is rendered. The engine ignores it: the secret
+	// itself is passed to InitRepo as an argument.
+	PassphraseSource string
 }
 
 // AWSPrepareOptions controls the AWS-side setup work. Bucket existence is

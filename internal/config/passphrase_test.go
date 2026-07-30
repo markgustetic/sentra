@@ -18,6 +18,73 @@ func writePassphraseFile(t *testing.T, dir, body string) string {
 	return path
 }
 
+// TestResolveNonInteractive covers the file-then-env half of the priority list
+// on its own, for callers that must know whether a secret is available BEFORE
+// they decide to prompt — the TUI setup wizard, which skips its passphrase
+// stage entirely when a non-interactive source answers.
+//
+// The reported source is a label, never the secret: an operator has to be able
+// to see which source setup is about to initialize the repository under, and a
+// silent mismatch between that source and what they typed is the failure this
+// whole path exists to prevent.
+func TestResolveNonInteractive(t *testing.T) {
+	t.Run("file wins over env", func(t *testing.T) {
+		t.Setenv("SENTRA_PASSPHRASE", "from-env")
+		path := writePassphraseFile(t, t.TempDir(), "from-file")
+		got, source, err := ResolveNonInteractive(path)
+		if err != nil {
+			t.Fatalf("ResolveNonInteractive: %v", err)
+		}
+		if string(got) != "from-file" {
+			t.Errorf("got %q, want from-file", got)
+		}
+		if source != PassphraseSourceFile {
+			t.Errorf("source = %q, want %q", source, PassphraseSourceFile)
+		}
+	})
+
+	t.Run("env when no file", func(t *testing.T) {
+		t.Setenv("SENTRA_PASSPHRASE", "from-env")
+		got, source, err := ResolveNonInteractive("")
+		if err != nil {
+			t.Fatalf("ResolveNonInteractive: %v", err)
+		}
+		if string(got) != "from-env" {
+			t.Errorf("got %q, want from-env", got)
+		}
+		if source != PassphraseSourceEnv {
+			t.Errorf("source = %q, want %q", source, PassphraseSourceEnv)
+		}
+	})
+
+	// No source is not an error: the caller falls back to prompting. Returning
+	// an error here would force every caller to branch on errors.Is just to
+	// reach its normal interactive path.
+	t.Run("no source is a clean miss", func(t *testing.T) {
+		t.Setenv("SENTRA_PASSPHRASE", "")
+		got, source, err := ResolveNonInteractive("")
+		if err != nil {
+			t.Fatalf("ResolveNonInteractive: %v", err)
+		}
+		if got != nil || source != "" {
+			t.Errorf("got (%q, %q), want a clean miss", got, source)
+		}
+	})
+
+	// A named-but-unusable file must fail loudly. Falling back to a prompt
+	// would let an operator who pointed setup at a file initialize the repo
+	// under a passphrase that file does not contain.
+	t.Run("unreadable file is an error", func(t *testing.T) {
+		got, source, err := ResolveNonInteractive(filepath.Join(t.TempDir(), "missing"))
+		if err == nil {
+			t.Fatalf("expected an error for a missing file, got (%q, %q)", got, source)
+		}
+		if got != nil {
+			t.Errorf("no secret may be returned alongside an error, got %q", got)
+		}
+	})
+}
+
 // TestResolve_FilePriority verifies the file beats env, keyring, and
 // prompt. The env var is set, but the resolver must read the file
 // because PassphraseFile takes precedence.

@@ -395,25 +395,24 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == stageProvision && msg.name == "setup" {
 			// The App dropped our start closure without running it, so its
 			// deferred crypto.Zeroize(pass) never fired and v.pass still holds
-			// the plaintext. Wipe it here — otherwise the secret stays resident
-			// indefinitely if the user abandons the wizard. Route back to
-			// passphrase (NOT review): a nil v.pass at review would let the
-			// confirm re-arm startProvision against an empty passphrase, so we
-			// require re-entry to re-populate v.pass via commitPassphrase.
-			crypto.Zeroize(v.pass)
-			v.pass = nil
-			v.stage = stagePassphrase
+			// the plaintext. Route back through enterPassphraseStage: it wipes
+			// the stash (otherwise the secret stays resident indefinitely if the
+			// user abandons the wizard) and then re-establishes it from whichever
+			// source armed it in the first place. Re-entry is mandatory only when
+			// that source was the operator — a nil v.pass at review would let the
+			// confirm re-arm startProvision against an empty passphrase, and
+			// prompting someone whose passphrase came from the environment would
+			// invite them to type a different one.
+			v = v.enterPassphraseStage()
 			// The forced route back is a stage DECREASE, which the Update
 			// wrapper never records — the history stack still ends with the
 			// entry pushed on review→provision. Truncate to the stages
 			// strictly behind passphrase, or esc would pop that stale entry
-			// and walk FORWARD to review, skipping the re-entry this handler
-			// just made mandatory and arming a confirm with a nil passphrase.
+			// and walk FORWARD, skipping the re-entry this handler just made
+			// mandatory and arming a confirm with a nil passphrase.
 			for len(v.history) > 0 && v.history[len(v.history)-1] >= stagePassphrase {
 				v.history = v.history[:len(v.history)-1]
 			}
-			v.newPass.Focus()
-			v.confirmPass.Blur()
 			v.notice = "another operation is in progress — try again when it finishes"
 		}
 		return v, nil
@@ -909,10 +908,7 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 		v.plan.CreateBucket = false
 		v.plan.BlockPublicAccess = false
 		v.plan.DefaultEncryption = false
-		v.stage = stagePassphrase
-		v.newPass.Focus()
-		v.confirmPass.Blur()
-		return v, nil
+		return v.enterPassphraseStage(), nil
 	}
 	v.stage = stageActions
 	return v, nil
@@ -1020,15 +1016,63 @@ func (v SetupWizardView) maybeStartInteractiveAuth(method setup.AWSAuthMethod) (
 // init-repo on → passphrase, off → review.
 func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 	if v.plan.InitRepo {
-		v.stage = stagePassphrase
-		v.newPass.Focus()
-		v.confirmPass.Blur()
-		return v, nil
+		return v.enterPassphraseStage(), nil
 	}
 	v.plan.SavePassphrase = false
 	setup.ApplyPassphraseConfig(&v.plan)
 	v.stage = stageReview
 	return v, nil
+}
+
+// enterPassphraseStage is the ONE way into the passphrase stage. It first asks
+// the non-interactive sources — --passphrase-file, then SENTRA_PASSPHRASE — and
+// when one answers it stashes that secret, records the source label for the
+// review screen, and goes straight to review without ever showing an entry
+// field.
+//
+// That skip is the point, not an optimization. `sentra setup` honored those
+// sources before the wizard became its only surface, and QUICKSTART still tells
+// operators to export SENTRA_PASSPHRASE. Prompting anyway would let them type a
+// different secret: the repo initializes under what they typed, while every
+// later command resolves the env var (which outranks the keyring) and fails to
+// decrypt — a silent, arbitrarily delayed failure whose error never mentions
+// setup.
+//
+// A named-but-unusable file (missing, or group/world-readable) is NOT a clean
+// miss: it lands on the entry stage with the reason shown, so the operator
+// either fixes the file or types a passphrase deliberately, rather than being
+// silently prompted for a source they thought was configured.
+//
+// The keyring choice is untouched by any of this — it is a separate decision
+// (the deleted huh wizard asked it independently of the passphrase source), so
+// the plan keeps whatever v.savePass holds and review states the outcome.
+func (v SetupWizardView) enterPassphraseStage() SetupWizardView {
+	// Any earlier stash is dead the moment we re-enter this stage (esc back to
+	// details, then forward again). Wipe before overwriting so an abandoned
+	// copy cannot outlive the step that made it.
+	crypto.Zeroize(v.pass)
+	v.pass = nil
+	v.plan.PassphraseSource = ""
+
+	pass, source, err := config.ResolveNonInteractive(v.deps.PassphraseFile)
+	switch {
+	case err != nil:
+		v.passErr = err.Error()
+	case len(pass) > 0:
+		v.pass = pass
+		v.plan.PassphraseSource = source
+		v.plan.SavePassphrase = v.savePass
+		setup.ApplyPassphraseConfig(&v.plan)
+		v.passErr = ""
+		v.stage = stageReview
+		return v
+	}
+
+	v.stage = stagePassphrase
+	v.focusConf = false
+	v.newPass.Focus()
+	v.confirmPass.Blur()
+	return v
 }
 
 // interactiveAWSAuthCommand builds the `aws` subprocess for browser login

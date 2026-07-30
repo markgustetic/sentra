@@ -273,8 +273,14 @@ func TestSetupWizard_UnlockedBackendOffersBothAndAWSBranchWorks(t *testing.T) {
 
 // setupAtDetails drives the wizard to stageDetails on the given backend
 // cursor (0=AWS, 1=S3-compatible).
+//
+// It clears SENTRA_PASSPHRASE for the duration: the wizard now skips its
+// passphrase stage when a non-interactive source answers, so every test built
+// on this helper that expects the entry stage would otherwise pass or fail
+// depending on whether the developer running it happens to export the var.
 func setupAtDetails(t *testing.T, backendCursor int) SetupWizardView {
 	t.Helper()
+	t.Setenv("SENTRA_PASSPHRASE", "")
 	v := NewSetupWizardView(Deps{Config: &config.Config{}})
 	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
 	v = m.(SetupWizardView)
@@ -421,6 +427,120 @@ func TestSetupWizard_PassphraseNeverRendered(t *testing.T) {
 	v = setupTypePass(v, "correcthorse", "correcthorse")
 	if strings.Contains(v.View(), "correcthorse") {
 		t.Fatal("masked passphrase must never appear in the rendered view")
+	}
+}
+
+// TestSetupWizard_NonInteractivePassphraseSkipsEntryStage is the regression
+// guard for the capability the TUI-only wizard silently dropped: `sentra setup`
+// used to resolve --passphrase-file / SENTRA_PASSPHRASE through config.Resolve
+// before ever prompting.
+//
+// Without this, an operator with SENTRA_PASSPHRASE=X exported runs setup, types
+// Y, and the repository is initialized under Y — while every later command
+// resolves X from the env (env outranks the keyring) and fails to decrypt, with
+// an error that never mentions setup. The failure is silent and arbitrarily
+// delayed, which is why the wizard must not offer a field it will then ignore.
+func TestSetupWizard_NonInteractivePassphraseSkipsEntryStage(t *testing.T) {
+	const secret = "correcthorsebatterystaple"
+
+	tests := []struct {
+		name string
+		// arrange returns the --passphrase-file value for Deps, after setting
+		// up whichever source it exercises.
+		arrange    func(t *testing.T) string
+		wantSource string
+	}{
+		{
+			name: "env",
+			arrange: func(t *testing.T) string {
+				t.Setenv("SENTRA_PASSPHRASE", secret)
+				return ""
+			},
+			wantSource: config.PassphraseSourceEnv,
+		},
+		{
+			name: "passphrase file",
+			arrange: func(t *testing.T) string {
+				t.Setenv("SENTRA_PASSPHRASE", "")
+				path := filepath.Join(t.TempDir(), "pass")
+				if err := os.WriteFile(path, []byte(secret+"\n"), 0o600); err != nil {
+					t.Fatalf("write passphrase file: %v", err)
+				}
+				return path
+			},
+			wantSource: config.PassphraseSourceFile,
+		},
+	}
+
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := setupAtActions(t) // AWS, valid bucket, init-repo on
+			v.deps.PassphraseFile = tc.arrange(t)
+
+			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			v = m.(SetupWizardView)
+
+			if v.stage != stageReview {
+				t.Fatalf("a resolved non-interactive passphrase must skip entry and land on review, got %v", v.stage)
+			}
+			if string(v.pass) != secret {
+				t.Fatalf("wizard must provision with the resolved secret, stashed %d bytes", len(v.pass))
+			}
+			if v.plan.PassphraseSource != tc.wantSource {
+				t.Fatalf("plan.PassphraseSource = %q, want %q", v.plan.PassphraseSource, tc.wantSource)
+			}
+			out := v.View()
+			if !strings.Contains(out, tc.wantSource) {
+				t.Fatalf("review must name the passphrase source %q:\n%s", tc.wantSource, out)
+			}
+			if strings.Contains(out, secret) {
+				t.Fatalf("review must never render the passphrase:\n%s", out)
+			}
+		})
+	}
+}
+
+// The S3-compatible branch reaches the passphrase stage from commitDetails
+// rather than from the actions stage, so it needs its own guard: routing it
+// past a resolved source is the same correctness property, on a different edge.
+func TestSetupWizard_NonInteractivePassphraseSkipsEntryOnS3Compatible(t *testing.T) {
+	v := setupAtDetails(t, 1) // S3-compatible: no actions stage
+	t.Setenv("SENTRA_PASSPHRASE", "correcthorsebatterystaple")
+	v = setupTypeField(v, "my-sentra-bucket")
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+
+	if v.stage != stageReview {
+		t.Fatalf("S3-compatible with an env passphrase must land on review, got %v", v.stage)
+	}
+	if v.plan.PassphraseSource != config.PassphraseSourceEnv {
+		t.Fatalf("plan.PassphraseSource = %q, want the env source", v.plan.PassphraseSource)
+	}
+}
+
+// A --passphrase-file the operator named but Sentra cannot read must NOT fall
+// through to a silent prompt: they configured a source, and initializing under
+// something else is the exact failure this path exists to prevent. Show the
+// reason on the entry stage so they can fix the file or type one deliberately.
+func TestSetupWizard_UnreadablePassphraseFileStaysOnEntryWithReason(t *testing.T) {
+	v := setupAtActions(t)
+	v.deps.PassphraseFile = filepath.Join(t.TempDir(), "missing")
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+
+	if v.stage != stagePassphrase {
+		t.Fatalf("an unusable passphrase file must land on entry, got %v", v.stage)
+	}
+	if v.passErr == "" {
+		t.Fatal("an unusable passphrase file must explain itself on the entry stage")
+	}
+	if len(v.pass) != 0 {
+		t.Fatal("no secret may be stashed when the source failed")
+	}
+	if !strings.Contains(v.View(), "passphrase file") {
+		t.Fatalf("entry stage must show the file error:\n%s", v.View())
 	}
 }
 

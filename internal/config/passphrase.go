@@ -80,6 +80,50 @@ type StoreKeyringOptions struct {
 	KeyringUser string
 }
 
+// Passphrase source labels. They name a source, never a secret, so they are
+// safe to render in a UI — which is the point: `sentra setup` initializes a
+// repository under whatever passphrase it resolved, and an operator who cannot
+// see WHICH source that was has no way to notice a mismatch until every later
+// command fails to decrypt.
+const (
+	PassphraseSourceFile = "--passphrase-file"
+	PassphraseSourceEnv  = "SENTRA_PASSPHRASE"
+)
+
+// ResolveNonInteractive resolves the passphrase from the non-interactive
+// sources only — the --passphrase-file path, then SENTRA_PASSPHRASE — and
+// reports which one supplied it. It is the first half of Resolve's priority
+// list, split out for callers that must decide whether to prompt at all rather
+// than pass a prompt callback: the TUI setup wizard skips its passphrase entry
+// stage when a source answers here, so the repository is initialized under the
+// same secret every later command will resolve.
+//
+// A clean miss (no file path, no env var) returns (nil, "", nil) — the caller's
+// interactive path is the normal continuation, not an error. A named file that
+// cannot be read, or that has group/world-readable bits, IS an error: the
+// operator pointed at a source, and quietly prompting instead would initialize
+// the repo under a different passphrase than the one they configured.
+//
+// The caller owns zeroizing the returned bytes.
+func ResolveNonInteractive(passphraseFile string) ([]byte, string, error) {
+	if passphraseFile != "" {
+		pass, err := readPassphraseFile(passphraseFile)
+		if err != nil {
+			return nil, "", err
+		}
+		return pass, PassphraseSourceFile, nil
+	}
+	if v := os.Getenv(envPassphrase); v != "" {
+		// Defensive copy so the env-var storage isn't aliased into
+		// the returned slice; we want callers to be able to zeroize
+		// without wondering whether the runtime keeps the env around.
+		out := make([]byte, len(v))
+		copy(out, v)
+		return out, PassphraseSourceEnv, nil
+	}
+	return nil, "", nil
+}
+
 // Resolve looks up the passphrase per the documented priority and
 // returns the bytes. The caller is responsible for zeroizing the
 // returned slice after deriving keys from it.
@@ -88,16 +132,11 @@ type StoreKeyringOptions struct {
 // through to the prompt branch — a clean install hasn't stored the
 // passphrase in the keyring yet. Other keyring errors surface as-is.
 func Resolve(opts ResolveOptions) ([]byte, error) {
-	if opts.PassphraseFile != "" {
-		return readPassphraseFile(opts.PassphraseFile)
-	}
-	if v := os.Getenv(envPassphrase); v != "" {
-		// Defensive copy so the env-var storage isn't aliased into
-		// the returned slice; we want callers to be able to zeroize
-		// without wondering whether the runtime keeps the env around.
-		out := make([]byte, len(v))
-		copy(out, v)
-		return out, nil
+	// Steps 1 and 2 of the priority list live in ResolveNonInteractive so the
+	// wizard's "is a secret already available?" probe and this read path cannot
+	// disagree about which sources count or which order they are tried in.
+	if pass, _, err := ResolveNonInteractive(opts.PassphraseFile); err != nil || pass != nil {
+		return pass, err
 	}
 	if opts.UseKeyring {
 		service, user := normalizeKeyringTarget(opts.KeyringService, opts.KeyringUser)

@@ -724,6 +724,43 @@ func TestRunUI_SetupPrefillPrecedence(t *testing.T) {
 	}
 }
 
+// TestRunUI_ThreadsPassphraseFileToTUI: the setup wizard resolves
+// --passphrase-file itself (then SENTRA_PASSPHRASE) so it can skip its entry
+// stage rather than prompt for a secret the operator already configured. That
+// only works if runUI hands the flag's value down — the wizard has no other way
+// to see it, and a dropped field degrades silently into the exact
+// initialize-under-the-wrong-passphrase bug the resolution exists to prevent.
+//
+// The path is threaded, never the file's contents.
+func TestRunUI_ThreadsPassphraseFileToTUI(t *testing.T) {
+	for _, forceSetup := range []bool{false, true} {
+		t.Run(fmt.Sprintf("forceSetup=%v", forceSetup), func(t *testing.T) {
+			chDir(t, t.TempDir())
+			const passFile = "/tmp/does-not-need-to-exist"
+
+			var captured tui.App
+			deps := UIDeps{
+				RepoDeps: RepoDeps{
+					NewStore: func(_ context.Context, _ *config.Config) (blobstore.Store, error) {
+						return blobstore.NewMemory(), nil
+					},
+				},
+				Run:            func(app tui.App) error { captured = app; return nil },
+				PassphraseFile: func() string { return passFile },
+			}
+			cmd := NewUI(deps)
+			cmd.SetOut(io.Discard)
+			cmd.SetErr(io.Discard)
+			if err := runUI(cmd, deps, configFileName, forceSetup); err != nil {
+				t.Fatalf("launch: %v", err)
+			}
+			if got := captured.Deps().PassphraseFile; got != passFile {
+				t.Errorf("tui.Deps.PassphraseFile = %q, want %q", got, passFile)
+			}
+		})
+	}
+}
+
 // TestRunUI_UnreadableSetupDraftDegradesToNextSource: a corrupt draft is a
 // stale convenience artifact, not a reason to refuse the wizard. If it were
 // fatal the operator would be stranded — the only in-product way to clear the

@@ -194,6 +194,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 			SaveKeyringPassphrase:   deps.SavePassphrase,
 			DeleteKeyringPassphrase: deps.DeletePassphrase,
 			SetupEffects:            setupEffectsForLaunch(deps),
+			PassphraseFile:          passphraseFile,
 			InitialView:             initial,
 			Reconfigure:             forceSetup && st.ConfigExists,
 			ShowSplash:              showSplash,
@@ -247,9 +248,12 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
-		ShowSplash:              showSplash,
-		Version:                 deps.Version,
-		Commit:                  deps.Commit,
+		// Reconfiguring from Settings reaches the same wizard as `sentra setup`,
+		// so the flag has to follow the dashboard launch too.
+		PassphraseFile: passphraseFile,
+		ShowSplash:     showSplash,
+		Version:        deps.Version,
+		Commit:         deps.Commit,
 	})
 
 	if deps.Run == nil {

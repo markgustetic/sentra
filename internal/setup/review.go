@@ -36,17 +36,33 @@ func ReviewText(cfgPath string, p Plan) string {
 	}
 	if p.InitRepo {
 		fmt.Fprintln(&b, "Repository: initialize after config")
-		if p.SavePassphrase {
-			fmt.Fprintln(&b, "Passphrase: save to OS keyring after repo initialization")
-		} else {
-			fmt.Fprintln(&b, "Passphrase: prompted or read from --passphrase-file or SENTRA_PASSPHRASE")
-		}
+		fmt.Fprintf(&b, "Passphrase: %s\n", passphrasePlanLine(p))
 	} else {
 		fmt.Fprintln(&b, "Repository: config only")
 	}
 	fmt.Fprintln(&b)
 	fmt.Fprintln(&b, "No passphrases, AWS credentials, salts, wrapped keys, or MAC material are written to the config.")
 	return b.String()
+}
+
+// passphrasePlanLine describes where the repository passphrase comes from.
+// When a non-interactive source already answered, the wizard never showed its
+// passphrase stage, so this line is the only place the operator learns which
+// secret the repository is about to be initialized under — naming it is what
+// makes a mismatch visible now instead of at the first failed decrypt. It
+// renders the source LABEL only; the secret never reaches this package's
+// output.
+func passphrasePlanLine(p Plan) string {
+	switch {
+	case p.PassphraseSource != "" && p.SavePassphrase:
+		return "read from " + p.PassphraseSource + ", saved to OS keyring after repo initialization"
+	case p.PassphraseSource != "":
+		return "read from " + p.PassphraseSource
+	case p.SavePassphrase:
+		return "save to OS keyring after repo initialization"
+	default:
+		return "prompted or read from --passphrase-file or SENTRA_PASSPHRASE"
+	}
 }
 
 func emptyDash(s string) string {

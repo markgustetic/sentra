@@ -113,6 +113,14 @@ type Deps struct {
 	// repo that's already configured and unlocked never needs it).
 	SetupEffects setup.Effects
 
+	// PassphraseFile is the --passphrase-file path the process was launched
+	// with, empty when the flag was not given. The setup wizard resolves it
+	// (then SENTRA_PASSPHRASE) before offering its passphrase entry stage, so a
+	// non-interactive source initializes the repository under the same secret
+	// every later command will resolve. It is a PATH — plain data, never the
+	// file's contents and never a secret.
+	PassphraseFile string
+
 	// InitialView names the registered command the App should land on at
 	// launch, instead of the dashboard. runUI sets it to "setup" for a
 	// first-run (no sentra.yaml) and "unlock" for a configured-but-locked

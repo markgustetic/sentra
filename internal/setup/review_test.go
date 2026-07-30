@@ -31,6 +31,44 @@ func TestReviewTextMentionsPassphraseSourceForInit(t *testing.T) {
 	}
 }
 
+// TestReviewTextNamesResolvedPassphraseSource: when a non-interactive source
+// already supplied the passphrase, the wizard skips its entry stage, so review
+// is the last screen before the repository is initialized under a secret the
+// operator never typed. It must name the source — and only ever the source.
+func TestReviewTextNamesResolvedPassphraseSource(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.Bucket = "b"
+	const secret = "correcthorsebatterystaple"
+
+	tests := []struct {
+		name   string
+		source string
+		save   bool
+		want   string
+	}{
+		{"env", config.PassphraseSourceEnv, false, "Passphrase: read from SENTRA_PASSPHRASE"},
+		{"file", config.PassphraseSourceFile, false, "Passphrase: read from --passphrase-file"},
+		{"file plus keyring", config.PassphraseSourceFile, true, "Passphrase: read from --passphrase-file, saved to OS keyring after repo initialization"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Plan{
+				Config:           cfg,
+				InitRepo:         true,
+				SavePassphrase:   tc.save,
+				PassphraseSource: tc.source,
+			}
+			got := ReviewText("sentra.yaml", p)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("review text missing %q:\n%s", tc.want, got)
+			}
+			if strings.Contains(got, secret) {
+				t.Fatalf("review text must never contain the passphrase:\n%s", got)
+			}
+		})
+	}
+}
+
 func TestReviewTextAssertsNoSecrets(t *testing.T) {
 	var cfg config.Config
 	cfg.Repo.S3.Bucket = "b"
