@@ -48,7 +48,7 @@ func NewSnapshots(deps SnapshotsDeps) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit JSON instead of a styled table")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
@@ -68,6 +68,7 @@ type snapshotJSONRow struct {
 // runSnapshots is the body of `sentra snapshots`.
 func runSnapshots(cmd *cobra.Command, deps SnapshotsDeps, asJSON bool, cfgPath string) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

@@ -199,3 +199,46 @@ func TestScheduleInstall_RejectsUnsupportedOS(t *testing.T) {
 		t.Fatalf("error: got %v, want unsupported OS error", err)
 	}
 }
+
+// The cron/launchd artifact must embed the discovered ABSOLUTE config
+// path: cron's cwd is arbitrary, so a relative or undiscovered path would
+// break every scheduled run.
+func TestScheduleInstall_DiscoversHomeConfigAndEmbedsAbsolutePath(t *testing.T) {
+	xdg := t.TempDir()
+	chDir(t, t.TempDir()) // empty cwd: no ./sentra.yaml
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["home"] = config.PolicyConfig{
+		Paths:    []string{"~/Documents"},
+		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
+	}
+	cfgPath := filepath.Join(xdg, "sentra", "sentra.yaml")
+	if err := config.Write(cfgPath, &cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	home := filepath.Join(t.TempDir(), "home")
+	out := &bytes.Buffer{}
+	cmd := NewSchedule(ScheduleDeps{
+		OS:         "darwin",
+		HomeDir:    func() (string, error) { return home, nil },
+		Executable: func() (string, error) { return "/usr/local/bin/sentra", nil },
+		Stdout:     out,
+	})
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"install", "home"}) // no --config: discovery must find the XDG path
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	raw, err := os.ReadFile(filepath.Join(home, "Library", "LaunchAgents", "com.sentra.home.plist"))
+	if err != nil {
+		t.Fatalf("read plist: %v", err)
+	}
+	if !strings.Contains(string(raw), cfgPath) {
+		t.Errorf("launch agent does not embed the discovered absolute config path %q:\n%s", cfgPath, raw)
+	}
+}

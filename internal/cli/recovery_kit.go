@@ -36,7 +36,7 @@ func NewRecoveryKit(deps RecoveryKitDeps) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.Flags().StringVar(&outPath, "out", "",
 		"write the kit to this path instead of stdout")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
@@ -46,6 +46,7 @@ func NewRecoveryKit(deps RecoveryKitDeps) *cobra.Command {
 
 func runRecoveryKit(cmd *cobra.Command, deps RecoveryKitDeps, cfgPath, outPath string, asJSON bool) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

@@ -59,6 +59,7 @@ type PasswdDeps struct {
 // can be tested independently.
 type passwdFlags struct {
 	newPassphraseFile string
+	configPath        string
 }
 
 type passwordForgetFlags struct {
@@ -87,7 +88,7 @@ type passwordForgetFlags struct {
 //
 // Refusal cases short-circuit before any S3 write.
 func NewPasswd(deps PasswdDeps) *cobra.Command {
-	flags := &passwdFlags{}
+	flags := &passwdFlags{configPath: configFileName}
 	cmd := &cobra.Command{
 		Use:     "password",
 		Aliases: []string{"passwd"},
@@ -106,6 +107,8 @@ func NewPasswd(deps PasswdDeps) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&flags.newPassphraseFile, "new-passphrase-file", "",
 		"path to a file containing the new passphrase (default: interactive prompt)")
+	cmd.Flags().StringVar(&flags.configPath, "config", configFileName,
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.AddCommand(newPasswordForget(deps))
 	return cmd
 }
@@ -139,9 +142,11 @@ func runPasswd(cmd *cobra.Command, deps PasswdDeps, flags *passwdFlags) error {
 
 	out := cmdStdout(cmd, deps.Stdout)
 
-	cfg, err := config.Load(configFileName)
+	// Honor --config (previously ignored here) and apply discovery.
+	cfgPath := resolveConfigPath(cmd, flags.configPath)
+	cfg, err := config.Load(cfgPath)
 	if err != nil {
-		return fmt.Errorf("load %s: %w", configFileName, err)
+		return fmt.Errorf("load %s: %w", cfgPath, err)
 	}
 
 	store, err := deps.NewStore(cmd.Context(), cfg)
@@ -239,6 +244,7 @@ func runPasswordForget(cmd *cobra.Command, deps PasswdDeps, flags *passwordForge
 	if cfgPath == "" {
 		cfgPath = configFileName
 	}
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	yamlExists := false
 	if _, err := os.Stat(cfgPath); err == nil {
 		yamlExists = true

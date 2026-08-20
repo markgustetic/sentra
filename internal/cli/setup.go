@@ -30,7 +30,7 @@ func NewSetup(deps UIDeps) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.AddCommand(newSetupIAMPolicy(deps.Stdout))
 	return cmd
 }

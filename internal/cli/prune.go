@@ -123,7 +123,7 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 	cmd.Flags().BoolVar(&flags.explain, "explain", false,
 		"print the retention decision and reason for every snapshot")
 	cmd.Flags().StringVar(&flags.cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
@@ -131,6 +131,7 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 // for grep-ability and unit-testability.
 func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	cmd.SilenceUsage = true
+	flags.cfgPath = resolveConfigPath(cmd, flags.cfgPath)
 
 	r, pass, cfg, err := openRepoForConfig(cmd, flags.cfgPath, deps.RepoDeps)
 	if err != nil {

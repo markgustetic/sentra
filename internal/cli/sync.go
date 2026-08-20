@@ -51,7 +51,8 @@ type syncFlags struct {
 // command flow:
 //
 //  1. Validate --dst-config is set (refuse with a clear error).
-//  2. Load the source's sentra.yaml from cwd via config.Load.
+//  2. Load the source's sentra.yaml via config discovery (cwd, else the
+//     user-level config).
 //  3. Load the destination's sentra.yaml from --dst-config.
 //  4. Refuse if source and destination resolve to the same bucket
 //     + prefix (a no-op at best, deadlock at worst).
@@ -107,11 +108,12 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 		return fmt.Errorf("sentra sync: --dst-config is required")
 	}
 
-	// 1. Load source's sentra.yaml from cwd (same as every other
-	// command).
-	srcCfg, err := config.Load(configFileName)
+	// 1. Load source's sentra.yaml via config discovery (cwd, else
+	// the user-level config).
+	srcCfgPath := config.DiscoverPath()
+	srcCfg, err := config.Load(srcCfgPath)
 	if err != nil {
-		return fmt.Errorf("load %s: %w", configFileName, err)
+		return fmt.Errorf("load %s: %w", srcCfgPath, err)
 	}
 
 	// 2. Load destination's sentra.yaml from --dst-config.

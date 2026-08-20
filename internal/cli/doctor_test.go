@@ -203,3 +203,39 @@ func TestDoctor_JSON(t *testing.T) {
 		t.Errorf("unexpected report: %+v", report)
 	}
 }
+
+// End-to-end discovery through a real command: with an empty cwd and a
+// config under $XDG_CONFIG_HOME, doctor must load THAT file. The invalid
+// bucket proves which file was read (a missed discovery fails earlier,
+// with "Config load failed").
+func TestDoctor_DiscoversHomeConfigFromAnywhere(t *testing.T) {
+	xdg := t.TempDir()
+	chDir(t, t.TempDir()) // empty cwd: no ./sentra.yaml
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "Bad_Bucket"
+	if err := config.Write(filepath.Join(xdg, "sentra", "sentra.yaml"), &cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+
+	out := &bytes.Buffer{}
+	deps := DoctorDeps{
+		CheckAWSSDKIdentity: func(context.Context, *config.Config) error {
+			t.Fatal("AWS identity check should not run for invalid bucket")
+			return nil
+		},
+		Stdout: out,
+	}
+	cmd := NewDoctor(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--skip-repo"})
+	err := cmd.Execute()
+	if !errors.Is(err, ErrDoctorFailed) {
+		t.Fatalf("error: got %v, want ErrDoctorFailed (invalid bucket from home config)", err)
+	}
+	if !strings.Contains(out.String(), "lowercase") {
+		t.Fatalf("doctor did not validate the bucket from the discovered config:\n%s", out.String())
+	}
+}
