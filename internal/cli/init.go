@@ -41,8 +41,9 @@ type InitDeps struct {
 
 // configFileName is the canonical local config file. Always relative
 // to the user's working directory — the design doc is explicit that
-// init never reaches outside cwd.
-const configFileName = "sentra.yaml"
+// init never reaches outside cwd. Aliased to the config package's
+// constant so the CLI and discovery can never disagree on the name.
+const configFileName = config.DefaultFileName
 
 // initFlags holds the values of the S3 backend flags exposed by
 // `sentra init`. Bundled into a struct so the cobra wiring stays

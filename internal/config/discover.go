@@ -5,6 +5,13 @@ import (
 	"path/filepath"
 )
 
+// DefaultFileName is the canonical config file name: what discovery looks
+// for in the working directory, what init writes there, and the last path
+// segment of the user-level fallback. internal/cli's configFileName
+// aliases it so the two surfaces cannot drift apart — the name is part of
+// the surface contract (AGENTS.md).
+const DefaultFileName = "sentra.yaml"
+
 // DiscoverPath returns the config path commands use when the operator did
 // not pass --config explicitly:
 //
@@ -21,19 +28,17 @@ import (
 // cwd-relative name (the pre-discovery behavior) rather than failing.
 //
 // DiscoverPath only names the path; it never reads or writes the file.
-// The "sentra.yaml" literal mirrors internal/cli's configFileName — the
-// canonical file name is part of the surface contract (AGENTS.md).
 func DiscoverPath() string {
-	if info, err := os.Stat("sentra.yaml"); err == nil && info.Mode().IsRegular() {
-		return "sentra.yaml"
+	if info, err := os.Stat(DefaultFileName); err == nil && info.Mode().IsRegular() {
+		return DefaultFileName
 	}
 	base := os.Getenv("XDG_CONFIG_HOME")
 	if base == "" {
 		home, err := os.UserHomeDir()
 		if err != nil {
-			return "sentra.yaml"
+			return DefaultFileName
 		}
 		base = filepath.Join(home, ".config")
 	}
-	return filepath.Join(base, "sentra", "sentra.yaml")
+	return filepath.Join(base, "sentra", DefaultFileName)
 }
