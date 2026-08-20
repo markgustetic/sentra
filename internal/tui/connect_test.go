@@ -173,3 +173,17 @@ func TestConnect_KeysIgnoredWhileOpening(t *testing.T) {
 		t.Fatal("r was not ignored while opening")
 	}
 }
+
+// q quits from idle: startup gates bypass the shell's global quit binding, so
+// the connect view owns q. The returned cmd's message must be tea.QuitMsg.
+func TestConnect_QQuitsFromIdle(t *testing.T) {
+	v := NewConnectView(connectDeps(nil))
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}})
+	if cmd == nil {
+		t.Fatal("q did not return a quit command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("q's cmd returned %T, expected tea.QuitMsg", cmd())
+	}
+	_ = m
+}

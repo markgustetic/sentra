@@ -137,6 +137,12 @@ func (v ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.startOpen()
 		case "l":
 			return v.startAuth()
+		case "q":
+			// Startup gates bypass the shell's global quit binding; this view
+			// owns q so a keystroke from the reachability gate reaches the quit
+			// path. ctrl+c is still handled ahead of view routing and works
+			// across all gates.
+			return v, tea.Quit
 		}
 	}
 	return v, nil

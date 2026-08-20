@@ -682,14 +682,14 @@ func (m App) tooSmall() bool {
 	return m.width > 0 && (m.width < minWidth || m.height < minHeight)
 }
 
-// inStartupGate reports whether the App is sitting on a first-run/unlock
-// gate: a setup or unlock view with no repo behind it. In that state every
+// inStartupGate reports whether the App is sitting on a first-run/unlock/connect
+// gate: a setup, unlock, or connect view with no repo behind it. In that state every
 // other view is dead (they all read from a repo that doesn't exist yet), so
 // the shell hides its navigation chrome — the rail, the palette, and the
 // number/tab jumps — and devotes the whole frame to the gate view.
 func (m App) inStartupGate() bool {
 	id := m.views[m.active].id
-	return m.deps.Repo == nil && (id == "setup" || id == "unlock")
+	return m.deps.Repo == nil && (id == "setup" || id == "unlock" || id == "connect")
 }
 
 // contentCapturesText reports whether the content pane is focused on a view

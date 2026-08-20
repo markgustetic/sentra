@@ -2168,3 +2168,25 @@ func TestApp_ConnectHiddenFromRail(t *testing.T) {
 		t.Fatal("connect gate leaked into the rail")
 	}
 }
+
+// TestApp_ConnectLaunchHidesRail: when the connect gate is the InitialView,
+// the shell hides the rail and devotes the frame to the gate, just like
+// unlock/setup. The gate view owns the full width, and the shell's global
+// navigation (number jumps, tab, palette) is suppressed.
+func TestApp_ConnectLaunchHidesRail(t *testing.T) {
+	app := NewApp(Deps{
+		RepoName:     "x",
+		InitialView:  "connect",
+		ConnectError: errors.New("session expired"),
+	})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	view := m.(App).View()
+	// The gate view is active and renders its content (the error message).
+	if !strings.Contains(view, "Repository unreachable") {
+		t.Fatal("connect gate not rendering; expected 'Repository unreachable'")
+	}
+	// The rail is hidden — no Dashboard title (rail shows navigable views).
+	if strings.Contains(view, "Dashboard") {
+		t.Fatal("rail leaked into view when connect gate is active startup gate")
+	}
+}
