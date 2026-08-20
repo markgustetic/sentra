@@ -897,3 +897,29 @@ func TestRunUI_ForcedSetupPrefersOnDiskConfigOverSeed(t *testing.T) {
 		t.Error("forced setup over an existing config must use the on-disk config, not SetupSeedConfig")
 	}
 }
+
+// The headline behavior: `sentra` from a directory with no sentra.yaml
+// routes to the first-run wizard TARGETING the user-level config path, so
+// completing setup once makes bare `sentra` work from anywhere after.
+func TestUI_FirstRunFromAnywhereTargetsHomeConfig(t *testing.T) {
+	xdg := t.TempDir()
+	chDir(t, t.TempDir()) // empty cwd: no ./sentra.yaml
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	deps, captured := uiFixture(t, "hunter2")
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	d := captured.Deps()
+	want := filepath.Join(xdg, "sentra", "sentra.yaml")
+	if d.ConfigPath != want {
+		t.Errorf("ConfigPath = %q, want discovered home path %q", d.ConfigPath, want)
+	}
+	if d.InitialView != "setup" {
+		t.Errorf("InitialView = %q, want \"setup\" (first run)", d.InitialView)
+	}
+}

@@ -135,6 +135,12 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		cfgPath = configFileName
 	}
 
+	// Discovery: the untouched default falls back to the user-level
+	// config when the cwd has none, so bare `sentra` opens the
+	// configured repo from anywhere. Explicit --config (and `sentra
+	// local`'s programmatic path) pass through untouched.
+	cfgPath = resolveConfigPath(cmd, cfgPath)
+
 	passphraseFile := ""
 	if deps.PassphraseFile != nil {
 		passphraseFile = deps.PassphraseFile()
