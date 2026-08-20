@@ -116,8 +116,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing operation %q", want)
 		}
 	}
-	if got := len(app.views); got != 20 {
-		t.Fatalf("views = %d, want 20 (3 read-only + files + check + stats + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock + settings + setup + help)", got)
+	if got := len(app.views); got != 21 {
+		t.Fatalf("views = %d, want 21 (3 read-only + files + check + stats + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock + connect + settings + setup + help)", got)
 	}
 }
 
@@ -950,8 +950,8 @@ func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
 	if strings.Contains(out, "Operations") {
 		t.Errorf("Operations placeholder should be gone:\n%s", out)
 	}
-	if got := len(app.views); got != 20 {
-		t.Fatalf("views = %d, want 20 (Phase 2c end-state + files + stats + the unlock gate + settings + setup + help)", got)
+	if got := len(app.views); got != 21 {
+		t.Fatalf("views = %d, want 21 (Phase 2c end-state + files + stats + the unlock gate + connect gate + settings + setup + help)", got)
 	}
 }
 
@@ -1034,7 +1034,7 @@ func TestApp_Phase2cViewsRegistered(t *testing.T) {
 	want := []string{
 		"dashboard", "snapshots", "files", "diff", "check", "stats", "doctor",
 		"recovery-kit", "policies", "schedule", "agent", "backup", "restore",
-		"prune", "sync", "password", "unlock", "settings", "setup", "help",
+		"prune", "sync", "password", "unlock", "connect", "settings", "setup", "help",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {
@@ -1069,7 +1069,7 @@ func TestApp_Phase3ViewsRegistered(t *testing.T) {
 	want := []string{
 		"dashboard", "snapshots", "files", "diff", "check", "stats", "doctor",
 		"recovery-kit", "policies", "schedule", "agent", "backup", "restore",
-		"prune", "sync", "password", "setup", "settings", "unlock", "help",
+		"prune", "sync", "password", "setup", "settings", "unlock", "connect", "help",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {
@@ -2141,5 +2141,30 @@ func TestApp_DataViewsRefreshAfterBackup(t *testing.T) {
 	}
 	if len(snaps.snaps) != 1 {
 		t.Errorf("snapshots did not refresh through the shell: got %d, want 1", len(snaps.snaps))
+	}
+}
+
+// TestApp_ConnectRegisteredAsView: the connect gate is a registered view
+// so InitialView routing can land on it.
+func TestApp_ConnectRegisteredAsView(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x"})
+	found := false
+	for _, v := range app.views {
+		if v.id == "connect" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("connect view not registered in NewApp")
+	}
+}
+
+// TestApp_ConnectHiddenFromRail: connect is a startup gate like unlock —
+// it must never appear in the rail/palette surface.
+func TestApp_ConnectHiddenFromRail(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	if strings.Contains(m.(App).View(), "Connect") {
+		t.Fatal("connect gate leaked into the rail")
 	}
 }
