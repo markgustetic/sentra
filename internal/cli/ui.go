@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"os"
@@ -14,6 +15,7 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/tui"
 )
@@ -224,7 +226,14 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
-		return err
+		// Configured, passphrase available, but the repo would not OPEN
+		// (expired AWS credentials, unreachable bucket, network down).
+		// The TUI owns the other launch states — first-run lands on the
+		// wizard, locked on unlock — so this one lands on the connect
+		// gate with the fix a keypress away, instead of dying to stderr.
+		// Config-load/probe failures never reach here: probeLaunchState
+		// already returned those above.
+		return launchConnectGate(cmd, deps, cfgPath, absCfgPath, st, showSplash, passphraseFile, err)
 	}
 	defer crypto.Zeroize(pass)
 	defer r.Close()
@@ -271,6 +280,49 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		Commit:         deps.Commit,
 	})
 
+	if deps.Run == nil {
+		return fmt.Errorf("ui: no Run hook configured")
+	}
+	return deps.Run(app)
+}
+
+// launchConnectGate builds the App for the connect gate: no repo, the
+// open failure for the gate to render, and a retry closure that re-runs
+// the launch open end-to-end. The closure re-resolves the passphrase
+// chain (env / file / keyring) on every call and zeroizes the secret
+// before returning — the repo's derived keys are what the TUI needs, the
+// passphrase never crosses the seam. Closure injection keeps the
+// tui→cli import direction clean, same as Deps.NewStore.
+func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath string, st launchState, showSplash bool, passphraseFile string, openErr error) error {
+	app := tui.NewApp(tui.Deps{
+		Provider:                providerForLaunch(deps, st.Config),
+		RepoName:                st.Config.Repo.S3.Bucket,
+		Config:                  st.Config,
+		Ctx:                     cmd.Context(),
+		ConfigPath:              absCfgPath,
+		NewStore:                deps.NewStore,
+		Actions:                 deps.Actions,
+		SaveKeyringPassphrase:   deps.SavePassphrase,
+		DeleteKeyringPassphrase: deps.DeletePassphrase,
+		SetupEffects:            setupEffectsForLaunch(deps),
+		PassphraseFile:          passphraseFile,
+		InitialView:             "connect",
+		ShowSplash:              showSplash,
+		Version:                 deps.Version,
+		Commit:                  deps.Commit,
+		ConnectError:            openErr,
+		OpenRepo: func(_ context.Context) (*repo.Repo, *config.Config, error) {
+			// openRepoForConfig reads the command's context itself; the
+			// parameter exists for the seam's shape, and the command's
+			// context is the same cancellation tree the TUI runs under.
+			r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
+			if err != nil {
+				return nil, nil, err
+			}
+			crypto.Zeroize(pass)
+			return r, cfg, nil
+		},
+	})
 	if deps.Run == nil {
 		return fmt.Errorf("ui: no Run hook configured")
 	}

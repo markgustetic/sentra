@@ -978,3 +978,90 @@ func TestUI_FirstRunFromAnywhereTargetsHomeConfig(t *testing.T) {
 		t.Errorf("InitialView = %q, want \"setup\" (first run)", d.InitialView)
 	}
 }
+
+// The headline routing: a configured repo whose OPEN fails (expired
+// credentials, dead network) must land the operator on the TUI connect
+// gate with the error and a working retry hook — not exit to stderr.
+func TestRunUI_OpenFailureRoutesToConnectGate(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2") // passphrase available → dashboard path
+	deps, captured := uiFixture(t, "hunter2")
+	deps.NewStore = func(context.Context, *config.Config) (blobstore.Store, error) {
+		return nil, errors.New("login session has expired")
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute should launch the gate, not fail: %v", err)
+	}
+	d := captured.Deps()
+	if d.InitialView != "connect" {
+		t.Fatalf("InitialView = %q, want \"connect\"", d.InitialView)
+	}
+	if d.Repo != nil {
+		t.Fatal("gate launch must not carry a repo")
+	}
+	if d.ConnectError == nil || !strings.Contains(d.ConnectError.Error(), "login session has expired") {
+		t.Fatalf("ConnectError = %v, want the open failure", d.ConnectError)
+	}
+	if d.OpenRepo == nil {
+		t.Fatal("OpenRepo retry hook not wired")
+	}
+}
+
+// The retry closure must re-run the whole open path — store construction
+// and passphrase chain — so a fixed environment succeeds on retry.
+func TestRunUI_ConnectGateRetryClosureReopens(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+	deps, captured := uiFixture(t, "hunter2")
+	working := deps.NewStore // uiFixture's in-memory store with a real repo
+	calls := 0
+	deps.NewStore = func(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("transient outage")
+		}
+		return working(ctx, cfg)
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	r, cfg, err := d.OpenRepo(context.Background())
+	if err != nil {
+		t.Fatalf("retry closure failed against a recovered store: %v", err)
+	}
+	if r == nil || cfg == nil {
+		t.Fatal("retry closure returned nil repo or config")
+	}
+	_ = r.Close()
+}
+
+// Scope pin: a config that cannot LOAD is a fix-the-file problem, not a
+// TUI state — it must still exit to the CLI without constructing an App.
+func TestRunUI_ConfigLoadFailureStillExitsToCLI(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	if err := os.WriteFile("sentra.yaml", []byte(":\tnot yaml ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps, _ := uiFixture(t, "hunter2")
+	ran := false
+	deps.Run = func(_ tui.App) error { ran = true; return nil }
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected a config load error")
+	}
+	if ran {
+		t.Fatal("a broken config must not launch the TUI")
+	}
+}
