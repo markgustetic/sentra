@@ -356,6 +356,12 @@ func DefaultUIRunner(app tui.App) error {
 func SetUIAsDefault(root *cobra.Command, deps UIDeps) {
 	uiCmd := NewUI(deps)
 	root.RunE = func(cmd *cobra.Command, args []string) error {
+		// The executed command on this path is root, so root's
+		// SilenceUsage governs error output: without this, any launch
+		// failure (expired AWS credentials, unreachable bucket) gets
+		// buried under the full command list. `sentra ui` already
+		// silences usage; the bare dispatch must fail the same way.
+		cmd.SilenceUsage = true
 		// When the user types `sentra --help`, args is empty but
 		// cobra prints help before reaching here. So this body fires
 		// only on bare `sentra` (or `sentra` with global flags).

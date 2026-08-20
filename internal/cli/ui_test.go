@@ -159,6 +159,34 @@ func TestRoot_BareSentraLaunchesUI(t *testing.T) {
 	}
 }
 
+// TestRoot_BareSentraErrorDoesNotDumpUsage pins the failure UX of the
+// default dispatch: a launch error (expired AWS credentials, unreachable
+// bucket) must surface as the error alone, exactly like `sentra ui` —
+// not buried under the full root help. Cobra prints usage on a RunE error
+// unless the EXECUTED command silences it, and on the bare path that is
+// the root command, so the delegation must set root's SilenceUsage.
+func TestRoot_BareSentraErrorDoesNotDumpUsage(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	deps, _ := uiFixture(t, "hunter2")
+	deps.Run = func(_ tui.App) error {
+		return errors.New("tea boom")
+	}
+	root := NewRoot("v", "c", "d")
+	root.AddCommand(NewUI(deps))
+	SetUIAsDefault(root, deps)
+	out := &bytes.Buffer{}
+	root.SetOut(out)
+	root.SetErr(out)
+	root.SetArgs([]string{})
+	if err := root.Execute(); err == nil {
+		t.Fatal("expected error from execute")
+	}
+	if strings.Contains(out.String(), "Usage:") {
+		t.Errorf("bare sentra error dumped usage, burying the error:\n%s", out.String())
+	}
+}
+
 // TestRunUI_ThreadsNewDepsFields proves runUI populates the four Unit-1
 // Deps fields from UIDeps: the store factory, the action registry, the
 // keyring saver, and an absolute ConfigPath. No secret is threaded — the
