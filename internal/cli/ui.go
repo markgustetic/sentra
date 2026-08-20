@@ -117,7 +117,7 @@ func NewUI(deps UIDeps) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
@@ -134,6 +134,12 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 	if cfgPath == "" {
 		cfgPath = configFileName
 	}
+
+	// Discovery: the untouched default falls back to the user-level
+	// config when the cwd has none, so bare `sentra` opens the
+	// configured repo from anywhere. Explicit --config (and `sentra
+	// local`'s programmatic path) pass through untouched.
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	passphraseFile := ""
 	if deps.PassphraseFile != nil {

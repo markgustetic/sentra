@@ -63,7 +63,7 @@ func NewRestore(deps RestoreDeps) *cobra.Command {
 	cmd.Flags().IntVar(&concurrency, "concurrency", 0,
 		"files restored in parallel (0 = one per logical CPU)")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
@@ -78,6 +78,7 @@ func runRestore(
 	concurrency int,
 ) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	if dryRun && verify {
 		return fmt.Errorf("restore: --dry-run and --verify cannot be combined")
 	}

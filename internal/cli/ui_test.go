@@ -704,6 +704,14 @@ func TestRunUI_SetupPrefillPrecedence(t *testing.T) {
 					cmd := NewUI(deps)
 					cmd.SetOut(io.Discard)
 					cmd.SetErr(io.Discard)
+					// This test calls runUI directly rather than cmd.Execute(), so
+					// cobra never marks the "config" flag Changed. Pin it explicitly
+					// so config discovery (added after this test) doesn't reroute
+					// cfgPath away from the cwd path the draft above was written
+					// to — this test's subject is source precedence, not discovery.
+					if err := cmd.Flags().Set("config", configFileName); err != nil {
+						t.Fatal(err)
+					}
 					// forceSetup so the config-present rows reach the wizard
 					// instead of the unlock gate.
 					if err := runUI(cmd, deps, configFileName, true); err != nil {
@@ -773,6 +781,16 @@ func TestRunUI_EmptyConfigPathNormalizes(t *testing.T) {
 	cmd := NewUI(deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
+	// This test calls runUI directly rather than cmd.Execute(), so cobra
+	// never marks the "config" flag Changed — but the scenario under test
+	// (a literal `--config ""`) IS an explicit flag on the real CLI path, so
+	// pin Changed here too. Otherwise config discovery (added after this
+	// test) sees an "untouched default" in this empty cwd and reroutes to
+	// the XDG home path, which is a different, also-legitimate behavior
+	// this test isn't about.
+	if err := cmd.Flags().Set("config", ""); err != nil {
+		t.Fatal(err)
+	}
 	if err := runUI(cmd, deps, "", false); err != nil {
 		t.Fatalf("launch: %v", err)
 	}
@@ -848,6 +866,15 @@ func TestRunUI_UnreadableSetupDraftDegradesToNextSource(t *testing.T) {
 	cmd := NewUI(deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
+	// This test calls runUI directly rather than cmd.Execute(), so cobra
+	// never marks the "config" flag Changed. Pin it so config discovery
+	// can't reroute cfgPath away from the cwd path the corrupt draft above
+	// was written next to — otherwise the wizard's draft lookup would miss
+	// the draft entirely (wrong directory) and this test would pass for
+	// the wrong reason: an absent draft, not a corrupt one.
+	if err := cmd.Flags().Set("config", configFileName); err != nil {
+		t.Fatal(err)
+	}
 	if err := runUI(cmd, deps, configFileName, true); err != nil {
 		t.Fatalf("a corrupt setup draft must not fail the launch: %v", err)
 	}
@@ -895,5 +922,31 @@ func TestRunUI_ForcedSetupPrefersOnDiskConfigOverSeed(t *testing.T) {
 	d := captured.Deps()
 	if d.Config.Repo.S3.Bucket == "seeded-not-wanted" {
 		t.Error("forced setup over an existing config must use the on-disk config, not SetupSeedConfig")
+	}
+}
+
+// The headline behavior: `sentra` from a directory with no sentra.yaml
+// routes to the first-run wizard TARGETING the user-level config path, so
+// completing setup once makes bare `sentra` work from anywhere after.
+func TestUI_FirstRunFromAnywhereTargetsHomeConfig(t *testing.T) {
+	xdg := t.TempDir()
+	chDir(t, t.TempDir()) // empty cwd: no ./sentra.yaml
+	t.Setenv("XDG_CONFIG_HOME", xdg)
+
+	deps, captured := uiFixture(t, "hunter2")
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	d := captured.Deps()
+	want := filepath.Join(xdg, "sentra", "sentra.yaml")
+	if d.ConfigPath != want {
+		t.Errorf("ConfigPath = %q, want discovered home path %q", d.ConfigPath, want)
+	}
+	if d.InitialView != "setup" {
+		t.Errorf("InitialView = %q, want \"setup\" (first run)", d.InitialView)
 	}
 }

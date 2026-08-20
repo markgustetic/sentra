@@ -54,12 +54,13 @@ func NewLs(deps LsDeps) *cobra.Command {
 	}
 	cmd.Flags().BoolVar(&asJSON, "json", false, "emit a JSON array instead of text lines")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
 func runLs(cmd *cobra.Command, deps LsDeps, ref string, asJSON bool, cfgPath string) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

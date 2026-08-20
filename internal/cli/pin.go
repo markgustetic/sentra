@@ -45,12 +45,13 @@ func newPinCommand(deps PinDeps, pin bool) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
 func runPin(cmd *cobra.Command, deps PinDeps, ref, cfgPath string, pin bool) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

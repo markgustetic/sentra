@@ -72,7 +72,7 @@ func NewBackup(deps BackupDeps) *cobra.Command {
 	cmd.Flags().BoolVar(&asJSON, "json", false,
 		"emit the snapshot summary as JSON instead of the styled text")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.AddCommand(newBackupPlan(deps))
 	cmd.AddCommand(newBackupApply(deps))
 	return cmd
@@ -98,7 +98,7 @@ func newBackupPlan(deps BackupDeps) *cobra.Command {
 	}
 	cmd.Flags().StringVar(&tag, "tag", "", "optional human-readable tag persisted on apply")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.Flags().StringVar(&outPath, "out", "sentra-backup-plan.json",
 		"path to write the reviewable JSON plan")
 	return cmd
@@ -122,7 +122,7 @@ func newBackupApply(deps BackupDeps) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.Flags().BoolVar(&yes, "yes", false,
 		"skip the interactive confirmation prompt")
 	return cmd
@@ -132,6 +132,7 @@ func newBackupApply(deps BackupDeps) *cobra.Command {
 // independently testable and easy to grep.
 func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, rescan, asJSON bool) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
@@ -202,6 +203,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 
 func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outPath string) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	if outPath == "" {
 		return errors.New("backup plan: --out must not be empty")
 	}
@@ -244,6 +246,7 @@ func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outP
 
 func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath string, yes bool) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	raw, err := os.ReadFile(planPath) //nolint:gosec // user-provided plan path is the command argument.
 	if err != nil {

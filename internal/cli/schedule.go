@@ -33,7 +33,7 @@ func NewSchedule(deps ScheduleDeps) *cobra.Command {
 		SilenceErrors: false,
 	}
 	cmd.PersistentFlags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.AddCommand(newScheduleInstall(deps, &cfgPath))
 	cmd.AddCommand(newScheduleStatus(deps, &cfgPath))
 	cmd.AddCommand(newScheduleUninstall(deps, &cfgPath))
@@ -80,6 +80,7 @@ func newScheduleUninstall(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 }
 
 func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	p, absConfig, err := loadScheduledPolicy(cfgPath, name)
 	if err != nil {
 		return err
@@ -118,6 +119,7 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 }
 
 func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	if _, _, err := loadScheduledPolicy(cfgPath, name); err != nil {
 		return err
 	}
@@ -147,6 +149,7 @@ func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name stri
 }
 
 func runScheduleUninstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	if _, _, err := loadScheduledPolicy(cfgPath, name); err != nil {
 		return err
 	}

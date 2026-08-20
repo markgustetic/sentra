@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -47,7 +48,7 @@ func NewDoctor(deps DoctorDeps) *cobra.Command {
 		},
 	}
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	cmd.Flags().BoolVar(&skipRepo, "skip-repo", false,
 		"skip encrypted repository open/check")
 	cmd.Flags().BoolVar(&asJSON, "json", false,
@@ -56,6 +57,7 @@ func NewDoctor(deps DoctorDeps) *cobra.Command {
 }
 
 func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo, asJSON bool) error {
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 	stdout := cmdStdout(cmd, deps.Stdout)
 	out := stdout
 	if asJSON {
@@ -71,7 +73,13 @@ func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo, as
 		printSetupFail(out, "Config load failed")
 		return fmt.Errorf("load config: %w", err)
 	}
-	printSetupOK(out, "Config loaded")
+	// Two possible config locations exist since discovery; naming the
+	// one actually loaded is doctor's answer to "which config am I on?".
+	absCfg := cfgPath
+	if p, err := filepath.Abs(cfgPath); err == nil {
+		absCfg = p
+	}
+	printSetupOK(out, fmt.Sprintf("Config loaded (%s)", absCfg))
 
 	bucketOK := false
 	if cfg.Repo.S3.Bucket == "" {

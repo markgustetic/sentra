@@ -63,7 +63,7 @@ func NewCheck(deps CheckDeps) *cobra.Command {
 	cmd.Flags().Float64Var(&readDataSubset, "read-data-subset", 0,
 		"deep-verify only this percent of chunks (implies --read-data)")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
@@ -77,6 +77,7 @@ func runCheck(
 	readDataSubset float64,
 ) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

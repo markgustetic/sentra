@@ -45,7 +45,7 @@ func NewAgentAdviseIgnore(deps AgentDeps) *cobra.Command {
 	cmd.Flags().Int64Var(&largeFileBytes, "large-file-bytes", 0,
 		"large-file threshold in bytes (0 uses the heuristic default)")
 	cmd.Flags().StringVar(&cfgPath, "config", configFileName,
-		"path to sentra.yaml (defaults to ./sentra.yaml)")
+		"path to sentra.yaml (default: ./sentra.yaml, else ~/.config/sentra/sentra.yaml)")
 	return cmd
 }
 
@@ -57,6 +57,7 @@ func runAgentAdviseIgnore(
 	largeFileBytes int64,
 ) error {
 	cmd.SilenceUsage = true
+	cfgPath = resolveConfigPath(cmd, cfgPath)
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

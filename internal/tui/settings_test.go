@@ -281,9 +281,25 @@ func TestSettings_ToggleSplashDisabledWithoutConfig(t *testing.T) {
 
 // A failed write must not desync the in-memory config from disk.
 func TestSettings_ToggleSplashWriteErrorKeepsMemory(t *testing.T) {
+	if os.Getuid() == 0 {
+		t.Skip("a read-only directory does not block writes for root")
+	}
 	cfg := &config.Config{}
-	// A path inside a non-existent directory makes config.Write fail.
-	bad := filepath.Join(t.TempDir(), "missing-dir", "sentra.yaml")
+	// config.Write now creates a missing parent directory (config
+	// discovery's home-path fallback needs that), so a merely-missing
+	// directory no longer makes Write fail. Use a read-only parent
+	// instead: MkdirAll is a no-op on an existing directory, but the
+	// WriteFile inside it still needs write permission.
+	dir := t.TempDir()
+	if err := os.Chmod(dir, 0o500); err != nil {
+		t.Fatalf("chmod: %v", err)
+	}
+	t.Cleanup(func() {
+		if err := os.Chmod(dir, 0o700); err != nil {
+			t.Errorf("restore perms for cleanup: %v", err)
+		}
+	})
+	bad := filepath.Join(dir, "sentra.yaml")
 	v := cursorTo(NewSettingsView(Deps{Config: cfg, ConfigPath: bad}), entryToggleSplash)
 
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
