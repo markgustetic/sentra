@@ -262,6 +262,12 @@ safely share one bucket under different prefixes.
 
 ## Configuration
 
+Sentra looks for `sentra.yaml` in the current directory first, then falls
+back to `~/.config/sentra/sentra.yaml` (honoring `XDG_CONFIG_HOME`).
+First-run setup writes the home location, so after setting up once you
+can run `sentra` from any directory. Pass `--config` to use a specific
+file.
+
 `sentra.yaml` holds non-secret settings only. A `.sentraignore` at the walk root
 applies gitignore-style globs (a starter ships at
 [`.sentraignore.example`](.sentraignore.example)). The Anthropic provider needs

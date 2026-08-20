@@ -193,6 +193,33 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra agent advise-ignore` is read-only and must not edit `.sentraignore`.
 - `sentra recovery-kit` is non-secret documentation only.
 
+## Config resolution
+
+Every repo-facing command resolves its config path the same way:
+
+1. An explicit `--config <path>` is used verbatim — no discovery.
+2. Otherwise `./sentra.yaml`, when it exists as a regular file.
+3. Otherwise `$XDG_CONFIG_HOME/sentra/sentra.yaml`, with unset/empty
+   `XDG_CONFIG_HOME` defaulting to `~/.config` (the gh-CLI convention,
+   not `os.UserConfigDir`).
+
+When neither file exists, the home path is still the resolved target: a
+first run from any directory lands on the TUI setup wizard, which
+persists `~/.config/sentra/sentra.yaml`, so bare `sentra` opens the
+configured repo from anywhere afterwards. `config.Write` creates the
+missing parent directory (0700).
+
+Exceptions: `sentra init` writes `./sentra.yaml` only (scripting /
+recovery surface; never reaches outside cwd). `sentra local` always uses
+`.sentra-local.yaml`. `sentra sync` resolves its *source* config through
+discovery; its destination comes only from `--dst-config`.
+
+Implementation: `config.DiscoverPath()` (internal/config/discover.go),
+applied by `resolveConfigPath` (internal/cli/config_path.go) as the first
+statement of every run body — at RunE time, because `Flags().Changed` is
+only meaningful after argv parsing. `sentra doctor` prints the resolved
+path.
+
 ## CI
 
 CI is defined in `.github/workflows/ci.yml`. It should cover:

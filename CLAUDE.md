@@ -16,6 +16,12 @@ it lands on the unlock gate; otherwise the dashboard. The TUI covers every job
 a human does; the CLI is the machine and recovery surface (see the surface
 contract in AGENTS.md).
 
+Config discovery: with no `--config`, commands use `./sentra.yaml` when
+present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default
+`~/.config`); first-run setup writes the home path, so bare `sentra`
+works from any directory. `init` (cwd-only) and `local`
+(`.sentra-local.yaml`) are the exceptions.
+
 `sentra local` is the dev flow: it starts MinIO, exports the `minioadmin`
 credentials **only if you have not set AWS credentials yourself**, and opens the
 wizard pre-filled for MinIO. It launches against `.sentra-local.yaml` and never

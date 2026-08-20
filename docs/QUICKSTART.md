@@ -131,6 +131,12 @@ if selected. If a run fails, setup saves a non-secret `.sentra.yaml.setup-draft`
 and loads it the next time you run the wizard. If you choose `Config only`, run
 `sentra init` later.
 
+Sentra looks for `sentra.yaml` in the current directory first, then falls
+back to `~/.config/sentra/sentra.yaml` (honoring `XDG_CONFIG_HOME`).
+First-run setup writes the home location, so after setting up once you
+can run `sentra` from any directory. Pass `--config` to use a specific
+file.
+
 To verify setup without changing anything:
 
 ```bash
