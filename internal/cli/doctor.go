@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"path/filepath"
 	"time"
 
 	"github.com/spf13/cobra"
@@ -72,7 +73,13 @@ func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo, as
 		printSetupFail(out, "Config load failed")
 		return fmt.Errorf("load config: %w", err)
 	}
-	printSetupOK(out, "Config loaded")
+	// Two possible config locations exist since discovery; naming the
+	// one actually loaded is doctor's answer to "which config am I on?".
+	absCfg := cfgPath
+	if p, err := filepath.Abs(cfgPath); err == nil {
+		absCfg = p
+	}
+	printSetupOK(out, fmt.Sprintf("Config loaded (%s)", absCfg))
 
 	bucketOK := false
 	if cfg.Repo.S3.Bucket == "" {

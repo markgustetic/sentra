@@ -238,4 +238,7 @@ func TestDoctor_DiscoversHomeConfigFromAnywhere(t *testing.T) {
 	if !strings.Contains(out.String(), "lowercase") {
 		t.Fatalf("doctor did not validate the bucket from the discovered config:\n%s", out.String())
 	}
+	if !strings.Contains(out.String(), filepath.Join(xdg, "sentra", "sentra.yaml")) {
+		t.Errorf("doctor should print the resolved config path:\n%s", out.String())
+	}
 }
