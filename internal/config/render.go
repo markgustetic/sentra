@@ -3,6 +3,7 @@ package config
 import (
 	"fmt"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 )
@@ -160,6 +161,9 @@ func writeYAMLStringList(b *strings.Builder, key string, values []string) {
 // names the bucket/region/profile but never a secret, yet 0o600 keeps it
 // out of other users' reach as a matter of policy hygiene.
 //
+// Write creates path's parent directory (0o700) when missing — the user-level
+// config location may not exist on a fresh machine.
+//
 // Write authors the *whole* file from the Config it is handed, so it is only
 // correct when the caller means to materialize a resolved config: `init`
 // (Defaults < yaml < env < flags, and it must record the bucket it just
@@ -170,6 +174,12 @@ func writeYAMLStringList(b *strings.Builder, key string, values []string) {
 // To change one field of an existing file, use Update. Passing a Config from
 // Load to Write silently persists that process's SENTRA_* overrides.
 func Write(path string, cfg *Config) error {
+	// The user-level fallback path (~/.config/sentra/sentra.yaml) may be
+	// the first thing ever written there; create the directory rather
+	// than failing on a fresh machine. 0o700 matches the file's 0o600.
+	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
+		return fmt.Errorf("create config dir %s: %w", filepath.Dir(path), err)
+	}
 	if err := os.WriteFile(path, Render(cfg), 0o600); err != nil {
 		return fmt.Errorf("write %s: %w", path, err)
 	}

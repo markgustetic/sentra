@@ -58,3 +58,17 @@ func TestEngineWriteAndRemoveDraft(t *testing.T) {
 	// Second RemoveDraft on the now-missing draft must not panic or error.
 	e.RemoveDraft(cfgPath)
 }
+
+// A first run from a random directory targets ~/.config/sentra/, which may
+// not exist yet — the resumability draft must not be the thing that fails.
+func TestWriteDraft_CreatesMissingParentDirs(t *testing.T) {
+	e := NewEngine(nil)
+	cfgPath := filepath.Join(t.TempDir(), "sentra", "sentra.yaml")
+	cfg := config.Defaults()
+	if err := e.WriteDraft(cfgPath, &cfg); err != nil {
+		t.Fatalf("WriteDraft into missing dir: %v", err)
+	}
+	if _, err := os.Stat(e.DraftPath(cfgPath)); err != nil {
+		t.Errorf("draft not written: %v", err)
+	}
+}

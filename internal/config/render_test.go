@@ -254,3 +254,24 @@ func TestWrite_RoundTripsHideSplash(t *testing.T) {
 		t.Error("HideSplash did not round-trip through Write -> Load")
 	}
 }
+
+// The user-level fallback (~/.config/sentra/sentra.yaml) may be the first
+// thing ever written there; Write must create the directory rather than
+// fail on a fresh machine, and must create it private.
+func TestWrite_CreatesMissingParentDirs(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra", "nested", "sentra.yaml")
+	cfg := Defaults()
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("Write into missing dir: %v", err)
+	}
+	info, err := os.Stat(filepath.Dir(path))
+	if err != nil {
+		t.Fatalf("stat created dir: %v", err)
+	}
+	if got := info.Mode().Perm(); got != 0o700 {
+		t.Errorf("config dir perms = %o, want 0700", got)
+	}
+	if _, err := Load(path); err != nil {
+		t.Errorf("round-trip Load: %v", err)
+	}
+}
