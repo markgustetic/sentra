@@ -26,8 +26,31 @@ import (
 // restores the pre-test value (unset, thanks to this) when the test ends —
 // so this does not conflict with tests exercising the "source resolves"
 // path.
+// Same trap, a second source: config.DiscoverPath falls back to
+// $XDG_CONFIG_HOME/sentra/sentra.yaml whenever a test's cwd has no
+// sentra.yaml and its --config flag is untouched. Left pointing at
+// whatever the host process inherited, any such test resolves to the
+// real developer machine's ~/.config — passing or failing depending on
+// whether that machine happens to have a ~/.config/sentra/sentra.yaml,
+// not on the test's own fixture. Several TestRunUI_* tests in this
+// package call runUI directly (bypassing cobra's flag parsing, so
+// Flags().Changed is never true) and hit exactly this path. Pinning
+// XDG_CONFIG_HOME once, here, to a directory guaranteed empty for the
+// life of the test binary removes the machine dependency for all of
+// them at once, the same way the SENTRA_PASSPHRASE clear above does for
+// its trap. Tests that deliberately exercise discovery still override
+// this with their own t.Setenv, which restores this value when they end.
 func TestMain(m *testing.M) {
 	_ = os.Unsetenv("SENTRA_PASSPHRASE")
 	_ = os.Unsetenv("SENTRA_PASSPHRASE_FILE")
-	os.Exit(m.Run())
+
+	xdg, err := os.MkdirTemp("", "sentra-test-xdg-config-*")
+	if err != nil {
+		panic(err)
+	}
+	_ = os.Setenv("XDG_CONFIG_HOME", xdg)
+
+	code := m.Run()
+	_ = os.RemoveAll(xdg)
+	os.Exit(code)
 }

@@ -866,6 +866,15 @@ func TestRunUI_UnreadableSetupDraftDegradesToNextSource(t *testing.T) {
 	cmd := NewUI(deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
+	// This test calls runUI directly rather than cmd.Execute(), so cobra
+	// never marks the "config" flag Changed. Pin it so config discovery
+	// can't reroute cfgPath away from the cwd path the corrupt draft above
+	// was written next to — otherwise the wizard's draft lookup would miss
+	// the draft entirely (wrong directory) and this test would pass for
+	// the wrong reason: an absent draft, not a corrupt one.
+	if err := cmd.Flags().Set("config", configFileName); err != nil {
+		t.Fatal(err)
+	}
 	if err := runUI(cmd, deps, configFileName, true); err != nil {
 		t.Fatalf("a corrupt setup draft must not fail the launch: %v", err)
 	}
