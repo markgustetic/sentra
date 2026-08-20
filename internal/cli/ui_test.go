@@ -704,6 +704,14 @@ func TestRunUI_SetupPrefillPrecedence(t *testing.T) {
 					cmd := NewUI(deps)
 					cmd.SetOut(io.Discard)
 					cmd.SetErr(io.Discard)
+					// This test calls runUI directly rather than cmd.Execute(), so
+					// cobra never marks the "config" flag Changed. Pin it explicitly
+					// so config discovery (added after this test) doesn't reroute
+					// cfgPath away from the cwd path the draft above was written
+					// to — this test's subject is source precedence, not discovery.
+					if err := cmd.Flags().Set("config", configFileName); err != nil {
+						t.Fatal(err)
+					}
 					// forceSetup so the config-present rows reach the wizard
 					// instead of the unlock gate.
 					if err := runUI(cmd, deps, configFileName, true); err != nil {
@@ -773,6 +781,16 @@ func TestRunUI_EmptyConfigPathNormalizes(t *testing.T) {
 	cmd := NewUI(deps)
 	cmd.SetOut(io.Discard)
 	cmd.SetErr(io.Discard)
+	// This test calls runUI directly rather than cmd.Execute(), so cobra
+	// never marks the "config" flag Changed — but the scenario under test
+	// (a literal `--config ""`) IS an explicit flag on the real CLI path, so
+	// pin Changed here too. Otherwise config discovery (added after this
+	// test) sees an "untouched default" in this empty cwd and reroutes to
+	// the XDG home path, which is a different, also-legitimate behavior
+	// this test isn't about.
+	if err := cmd.Flags().Set("config", ""); err != nil {
+		t.Fatal(err)
+	}
 	if err := runUI(cmd, deps, "", false); err != nil {
 		t.Fatalf("launch: %v", err)
 	}
