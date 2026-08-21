@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -182,6 +183,14 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v.startBackup(v.pending)
 
+	case cursor.BlinkMsg:
+		if v.tag.Focused() {
+			var cmd tea.Cmd
+			v.tag, cmd = v.tag.Update(msg)
+			return v, cmd
+		}
+		return v, nil
+
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -220,10 +229,10 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			if v.focus == focusPicker {
 				v.focus = focusTagField
 				v.tag.Focus()
-			} else {
-				v.focus = focusPicker
-				v.tag.Blur()
+				return v, textinput.Blink
 			}
+			v.focus = focusPicker
+			v.tag.Blur()
 			return v, nil
 		}
 
@@ -382,7 +391,13 @@ func (v BackupView) View() string {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
 		fmt.Fprintf(&b, "\n\n%s", v.picker.View(v.focus == focusPicker))
-		fmt.Fprintf(&b, "\n%s", v.tag.View())
+		tagField := v.tag.View()
+		if v.tag.Focused() {
+			// The box IS the focus affordance: only while tab has moved
+			// focus onto the tag field does it carry the frame.
+			tagField = ui.FieldBox.Render(tagField)
+		}
+		fmt.Fprintf(&b, "\n%s", tagField)
 		if v.rescan {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  rescan armed — every file will be re-read (ctrl+r to disarm)"))
 		} else {

@@ -4,6 +4,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -81,5 +82,37 @@ func TestTypedConfirmModal_EscCancelsAndQTypes(t *testing.T) {
 	_, cmd := m.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	if _, ok := cmd().(dismissModalMsg); !ok {
 		t.Fatalf("esc must dismiss, got %#v", cmd())
+	}
+}
+
+// No box test: the typed field is chrome inside the shared ModalBox frame,
+// not the sole affordance distinguishing a focused field from its
+// surroundings — the FieldBox distinction doesn't apply here.
+
+// TestTypedConfirmModal_InitSchedulesBlink: the typed field is constructed
+// already focused (NewTypedConfirmModal) and never blurred while the modal
+// is up, so there is no later Focus() transition to hang the blink cmd on —
+// Init is where it starts, mirroring UnlockView.Init for the same
+// "focused from birth" shape.
+func TestTypedConfirmModal_InitSchedulesBlink(t *testing.T) {
+	m := NewTypedConfirmModal("Confirm prune", "b", "prune", "id", 80, 24)
+	assertBlinkCmd(t, m.Init())
+}
+
+// TestTypedConfirmModal_RoutesBlinkTicks: blink ticks must reach the typed
+// field so the cursor keeps blinking for as long as the modal is up. A bare
+// cursor.BlinkMsg{} won't do: bubbles/cursor tags each scheduled tick and
+// rejects one whose tag doesn't match its current count (stale-tick guard),
+// and Focus() at construction already advanced that counter past zero — so
+// the test captures a genuinely tag-matched tick from the field's own
+// cursor instead of a zero-value literal. BlinkSpeed is dropped to make
+// capturing one instant rather than a real ~530ms wait.
+func TestTypedConfirmModal_RoutesBlinkTicks(t *testing.T) {
+	tc := NewTypedConfirmModal("t", "b", "prune", "id", 80, 24)
+	tc.input.Cursor.BlinkSpeed = time.Millisecond
+	tick := tc.input.Cursor.BlinkCmd()
+	_, cmd := Modal(tc).Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the modal's typed field")
 	}
 }

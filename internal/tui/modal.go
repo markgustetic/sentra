@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -180,7 +181,24 @@ func NewTypedConfirmModal(title, body, word, id string, width, height int) Typed
 		input: ti, width: width, height: height}
 }
 
+// Init starts the typed field's cursor blinking. The field is constructed
+// already focused (NewTypedConfirmModal) and never blurred while the modal
+// is up — esc dismisses the whole modal rather than blurring the field — so
+// there is no later Focus() transition to hang the blink cmd on. Not part of
+// the Modal interface: the App pushes modals via pushModalMsg without an
+// Init hook, so this is a plain method the constructor's caller (or a test)
+// invokes directly, mirroring UnlockView.Init for the same "focused from
+// birth" shape.
+func (m TypedConfirmModal) Init() tea.Cmd { return textinput.Blink }
+
 func (m TypedConfirmModal) Update(msg tea.Msg) (Modal, tea.Cmd) {
+	// The typed field is always focused for as long as this modal exists
+	// (see Init), so a blink tick always routes.
+	if _, ok := msg.(cursor.BlinkMsg); ok {
+		var cmd tea.Cmd
+		m.input, cmd = m.input.Update(msg)
+		return m, cmd
+	}
 	k, ok := msg.(tea.KeyMsg)
 	if !ok {
 		return m, nil

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -42,6 +43,13 @@ func NewPalette(registry *Registry, width, height int) Palette {
 	p.refilter()
 	return p
 }
+
+// Init starts the search field's cursor blinking. The field is constructed
+// already focused (NewPalette) and never blurred for as long as the palette
+// exists, so — mirroring UnlockView.Init, the same "focused from birth"
+// shape — Init is where the blink schedule starts rather than a later
+// Focus() transition.
+func (p Palette) Init() tea.Cmd { return textinput.Blink }
 
 // Reset clears the query for the next open.
 func (p *Palette) Reset() {
@@ -84,6 +92,14 @@ func (p *Palette) clampWindow() {
 }
 
 func (p Palette) Update(msg tea.Msg) (Palette, tea.Cmd) {
+	// The search field is always focused (see Init), so a blink tick always
+	// routes — no Focused() guard needed, unlike a field that shares a view
+	// with an unfocused sibling.
+	if _, ok := msg.(cursor.BlinkMsg); ok {
+		var cmd tea.Cmd
+		p.input, cmd = p.input.Update(msg)
+		return p, cmd
+	}
 	if k, ok := msg.(tea.KeyMsg); ok {
 		switch k.Type {
 		case tea.KeyEnter:

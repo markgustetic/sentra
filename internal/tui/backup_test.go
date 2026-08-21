@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -510,5 +511,50 @@ func TestBackupFlow_RescanToggle(t *testing.T) {
 	v = m.(BackupView)
 	if v.rescan {
 		t.Error("second ctrl+r should disarm rescan")
+	}
+}
+
+// TestBackup_TagFieldIsBoxedOnlyWhenFocused: the box appears only once tab
+// moves focus onto the tag field — a delta assertion since the picker above
+// it renders its own chrome.
+func TestBackup_TagFieldIsBoxedOnlyWhenFocused(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	before := boxCount(v.View())
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+	after := boxCount(v.View())
+
+	if after-before != 1 {
+		t.Fatalf("boxCount delta on tag focus = %d, want 1 (before=%d after=%d)", after-before, before, after)
+	}
+}
+
+// TestBackup_TabToTagFieldSchedulesBlink: tabbing onto the tag field must
+// start the cursor blinking.
+func TestBackup_TabToTagFieldSchedulesBlink(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	assertBlinkCmd(t, cmd)
+}
+
+// TestBackup_RoutesBlinkTicksWhileTagFocused: blink ticks must reach the tag
+// field while it holds focus. A bare cursor.BlinkMsg{} won't do:
+// bubbles/cursor tags each scheduled tick and rejects one whose tag doesn't
+// match its current count (stale-tick guard), and Focus() already advanced
+// that counter past zero — so the test captures a genuinely tag-matched
+// tick from the field's own cursor instead of a zero-value literal.
+// BlinkSpeed is dropped to make capturing one instant rather than a real
+// ~530ms wait.
+func TestBackup_RoutesBlinkTicksWhileTagFocused(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+
+	v.tag.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.tag.Cursor.BlinkCmd()
+	_, cmd := v.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the focused tag field")
 	}
 }

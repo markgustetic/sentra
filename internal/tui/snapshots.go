@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"github.com/atotto/clipboard"
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -497,6 +498,15 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.detailMan = msg.man
 		s.detailErr = msg.err
 		return s, nil
+
+	case cursor.BlinkMsg:
+		if s.filter.Focused() {
+			var cmd tea.Cmd
+			s.filter, cmd = s.filter.Update(msg)
+			return s, cmd
+		}
+		return s, nil
+
 	case tea.KeyMsg:
 		if s.detailOpen {
 			if msg.Type == tea.KeyEsc {
@@ -515,7 +525,7 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.notice = ""
 			s.filtering = true
 			s.filter.Focus()
-			return s, nil
+			return s, textinput.Blink
 		case "s":
 			s.notice = ""
 			s.sortMode = (s.sortMode + 1) % 5
@@ -582,7 +592,9 @@ func (s Snapshots) View() string {
 	status := ui.Muted.Render("sort: " + s.sortMode.label())
 	switch {
 	case s.filtering:
-		status = s.filter.View()
+		// The box IS the focus affordance: only the filter field, and only
+		// while it holds focus, renders the frame.
+		status = ui.FieldBox.Render(s.filter.View())
 	case s.notice != "":
 		status = ui.Success.Render(s.notice)
 	case strings.TrimSpace(s.filter.Value()) != "":

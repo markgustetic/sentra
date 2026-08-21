@@ -5,9 +5,31 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
+
+// recoveryKitAtDone drives a fresh RecoveryKitView through a build (no
+// snapshot required — Build tolerates an empty repo) to the rkDone stage,
+// the jumping-off point for 's' to open the save-path field.
+func recoveryKitAtDone(t *testing.T) RecoveryKitView {
+	t.Helper()
+	r := newFlowRepo(t)
+	v := NewRecoveryKitView(Deps{Repo: r, ConfigPath: "sentra.yaml"})
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(RecoveryKitView)
+	for _, msg := range execCmds(t, cmd) {
+		if _, ok := msg.(recoveryKitDoneMsg); ok {
+			m, _ = v.Update(msg)
+			v = m.(RecoveryKitView)
+		}
+	}
+	if v.stage != rkDone {
+		t.Fatalf("recoveryKitAtDone: stage = %v, want rkDone", v.stage)
+	}
+	return v
+}
 
 func TestRecoveryKitFlow_RunsAndRendersMarkdown(t *testing.T) {
 	r := newFlowRepo(t)
@@ -173,6 +195,51 @@ func TestRecoveryKitFlow_SaveErrorSurfaced(t *testing.T) {
 	}
 	if v.saveErr == "" {
 		t.Fatal("failed save must set saveErr")
+	}
+}
+
+// TestRecoveryKit_SavePathIsBoxedOnlyWhenFocused: the box appears only once
+// 's' opens the save-path prompt — a delta assertion since the kit preview
+// above it is free to grow its own chrome later.
+func TestRecoveryKit_SavePathIsBoxedOnlyWhenFocused(t *testing.T) {
+	v := recoveryKitAtDone(t)
+	before := boxCount(v.View())
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	v = m.(RecoveryKitView)
+	after := boxCount(v.View())
+
+	if after-before != 1 {
+		t.Fatalf("boxCount delta on save-path focus = %d, want 1 (before=%d after=%d)", after-before, before, after)
+	}
+}
+
+// TestRecoveryKit_SaveKeySchedulesBlink: 's' opening the save-path prompt
+// must start the cursor blinking.
+func TestRecoveryKit_SaveKeySchedulesBlink(t *testing.T) {
+	v := recoveryKitAtDone(t)
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	assertBlinkCmd(t, cmd)
+}
+
+// TestRecoveryKit_RoutesBlinkTicksWhileSaving: blink ticks must reach the
+// save-path field while it holds focus. A bare cursor.BlinkMsg{} won't do:
+// bubbles/cursor tags each scheduled tick and rejects one whose tag doesn't
+// match its current count (stale-tick guard), and Focus() already advanced
+// that counter past zero — so the test captures a genuinely tag-matched
+// tick from the field's own cursor instead of a zero-value literal.
+// BlinkSpeed is dropped to make capturing one instant rather than a real
+// ~530ms wait.
+func TestRecoveryKit_RoutesBlinkTicksWhileSaving(t *testing.T) {
+	v := recoveryKitAtDone(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	v = m.(RecoveryKitView)
+
+	v.savePath.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.savePath.Cursor.BlinkCmd()
+	_, cmd := v.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the focused save-path field")
 	}
 }
 

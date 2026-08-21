@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 )
@@ -102,5 +103,36 @@ func TestPalette_CursorStaysVisibleAndActivates(t *testing.T) {
 	act, ok := cmd().(activateMsg)
 	if !ok || act.id != wantID {
 		t.Fatalf("got %v, want activateMsg{%s}", cmd(), wantID)
+	}
+}
+
+// No box test: the palette's input is chrome inside the shared ModalBox
+// frame, not the sole affordance for a field the operator picked out of
+// several — the FieldBox distinction doesn't apply here.
+
+// TestPalette_InitSchedulesBlink: the search field is constructed already
+// focused (NewPalette) and never blurred, so there is no later Focus()
+// transition to hang the blink cmd on — Init is where it starts, mirroring
+// UnlockView.Init for the same "focused from birth" shape.
+func TestPalette_InitSchedulesBlink(t *testing.T) {
+	p := NewPalette(testRegistry(), 60, 20)
+	assertBlinkCmd(t, p.Init())
+}
+
+// TestPalette_RoutesBlinkTicks: blink ticks must reach the search field so
+// the cursor keeps blinking for as long as the palette stays open. A bare
+// cursor.BlinkMsg{} won't do: bubbles/cursor tags each scheduled tick and
+// rejects one whose tag doesn't match its current count (stale-tick guard),
+// and Focus() at construction already advanced that counter past zero — so
+// the test captures a genuinely tag-matched tick from the field's own
+// cursor instead of a zero-value literal. BlinkSpeed is dropped to make
+// capturing one instant rather than a real ~530ms wait.
+func TestPalette_RoutesBlinkTicks(t *testing.T) {
+	p := NewPalette(testRegistry(), 60, 20)
+	p.input.Cursor.BlinkSpeed = time.Millisecond
+	tick := p.input.Cursor.BlinkCmd()
+	_, cmd := p.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the palette's search field")
 	}
 }

@@ -316,6 +316,51 @@ func TestSnapshots_FilterFlow(t *testing.T) {
 	}
 }
 
+// TestSnapshots_FilterFieldIsBoxedOnlyWhenFocused: the box is the focus
+// glyph, so it must appear only once '/' opens the filter — a delta
+// assertion, since the filter row could in principle carry other chrome.
+func TestSnapshots_FilterFieldIsBoxedOnlyWhenFocused(t *testing.T) {
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	before := boxCount(s.View())
+
+	m, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s = m.(Snapshots)
+	after := boxCount(s.View())
+
+	if after-before != 1 {
+		t.Fatalf("boxCount delta on filter focus = %d, want 1 (before=%d after=%d)", after-before, before, after)
+	}
+}
+
+// TestSnapshots_SlashSchedulesBlink: opening the filter with '/' must start
+// the cursor blinking, or the field looks inert until the first keystroke.
+func TestSnapshots_SlashSchedulesBlink(t *testing.T) {
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	assertBlinkCmd(t, cmd)
+}
+
+// TestSnapshots_RoutesBlinkTicksWhileFiltering: blink ticks must reach the
+// filter field while it holds focus, so the schedule continues. A bare
+// cursor.BlinkMsg{} won't do: bubbles/cursor tags each scheduled tick and
+// rejects one whose tag doesn't match its current count (stale-tick guard),
+// and Focus() already advanced that counter past zero — so the test
+// captures a genuinely tag-matched tick from the field's own cursor instead
+// of a zero-value literal. BlinkSpeed is dropped to make capturing one
+// instant rather than a real ~530ms wait.
+func TestSnapshots_RoutesBlinkTicksWhileFiltering(t *testing.T) {
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	m, _ := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s = m.(Snapshots)
+
+	s.filter.Cursor.BlinkSpeed = time.Millisecond
+	tick := s.filter.Cursor.BlinkCmd()
+	_, cmd := s.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the focused filter field")
+	}
+}
+
 // TestSnapshots_CopyID: 'y' copies the highlighted id through the injected
 // clipboard fn and shows a confirmation.
 func TestSnapshots_CopyID(t *testing.T) {

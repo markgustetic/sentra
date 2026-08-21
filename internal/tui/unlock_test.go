@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -118,4 +119,50 @@ func TestUnlock_EmptyPassphraseIsRejectedLocally(t *testing.T) {
 	if v.View() == "" {
 		t.Fatal("empty-entry attempt should render a hint")
 	}
+}
+
+// The box is the focus glyph: the unlock field is always focused, so its
+// render always carries exactly one FieldBox frame.
+func TestUnlock_FocusedFieldIsBoxed(t *testing.T) {
+	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	if got := boxCount(v.View()); got != 1 {
+		t.Fatalf("focused unlock field: boxCount = %d, want 1", got)
+	}
+}
+
+// Landing on unlock must start the cursor blinking.
+func TestUnlock_InitSchedulesBlink(t *testing.T) {
+	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	assertBlinkCmd(t, v.Init())
+}
+
+// Blink ticks must reach the focused input so the schedule continues. A bare
+// cursor.BlinkMsg{} won't do: bubbles/cursor tags each scheduled tick and
+// rejects one whose tag doesn't match its current count (stale-tick guard),
+// and Focus() at construction already advanced that counter past zero — so
+// the test captures a genuinely tag-matched tick from the field's own
+// cursor instead of a zero-value literal. BlinkSpeed is dropped to make
+// capturing one instant rather than a real ~530ms wait.
+func TestUnlock_RoutesBlinkTicks(t *testing.T) {
+	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	v.input.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.input.Cursor.BlinkCmd()
+	_, cmd := v.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the focused input")
+	}
+}
+
+// A wrong passphrase clears and re-focuses the input for a retry; that
+// re-focus is a second transition that must also (re)start the blink, or
+// the cursor looks dead after a failed attempt.
+func TestUnlock_WrongPassphraseReschedulesBlink(t *testing.T) {
+	v := NewUnlockView(unlockDeps(t, "correct-horse"))
+	v = typeIntoUnlock(v, "wrong-passphrase")
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(UnlockView)
+	m, cmd = v.Update(cmd())
+	v = m.(UnlockView)
+	_ = v // re-focus happened; only the returned cmd matters here
+	assertBlinkCmd(t, cmd)
 }

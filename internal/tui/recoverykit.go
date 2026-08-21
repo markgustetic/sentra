@@ -5,6 +5,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -146,6 +147,14 @@ func (v RecoveryKitView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case cursor.BlinkMsg:
+		if v.savePath.Focused() {
+			var cmd tea.Cmd
+			v.savePath, cmd = v.savePath.Update(msg)
+			return v, cmd
+		}
+		return v, nil
+
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -175,7 +184,7 @@ func (v RecoveryKitView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.saveErr = ""
 			v.savePath.SetValue("")
 			v.savePath.Focus()
-			return v, nil
+			return v, textinput.Blink
 		case msg.Type == tea.KeyEnter:
 			return v.startBuild()
 		}
@@ -268,7 +277,9 @@ func (v RecoveryKitView) renderKit() string {
 	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Recovery kit"))
 	b.WriteString(v.vp.View())
 	if v.stage == rkSaving {
-		fmt.Fprintf(&b, "\n\n%s", v.savePath.View())
+		// The box IS the focus affordance: the save-path field renders it
+		// only while this stage — the only stage where it's focused — holds.
+		fmt.Fprintf(&b, "\n\n%s", ui.FieldBox.Render(v.savePath.View()))
 		if v.saveErr != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Danger.Render(v.saveErr))
 		}

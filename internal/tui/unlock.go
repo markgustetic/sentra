@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -72,7 +73,10 @@ func NewUnlockView(deps Deps) UnlockView {
 	return UnlockView{deps: deps, input: field}
 }
 
-func (UnlockView) Init() tea.Cmd { return nil }
+// Init starts the cursor blinking. The unlock field is constructed already
+// focused (NewUnlockView) — it's the landing view, not one the operator tabs
+// into — so there is no later Focus() transition to hang the blink cmd on.
+func (UnlockView) Init() tea.Cmd { return textinput.Blink }
 
 func (v UnlockView) Title() string { return "Unlock" }
 
@@ -104,12 +108,24 @@ func (v UnlockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// user starts a fresh attempt.
 			v.input.SetValue("")
 			v.input.Focus()
-			return v, nil
+			// Re-focusing for the retry is a second focus transition (the
+			// first was at construction, covered by Init) — it must also
+			// restart the blink, or the cursor looks dead after a failed
+			// attempt.
+			return v, textinput.Blink
 		}
 		// Success: forward to the App, which rebuilds the shell against the
 		// live repo and switches to the dashboard.
 		ready := repoReadyMsg{repo: msg.repo, config: msg.config}
 		return v, func() tea.Msg { return ready }
+
+	case cursor.BlinkMsg:
+		if v.input.Focused() {
+			var cmd tea.Cmd
+			v.input, cmd = v.input.Update(msg)
+			return v, cmd
+		}
+		return v, nil
 
 	case tea.KeyMsg:
 		return v.handleKey(msg)
@@ -172,7 +188,14 @@ func (v UnlockView) View() string {
 	case unlockOpening:
 		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("opening the repository…"))
 	default:
-		fmt.Fprintf(&b, "\n\n%s", v.input.View())
+		field := v.input.View()
+		if v.input.Focused() {
+			// The box IS the focus affordance (see FieldBox's doc comment):
+			// there is exactly one field on this view and it starts and stays
+			// focused, so the frame is always present here.
+			field = ui.FieldBox.Render(field)
+		}
+		fmt.Fprintf(&b, "\n\n%s", field)
 		if v.inputErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}
