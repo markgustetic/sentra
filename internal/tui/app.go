@@ -128,6 +128,20 @@ type Deps struct {
 	// data, never a secret.
 	InitialView string
 
+	// ConnectError is the repo-open failure that routed this launch to the
+	// connect gate. The gate renders it on its first frame; nil on every
+	// other launch path.
+	ConnectError error
+
+	// OpenRepo retries the launch-path repo open for the connect gate.
+	// runUI wires it to the CLI's open path with the launch's command and
+	// config captured, so a retry re-resolves the passphrase chain
+	// (env / file / keyring) exactly like the original attempt; the
+	// closure owns the secret's lifecycle and zeroizes it internally —
+	// no passphrase ever reaches the TUI. Injected as a closure (like
+	// NewStore) so internal/tui never imports internal/cli.
+	OpenRepo func(ctx context.Context) (*repo.Repo, *config.Config, error)
+
 	// Reconfigure tells the setup wizard it is opening over a sentra.yaml that
 	// already exists, so its review stage can warn that completing the wizard
 	// overwrites that file. Set by runUI only on the forced-setup path
@@ -302,6 +316,7 @@ func NewApp(deps Deps) App {
 		{id: "sync", model: NewSyncView(deps)},
 		{id: "password", model: NewPasswordView(deps)},
 		{id: "unlock", model: NewUnlockView(deps)},
+		{id: "connect", model: NewConnectView(deps)},
 		{id: "settings", model: NewSettingsView(deps)},
 		{id: "setup", model: NewSetupWizardView(deps)},
 		// Help sits last so it renders at the BOTTOM of the rail: it is the
@@ -320,10 +335,10 @@ func NewApp(deps Deps) App {
 		"settings": "Settings", "setup": "Settings",
 	}
 	// hiddenFromRail lists view ids that are reachable only via InitialView
-	// routing (startup gates), never from the sidebar/palette. unlock is a
-	// login screen, not a navigable operation, so it must not clutter the
-	// rail or the command palette.
-	hiddenFromRail := map[string]bool{"unlock": true}
+	// routing (startup gates), never from the sidebar/palette. unlock and
+	// connect are login/repair screens, not navigable operations, so they must
+	// not clutter the rail or the command palette.
+	hiddenFromRail := map[string]bool{"unlock": true, "connect": true}
 	for _, v := range views {
 		if hiddenFromRail[v.id] {
 			continue // startup gate — renderable via InitialView, not navigable
@@ -667,14 +682,14 @@ func (m App) tooSmall() bool {
 	return m.width > 0 && (m.width < minWidth || m.height < minHeight)
 }
 
-// inStartupGate reports whether the App is sitting on a first-run/unlock
-// gate: a setup or unlock view with no repo behind it. In that state every
+// inStartupGate reports whether the App is sitting on a first-run/unlock/connect
+// gate: a setup, unlock, or connect view with no repo behind it. In that state every
 // other view is dead (they all read from a repo that doesn't exist yet), so
 // the shell hides its navigation chrome — the rail, the palette, and the
 // number/tab jumps — and devotes the whole frame to the gate view.
 func (m App) inStartupGate() bool {
 	id := m.views[m.active].id
-	return m.deps.Repo == nil && (id == "setup" || id == "unlock")
+	return m.deps.Repo == nil && (id == "setup" || id == "unlock" || id == "connect")
 }
 
 // contentCapturesText reports whether the content pane is focused on a view
@@ -797,8 +812,13 @@ func (m App) contentConsumesTab() bool {
 // not one of them worked.
 func (m App) statusGlobals(viewKeys []key.Binding) []key.Binding {
 	if m.inStartupGate() {
-		// Every key routes into the gate view, so 'q' is typed into the unlock
-		// passphrase field, not a quit. Only ctrl+c quits — advertise that.
+		// Startup gates own the keyboard, not the shell. Unlock (and setup's
+		// text fields) capture every key into a text input, so 'q' types
+		// into the passphrase field rather than quitting — ctrl+c is the
+		// only key that still reaches the shell. Connect isn't a text
+		// capturer, but it owns r/l/q itself and prints them in its own
+		// View() (see ConnectView), so the status bar still has nothing of
+		// its own to add beyond the same ctrl+c safety net.
 		return []key.Binding{m.keys.ForceQuit}
 	}
 	var g []key.Binding

@@ -978,3 +978,148 @@ func TestUI_FirstRunFromAnywhereTargetsHomeConfig(t *testing.T) {
 		t.Errorf("InitialView = %q, want \"setup\" (first run)", d.InitialView)
 	}
 }
+
+// The headline routing: a configured repo whose OPEN fails (expired
+// credentials, dead network) must land the operator on the TUI connect
+// gate with the error and a working retry hook — not exit to stderr.
+func TestRunUI_OpenFailureRoutesToConnectGate(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2") // passphrase available → dashboard path
+	deps, captured := uiFixture(t, "hunter2")
+	deps.NewStore = func(context.Context, *config.Config) (blobstore.Store, error) {
+		return nil, errors.New("login session has expired")
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute should launch the gate, not fail: %v", err)
+	}
+	d := captured.Deps()
+	if d.InitialView != "connect" {
+		t.Fatalf("InitialView = %q, want \"connect\"", d.InitialView)
+	}
+	if d.Repo != nil {
+		t.Fatal("gate launch must not carry a repo")
+	}
+	if d.ConnectError == nil || !strings.Contains(d.ConnectError.Error(), "login session has expired") {
+		t.Fatalf("ConnectError = %v, want the open failure", d.ConnectError)
+	}
+	if d.OpenRepo == nil {
+		t.Fatal("OpenRepo retry hook not wired")
+	}
+}
+
+// The retry closure must re-run the whole open path — store construction
+// and passphrase chain — so a fixed environment succeeds on retry.
+func TestRunUI_ConnectGateRetryClosureReopens(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+	deps, captured := uiFixture(t, "hunter2")
+	working := deps.NewStore // uiFixture's in-memory store with a real repo
+	calls := 0
+	deps.NewStore = func(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {
+		calls++
+		if calls == 1 {
+			return nil, errors.New("transient outage")
+		}
+		return working(ctx, cfg)
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	d := captured.Deps()
+	r, cfg, err := d.OpenRepo(context.Background())
+	if err != nil {
+		t.Fatalf("retry closure failed against a recovered store: %v", err)
+	}
+	if r == nil || cfg == nil {
+		t.Fatal("retry closure returned nil repo or config")
+	}
+	_ = r.Close()
+}
+
+// TestRunUI_ConnectGateRetryClosureNeverPrompts is a RULE test, not an
+// example: a retry whose only remaining passphrase source would be the
+// interactive prompt must fail closed with a readable error and must NEVER
+// invoke the prompt. huh cannot run inside a live tea.Program (CLAUDE.md) —
+// if the closure ever reached deps.Passphrase / deps.PassphraseWithConfig
+// (the CLI's prompt-capable resolvers), a keyring entry disappearing while
+// the operator sits on the gate would wedge the terminal. The stubs below
+// call t.Fatal if invoked, so any regression that routes the retry back
+// through the interactive resolvers fails this test immediately.
+func TestRunUI_ConnectGateRetryClosureNeverPrompts(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".") // passphrase.use_keyring defaults false
+	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
+	deps, captured := uiFixture(t, "hunter2")
+	calls := 0
+	deps.NewStore = func(context.Context, *config.Config) (blobstore.Store, error) {
+		calls++
+		if calls == 1 {
+			// Initial launch: fail before passphrase resolution so the
+			// prompt-capable stubs below are never reached on this call
+			// either — the gate must route here purely off the store error.
+			return nil, errors.New("transient outage")
+		}
+		return blobstore.NewMemory(), nil
+	}
+	deps.Passphrase = func() ([]byte, error) {
+		t.Fatal("legacy Passphrase resolver invoked — retry closure must stay non-interactive")
+		return nil, nil
+	}
+	deps.PassphraseWithConfig = func(*config.Config) ([]byte, error) {
+		t.Fatal("PassphraseWithConfig resolver invoked — retry closure must stay non-interactive")
+		return nil, nil
+	}
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute should launch the gate, not fail: %v", err)
+	}
+	d := captured.Deps()
+	if d.OpenRepo == nil {
+		t.Fatal("OpenRepo retry hook not wired")
+	}
+
+	// The env source that got the launch onto the gate disappears before the
+	// operator retries — e.g. a keyring entry deleted mid-session.
+	t.Setenv("SENTRA_PASSPHRASE", "")
+
+	_, _, err := d.OpenRepo(context.Background())
+	if err == nil {
+		t.Fatal("expected the retry to fail closed with no passphrase source")
+	}
+	const want = "passphrase source no longer available — quit and relaunch to unlock"
+	if err.Error() != want {
+		t.Fatalf("err = %q, want %q", err.Error(), want)
+	}
+}
+
+// Scope pin: a config that cannot LOAD is a fix-the-file problem, not a
+// TUI state — it must still exit to the CLI without constructing an App.
+func TestRunUI_ConfigLoadFailureStillExitsToCLI(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	if err := os.WriteFile("sentra.yaml", []byte(":\tnot yaml ["), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	deps, _ := uiFixture(t, "hunter2")
+	ran := false
+	deps.Run = func(_ tui.App) error { ran = true; return nil }
+	cmd := NewUI(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	if err := cmd.Execute(); err == nil {
+		t.Fatal("expected a config load error")
+	}
+	if ran {
+		t.Fatal("a broken config must not launch the TUI")
+	}
+}

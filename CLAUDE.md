@@ -12,9 +12,11 @@ content-addressed** snapshots. Go 1.25, module `github.com/markgustetic/sentra`.
 
 The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
-it lands on the unlock gate; otherwise the dashboard. The TUI covers every job
-a human does; the CLI is the machine and recovery surface (see the surface
-contract in AGENTS.md).
+it lands on the unlock gate; otherwise the dashboard. A configured repo that
+fails to *open* (expired AWS SSO, unreachable bucket) lands on the connect
+gate — retry or run `aws sso login` from inside the TUI; only config-file
+errors exit to the CLI. The TUI covers every job a human does; the CLI is the
+machine and recovery surface (see the surface contract in AGENTS.md).
 
 Config discovery: with no `--config`, commands use `./sentra.yaml` when
 present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default
