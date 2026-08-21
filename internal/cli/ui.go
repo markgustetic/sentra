@@ -289,10 +289,16 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 // launchConnectGate builds the App for the connect gate: no repo, the
 // open failure for the gate to render, and a retry closure that re-runs
 // the launch open end-to-end. The closure re-resolves the passphrase
-// chain (env / file / keyring) on every call and zeroizes the secret
-// before returning — the repo's derived keys are what the TUI needs, the
-// passphrase never crosses the seam. Closure injection keeps the
-// tui→cli import direction clean, same as Deps.NewStore.
+// chain NON-INTERACTIVELY (env / file / keyring only, never the prompt) on
+// every call and zeroizes the secret before returning — the repo's derived
+// keys are what the TUI needs, the passphrase never crosses the seam.
+// Non-interactive is load-bearing here, not just tidy: this closure runs
+// inside a live tea.Program, and a source that answered on the original
+// launch (e.g. a keyring entry) can vanish before the operator retries: if
+// that pushed the closure into an interactive prompt, huh would fight
+// Bubbletea for stdin and wedge the terminal (CLAUDE.md: "huh cannot run
+// inside a live tea.Program"). See openRepoForConfigNonInteractive. Closure
+// injection keeps the tui→cli import direction clean, same as Deps.NewStore.
 func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath string, st launchState, showSplash bool, passphraseFile string, openErr error) error {
 	app := tui.NewApp(tui.Deps{
 		Provider:                providerForLaunch(deps, st.Config),
@@ -312,10 +318,11 @@ func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath stri
 		Commit:                  deps.Commit,
 		ConnectError:            openErr,
 		OpenRepo: func(_ context.Context) (*repo.Repo, *config.Config, error) {
-			// openRepoForConfig reads the command's context itself; the
-			// parameter exists for the seam's shape, and the command's
-			// context is the same cancellation tree the TUI runs under.
-			r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
+			// openRepoForConfigNonInteractive reads the command's context
+			// itself; the parameter exists for the seam's shape, and the
+			// command's context is the same cancellation tree the TUI runs
+			// under. Non-interactive on purpose — see the doc comment above.
+			r, pass, cfg, err := openRepoForConfigNonInteractive(cmd, cfgPath, passphraseFile, deps.NewStore)
 			if err != nil {
 				return nil, nil, err
 			}
