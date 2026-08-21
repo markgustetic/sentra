@@ -65,6 +65,13 @@ var (
 	// that currently owns keyboard focus.
 	PanelFocused = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 			BorderForeground(AccentAqua).Padding(0, 1)
+
+	// FieldBox frames the one text field currently accepting input. The
+	// border is the focus affordance itself — a glyph, visible without
+	// color — so views must apply it only to the focused field. Padding
+	// matches Panel so boxed fields align with panel content.
+	FieldBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
+			BorderForeground(AccentAqua).Padding(0, 1)
 )
 
 // Severity returns the style for an agent finding's severity level.

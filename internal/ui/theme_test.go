@@ -141,6 +141,17 @@ func TestSelectRowDoesNotNestStyles(t *testing.T) {
 	}
 }
 
+// TestFieldBox_RendersRoundedFrame asserts that FieldBox applies a rounded
+// border frame to its content.
+func TestFieldBox_RendersRoundedFrame(t *testing.T) {
+	out := FieldBox.Render("hello")
+	for _, want := range []string{"╭", "╰", "hello"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("FieldBox output missing %q:\n%s", want, out)
+		}
+	}
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	inEsc := false
