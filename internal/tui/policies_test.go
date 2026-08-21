@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -596,5 +597,90 @@ func TestPoliciesRun_ExecutesHooks(t *testing.T) {
 	snaps, _ = r.ListSnapshots(context.Background())
 	if len(snaps) != 1 {
 		t.Errorf("aborted run must not snapshot; got %d", len(snaps))
+	}
+}
+
+// TestPolicies_ExactlyOneBoxAndItFollowsFocus mirrors the brief's canonical
+// shape for the add form's four text fields. The form only exists once the
+// operator presses 'a' — that first-focus keypress (which runs
+// newPolicyForm's name.Focus() at policies.go:708) is this view's
+// activation path, so its returned cmd must schedule the blink.
+func TestPolicies_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
+	deps, _ := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+
+	m, entryCmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+	if v.stage != policiesForm {
+		t.Fatalf("stage = %v, want policiesForm", v.stage)
+	}
+	assertBlinkCmd(t, entryCmd)
+
+	base := v
+	base.form.name.Blur()
+	base.form.path.Blur()
+	base.form.tags.Blur()
+	base.form.schedule.Blur()
+	n := boxCount(base.View())
+
+	if got := boxCount(v.View()); got != n+1 {
+		t.Fatalf("name focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
+	}
+
+	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // name -> path
+	tv := tabbed.(PoliciesView)
+	if got := boxCount(tv.View()); got != n+1 {
+		t.Fatalf("box count changed on tab (got %d, want %d) — box must follow focus, one at a time", got, n+1)
+	}
+	assertBlinkCmd(t, cmd)
+
+	tv.form.path.Cursor.BlinkSpeed = time.Millisecond
+	tick := tv.form.path.Cursor.BlinkCmd()
+	if _, tickCmd := tv.Update(tick()); tickCmd == nil {
+		t.Fatal("blink tick not routed to the newly focused path field")
+	}
+}
+
+// TestPolicies_RoutesBlinkTicksToNameField exercises the switch's other
+// arm: a tick reaches name while it holds focus (the state right after the
+// form opens).
+func TestPolicies_RoutesBlinkTicksToNameField(t *testing.T) {
+	deps, _ := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+
+	v.form.name.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.form.name.Cursor.BlinkCmd()
+	if _, cmd := v.Update(tick()); cmd == nil {
+		t.Fatal("blink tick not routed to the focused name field")
+	}
+}
+
+// TestPolicies_NoBoxWhenToggleFocused: tabbing past all four text fields
+// onto the check/prune toggles must drop the box — neither toggle is a text
+// field.
+func TestPolicies_NoBoxWhenToggleFocused(t *testing.T) {
+	deps, _ := policiesDeps(t, nil)
+	v := NewPoliciesView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+	v = m.(PoliciesView)
+
+	base := v
+	base.form.name.Blur()
+	base.form.path.Blur()
+	base.form.tags.Blur()
+	base.form.schedule.Blur()
+	n := boxCount(base.View())
+
+	for i := 0; i < 4; i++ { // name -> path -> tags -> schedule -> check
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+		v = m.(PoliciesView)
+	}
+	if v.form.focus != 4 {
+		t.Fatalf("form.focus = %d, want 4 (check)", v.form.focus)
+	}
+	if got := boxCount(v.View()); got != n {
+		t.Fatalf("toggle focused: boxCount = %d, want %d (no box on a non-text field)", got, n)
 	}
 }

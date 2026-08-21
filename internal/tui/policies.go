@@ -9,6 +9,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -166,7 +167,10 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 					v.stage = policiesForm
 					v.form = newPolicyForm()
 					v.notice = ""
-					return v, nil
+					// newPolicyForm focuses the name field (policies.go
+					// below) — this keypress is the form's first-focus
+					// activation, so it must start the blink.
+					return v, textinput.Blink
 				case 'd':
 					if len(v.names) > 0 {
 						name := v.names[v.selected]
@@ -227,6 +231,26 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, opTick()
 		}
 		return v, nil
+
+	case cursor.BlinkMsg:
+		// Only the form stage has focused text fields, and at most one of
+		// name/path/tags/schedule is focused at a time (the check/prune
+		// toggle steps have no cursor to blink).
+		if v.stage != policiesForm {
+			return v, nil
+		}
+		var cmd tea.Cmd
+		switch {
+		case v.form.name.Focused():
+			v.form.name, cmd = v.form.name.Update(msg)
+		case v.form.path.Focused():
+			v.form.path, cmd = v.form.path.Update(msg)
+		case v.form.tags.Focused():
+			v.form.tags, cmd = v.form.tags.Update(msg)
+		case v.form.schedule.Focused():
+			v.form.schedule, cmd = v.form.schedule.Update(msg)
+		}
+		return v, cmd
 	}
 	return v, nil
 }
@@ -245,13 +269,19 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch v.form.focus {
 		case 0:
 			v.form.name.Focus()
+			return v, textinput.Blink
 		case 1:
 			v.form.path.Focus()
+			return v, textinput.Blink
 		case 2:
 			v.form.tags.Focus()
+			return v, textinput.Blink
 		case 3:
 			v.form.schedule.Focus()
+			return v, textinput.Blink
 		}
+		// Landed on the check/prune toggle steps: no text field is
+		// focused, so no blink to (re)start.
 		return v, nil
 	case tea.KeyEnter:
 		name, _, err := v.form.build()
@@ -574,10 +604,19 @@ func (v PoliciesView) View() string {
 	if v.stage == policiesForm {
 		var b strings.Builder
 		fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("New policy"))
-		fmt.Fprintf(&b, "%s\n", v.form.name.View())
-		fmt.Fprintf(&b, "%s\n", v.form.path.View())
-		fmt.Fprintf(&b, "%s\n", v.form.tags.View())
-		fmt.Fprintf(&b, "%s\n", v.form.schedule.View())
+		// The box IS the focus affordance: only the field tab currently
+		// owns carries the frame.
+		boxed := func(f textinput.Model) string {
+			s := f.View()
+			if f.Focused() {
+				s = ui.FieldBox.Render(s)
+			}
+			return s
+		}
+		fmt.Fprintf(&b, "%s\n", boxed(v.form.name))
+		fmt.Fprintf(&b, "%s\n", boxed(v.form.path))
+		fmt.Fprintf(&b, "%s\n", boxed(v.form.tags))
+		fmt.Fprintf(&b, "%s\n", boxed(v.form.schedule))
 		checkMark, pruneMark := "[ ]", "  "
 		if v.form.check {
 			checkMark = "[x]"
