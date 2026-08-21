@@ -812,8 +812,13 @@ func (m App) contentConsumesTab() bool {
 // not one of them worked.
 func (m App) statusGlobals(viewKeys []key.Binding) []key.Binding {
 	if m.inStartupGate() {
-		// Every key routes into the gate view, so 'q' is typed into the unlock
-		// passphrase field, not a quit. Only ctrl+c quits — advertise that.
+		// Startup gates own the keyboard, not the shell. Unlock (and setup's
+		// text fields) capture every key into a text input, so 'q' types
+		// into the passphrase field rather than quitting — ctrl+c is the
+		// only key that still reaches the shell. Connect isn't a text
+		// capturer, but it owns r/l/q itself and prints them in its own
+		// View() (see ConnectView), so the status bar still has nothing of
+		// its own to add beyond the same ctrl+c safety net.
 		return []key.Binding{m.keys.ForceQuit}
 	}
 	var g []key.Binding

@@ -1096,6 +1096,9 @@ func TestApp_Phase3ViewsRegistered(t *testing.T) {
 	if ids["unlock"] {
 		t.Error("unlock is a startup gate and must NOT be in the command registry")
 	}
+	if ids["connect"] {
+		t.Error("connect is a startup gate and must NOT be in the command registry")
+	}
 
 	out := app.View()
 	for _, label := range []string{"Setup", "Settings"} {
@@ -1138,7 +1141,7 @@ func TestApp_InitialViewSetupLandsContentFocused(t *testing.T) {
 // ctrl+p must not open the palette, and a number key must not jump views —
 // every non-quit key belongs to the gate view.
 func TestApp_StartupGateHidesNavChrome(t *testing.T) {
-	for _, gate := range []string{"setup", "unlock"} {
+	for _, gate := range []string{"setup", "unlock", "connect"} {
 		t.Run(gate, func(t *testing.T) {
 			app := NewApp(Deps{RepoName: "x", InitialView: gate}) // Repo nil
 			sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
