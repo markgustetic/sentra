@@ -209,6 +209,9 @@ persists `~/.config/sentra/sentra.yaml`, so bare `sentra` opens the
 configured repo from anywhere afterwards. `config.Write` creates the
 missing parent directory (0700).
 
+A config that loads but whose passphrase no source can supply lands on
+the unlock gate instead.
+
 Configured but unreachable — the config loads and a passphrase source
 answers, but the repository fails to open (expired AWS credentials,
 unreachable bucket) — lands on the **connect gate**: it shows the open
