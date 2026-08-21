@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -225,5 +226,60 @@ func TestRestoreFlow_ScopeFocusResetOnReentry(t *testing.T) {
 	}
 	if v.focusScope {
 		t.Error("focusScope must reset when re-entering the dest stage")
+	}
+}
+
+// TestRestore_ExactlyOneBoxAndItFollowsFocus mirrors the brief's canonical
+// shape: exactly one box, and it follows focus across tab. The pick->dest
+// transition (restore.go:197) focuses dest for the first time, so its
+// returned cmd must also schedule the blink.
+func TestRestore_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
+	r := newFlowRepo(t)
+	seedSnapshotReal(t, r)
+	v := NewRestoreView(Deps{Repo: r})
+
+	m, entryCmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick -> dest
+	v = m.(RestoreView)
+	if v.stage != restoreDest {
+		t.Fatalf("stage = %v, want restoreDest", v.stage)
+	}
+	assertBlinkCmd(t, entryCmd)
+
+	base := v
+	base.dest.Blur()
+	base.scope.Blur()
+	n := boxCount(base.View())
+
+	if got := boxCount(v.View()); got != n+1 {
+		t.Fatalf("dest focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
+	}
+
+	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // dest -> scope
+	tv := tabbed.(RestoreView)
+	if got := boxCount(tv.View()); got != n+1 {
+		t.Fatalf("box count changed on tab (got %d, want %d) — box must follow focus, one at a time", got, n+1)
+	}
+	assertBlinkCmd(t, cmd)
+
+	tv.scope.Cursor.BlinkSpeed = time.Millisecond
+	tick := tv.scope.Cursor.BlinkCmd()
+	if _, tickCmd := tv.Update(tick()); tickCmd == nil {
+		t.Fatal("blink tick not routed to the newly focused scope field")
+	}
+}
+
+// TestRestore_RoutesBlinkTicksToDestField exercises the switch's other arm:
+// a tick reaches dest while it (not scope) holds focus.
+func TestRestore_RoutesBlinkTicksToDestField(t *testing.T) {
+	r := newFlowRepo(t)
+	seedSnapshotReal(t, r)
+	v := NewRestoreView(Deps{Repo: r})
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick -> dest
+	v = m.(RestoreView)
+
+	v.dest.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.dest.Cursor.BlinkCmd()
+	if _, cmd := v.Update(tick()); cmd == nil {
+		t.Fatal("blink tick not routed to the focused dest field")
 	}
 }

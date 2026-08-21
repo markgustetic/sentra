@@ -6,6 +6,7 @@ import (
 	"os"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -103,7 +104,11 @@ func NewSyncView(deps Deps) SyncView {
 	}
 }
 
-func (SyncView) Init() tea.Cmd { return nil }
+// Init starts the cursor blinking. dstPath is constructed already focused
+// (NewSyncView) and this is the flow's landing state — there is no later
+// Focus() transition to hang the blink on, so Init carries it, same as
+// unlock's/password's.
+func (SyncView) Init() tea.Cmd { return textinput.Blink }
 
 func (v SyncView) Title() string { return "Sync" }
 
@@ -165,6 +170,22 @@ func (v SyncView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case cursor.BlinkMsg:
+		// Only the configure stage has a focused text field, and at most
+		// one of dstPath/snapRefs is focused at a time (the toggles have
+		// no cursor to blink).
+		if v.stage != syncConfigure {
+			return v, nil
+		}
+		var cmd tea.Cmd
+		switch {
+		case v.dstPath.Focused():
+			v.dstPath, cmd = v.dstPath.Update(msg)
+		case v.snapRefs.Focused():
+			v.snapRefs, cmd = v.snapRefs.Update(msg)
+		}
+		return v, cmd
+
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -213,9 +234,13 @@ func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			switch v.field {
 			case syncFieldPath:
 				v.dstPath.Focus()
+				return v, textinput.Blink
 			case syncFieldSnapshots:
 				v.snapRefs.Focus()
+				return v, textinput.Blink
 			}
+			// Landed on a toggle: neither text field is focused, so no
+			// blink to (re)start.
 			return v, nil
 		case msg.Type == tea.KeyEnter:
 			return v.validateAndConfirm()
@@ -381,8 +406,18 @@ func (v SyncView) View() string {
 		if v.notice != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		fmt.Fprintf(&b, "\n\n%s", v.dstPath.View())
-		fmt.Fprintf(&b, "\n%s", v.snapRefs.View())
+		// The box IS the focus affordance: only the field tab currently
+		// owns carries the frame.
+		pathField := v.dstPath.View()
+		if v.dstPath.Focused() {
+			pathField = ui.FieldBox.Render(pathField)
+		}
+		refsField := v.snapRefs.View()
+		if v.snapRefs.Focused() {
+			refsField = ui.FieldBox.Render(refsField)
+		}
+		fmt.Fprintf(&b, "\n\n%s", pathField)
+		fmt.Fprintf(&b, "\n%s", refsField)
 		fmt.Fprintf(&b, "\n\n%s", v.toggleLine(syncFieldInitDest, "init-dest", v.initDest,
 			"bootstrap an empty destination"))
 		fmt.Fprintf(&b, "\n%s", v.toggleLine(syncFieldDryRun, "dry-run", v.dryRun,

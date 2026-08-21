@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -90,7 +91,11 @@ func NewPasswordView(deps Deps) PasswordView {
 	return PasswordView{deps: deps, newPass: newField, confirmPass: confirmField}
 }
 
-func (PasswordView) Init() tea.Cmd { return nil }
+// Init starts the cursor blinking. newPass is constructed already focused
+// (NewPasswordView) and this is the flow's landing state — there is no
+// later Focus() transition to hang the blink on, so Init carries it, same
+// as unlock's.
+func (PasswordView) Init() tea.Cmd { return textinput.Blink }
 
 func (v PasswordView) Title() string { return "Password" }
 
@@ -141,6 +146,18 @@ func (v PasswordView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.notice = ""
 		return v.startRotate()
 
+	case cursor.BlinkMsg:
+		// Exactly one of newPass/confirmPass is focused at a time (tab
+		// swaps which); route the tick to whichever that is.
+		var cmd tea.Cmd
+		switch {
+		case v.newPass.Focused():
+			v.newPass, cmd = v.newPass.Update(msg)
+		case v.confirmPass.Focused():
+			v.confirmPass, cmd = v.confirmPass.Update(msg)
+		}
+		return v, cmd
+
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -171,7 +188,8 @@ func (v PasswordView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				v.confirmPass.Blur()
 				v.newPass.Focus()
 			}
-			return v, nil
+			// Every focus transition (re)starts the blink.
+			return v, textinput.Blink
 		case tea.KeyEnter:
 			return v.requestConfirm()
 		}
@@ -282,8 +300,18 @@ func (v PasswordView) View() string {
 		if v.notice != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		fmt.Fprintf(&b, "\n\n%s", v.newPass.View())
-		fmt.Fprintf(&b, "\n%s", v.confirmPass.View())
+		// The box IS the focus affordance: only the field tab currently
+		// owns carries the frame.
+		newField := v.newPass.View()
+		if v.newPass.Focused() {
+			newField = ui.FieldBox.Render(newField)
+		}
+		confirmField := v.confirmPass.View()
+		if v.confirmPass.Focused() {
+			confirmField = ui.FieldBox.Render(confirmField)
+		}
+		fmt.Fprintf(&b, "\n\n%s", newField)
+		fmt.Fprintf(&b, "\n%s", confirmField)
 		if v.inputErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}

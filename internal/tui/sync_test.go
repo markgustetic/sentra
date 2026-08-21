@@ -6,6 +6,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -336,5 +337,67 @@ func TestSyncFlow_SelectedSnapshotOnly(t *testing.T) {
 	}
 	if len(infos) != 1 || infos[0].ID != s1.ID {
 		t.Fatalf("dest snapshots: got %+v, want only %s", infos, s1.ID)
+	}
+}
+
+// TestSync_ExactlyOneBoxAndItFollowsFocus mirrors the brief's canonical
+// shape for the dst/snapshots pair. Construction focuses dstPath
+// (sync.go:94) — the landing state for this flow — so Init must schedule
+// the blink, the same contract unlock's/password's Init establishes.
+func TestSync_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
+	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	assertBlinkCmd(t, v.Init())
+
+	base := v
+	base.dstPath.Blur()
+	base.snapRefs.Blur()
+	n := boxCount(base.View())
+
+	if got := boxCount(v.View()); got != n+1 {
+		t.Fatalf("dstPath focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
+	}
+
+	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // path -> snapshots
+	tv := tabbed.(SyncView)
+	if got := boxCount(tv.View()); got != n+1 {
+		t.Fatalf("box count changed on tab (got %d, want %d) — box must follow focus, one at a time", got, n+1)
+	}
+	assertBlinkCmd(t, cmd)
+
+	tv.snapRefs.Cursor.BlinkSpeed = time.Millisecond
+	tick := tv.snapRefs.Cursor.BlinkCmd()
+	if _, tickCmd := tv.Update(tick()); tickCmd == nil {
+		t.Fatal("blink tick not routed to the newly focused snapRefs field")
+	}
+}
+
+// TestSync_RoutesBlinkTicksToDstPathField exercises the switch's other arm:
+// a tick reaches dstPath while it holds focus (the state right after
+// construction).
+func TestSync_RoutesBlinkTicksToDstPathField(t *testing.T) {
+	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v.dstPath.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.dstPath.Cursor.BlinkCmd()
+	if _, cmd := v.Update(tick()); cmd == nil {
+		t.Fatal("blink tick not routed to the focused dstPath field")
+	}
+}
+
+// TestSync_NoBoxWhenToggleFocused: tabbing past both text fields onto the
+// init-dest/dry-run toggles must drop the box entirely — neither toggle is a
+// text field, so the box must never mark a fixed position.
+func TestSync_NoBoxWhenToggleFocused(t *testing.T) {
+	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	base := v
+	base.dstPath.Blur()
+	base.snapRefs.Blur()
+	n := boxCount(base.View())
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // path -> snapshots
+	v = m.(SyncView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // snapshots -> init-dest
+	v = m.(SyncView)
+	if got := boxCount(v.View()); got != n {
+		t.Fatalf("toggle focused: boxCount = %d, want %d (no box on a non-text field)", got, n)
 	}
 }

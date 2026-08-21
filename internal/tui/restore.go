@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/table"
@@ -170,6 +171,20 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, opTick()
 		}
 		return v, nil
+	case cursor.BlinkMsg:
+		// Only the dest stage has a focused field, and exactly one of
+		// dest/scope is focused at a time (tab swaps which).
+		if v.stage != restoreDest {
+			return v, nil
+		}
+		var cmd tea.Cmd
+		switch {
+		case v.dest.Focused():
+			v.dest, cmd = v.dest.Update(msg)
+		case v.scope.Focused():
+			v.scope, cmd = v.scope.Update(msg)
+		}
+		return v, cmd
 	case tea.KeyMsg:
 		return v.handleKey(msg)
 	}
@@ -195,7 +210,8 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.focusScope = false
 			v.scope.Blur()
 			v.dest.Focus()
-			return v, nil
+			// Choosing a snapshot is dest's first focus — start the blink.
+			return v, textinput.Blink
 		}
 		var cmd tea.Cmd
 		v.tbl, cmd = v.tbl.Update(msg)
@@ -217,7 +233,8 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				v.scope.Blur()
 				v.dest.Focus()
 			}
-			return v, nil
+			// Every focus transition (re)starts the blink.
+			return v, textinput.Blink
 		}
 		var cmd tea.Cmd
 		if v.focusScope {
@@ -323,7 +340,17 @@ func (v RestoreView) View() string {
 		fmt.Fprintf(&b, "\n\n%s", v.tbl.View())
 	case restoreDest:
 		b.WriteString(ui.Primary.Render("Restore " + v.snapID))
-		fmt.Fprintf(&b, "\n\n%s\n%s", v.dest.View(), v.scope.View())
+		// The box IS the focus affordance: only the field tab currently
+		// owns carries the frame.
+		destField := v.dest.View()
+		if v.dest.Focused() {
+			destField = ui.FieldBox.Render(destField)
+		}
+		scopeField := v.scope.View()
+		if v.scope.Focused() {
+			scopeField = ui.FieldBox.Render(scopeField)
+		}
+		fmt.Fprintf(&b, "\n\n%s\n%s", destField, scopeField)
 		b.WriteString("\n")
 		b.WriteString(ui.Muted.Render("  tab switches fields; scope narrows the restore to those paths"))
 		if v.destErr != "" {

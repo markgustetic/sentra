@@ -5,6 +5,7 @@ import (
 	"errors"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
@@ -277,5 +278,59 @@ func TestPasswordView_RegisteredUnderOperations(t *testing.T) {
 	}
 	if cmd.Category != "Operations" {
 		t.Fatalf("password category = %q, want Operations", cmd.Category)
+	}
+}
+
+// TestPassword_ExactlyOneBoxAndItFollowsFocus verifies the focused-field box
+// marks exactly one field at a time and follows focus across tab — the delta
+// over a fully-blurred baseline proves it tracks focus, not a fixed field
+// position.
+func TestPassword_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
+	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+
+	base := v
+	base.newPass.Blur()
+	base.confirmPass.Blur()
+	n := boxCount(base.View())
+
+	if got := boxCount(v.View()); got != n+1 {
+		t.Fatalf("newPass focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
+	}
+
+	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	tv := tabbed.(PasswordView)
+	if got := boxCount(tv.View()); got != n+1 {
+		t.Fatalf("box count changed on tab (got %d, want %d) — box must follow focus, one at a time", got, n+1)
+	}
+	assertBlinkCmd(t, cmd)
+
+	// The newly focused field must route its own tag-matched tick — a bare
+	// cursor.BlinkMsg{} can never match bubbles/cursor's internal tag
+	// counter once Focus() has advanced it past zero.
+	tv.confirmPass.Cursor.BlinkSpeed = time.Millisecond
+	tick := tv.confirmPass.Cursor.BlinkCmd()
+	if _, tickCmd := tv.Update(tick()); tickCmd == nil {
+		t.Fatal("blink tick not routed to the newly focused confirmPass field")
+	}
+}
+
+// TestPassword_ConstructionFocusSchedulesBlink: newPass is focused at
+// construction (password.go:82) and this is the flow's landing state, so
+// Init — not a later Focus() transition — must schedule the blink, the same
+// contract unlock's Init established.
+func TestPassword_ConstructionFocusSchedulesBlink(t *testing.T) {
+	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	assertBlinkCmd(t, v.Init())
+}
+
+// TestPassword_RoutesBlinkTicksToNewPassField exercises the other arm of the
+// focused-field switch: a tick reaches newPass while it (not confirmPass)
+// holds focus.
+func TestPassword_RoutesBlinkTicksToNewPassField(t *testing.T) {
+	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v.newPass.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.newPass.Cursor.BlinkCmd()
+	if _, cmd := v.Update(tick()); cmd == nil {
+		t.Fatal("blink tick not routed to the focused newPass field")
 	}
 }
