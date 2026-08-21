@@ -20,6 +20,7 @@ import (
 	"strings"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
@@ -636,7 +637,16 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m.showActive()
 
 	case pushModalMsg:
-		m.modals = append(m.modals, msg.modal.SetSize(m.width, m.height))
+		pushed := msg.modal.SetSize(m.width, m.height)
+		m.modals = append(m.modals, pushed)
+		// Most modals have no focused field and need no bootstrap cmd. The
+		// ones that do (TypedConfirmModal's typed prompt) expose it via a
+		// plain Init method outside the Modal interface — Modal has no Init
+		// hook, since only the typed-confirm variant needs one — so this
+		// asserts for it rather than growing the interface for one case.
+		if mi, ok := pushed.(interface{ Init() tea.Cmd }); ok {
+			return m, mi.Init()
+		}
 		return m, nil
 
 	case dismissModalMsg:
@@ -662,6 +672,28 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// discards the confirmation — the flow that pushed the modal
 		// never learns the user confirmed, and a destructive op that
 		// should have started never does.
+		return m.broadcast(msg)
+
+	case cursor.BlinkMsg:
+		// The cursor's self-perpetuating blink loop is chrome, not a data
+		// load — it gets its own case here rather than going through the
+		// generic view broadcast, the same way splashFrameMsg/uiFrameMsg/
+		// opTickMsg do. It must reach whichever surface currently owns
+		// keyboard focus, mirroring the modal-then-palette-then-view
+		// precedence routeKey already applies to keys: the top modal when
+		// the stack is non-empty, else the palette when it's open, else
+		// every view (broadcast already reaches the box+blink views'
+		// focused fields — unlock/snapshots/recoverykit/backup).
+		if n := len(m.modals); n > 0 {
+			var cmd tea.Cmd
+			m.modals[n-1], cmd = m.modals[n-1].Update(msg)
+			return m, cmd
+		}
+		if m.paletteOpen {
+			var cmd tea.Cmd
+			m.palette, cmd = m.palette.Update(msg)
+			return m, cmd
+		}
 		return m.broadcast(msg)
 
 	case tea.KeyMsg:
@@ -899,7 +931,11 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !m.inStartupGate() && key.Matches(msg, m.keys.Palette) {
 		m.paletteOpen = true
 		m.palette.Reset()
-		return m, nil
+		// Bootstrap the search field's cursor blink — Palette.Init() (never
+		// auto-invoked; Palette isn't in m.views, so App.Init's batching
+		// never reaches it) returns the same textinput.Blink sentinel a
+		// landing view's Init would.
+		return m, m.palette.Init()
 	}
 
 	// esc is the shell's escape hatch. A view that means something by it keeps

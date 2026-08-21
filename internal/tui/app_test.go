@@ -2193,3 +2193,143 @@ func TestApp_ConnectLaunchHidesRail(t *testing.T) {
 		t.Fatal("rail leaked into view when connect gate is active startup gate")
 	}
 }
+
+// --- App-level field-focus blink routing -----------------------------
+//
+// The view-level tests in palette_test.go and modal_test.go prove Palette
+// and TypedConfirmModal blink correctly *when driven directly* — but that
+// can't catch a shell-level wiring bug: Palette isn't in App.views (so
+// App.Init's per-view batching never reaches it), and App.Update's non-key
+// fallthrough (broadcast) only visits m.views, never m.palette or
+// m.modals. Before the app.go fix, opening the palette or pushing a typed-
+// confirm modal through the real App produced no blink cmd, and a live
+// blink tick sent through App.Update never reached either — the cursor
+// looked dead in an actual terminal even though the view-level tests were
+// green. These tests drive the real App (ctrl+p, pushModalMsg) instead of
+// the view/modal directly, so they exercise exactly the path a real
+// session takes.
+
+// TestApp_PaletteOpenSchedulesBlink: opening the palette through the real
+// App (the palette-toggle key) must return a cmd that yields a blink —
+// mirroring UnlockView.Init's "focused from birth" contract, but at the
+// point where the palette actually becomes visible (construction happens
+// once at NewApp, long before it's ever shown).
+func TestApp_PaletteOpenSchedulesBlink(t *testing.T) {
+	app := newTestApp(t)
+	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	assertBlinkCmd(t, cmd)
+}
+
+// TestApp_PaletteRoutesBlinkTicks: with the palette open, a live blink tick
+// sent through App.Update must reach the search field and return a
+// continuation cmd. A bare cursor.BlinkMsg{} can't exercise this: bubbles/
+// cursor tags each scheduled tick and rejects one whose tag doesn't match
+// its internal counter (a stale-tick guard), and the palette's Focus() at
+// construction already advanced that counter past zero — so, same
+// technique as the view-level RoutesBlinkTicks tests, this captures a
+// genuinely tag-matched tick from the palette's own field instead of a
+// zero-value literal (BlinkSpeed dropped to make capturing one instant).
+func TestApp_PaletteRoutesBlinkTicks(t *testing.T) {
+	app := newTestApp(t)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a := m.(App)
+	if !a.paletteOpen {
+		t.Fatal("ctrl+p should open the palette")
+	}
+
+	// a.palette is a plain struct field (not behind an interface), so
+	// mutating it in place is visible to the a.Update call below — no
+	// write-back needed, unlike the modal case (Modal is an interface;
+	// see pushedTypedConfirmThroughApp/TestApp_ModalRoutesBlinkTicks).
+	a.palette.input.Cursor.BlinkSpeed = time.Millisecond
+	tick := a.palette.input.Cursor.BlinkCmd()
+	_, cmd := a.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the open palette")
+	}
+}
+
+// pushedTypedConfirmThroughApp drives the password rotate flow through the
+// real App (navigate, fill both masked fields, enter) to get a
+// pushModalMsg-based TypedConfirmModal push — the same class of App-level
+// flow as TestApp_PruneTypedConfirmRoundTripThroughShell — and returns the
+// App with that modal on the stack plus the cmd the push itself returned.
+func pushedTypedConfirmThroughApp(t *testing.T) (App, tea.Cmd) {
+	t.Helper()
+	r := newFlowRepo(t)
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	a := sized.(App)
+
+	m, _ := a.Update(activateMsg{id: "password"})
+	a = m.(App)
+	if a.views[a.active].id != "password" {
+		t.Fatalf("active view = %s, want password", a.views[a.active].id)
+	}
+
+	for _, ch := range "longenough1" {
+		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		a = m.(App)
+	}
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
+	a = m.(App)
+	for _, ch := range "longenough1" {
+		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{ch}})
+		a = m.(App)
+	}
+	m, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	a = m.(App)
+	if cmd == nil {
+		t.Fatal("valid entry should request the rotate confirm modal")
+	}
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("expected pushModalMsg, got %#v", cmd())
+	}
+
+	m, pushCmd := a.Update(push)
+	a = m.(App)
+	if len(a.modals) != 1 {
+		t.Fatalf("modal stack = %d, want 1 after pushModalMsg", len(a.modals))
+	}
+	if _, ok := a.modals[0].(TypedConfirmModal); !ok {
+		t.Fatalf("expected a TypedConfirmModal on the stack, got %T", a.modals[0])
+	}
+	return a, pushCmd
+}
+
+// TestApp_ModalPushSchedulesBlink: pushing a modal with a text prompt
+// through the real App (pushModalMsg, exactly like a flow raises it) must
+// batch in that modal's blink-start cmd — mirroring UnlockView.Init's
+// "focused from birth" contract, but at the point where the modal actually
+// joins the stack (construction happens earlier, inside the flow, before
+// the App ever sees it).
+func TestApp_ModalPushSchedulesBlink(t *testing.T) {
+	_, pushCmd := pushedTypedConfirmThroughApp(t)
+	assertBlinkCmd(t, pushCmd)
+}
+
+// TestApp_ModalRoutesBlinkTicks: with a TypedConfirmModal on top of the
+// stack, a live blink tick sent through App.Update must reach its typed
+// field and return a continuation cmd. Same tag-matching rationale as
+// TestApp_PaletteRoutesBlinkTicks: a bare cursor.BlinkMsg{} can't exercise
+// this, so the test captures a genuinely tag-matched tick from the modal's
+// own field.
+func TestApp_ModalRoutesBlinkTicks(t *testing.T) {
+	a, _ := pushedTypedConfirmThroughApp(t)
+
+	// Unlike a.palette (a plain struct field), a.modals[0] is a Modal
+	// interface value: the type assertion below copies the TypedConfirmModal
+	// out, so the mutated Cursor state has to be written back into the slot
+	// before a.Update sees it, or App.Update would route the tick against
+	// the original, still-unmutated (tag 0) copy.
+	tc := a.modals[0].(TypedConfirmModal)
+	tc.input.Cursor.BlinkSpeed = time.Millisecond
+	tick := tc.input.Cursor.BlinkCmd()
+	a.modals[0] = tc
+
+	_, cmd := a.Update(tick())
+	if cmd == nil {
+		t.Fatal("blink tick was not routed to the top modal")
+	}
+}
