@@ -678,23 +678,42 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// The cursor's self-perpetuating blink loop is chrome, not a data
 		// load — it gets its own case here rather than going through the
 		// generic view broadcast, the same way splashFrameMsg/uiFrameMsg/
-		// opTickMsg do. It must reach whichever surface currently owns
-		// keyboard focus, mirroring the modal-then-palette-then-view
-		// precedence routeKey already applies to keys: the top modal when
-		// the stack is non-empty, else the palette when it's open, else
-		// every view (broadcast already reaches the box+blink views'
-		// focused fields — unlock/snapshots/recoverykit/backup).
+		// opTickMsg do.
+		//
+		// Deliver to every possible focus owner AT ONCE — the top modal (if
+		// any), the palette (if open), AND every view via broadcast — never
+		// an exclusive, precedence-style route (the shape routeKey uses for
+		// keys: modal, then palette, then the focused view). A tick's tag
+		// matches only the ONE field cursor.BlinkCmd scheduled it for;
+		// cursor.Model no-ops on any tag it doesn't recognize (exercised
+		// directly by the RoutesBlinkTicks tests across every field this
+		// package blinks), so hearing the same tick, harmlessly, is safe for
+		// every candidate that isn't the match — exactly one of them
+		// actually reschedules, so this can never double-blink.
+		//
+		// An earlier version of this case DID route by precedence, and it
+		// froze cursors: opening an overlay does not blur whatever view
+		// field was already focused underneath it (snapshots' filter,
+		// recoverykit's savePath, backup's tag, ...), so that field's own
+		// in-flight tick still needs a path back to it. Precedence handed
+		// the tick to the modal/palette alone and returned — ConfirmModal
+		// even drops non-key messages outright — silently killing the view
+		// field's chain. Nothing re-arms a chain that already stopped, so
+		// the cursor stayed frozen even after the overlay was dismissed.
+		var cmds []tea.Cmd
 		if n := len(m.modals); n > 0 {
 			var cmd tea.Cmd
 			m.modals[n-1], cmd = m.modals[n-1].Update(msg)
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
 		if m.paletteOpen {
 			var cmd tea.Cmd
 			m.palette, cmd = m.palette.Update(msg)
-			return m, cmd
+			cmds = append(cmds, cmd)
 		}
-		return m.broadcast(msg)
+		_, viewCmd := m.broadcast(msg)
+		cmds = append(cmds, viewCmd)
+		return m, tea.Batch(cmds...)
 
 	case tea.KeyMsg:
 		return m.routeKey(msg)

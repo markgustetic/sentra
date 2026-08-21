@@ -2333,3 +2333,138 @@ func TestApp_ModalRoutesBlinkTicks(t *testing.T) {
 		t.Fatal("blink tick was not routed to the top modal")
 	}
 }
+
+// --- Overlay-over-focused-field: the view field's own chain must survive ---
+//
+// Opening a palette or pushing a modal does NOT blur whatever text field was
+// already focused in the view underneath it — snapshots' filter, backup's
+// tag, recoverykit's savePath. That field's blink chain is still live and
+// still expects its own tag-matched tick to come back to it. A precedence
+// route (modal, then palette, then view — mirroring how KEYS route) handed
+// the tick to the overlay alone and returned, silently killing the view
+// field's chain: nothing re-arms a chain that already stopped, so its cursor
+// stayed frozen even after the overlay was dismissed. These tests drive a
+// live tick for the VIEW field through App.Update while an overlay sits on
+// top and assert it still gets a continuation cmd.
+
+// TestApp_PaletteOverlayKeepsViewFieldBlinking: snapshots' filter is focused,
+// then the palette opens over it (without blurring the filter — the palette
+// is a separate overlay, not a focus transition on the view). A tag-matched
+// tick for the filter field must still route through App.Update and return
+// non-nil.
+func TestApp_PaletteOverlayKeepsViewFieldBlinking(t *testing.T) {
+	app := newTestApp(t)
+
+	m, _ := app.Update(activateMsg{id: "snapshots"})
+	a := m.(App)
+	if a.views[a.active].id != "snapshots" {
+		t.Fatalf("active view = %s, want snapshots", a.views[a.active].id)
+	}
+
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	a = m.(App)
+	snap, ok := a.views[a.active].model.(Snapshots)
+	if !ok {
+		t.Fatalf("active view model is %T, want Snapshots", a.views[a.active].model)
+	}
+	if !snap.filter.Focused() {
+		t.Fatal("'/' should focus the filter field")
+	}
+
+	// Open the palette over it. This must not touch the filter's focus.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	a = m.(App)
+	if !a.paletteOpen {
+		t.Fatal("ctrl+p should open the palette")
+	}
+	snap, ok = a.views[a.active].model.(Snapshots)
+	if !ok {
+		t.Fatalf("active view model is %T, want Snapshots", a.views[a.active].model)
+	}
+	if !snap.filter.Focused() {
+		t.Fatal("opening the palette must not blur the filter field underneath it")
+	}
+
+	// Capture a genuinely tag-matched tick for the FILTER field (not the
+	// palette's own) — same technique as every other RoutesBlinkTicks test
+	// in this package: a bare cursor.BlinkMsg{} can't exercise this, since
+	// bubbles/cursor rejects a tag that doesn't match its internal counter,
+	// and Focus() already advanced it. installView writes the mutated copy
+	// back — the type assertion above copied it out of the tea.Model slot.
+	snap.filter.Cursor.BlinkSpeed = time.Millisecond
+	tick := snap.filter.Cursor.BlinkCmd()
+	installView(t, &a, "snapshots", snap)
+
+	_, cmd := a.Update(tick())
+	if cmd == nil {
+		t.Fatal("the filter field's blink chain died while the palette was open")
+	}
+}
+
+// TestApp_ConfirmModalOverlayKeepsTagFieldBlinking: backup's tag field is
+// focused, then enter raises the (plain, no-text-field) confirmation modal
+// without blurring the tag field underneath it — exactly the scenario named
+// in the regression: "backup tag → Enter (pushes ConfirmModal without
+// blurring) → Esc → frozen". A tag-matched tick for the tag field must still
+// route through App.Update and return non-nil, even though ConfirmModal
+// itself drops every non-key message outright.
+func TestApp_ConfirmModalOverlayKeepsTagFieldBlinking(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{RepoName: "x", Repo: r})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	a := sized.(App)
+
+	m, _ := a.Update(activateMsg{id: "backup"})
+	a = m.(App)
+	if a.views[a.active].id != "backup" {
+		t.Fatalf("active view = %s, want backup", a.views[a.active].id)
+	}
+
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
+	a = m.(App)
+	bv, ok := a.views[a.active].model.(BackupView)
+	if !ok {
+		t.Fatalf("active view model is %T, want BackupView", a.views[a.active].model)
+	}
+	if !bv.tag.Focused() {
+		t.Fatal("tab should focus the tag field")
+	}
+
+	// Enter on the focused tag field raises the confirmation modal.
+	m, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	a = m.(App)
+	if cmd == nil {
+		t.Fatal("enter on the tag field should request the confirm modal")
+	}
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("expected pushModalMsg, got %#v", cmd())
+	}
+	m, _ = a.Update(push)
+	a = m.(App)
+	if len(a.modals) != 1 {
+		t.Fatalf("modal stack = %d, want 1 after pushModalMsg", len(a.modals))
+	}
+	if _, ok := a.modals[0].(ConfirmModal); !ok {
+		t.Fatalf("expected a ConfirmModal on the stack, got %T", a.modals[0])
+	}
+
+	// The tag field must still be focused underneath — pushing a plain
+	// ConfirmModal never blurs it.
+	bv, ok = a.views[a.active].model.(BackupView)
+	if !ok {
+		t.Fatalf("active view model is %T, want BackupView", a.views[a.active].model)
+	}
+	if !bv.tag.Focused() {
+		t.Fatal("pushing the confirm modal must not blur the tag field underneath it")
+	}
+
+	bv.tag.Cursor.BlinkSpeed = time.Millisecond
+	tick := bv.tag.Cursor.BlinkCmd()
+	installView(t, &a, "backup", bv)
+
+	_, cmd = a.Update(tick())
+	if cmd == nil {
+		t.Fatal("the tag field's blink chain died while the confirm modal was open")
+	}
+}
