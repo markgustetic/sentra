@@ -58,8 +58,16 @@ func NewSettingsView(deps Deps) SettingsView {
 	return SettingsView{
 		deps: deps,
 		entries: []settingsEntry{
-			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
+			// The management views live behind Settings rather than on the
+			// rail: they are configured rarely, and each rail slot they held
+			// taxed the daily backup/snapshot/restore loop. Every demoted
+			// view keeps a navigate entry here — hidden from the rail must
+			// never mean unreachable.
+			{kind: entryNavigate, label: "Retention policies", desc: "named retention policies and dry-runs", targetID: "policies"},
+			{kind: entryNavigate, label: "Backup schedule", desc: "emit cron entries for scheduled backups", targetID: "schedule"},
+			{kind: entryNavigate, label: "Recovery kit", desc: "render the printable recovery document", targetID: "recovery-kit"},
 			{kind: entryNavigate, label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
+			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
 			{kind: entryToggleSplash, label: "Welcome splash", desc: "show the logo screen at launch (applies next launch)"},
 			{kind: entryForgetKeyring, label: "Forget keyring passphrase", desc: "remove the OS keyring entry and disable keyring lookup"},
 		},

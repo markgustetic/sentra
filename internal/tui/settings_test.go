@@ -48,38 +48,38 @@ func TestSettingsView_NoConfigPlaceholder(t *testing.T) {
 	}
 }
 
-// TestSettingsView_EnterOnSetupActivatesSetup: with the "Re-run setup"
-// entry selected, Enter emits activateMsg{"setup"} so the shell switches
-// to the setup wizard view.
-func TestSettingsView_EnterOnSetupActivatesSetup(t *testing.T) {
-	v := NewSettingsView(Deps{Config: ptrDefaults()})
-	// cursor starts at 0 == "Re-run setup".
-	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("Enter on setup entry returned no command")
-	}
-	msg := cmd()
-	act, ok := msg.(activateMsg)
-	if !ok || act.id != "setup" {
-		t.Fatalf("got %#v, want activateMsg{setup}", msg)
-	}
-}
-
-// TestSettingsView_EnterOnPasswordActivatesPassword: moving the cursor
-// down to "Change passphrase" and pressing Enter emits
-// activateMsg{"password"}.
-func TestSettingsView_EnterOnPasswordActivatesPassword(t *testing.T) {
-	v := NewSettingsView(Deps{Config: ptrDefaults()})
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
-	v = m.(SettingsView)
-	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	if cmd == nil {
-		t.Fatal("Enter on password entry returned no command")
-	}
-	msg := cmd()
-	act, ok := msg.(activateMsg)
-	if !ok || act.id != "password" {
-		t.Fatalf("got %#v, want activateMsg{password}", msg)
+// TestSettingsView_EnterActivatesNavigateTarget: selecting a navigate
+// entry and pressing Enter emits activateMsg for ITS target, so the shell
+// switches views. Rows are found by target rather than position — the
+// entry order is presentation, not contract.
+func TestSettingsView_EnterActivatesNavigateTarget(t *testing.T) {
+	for _, target := range []string{"setup", "password"} {
+		t.Run(target, func(t *testing.T) {
+			v := NewSettingsView(Deps{Config: ptrDefaults()})
+			idx := -1
+			for i, e := range v.entries {
+				if e.kind == entryNavigate && e.targetID == target {
+					idx = i
+					break
+				}
+			}
+			if idx < 0 {
+				t.Fatalf("no navigate entry for %q", target)
+			}
+			for i := 0; i < idx; i++ {
+				m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+				v = m.(SettingsView)
+			}
+			_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			if cmd == nil {
+				t.Fatalf("Enter on %s entry returned no command", target)
+			}
+			msg := cmd()
+			act, ok := msg.(activateMsg)
+			if !ok || act.id != target {
+				t.Fatalf("got %#v, want activateMsg{%s}", msg, target)
+			}
+		})
 	}
 }
 
@@ -99,7 +99,7 @@ func TestSettingsView_TitleAndCursorClamp(t *testing.T) {
 	if v.cursor != 0 {
 		t.Fatalf("cursor after up-spam = %d, want 0", v.cursor)
 	}
-	for i := 0; i < 5; i++ {
+	for i := 0; i < len(v.entries)+2; i++ {
 		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
 		v = m.(SettingsView)
 	}
@@ -129,8 +129,8 @@ func TestApp_SetupAndSettingsRegistered(t *testing.T) {
 			t.Errorf("view %q not registered", id)
 		}
 	}
-	if got := len(app.views); got != 21 {
-		t.Fatalf("views = %d, want 21 (15 Phase 2c+unlock+connect + setup + settings + files + stats + help)", got)
+	if got := len(app.views); got != 19 {
+		t.Fatalf("views = %d, want 19 (six rail views + thirteen hidden)", got)
 	}
 }
 
@@ -381,5 +381,24 @@ func TestSettings_ForgetKeyringEntry(t *testing.T) {
 	}
 	if got.Passphrase.UseKeyring {
 		t.Error("forget must persist passphrase.use_keyring: false")
+	}
+}
+
+// The management views that left the rail — policies, schedule, recovery
+// kit — must each keep a launcher here, alongside the setup and password
+// entries that always lived in Settings. This pins the fold: a view hidden
+// from the rail with no launcher would be unreachable.
+func TestSettings_NavigateEntriesCoverDemotedViews(t *testing.T) {
+	v := NewSettingsView(Deps{})
+	got := map[string]bool{}
+	for _, e := range v.entries {
+		if e.kind == entryNavigate {
+			got[e.targetID] = true
+		}
+	}
+	for _, want := range []string{"setup", "password", "policies", "schedule", "recovery-kit"} {
+		if !got[want] {
+			t.Errorf("settings has no navigate entry for %q", want)
+		}
 	}
 }
