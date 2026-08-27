@@ -10,11 +10,12 @@ import (
 // session — the failure that motivated humanizing known errors.
 const expiredLoginChain = `open repo: repo: get config: blobstore/s3: get "config": operation error S3: GetObject, get identity: get credentials: failed to refresh cached credentials, create oauth2 token: login session has expired, please reauthenticate`
 
-// humanizeErr's rule: a recognized cause leads with plain words and a fix,
-// and the raw chain stays below — the summary is for the operator, the
-// chain is for the bug report. (Tests run under the Ascii profile, so
+// humanizeErr's rule: a recognized cause renders ONLY the plain-words
+// summary and fix — the raw chain is hidden, not appended. The chain still
+// reaches operators through the CLI (verbatim by contract) and through any
+// cause Explain does not recognize. (Tests run under the Ascii profile, so
 // styled fragments compare as bare text.)
-func TestHumanizeErr_KnownCauseLeadsAndKeepsDetail(t *testing.T) {
+func TestHumanizeErr_KnownCauseShowsOnlyPlainWords(t *testing.T) {
 	got := humanizeErr(errors.New(expiredLoginChain))
 	if !strings.Contains(got, "your AWS login session has expired") {
 		t.Errorf("missing plain-words summary:\n%s", got)
@@ -22,8 +23,8 @@ func TestHumanizeErr_KnownCauseLeadsAndKeepsDetail(t *testing.T) {
 	if !strings.Contains(got, "sign in") {
 		t.Errorf("missing fix line:\n%s", got)
 	}
-	if !strings.Contains(got, expiredLoginChain) {
-		t.Errorf("raw chain dropped — the detail must survive for bug reports:\n%s", got)
+	if strings.Contains(got, "GetObject") {
+		t.Errorf("raw chain must be hidden for a known cause:\n%s", got)
 	}
 	if !strings.HasPrefix(got, "your AWS login session has expired") {
 		t.Errorf("summary must come first:\n%s", got)
@@ -38,8 +39,8 @@ func TestHumanizeErr_UnknownRendersRawOnly(t *testing.T) {
 	}
 }
 
-// The connect gate is where the motivating error appeared: its frame must
-// lead with the plain-words reading and keep the raw chain visible.
+// The connect gate is where the motivating error appeared: its frame shows
+// the plain-words reading alone — no raw chain.
 func TestConnect_ExplainsKnownOpenError(t *testing.T) {
 	deps := connectDeps(nil)
 	deps.ConnectError = errors.New(expiredLoginChain)
@@ -47,8 +48,8 @@ func TestConnect_ExplainsKnownOpenError(t *testing.T) {
 	if !strings.Contains(view, "your AWS login session has expired") {
 		t.Errorf("connect view missing plain-words summary:\n%s", view)
 	}
-	if !strings.Contains(view, expiredLoginChain) {
-		t.Errorf("connect view dropped the raw chain:\n%s", view)
+	if strings.Contains(view, "GetObject") {
+		t.Errorf("connect view must hide the raw chain for a known cause:\n%s", view)
 	}
 }
 
@@ -59,8 +60,8 @@ func TestUnlockErrMessage_ExplainsKnownCause(t *testing.T) {
 	if !strings.Contains(got, "your AWS login session has expired") {
 		t.Errorf("unlock message missing plain-words summary:\n%s", got)
 	}
-	if !strings.Contains(got, expiredLoginChain) {
-		t.Errorf("unlock message dropped the raw chain:\n%s", got)
+	if strings.Contains(got, "GetObject") {
+		t.Errorf("unlock message must hide the raw chain for a known cause:\n%s", got)
 	}
 }
 
@@ -74,7 +75,7 @@ func TestErrorModal_ExplainsKnownError(t *testing.T) {
 	if !strings.Contains(view, "AWS") {
 		t.Errorf("error modal missing plain-words summary:\n%s", view)
 	}
-	if !strings.Contains(view, "GetObject,") {
-		t.Errorf("error modal dropped the raw chain:\n%s", view)
+	if strings.Contains(view, "GetObject") {
+		t.Errorf("error modal must hide the raw chain for a known cause:\n%s", view)
 	}
 }

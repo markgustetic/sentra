@@ -8,10 +8,12 @@ import (
 )
 
 // humanizeErr renders an error for an operator: when diag.Explain
-// recognizes the cause, a plain-words summary (Danger) and fix lead, with
-// the raw chain kept below in Muted — the summary is for the human, the
-// chain is for the bug report. Unknown causes render the raw chain in
-// Danger, exactly as error surfaces did before this helper existed.
+// recognizes the cause, ONLY the plain-words summary (Danger) and fix
+// render — the raw chain is deliberately hidden, because for a known cause
+// it adds noise, not information. The chain is still recoverable: the CLI
+// surface prints errors verbatim by contract, and any cause Explain does
+// not recognize renders its raw chain in Danger exactly as error surfaces
+// did before this helper existed.
 //
 // The result contains styled fragments: callers must write it as-is,
 // never wrap it in another style (see the never-wrap-styled-strings
@@ -30,7 +32,5 @@ func humanizeErr(err error) string {
 		b.WriteString("\n")
 		b.WriteString(ex.Fix)
 	}
-	b.WriteString("\n\n")
-	b.WriteString(ui.Muted.Render(err.Error()))
 	return b.String()
 }

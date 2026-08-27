@@ -13,9 +13,10 @@ import (
 )
 
 // Explanation is an operator-readable reading of a low-level failure:
-// what went wrong in plain words, and what to do about it. It never
-// replaces the raw error — callers keep the chain visible (muted, below)
-// because that is what goes into a bug report.
+// what went wrong in plain words, and what to do about it. Whether the
+// raw chain also renders is the caller's call — the TUI shows only the
+// Explanation for a recognized cause, while the CLI never explains at
+// all and prints chains verbatim, so the full detail always has a home.
 type Explanation struct {
 	Summary string
 	Fix     string
