@@ -11,8 +11,6 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
-	"github.com/markgustetic/sentra/internal/agent/action"
-	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -27,15 +25,6 @@ import (
 type UIDeps struct {
 	RepoDeps
 
-	// Provider is the LLM provider for the agent view. May be nil
-	// when no API key is configured — the agent view shows a
-	// placeholder pointing at ANTHROPIC_API_KEY in that case.
-	Provider llm.Provider
-
-	// ProviderForConfig builds the LLM provider from the loaded
-	// command config. When set, it takes precedence over Provider.
-	ProviderForConfig func(cfg *config.Config) llm.Provider
-
 	// Run is the actual TUI launcher. Production wires it to a
 	// closure that constructs and runs a tea.Program; tests inject
 	// a stub that captures the constructed App and returns nil.
@@ -46,12 +35,6 @@ type UIDeps struct {
 	// goreleaser placeholder "none".
 	Version string
 	Commit  string
-
-	// Actions is the agent action registry the TUI's agent-apply flow
-	// executes confirmed recommendations through. Same registry the
-	// `agent` command builds. May be nil (agent-apply then reports no
-	// registry configured).
-	Actions *action.Registry
 
 	// SavePassphrase re-saves a rotated passphrase to the OS keyring
 	// after the TUI's password flow changes it. Same hook the `passwd`
@@ -201,13 +184,11 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		}
 		repoName := launchCfg.Repo.S3.Bucket
 		app := tui.NewApp(tui.Deps{
-			Provider:                providerForLaunch(deps, launchCfg),
 			RepoName:                repoName,
 			Config:                  launchCfg,
 			Ctx:                     cmd.Context(),
 			ConfigPath:              absCfgPath,
 			NewStore:                deps.NewStore,
-			Actions:                 deps.Actions,
 			SaveKeyringPassphrase:   deps.SavePassphrase,
 			DeleteKeyringPassphrase: deps.DeletePassphrase,
 			SetupEffects:            setupEffectsForLaunch(deps),
@@ -247,14 +228,8 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		repoName = r.Config().ID
 	}
 
-	provider := deps.Provider
-	if deps.ProviderForConfig != nil {
-		provider = deps.ProviderForConfig(cfg)
-	}
-
 	app := tui.NewApp(tui.Deps{
 		Repo:     r,
-		Provider: provider,
 		RepoName: repoName,
 		Config:   cfg,
 		// Pass the cobra command's context so:
@@ -268,7 +243,6 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		// operation flows consume. None hold resolved secrets.
 		ConfigPath:              absCfgPath,
 		NewStore:                deps.NewStore,
-		Actions:                 deps.Actions,
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
@@ -301,13 +275,11 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 // injection keeps the tui→cli import direction clean, same as Deps.NewStore.
 func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath string, st launchState, showSplash bool, passphraseFile string, openErr error) error {
 	app := tui.NewApp(tui.Deps{
-		Provider:                providerForLaunch(deps, st.Config),
 		RepoName:                st.Config.Repo.S3.Bucket,
 		Config:                  st.Config,
 		Ctx:                     cmd.Context(),
 		ConfigPath:              absCfgPath,
 		NewStore:                deps.NewStore,
-		Actions:                 deps.Actions,
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
@@ -363,17 +335,6 @@ func setupEffectsForLaunch(deps UIDeps) setup.Effects {
 		return deps.SetupEffects
 	}
 	return setup.DefaultEffects()
-}
-
-// providerForLaunch builds the agent provider for the launch-path Apps (first
-// run / locked), where no repo is open yet. It mirrors the dashboard path's
-// provider selection: ProviderForConfig wins when set, else the static
-// Provider.
-func providerForLaunch(deps UIDeps, cfg *config.Config) llm.Provider {
-	if deps.ProviderForConfig != nil {
-		return deps.ProviderForConfig(cfg)
-	}
-	return deps.Provider
 }
 
 // DefaultUIRunner is the production launcher: wraps the App in a

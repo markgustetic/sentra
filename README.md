@@ -12,7 +12,7 @@
 
 <img src="docs/screenshots/dashboard.png" width="840" alt="Sentra TUI dashboard: a synthwave sun banner over an activity sparkline, storage savings, tags, retention, and a recent-snapshots table.">
 
-<sub>The default surface is a full-screen TUI — 20 views, a first-run wizard, and every human workflow at your fingertips.</sub>
+<sub>The default surface is a full-screen TUI — a six-view rail, a first-run wizard, and every human workflow at your fingertips.</sub>
 
 </div>
 
@@ -51,8 +51,8 @@ built-in agent that audits your repository and surfaces recommendations.
       <br><sub><b>Snapshots</b> — sort, filter, copy an id, drill into any snapshot.</sub>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/files.png" alt="Files view: a box-and-arrows directory topology with per-edge file counts.">
-      <br><sub><b>Files</b> — a box-and-arrows map of a snapshot's directory topology.</sub>
+      <img src="docs/screenshots/dashboard.png" alt="Dashboard: repo health, activity sparkline, storage savings, and a recent-snapshots table.">
+      <br><sub><b>Dashboard</b> — repo health, activity, and savings at a glance.</sub>
     </td>
   </tr>
   <tr>
@@ -211,7 +211,11 @@ The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 
 Bare `sentra` falls through to `sentra ui`. Where it lands depends on your state:
 **no `sentra.yaml` → first-run wizard**, **configured but locked → unlock gate**,
-otherwise **the dashboard**. Every CLI capability is also a view — 19 in all.
+otherwise **the dashboard**. The rail holds six destinations — Dashboard,
+Backup, Snapshots, Maintenance, Settings, Help — and the occasional jobs
+live one keypress inside them: restore and diff launch from a snapshot row,
+check/prune/sync/doctor from Maintenance, policies/schedule/recovery-kit/
+passphrase/setup from Settings.
 
 Handy keys (the status bar always shows what's live):
 

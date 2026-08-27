@@ -82,6 +82,16 @@ func (d Diff) ShortHelp() []key.Binding {
 
 func (d Diff) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case launchDiffMsg:
+		// Snapshot-first entry: side A is already chosen, land on the B
+		// picker. Diff holds no op state, so resetting from ANY stage is
+		// safe — a relaunch replaces a stale comparison, and err clears
+		// for the same reason the pickB esc path clears it.
+		d.idA = msg.snapID
+		d.stage = diffPickB
+		d.err = ""
+		return d, nil
+
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
 		d.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(d.width), false))

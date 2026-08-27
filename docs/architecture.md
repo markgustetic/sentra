@@ -192,11 +192,13 @@ Two important rails on the agent loop:
 
 `sentra ui` (and bare `sentra`) launches a single Bubbletea program
 with one parent `App` model and one `tea.Model` per view (dashboard,
-snapshots, diff, agent). Inline-mode commands and the TUI both pull
-from `internal/ui` for theme + reusable styled components, so the
-visual language is consistent across both surfaces.
+snapshots, diff, restore, …). The rail lists six destinations; the
+other views stay registered but hidden, launched from a parent
+(Snapshots, Maintenance, Settings) via `activateMsg` routing. Inline-
+mode commands and the TUI both pull from `internal/ui` for theme +
+reusable styled components, so the visual language is consistent
+across both surfaces.
 
-The agent view in particular is a split-pane: the top half streams
-LLM tokens live (a Bubbletea-friendly channel feeds the viewport),
-and the bottom half is a recommendations table that fills in as
-tool calls return.
+The agent (`sentra agent scan`) is CLI-only: local heuristics first,
+LLM summaries second, recommendations printed with confirm-gated
+apply.

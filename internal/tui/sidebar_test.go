@@ -42,13 +42,3 @@ func TestSidebar_ArrowMovesSelectionAndEnterActivates(t *testing.T) {
 		t.Fatalf("enter moved the sidebar selection: %+v", s.list.SelectedItem())
 	}
 }
-
-func TestSidebar_BadgeVisible(t *testing.T) {
-	r := testRegistry()
-	r.SetBadge("diff", "3")
-	s := NewSidebar(r, 18, 12)
-	s.Refresh()
-	if !strings.Contains(s.View(), "3") {
-		t.Errorf("badge not rendered:\n%s", s.View())
-	}
-}

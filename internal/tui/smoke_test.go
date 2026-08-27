@@ -13,7 +13,6 @@ import (
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
 
-	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
 )
@@ -40,20 +39,20 @@ func smokeApp(t *testing.T, w, h int) (App, *repo.Repo) {
 	cfg := config.Defaults()
 	app := NewApp(Deps{
 		Repo: r, RepoName: "smoke", Config: &cfg,
-		Actions: action.NewDefaultRegistry(), Ctx: context.Background(),
+		Ctx: context.Background(),
 	})
 	m, _ := app.Update(tea.WindowSizeMsg{Width: w, Height: h})
 	app = m.(App)
 	// Note: we deliberately do NOT run app.Init() here — its batch includes the
 	// dashboard's 30s refresh tick, which execCmds would run synchronously and
-	// block. The data views hydrate in their constructors; Files loads lazily on
-	// activate (see the activate helper). teatest runs Init itself for the real
+	// block. The data views hydrate in their constructors. teatest runs Init
+	// itself for the real
 	// end-to-end test.
 	return app, r
 }
 
 // activate switches to a view through the real activateMsg path (which also
-// fires showActive → the lazy-load for Files), draining any resulting commands.
+// fires showActive → any lazy view load), draining any resulting commands.
 func activate(t *testing.T, app App, id string) App {
 	t.Helper()
 	m, cmd := app.Update(activateMsg{id: id})
@@ -100,7 +99,7 @@ func TestSmoke_EveryViewFitsTheFrame(t *testing.T) {
 // TestSmoke_BackupThenBrowse drives a realistic flow through the real App:
 // take a backup (confirmation gate), then inspect it in the snapshots and files
 // views — exercising key routing, the modal broadcast, the op guard, sort/filter,
-// and the lazy Files load together, the way a per-view test cannot.
+// together, the way a per-view test cannot.
 func TestSmoke_BackupThenBrowse(t *testing.T) {
 	const w, h = 100, 40
 	app, _ := smokeApp(t, w, h)
@@ -153,12 +152,6 @@ func TestSmoke_BackupThenBrowse(t *testing.T) {
 	}
 	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // detail → list
 	app = m.(App)
-
-	// --- Files: the box-and-arrows tree of the latest snapshot ---
-	app = activate(t, app, "files")
-	if out := app.View(); !strings.Contains(out, "▶") || !strings.Contains(out, "┌") {
-		t.Errorf("files view should render the directory graph (boxes + arrows):\n%s", out)
-	}
 
 	// Nothing panicked and the frame stayed within bounds throughout.
 	if lines := strings.Split(app.View(), "\n"); len(lines) != h {

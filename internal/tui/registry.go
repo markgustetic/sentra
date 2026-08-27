@@ -16,23 +16,12 @@ type Command struct {
 	Title string
 	// Category groups palette results ("Views", "Operations").
 	Category string
-	// Badge is a short live annotation rendered after the title in
-	// the sidebar (e.g. agent findings count). Empty hides it.
-	Badge string
 	// Description is the one-line "what does this screen do" text the Help
 	// view renders under the title. It lives on the Command rather than in
 	// the Help view so the description list and the rail are the same list,
 	// read in the same order — they cannot drift apart. NewApp fills it from
 	// viewDescriptions (see help.go); the sidebar and palette ignore it.
 	Description string
-}
-
-// badgeMsg updates a command's badge. Views emit it from their Update
-// (e.g. the agent view after a scan completes); App routes it to the
-// registry so the sidebar repaints with the new count.
-type badgeMsg struct {
-	id    string
-	badge string
 }
 
 // Registry holds the ordered command list. Not concurrency-safe by
@@ -82,14 +71,6 @@ func (r *Registry) Filter(query string) []Command {
 		}
 	}
 	return out
-}
-
-// SetBadge updates a command's badge; unknown IDs are ignored (a view
-// may emit a badge before registration in tests).
-func (r *Registry) SetBadge(id, badge string) {
-	if c, ok := r.byID[id]; ok {
-		c.Badge = badge
-	}
 }
 
 // isSubsequence reports whether every rune of needle appears in order

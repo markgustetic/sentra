@@ -144,13 +144,11 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 			PassphraseWithConfig: openPassphrase,
 			Stdout:               os.Stdout,
 		},
-		ProviderForConfig: newAgentProvider,
-		Actions:           action.NewDefaultRegistry(),
-		SavePassphrase:    saveRepoPassphraseToKeyring,
-		DeletePassphrase:  deleteRepoPassphraseFromKeyring,
-		Run:               cli.DefaultUIRunner,
-		Version:           version,
-		Commit:            commit,
+		SavePassphrase:   saveRepoPassphraseToKeyring,
+		DeletePassphrase: deleteRepoPassphraseFromKeyring,
+		Run:              cli.DefaultUIRunner,
+		Version:          version,
+		Commit:           commit,
 		// The launch probe must honor --passphrase-file the same way the read
 		// path does. RootFlags is populated by cobra as it parses argv, which
 		// happens AFTER this wiring runs, so we hand the probe a func that reads

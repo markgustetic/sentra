@@ -164,7 +164,13 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   backup, run a named policy, restore, browse snapshots, check, prune, and
   recovery kit must each be completable start to finish without leaving the
   TUI. A gap inside the floor is a bug; anything outside it is CLI-at-will,
-  needing no TUI affordance and no entry in any list. Per-run knobs
+  needing no TUI affordance and no entry in any list. Completable does not
+  mean rail-listed: the rail holds six destinations (Dashboard, Backup,
+  Snapshots, Maintenance, Settings, Help) and the rest of the floor lives
+  one launcher inside them — restore/diff from a snapshot row,
+  check/prune/sync/doctor from Maintenance, policies/schedule/recovery-kit/
+  passphrase/setup from Settings. Stats and the agent are CLI-only
+  (outside the floor by the sentence above). Per-run knobs
   (`prune --keep-*`, `--concurrency`, `--stale-lock-after`, agent
   `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come from config
   in the TUI by design.

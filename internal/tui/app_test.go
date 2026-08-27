@@ -10,8 +10,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/markgustetic/sentra/internal/agent"
-	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -111,13 +109,13 @@ func TestApp_DepsCarryConfig(t *testing.T) {
 func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 	app := newTestApp(t)
 	out := app.View()
-	for _, want := range []string{"Backup", "Restore", "Prune"} {
+	for _, want := range []string{"Backup", "Maintenance"} {
 		if !strings.Contains(out, want) {
-			t.Errorf("sidebar missing operation %q", want)
+			t.Errorf("sidebar missing %q", want)
 		}
 	}
-	if got := len(app.views); got != 21 {
-		t.Fatalf("views = %d, want 21 (3 read-only + files + check + stats + doctor + recovery-kit + policies + schedule + agent + 3 operations + sync + password + unlock + connect + settings + setup + help)", got)
+	if got := len(app.views); got != 19 {
+		t.Fatalf("views = %d, want 19 (6 rail views + 13 hidden: diff, check, doctor, recovery-kit, policies, schedule, restore, prune, sync, password, unlock, connect, setup)", got)
 	}
 }
 
@@ -148,7 +146,7 @@ func TestApp_RendersSidebarAndActiveView(t *testing.T) {
 	out := app.View()
 	// "S E N T R A" is the centered header logo; "test-repo" is the repo name,
 	// which now lives on the status bar rather than the header.
-	for _, want := range []string{"S E N T R A", "Dashboard", "Snapshots", "Agent", "test-repo"} {
+	for _, want := range []string{"S E N T R A", "Dashboard", "Snapshots", "Maintenance", "test-repo"} {
 		if !strings.Contains(out, want) {
 			t.Errorf("view missing %q", want)
 		}
@@ -193,7 +191,7 @@ func TestApp_NumberKeyJumpsToView(t *testing.T) {
 	app := newTestApp(t)
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
 	if got := m.(App).active; got != 3 {
-		t.Fatalf("active = %d, want 3 (agent)", got)
+		t.Fatalf("active = %d, want 3 (maintenance)", got)
 	}
 }
 
@@ -203,7 +201,7 @@ func TestApp_PaletteOpensFiltersAndActivates(t *testing.T) {
 	if !m.(App).paletteOpen {
 		t.Fatal("ctrl+p should open the palette")
 	}
-	for _, r := range "diff" {
+	for _, r := range "main" {
 		m, _ = m.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 	}
 	m2, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -215,8 +213,8 @@ func TestApp_PaletteOpensFiltersAndActivates(t *testing.T) {
 	if app2.paletteOpen {
 		t.Fatal("palette should close after activation")
 	}
-	if app2.views[app2.active].id != "diff" {
-		t.Fatalf("active view = %s, want diff", app2.views[app2.active].id)
+	if app2.views[app2.active].id != "maintenance" {
+		t.Fatalf("active view = %s, want maintenance", app2.views[app2.active].id)
 	}
 }
 
@@ -393,67 +391,6 @@ func TestApp_ModalSwallowsGlobalKeys(t *testing.T) {
 	m2, _ = m2.(App).Update(msg) // deliver dismissModalMsg
 	if len(m2.(App).modals) != 0 {
 		t.Fatal("error modal should pop on any key")
-	}
-}
-
-// TestApp_QuitCancelsAgentScan asserts that the App's quit handler
-// invokes AgentView.Cleanup, which cancels any in-flight scan's
-// context. Without this, pressing q during an LLM streaming call
-// leaks the network round-trip past process exit.
-//
-// We don't construct a real LLM-backed AgentView; we install a
-// runner that blocks on its ctx and observes the cancellation.
-func TestApp_QuitCancelsAgentScan(t *testing.T) {
-	app := newTestApp(t)
-
-	// Build an AgentView whose runner blocks until its ctx is cancelled,
-	// then drive it through Update directly (the shell routes plain keys
-	// by focus, so we start the scan at the sub-view level). We do NOT
-	// invoke the returned cmd — that's the waitForAgentEvent select,
-	// which would block the test goroutine on a token that never comes.
-	cancelled := make(chan struct{}, 1)
-	agentView := NewAgentViewWithRunner(Deps{}, func(ctx context.Context, _ chan<- string) ([]agent.Recommendation, error) {
-		<-ctx.Done()
-		cancelled <- struct{}{}
-		return nil, ctx.Err()
-	})
-	updated, _ := agentView.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
-
-	// Install the post-scan-started agent view back into the shell's
-	// registry slot, then quit: `q` pops the confirm and confirming runs
-	// cleanup(), which cancels the agent ctx.
-	installed := false
-	for i := range app.views {
-		if app.views[i].id == "agent" {
-			app.views[i].model = updated
-			installed = true
-		}
-	}
-	if !installed {
-		t.Fatal("no agent view registered in the shell")
-	}
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'q'}}) // pops the quit confirm
-	m2, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})              // confirm
-	if cmd != nil {
-		_, _ = m2.(App).Update(cmd()) // confirmedMsg{confirm-quit} → cleanup() cancels the ctx
-	}
-
-	select {
-	case <-cancelled:
-		// Runner observed ctx cancellation — good.
-	case <-time.After(2 * time.Second):
-		t.Fatal("agent runner did not see ctx cancel after q; cleanup() failed")
-	}
-}
-
-// TestApp_BadgeMsgUpdatesSidebar covers the badge round-trip: a view
-// emits badgeMsg, the App writes it into the registry and refreshes
-// the rail, and the rail actually shows the count.
-func TestApp_BadgeMsgUpdatesSidebar(t *testing.T) {
-	app := newTestApp(t)
-	m, _ := app.Update(badgeMsg{id: "agent", badge: "3"})
-	if out := m.(App).sidebar.View(); !strings.Contains(out, "3") {
-		t.Errorf("sidebar missing badge after badgeMsg:\n%s", out)
 	}
 }
 
@@ -678,17 +615,17 @@ func TestApp_ResizeForwardsInnerSize(t *testing.T) {
 func TestApp_SidebarHighlightTracksActive(t *testing.T) {
 	app := newTestApp(t)
 
-	// '4' jumps to the 4th view (agent, index 3) — rail selects index 3.
+	// '4' jumps to the 4th rail view (maintenance, index 3) — rail selects index 3.
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
 	a := m.(App)
 	if got := a.sidebar.list.Index(); got != 3 {
 		t.Fatalf("after '4', sidebar index = %d, want 3", got)
 	}
 
-	// Open the palette and activate "diff" (view index 2) — rail follows.
+	// Open the palette and activate "settings" — rail follows.
 	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
 	a = m.(App)
-	for _, r := range "diff" {
+	for _, r := range "sett" {
 		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		a = m.(App)
 	}
@@ -702,12 +639,12 @@ func TestApp_SidebarHighlightTracksActive(t *testing.T) {
 	// decision that moves (backup was promoted to sit under snapshots).
 	want := -1
 	for i, v := range a.views {
-		if v.id == "diff" {
+		if v.id == "settings" {
 			want = i
 		}
 	}
 	if got := a.sidebar.list.Index(); got != want {
-		t.Fatalf("after activating diff, sidebar index = %d, want %d", got, want)
+		t.Fatalf("after activating settings, sidebar index = %d, want %d", got, want)
 	}
 }
 
@@ -770,40 +707,34 @@ func TestApp_PaletteEscResetLifecycle(t *testing.T) {
 }
 
 // T6 — TestApp_BroadcastReachesInactiveView: a non-key message must be
-// broadcast to every view, not just the active one. We install an agent
-// view (with a runner so it renders its stream pane rather than the
-// unavailable-placeholder), leave the Dashboard active, and deliver a
-// tokenMsg — the agent's stream message. The agent view must absorb it
-// even though it isn't focused, proving broadcast() forwards to all
-// views.
+// broadcast to every view, not just the active one. A recorder stub is
+// installed under a hidden view id; the Dashboard stays active, and a
+// synthetic message must still reach the stub — proving broadcast()
+// forwards to all views.
+type broadcastProbeMsg struct{}
+
+type broadcastRecorder struct{ got *bool }
+
+func (r broadcastRecorder) Init() tea.Cmd { return nil }
+func (r broadcastRecorder) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(broadcastProbeMsg); ok {
+		*r.got = true
+	}
+	return r, nil
+}
+func (r broadcastRecorder) View() string { return "" }
+
 func TestApp_BroadcastReachesInactiveView(t *testing.T) {
 	app := newTestApp(t)
-	// A runner is required for the agent view to render its viewport (nil
-	// run => "configure ANTHROPIC_API_KEY" placeholder). The runner body
-	// is never called here — we deliver the token msg directly.
-	agentView := NewAgentViewWithRunner(Deps{}, func(context.Context, chan<- string) ([]agent.Recommendation, error) {
-		return nil, nil
-	})
-	installView(t, &app, "agent", agentView)
+	var got bool
+	installView(t, &app, "sync", broadcastRecorder{got: &got})
 
-	// Dashboard (index 0) stays active; the agent view is not focused.
 	if app.active != 0 {
 		t.Fatalf("expected dashboard active, got %d", app.active)
 	}
-
-	const token = "REASONING-TOKEN-XYZ"
-	m, _ := app.Update(tokenMsg(token))
-	a := m.(App)
-
-	// Find the agent view and confirm it absorbed the token.
-	var agentOut string
-	for _, v := range a.views {
-		if v.id == "agent" {
-			agentOut = v.model.View()
-		}
-	}
-	if !strings.Contains(agentOut, token) {
-		t.Errorf("inactive agent view did not absorb broadcast tokenMsg:\n%s", agentOut)
+	_, _ = app.Update(broadcastProbeMsg{})
+	if !got {
+		t.Error("inactive view did not receive the broadcast message")
 	}
 }
 
@@ -938,26 +869,9 @@ func TestApp_PruneTypedConfirmRoundTripThroughShell(t *testing.T) {
 	}
 }
 
-// TestApp_CheckReplacesOperationsInSidebar: after Phase 2b, the sidebar
-// exposes Check (not the old Operations placeholder), and the view count
-// is unchanged (operations → check is a swap, not an addition).
-func TestApp_CheckReplacesOperationsInSidebar(t *testing.T) {
-	app := newTestApp(t)
-	out := app.View()
-	if !strings.Contains(out, "Check") {
-		t.Errorf("sidebar should list Check:\n%s", out)
-	}
-	if strings.Contains(out, "Operations") {
-		t.Errorf("Operations placeholder should be gone:\n%s", out)
-	}
-	if got := len(app.views); got != 21 {
-		t.Fatalf("views = %d, want 21 (Phase 2c end-state + files + stats + the unlock gate + connect gate + settings + setup + help)", got)
-	}
-}
-
-// TestApp_DepsCarryNewFields: Unit-1 plumbing. Deps must carry the four
-// action/store/config-path/keyring fields through NewApp so the ported
-// operation flows (sync, agent-apply, password, setup) can reach them.
+// TestApp_DepsCarryNewFields: Unit-1 plumbing. Deps must carry the
+// store/config-path/keyring fields through NewApp so the ported
+// operation flows (sync, password, setup) can reach them.
 // These are call-time function values and plain data — never resolved
 // secrets — so a stub that records its call is a faithful test double.
 func TestApp_DepsCarryNewFields(t *testing.T) {
@@ -971,20 +885,14 @@ func TestApp_DepsCarryNewFields(t *testing.T) {
 		saveKeyringCalled = true
 		return nil
 	}
-	reg := action.NewDefaultRegistry()
-
 	app := NewApp(Deps{
 		ConfigPath:            "/abs/path/sentra.yaml",
 		NewStore:              newStore,
-		Actions:               reg,
 		SaveKeyringPassphrase: saveKeyring,
 	})
 
 	if app.deps.ConfigPath != "/abs/path/sentra.yaml" {
 		t.Errorf("Deps.ConfigPath not carried: got %q", app.deps.ConfigPath)
-	}
-	if app.deps.Actions != reg {
-		t.Error("Deps.Actions not carried through NewApp")
 	}
 	if app.deps.NewStore == nil {
 		t.Fatal("Deps.NewStore not carried through NewApp")
@@ -1022,19 +930,17 @@ func TestApp_RegistersPoliciesView(t *testing.T) {
 	}
 }
 
-// TestApp_Phase2cViewsRegistered: after Phase 2c, all six new standalone
-// views are present (doctor, recovery-kit, policies, schedule, sync,
-// password) alongside the eight pre-existing ones, plus the unlock gate
-// and the Part 7 settings/setup views, for a total of 17. agent-apply is
-// NOT a new view — it extends the existing "agent" view in place — so it
-// adds no id.
-func TestApp_Phase2cViewsRegistered(t *testing.T) {
+// TestApp_AllViewsRegistered pins the views slice after the six-view rail
+// simplification: every view — rail and hidden alike — is present exactly
+// once. Rail/palette membership itself is pinned by
+// TestApp_RailShowsExactlySixViews; this guards the routable set.
+func TestApp_AllViewsRegistered(t *testing.T) {
 	app := newTestApp(t)
 
 	want := []string{
-		"dashboard", "snapshots", "files", "diff", "check", "stats", "doctor",
-		"recovery-kit", "policies", "schedule", "agent", "backup", "restore",
-		"prune", "sync", "password", "unlock", "connect", "settings", "setup", "help",
+		"dashboard", "backup", "snapshots", "maintenance", "settings", "help",
+		"diff", "check", "doctor", "recovery-kit", "policies", "schedule",
+		"restore", "prune", "sync", "password", "unlock", "connect", "setup",
 	}
 	got := make(map[string]bool, len(app.views))
 	for _, v := range app.views {
@@ -1047,70 +953,12 @@ func TestApp_Phase2cViewsRegistered(t *testing.T) {
 	}
 	if len(app.views) != len(want) {
 		t.Fatalf("views = %d, want %d", len(app.views), len(want))
-	}
-
-	// The direct data operations carry the "Operations" palette category.
-	out := app.View()
-	for _, label := range []string{"Sync", "Password", "Doctor", "Policies"} {
-		if !strings.Contains(out, label) {
-			t.Errorf("sidebar/palette should list %q:\n%s", label, out)
-		}
-	}
-}
-
-// TestApp_Phase3ViewsRegistered: after Phase 3 the shell has 17 view models
-// (14 Phase 2c + unlock + setup + settings). setup and settings are
-// navigable (rail/palette) under the "Settings" category; unlock is a
-// startup gate reached only via Deps.InitialView, so it is NOT in the
-// command registry.
-func TestApp_Phase3ViewsRegistered(t *testing.T) {
-	app := newTestApp(t)
-
-	want := []string{
-		"dashboard", "snapshots", "files", "diff", "check", "stats", "doctor",
-		"recovery-kit", "policies", "schedule", "agent", "backup", "restore",
-		"prune", "sync", "password", "setup", "settings", "unlock", "connect", "help",
-	}
-	got := make(map[string]bool, len(app.views))
-	for _, v := range app.views {
-		got[v.id] = true
-	}
-	for _, id := range want {
-		if !got[id] {
-			t.Errorf("view %q not registered", id)
-		}
-	}
-	if len(app.views) != len(want) {
-		t.Fatalf("views = %d, want %d", len(app.views), len(want))
-	}
-
-	// setup + settings are navigable; unlock is a hidden startup gate.
-	cmds := app.registry.Commands()
-	ids := make(map[string]bool, len(cmds))
-	for _, c := range cmds {
-		ids[c.ID] = true
-	}
-	if !ids["setup"] || !ids["settings"] {
-		t.Error("setup and settings must be in the command registry (rail/palette)")
-	}
-	if ids["unlock"] {
-		t.Error("unlock is a startup gate and must NOT be in the command registry")
-	}
-	if ids["connect"] {
-		t.Error("connect is a startup gate and must NOT be in the command registry")
-	}
-
-	out := app.View()
-	for _, label := range []string{"Setup", "Settings"} {
-		if !strings.Contains(out, label) {
-			t.Errorf("sidebar/palette should list %q:\n%s", label, out)
-		}
 	}
 }
 
 // TestApp_InitialViewUnlockLandsContentFocusedAndHidden: the unlock gate is
 // reachable only via Deps.InitialView (never the sidebar/palette per
-// TestApp_Phase3ViewsRegistered). Landing on it must still focus content
+// TestApp_RailShowsExactlySixViews). Landing on it must still focus content
 // immediately, exactly like any other non-dashboard InitialView.
 func TestApp_InitialViewUnlockLandsContentFocusedAndHidden(t *testing.T) {
 	app := NewApp(Deps{RepoName: "x", InitialView: "unlock"})

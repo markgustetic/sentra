@@ -146,6 +146,22 @@ func (v RestoreView) ShortHelp() []key.Binding {
 
 func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
+	case launchRestoreMsg:
+		// Snapshot-first entry from the Snapshots view: the picker's
+		// question is already answered, so mirror its enter transition
+		// exactly (see restorePick below). Only from the picker — a
+		// launch must never clobber a flow already past it; mid-flow the
+		// shell still activates this view, landing on the live screen.
+		if v.stage != restorePick {
+			return v, nil
+		}
+		v.snapID = msg.snapID
+		v.stage = restoreDest
+		v.focusScope = false
+		v.scope.Blur()
+		v.dest.Focus()
+		return v, nil
+
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
 		v.height = msg.Height

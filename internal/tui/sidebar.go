@@ -28,7 +28,7 @@ type sidebarItem struct{ cmd Command }
 func (i sidebarItem) FilterValue() string { return i.cmd.Title }
 
 // sidebarDelegate renders one compact row: the active row gets the "▍" accent,
-// inactive rows ui.SidebarItem; badges render dimmed after the title.
+// inactive rows ui.SidebarItem.
 //
 // frame carries the ambient animation clock so the active row's neon breathes in
 // step with the rest of the chrome (see App.View / anim.go). It is 0 in tests
@@ -44,23 +44,15 @@ func (d sidebarDelegate) Render(w io.Writer, m list.Model, index int, it list.It
 	if !ok {
 		return
 	}
-	// The badge is styled separately and appended AFTER the row style is
-	// applied: rendering it inside the label would embed an ANSI reset
-	// that terminates the row style mid-line (the never-wrap-an-already-
-	// styled-string rule).
 	label := si.cmd.Title
-	badge := ""
-	if si.cmd.Badge != "" {
-		badge = " " + ui.Muted.Render(si.cmd.Badge)
-	}
 	if index == m.Index() {
 		// Mirror ui.SidebarActive (bold + the "▍ " marker) but with the breathing
 		// accent so the current view's rail entry pulses.
 		active := lipgloss.NewStyle().Foreground(animColor(animActive, d.frame)).Bold(true).SetString("▍ ")
-		fmt.Fprint(w, active.Render(label)+badge)
+		fmt.Fprint(w, active.Render(label))
 		return
 	}
-	fmt.Fprint(w, ui.SidebarItem.Render(label)+badge)
+	fmt.Fprint(w, ui.SidebarItem.Render(label))
 }
 
 // Sidebar is the persistent nav rail. It renders the registry in
@@ -85,7 +77,7 @@ func NewSidebar(registry *Registry, width, height int) Sidebar {
 }
 
 // Refresh re-reads the registry into the list (registration order),
-// preserving the current selection index. Called after badge updates
+// preserving the current selection index. Called after registry updates
 // and at construction.
 func (s *Sidebar) Refresh() {
 	idx := s.list.Index()

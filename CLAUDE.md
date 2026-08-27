@@ -14,9 +14,12 @@ The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
 it lands on the unlock gate; otherwise the dashboard. A configured repo that
 fails to *open* (expired AWS SSO, unreachable bucket) lands on the connect
-gate — retry or run `aws sso login` from inside the TUI; only config-file
-errors exit to the CLI. The TUI covers every job a human does; the CLI is the
-machine and recovery surface (see the surface contract in AGENTS.md).
+gate — retry or run the profile's aws login command from inside the TUI; only
+config-file errors exit to the CLI. The TUI covers the human floor through a
+six-view rail (Dashboard, Backup, Snapshots, Maintenance, Settings, Help) with
+the occasional jobs launched from inside those; stats and the agent are
+CLI-only. The CLI is the machine and recovery surface (see the surface
+contract in AGENTS.md).
 
 Config discovery: with no `--config`, commands use `./sentra.yaml` when
 present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default
