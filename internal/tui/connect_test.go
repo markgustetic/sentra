@@ -369,14 +369,17 @@ func TestConnect_AuthFailureShowsCapturedOutput(t *testing.T) {
 	}
 }
 
-// newAuthCmd wires the child's stderr through a capture buffer WITHOUT
-// replacing the terminal stream — bubbletea only fills nil streams, so the
-// pre-set writer survives ExecProcess and the operator still sees live
-// output.
+// newAuthCmd routes the child's stderr into the capture buffer ONLY — not
+// teed to the terminal. Anything written to the released terminal during
+// the exec window stays in the normal screen's scrollback after the
+// alt-screen returns, so the same error would show both in the terminal
+// and in the gate; errors must render exactly once, in the app. The
+// buffer must be the stream itself (pre-set, so ExecProcess cannot
+// replace it — bubbletea only fills nil streams).
 func TestNewAuthCmd_CapturesStderr(t *testing.T) {
 	cmd, buf := newAuthCmd(context.Background(), setup.AWSAuthLogin, "p", "r")
-	if cmd.Stderr == nil {
-		t.Fatal("auth cmd must pre-set Stderr so ExecProcess cannot replace it")
+	if cmd.Stderr != buf {
+		t.Fatalf("auth cmd Stderr = %T, must be the capture buffer itself — no tee to the terminal", cmd.Stderr)
 	}
 	fmt.Fprint(cmd.Stderr, "hello from the child")
 	if !strings.Contains(buf.String(), "hello from the child") {

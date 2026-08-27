@@ -5,8 +5,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"io"
-	"os"
 	"os/exec"
 	"strings"
 
@@ -153,16 +151,19 @@ func (v ConnectView) authRegion() string {
 	return strings.TrimSpace(v.deps.Config.Repo.S3.Region)
 }
 
-// newAuthCmd builds the interactive reauth child with its stderr teed into
-// a capture buffer. The stream is pre-set deliberately: tea.ExecProcess
-// only fills nil streams, so the tee survives it — the operator still sees
-// live output on the terminal, and after the alt-screen restore erases the
-// scrollback, the gate can show what the child printed. Stdout/stdin stay
-// nil (the real TTY): the AWS CLI's browser flows check tty-ness there.
+// newAuthCmd builds the interactive reauth child with its stderr captured
+// into a buffer — and ONLY the buffer, never the terminal. During the exec
+// window the alt screen is released, so anything the child writes to the
+// real stderr lands in the normal screen's scrollback and stays there
+// after the TUI returns: the operator would see the same error once in
+// the terminal and again in the gate. Errors render exactly once, in the
+// app. The stream is pre-set deliberately (tea.ExecProcess only fills nil
+// streams), while stdout/stdin stay nil — the real TTY — because the AWS
+// CLI's interactive flows print instructions and check tty-ness there.
 func newAuthCmd(ctx context.Context, method setup.AWSAuthMethod, profile, region string) (*exec.Cmd, *bytes.Buffer) {
 	c := interactiveAWSAuthCommand(ctx, nil, method, profile, region)
 	buf := &bytes.Buffer{}
-	c.Stderr = io.MultiWriter(os.Stderr, buf)
+	c.Stderr = buf
 	return c, buf
 }
 
