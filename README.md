@@ -5,7 +5,7 @@
 **Encrypted, deduplicated, agent-aware backups for S3 — driven from a synthwave terminal.**
 
 [![CI](https://img.shields.io/github/actions/workflow/status/markgustetic/sentra/ci.yml?branch=main&style=for-the-badge&label=CI&labelColor=0D0221&color=5CFFB4)](https://github.com/markgustetic/sentra/actions/workflows/ci.yml)
-[![Go 1.25+](https://img.shields.io/badge/go-1.25+-5CEBFF?style=for-the-badge&labelColor=0D0221&logo=go&logoColor=5CEBFF)](go.mod)
+[![Go 1.27+](https://img.shields.io/badge/go-1.27+-5CEBFF?style=for-the-badge&labelColor=0D0221&logo=go&logoColor=5CEBFF)](go.mod)
 [![License MIT](https://img.shields.io/badge/license-MIT-CB8CFF?style=for-the-badge&labelColor=0D0221)](LICENSE)
 [![XChaCha20-Poly1305](https://img.shields.io/badge/AEAD-XChaCha20--Poly1305-FFD84D?style=for-the-badge&labelColor=0D0221)](#security)
 [![S3 · S3-compatible](https://img.shields.io/badge/storage-S3%20%C2%B7%20S3--compatible-FF6BDD?style=for-the-badge&labelColor=0D0221&logo=amazons3&logoColor=FF6BDD)](#quickstart)
@@ -344,7 +344,7 @@ addressing; and both the CLI and TUI drive the same core in `internal/repo`.
 
 ## Development
 
-Go **1.25+** is required, and the codebase is `internal/`-only (no public API in
+Go **1.27+** is required, and the codebase is `internal/`-only (no public API in
 v1). Prefer `just`:
 
 ```bash

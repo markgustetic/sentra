@@ -8,7 +8,7 @@ quick reference and the load-bearing invariants.
 
 Sentra is a single-binary Go CLI/TUI (`cmd/sentra`) that backs up local
 directories to S3 / S3-compatible storage as **encrypted, deduplicated,
-content-addressed** snapshots. Go 1.25, module `github.com/markgustetic/sentra`.
+content-addressed** snapshots. Go 1.27, module `github.com/markgustetic/sentra`.
 
 The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
