@@ -47,7 +47,14 @@ type rowKind int
 const (
 	rowParent rowKind = iota
 	rowChild
+	rowPlace // a jump-to bookmark (~, ~/Documents, …), not an entry of cwd
 )
+
+// dirPickerHome is the picker's home-directory lookup, a seam so tests can
+// point the place rows at a hermetic temp home (TestMain neutralizes it —
+// real machines differ in which well-known folders exist, and rows that
+// vary by machine would make every picker test flaky).
+var dirPickerHome = os.UserHomeDir
 
 type dirRow struct {
 	kind  rowKind
@@ -86,6 +93,8 @@ func (p dirPicker) reload() dirPicker {
 		p.rows = append(p.rows, dirRow{kind: rowParent, label: "..", path: parent})
 	}
 
+	p.rows = append(p.rows, p.placeRows()...)
+
 	entries, err := os.ReadDir(p.cwd)
 	if err != nil {
 		p.err = "cannot read " + p.cwd + ": " + errReason(err)
@@ -116,6 +125,33 @@ func (p dirPicker) reload() dirPicker {
 	}
 	p.clampCursor()
 	return p
+}
+
+// placeRows builds the jump-to bookmarks: the home directory and its
+// well-known folders, listed right after ".." so a backup of Documents or
+// Downloads is one enter away from anywhere. Only directories that exist
+// are offered (a bookmark to nowhere would just render an error), and the
+// one matching the directory being browsed is dropped — jumping to where
+// you already stand is noise.
+func (p dirPicker) placeRows() []dirRow {
+	home, err := dirPickerHome()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	rows := []dirRow{{kind: rowPlace, label: "~", path: home}}
+	for _, name := range []string{"Documents", "Downloads", "Desktop", "Pictures"} {
+		path := filepath.Join(home, name)
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			rows = append(rows, dirRow{kind: rowPlace, label: "~/" + name, path: path})
+		}
+	}
+	kept := rows[:0]
+	for _, r := range rows {
+		if r.path != p.cwd {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // onStart reports whether the cursor rests on the Start button — cursor 0, the
@@ -168,7 +204,7 @@ func (p dirPicker) activate() (dirPicker, string) {
 		return p, p.cwd
 	}
 	switch row := p.rows[p.cursor-1]; row.kind {
-	case rowParent, rowChild:
+	case rowParent, rowChild, rowPlace:
 		p.cwd = row.path
 		p.cursor = 0
 		return p.reload(), ""
@@ -230,6 +266,8 @@ func (p dirPicker) enterVerb() string {
 	switch r := p.rows[p.cursor-1]; r.kind {
 	case rowParent:
 		return "go up to " + filepath.Base(r.path)
+	case rowPlace:
+		return "jump to " + r.label
 	default:
 		return "open " + r.label
 	}

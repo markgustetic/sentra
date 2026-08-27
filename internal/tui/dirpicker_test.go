@@ -219,3 +219,103 @@ func TestDirPickerMarkerOnlyWhenFocused(t *testing.T) {
 		t.Error("an unfocused picker must not mark any row")
 	}
 }
+
+// fakeHome points the picker's home lookup at a temp dir with the given
+// well-known subdirectories, restoring the neutralized test default after.
+func fakeHome(t *testing.T, wellKnown ...string) string {
+	t.Helper()
+	home := t.TempDir()
+	for _, d := range wellKnown {
+		if err := os.Mkdir(filepath.Join(home, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	prev := dirPickerHome
+	dirPickerHome = func() (string, error) { return home, nil }
+	t.Cleanup(func() { dirPickerHome = prev })
+	return home
+}
+
+// placeLabels collects the place-row labels in order.
+func placeLabels(p dirPicker) []string {
+	var out []string
+	for _, r := range p.rows {
+		if r.kind == rowPlace {
+			out = append(out, r.label)
+		}
+	}
+	return out
+}
+
+// The picker lists jump-to places for the home directory and its
+// well-known folders — but only the ones that actually exist on disk: a
+// row that navigates to a missing directory would just render an error.
+func TestDirPicker_PlacesListExistingWellKnownDirs(t *testing.T) {
+	fakeHome(t, "Documents", "Downloads")
+	p := newDirPicker(tempTree(t))
+	got := placeLabels(p)
+	want := []string{"~", "~/Documents", "~/Downloads"}
+	if fmt.Sprint(got) != fmt.Sprint(want) {
+		t.Fatalf("places = %v, want %v", got, want)
+	}
+}
+
+// Activating a place jumps the browse root there and parks the cursor on
+// the Start button — one enter later the jumped-to folder is backed up,
+// same contract as descending into a folder row.
+func TestDirPicker_PlaceJumpsAndResetsCursor(t *testing.T) {
+	home := fakeHome(t, "Documents")
+	p := newDirPicker(tempTree(t))
+	for i := 1; i <= len(p.rows); i++ {
+		if p.rows[i-1].kind == rowPlace && p.rows[i-1].label == "~/Documents" {
+			p.cursor = i
+			break
+		}
+	}
+	p2, committed := p.activate()
+	if committed != "" {
+		t.Fatalf("place activation committed %q, want navigation", committed)
+	}
+	if want := filepath.Join(home, "Documents"); p2.cwd != want {
+		t.Fatalf("cwd = %q, want %q", p2.cwd, want)
+	}
+	if !p2.onStart() {
+		t.Fatal("jump must park the cursor on the Start button")
+	}
+}
+
+// The place for the directory being browsed is dropped — jumping to where
+// you already stand is noise.
+func TestDirPicker_PlaceForCurrentDirHidden(t *testing.T) {
+	home := fakeHome(t, "Documents", "Downloads")
+	p := newDirPicker(filepath.Join(home, "Documents"))
+	for _, l := range placeLabels(p) {
+		if l == "~/Documents" {
+			t.Fatalf("place for the current directory must be hidden: %v", placeLabels(p))
+		}
+	}
+}
+
+// No resolvable home (the hermetic test default) means no place rows at
+// all — the picker degrades to plain browsing.
+func TestDirPicker_NoHomeNoPlaces(t *testing.T) {
+	p := newDirPicker(tempTree(t))
+	if got := placeLabels(p); len(got) != 0 {
+		t.Fatalf("places with no home = %v, want none", got)
+	}
+}
+
+// The action line must say where enter will jump.
+func TestDirPicker_PlaceEnterVerb(t *testing.T) {
+	fakeHome(t, "Downloads")
+	p := newDirPicker(tempTree(t))
+	for i := 1; i <= len(p.rows); i++ {
+		if p.rows[i-1].kind == rowPlace && p.rows[i-1].label == "~/Downloads" {
+			p.cursor = i
+			break
+		}
+	}
+	if got := p.enterVerb(); !strings.Contains(got, "~/Downloads") {
+		t.Fatalf("enterVerb = %q, want it to name ~/Downloads", got)
+	}
+}
