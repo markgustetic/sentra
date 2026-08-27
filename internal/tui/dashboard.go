@@ -436,9 +436,17 @@ func (d Dashboard) renderStoragePanel(colW int) string {
 	textW := colW - contentPanelHPad
 	saved := savingsFrac(d.data.TotalBytes, d.data.UploadedBytes)
 
+	// The bucket name gets a label when the column affords both; when space
+	// is tight the NAME wins — confirming which repo you're looking at
+	// outranks captioning it (see TestDashboard_RendersRepoName).
 	head := spread(textW,
 		ui.Primary.Render(truncateToWidth(name, textW-9)),
 		ui.Muted.Render(fmt.Sprintf("%d snaps", d.data.SnapshotCount)))
+	if textW >= 30 {
+		head = spread(textW,
+			ui.SectionTitle("bucket")+" "+ui.Primary.Render(truncateToWidth(name, textW-16)),
+			ui.Muted.Render(fmt.Sprintf("%d snaps", d.data.SnapshotCount)))
+	}
 	shrink := ui.Subtle.Render(truncateToWidth(fmt.Sprintf("%s → %s",
 		ui.FormatBytes(d.data.TotalBytes), ui.FormatBytes(d.data.UploadedBytes)), textW))
 	meter := styledGauge(saved, 10) + ui.Muted.Render(fmt.Sprintf(" %d%% saved", int(saved*100+0.5)))
@@ -556,7 +564,7 @@ func (d Dashboard) renderRetentionPanel(colW int) string {
 // panel's lipgloss Width; block is its total height including the border.
 func (d Dashboard) renderSnapTable(panelW, block int) string {
 	textW := panelW - contentPanelHPad
-	dataRows := max(block-3, 1) // -border(2) -header(1)
+	dataRows := max(block-4, 1) // -border(2) -title(1) -header(1)
 
 	const createdW, filesW, sizeW, newW = 12, 7, 8, 8
 	tagW := max(textW-createdW-filesW-sizeW-newW-4, 4) // 4 single-space gaps
@@ -591,7 +599,8 @@ func (d Dashboard) renderSnapTable(panelW, block int) string {
 			rows[i] = ui.Muted.Render("no snapshots yet")
 		}
 	}
-	return dashPanel(panelW, header+"\n"+strings.Join(rows, "\n"))
+	title := ui.SectionTitle("recent snapshots")
+	return dashPanel(panelW, title+"\n"+header+"\n"+strings.Join(rows, "\n"))
 }
 
 // snapTableRow lays five cells at fixed widths (date and tag left-aligned, the

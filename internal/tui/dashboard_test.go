@@ -578,3 +578,21 @@ func TestDashboard_SectionTitlesAreUppercase(t *testing.T) {
 		}
 	}
 }
+
+// The bottom table carries a section header like every other panel, and
+// the bucket name is labeled rather than floating bare.
+func TestDashboard_TableHeaderAndBucketLabel(t *testing.T) {
+	day := func(n int) time.Time { return time.Date(2026, 6, n, 3, 30, 0, 0, time.UTC) }
+	snaps := []repo.SnapshotInfo{
+		{ID: "s1", CreatedAt: day(9), Tag: "nightly", Stats: repo.SnapshotStats{Files: 10, Bytes: 1 << 20}},
+	}
+	d := NewDashboard(Deps{RepoName: "sentra-mg-002"})
+	m, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	view := m.(Dashboard).SetData(DashboardData{SnapshotCount: 1, LastSnap: &snaps[0], Snaps: snaps,
+		TotalBytes: 1 << 20, UploadedBytes: 1 << 20}).View()
+	for _, want := range []string{"RECENT SNAPSHOTS", "BUCKET", "sentra-mg-002"} {
+		if !strings.Contains(view, want) {
+			t.Errorf("dashboard missing %q:\n%s", want, view)
+		}
+	}
+}
