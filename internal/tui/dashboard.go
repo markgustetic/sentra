@@ -389,7 +389,7 @@ func (d Dashboard) renderHero(panelW, block int) string {
 		area := make([]string, graphRows)
 		area[graphRows/2] = ui.Muted.Render(
 			truncateToWidth("run a backup to see activity here", textW))
-		body := ui.Subtle.Render("activity") + "\n" +
+		body := ui.SectionTitle("activity") + "\n" +
 			strings.Join(area, "\n") + "\n" +
 			ui.Muted.Render("no backups yet")
 		return dashPanel(panelW, body)
@@ -406,7 +406,7 @@ func (d Dashboard) renderHero(panelW, block int) string {
 	}
 
 	title := spread(textW,
-		ui.Subtle.Render("activity"),
+		ui.SectionTitle("activity"),
 		ui.Muted.Render("peak "+ui.FormatBytes(peak)))
 
 	cadence := "1 backup"
@@ -484,7 +484,7 @@ func (d Dashboard) storageDetail() string {
 // Five content lines: a title and up to four tag rows.
 func (d Dashboard) renderTagsPanel(colW int) string {
 	textW := colW - contentPanelHPad
-	title := ui.Subtle.Render("tags")
+	title := ui.SectionTitle("tags")
 	tags := tagBreakdown(d.data.Snaps)
 
 	rows := make([]string, 4)
@@ -542,7 +542,7 @@ func (d Dashboard) renderRetentionPanel(colW int) string {
 	// to fit the ~24-cell interior at the 80-col minimum.
 	line := func(s string) string { return ui.Subtle.Render(truncateToWidth(s, textW)) }
 	body := strings.Join([]string{
-		spread(textW, ui.Subtle.Render("retention"), ui.Muted.Render(cadence)),
+		spread(textW, ui.SectionTitle("retention"), ui.Muted.Render(cadence)),
 		line(fmt.Sprintf("keep last %d · daily %d", ret.KeepLast, ret.KeepDaily)),
 		line(fmt.Sprintf("weekly %d · monthly %d", ret.KeepWeekly, ret.KeepMonthly)),
 		line(since),
@@ -630,7 +630,7 @@ func savingsFrac(total, uploaded int64) float64 {
 // what tag, file count, and how much data that snapshot actually pushed (its
 // NewBytes delta) — or an empty-state line when the repo has no snapshots.
 func (d Dashboard) renderLastPanel(colW int) string {
-	title := ui.Subtle.Render("last snapshot")
+	title := ui.SectionTitle("last snapshot")
 	if d.data.LastSnap == nil {
 		body := title + "\n" + ui.Muted.Render("no snapshots yet") + "\n\n\n"
 		return dashPanel(colW, body)

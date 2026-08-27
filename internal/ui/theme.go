@@ -7,7 +7,11 @@
 // degradation automatically.
 package ui
 
-import "github.com/charmbracelet/lipgloss"
+import (
+	"strings"
+
+	"github.com/charmbracelet/lipgloss"
+)
 
 // Palette — synthwave / outrun. Dark variants are saturated neons that glow
 // against a dark terminal (electric purple, hot magenta, laser cyan, a sunset
@@ -89,6 +93,17 @@ var (
 	rowSelected = lipgloss.NewStyle().Foreground(AccentPink).Bold(true)
 	rowPlain    = lipgloss.NewStyle().Foreground(FgSubtle)
 )
+
+// SectionTitle renders a panel/section heading so it reads as chrome, not
+// data: UPPERCASE in a bold accent. Uppercasing is the load-bearing half —
+// bold and color vanish under NO_COLOR, a pipe, and the Ascii profile the
+// tests run in; the capitals survive everywhere. Same rationale as
+// SelectRow's glyph marker below.
+func SectionTitle(label string) string {
+	return sectionTitleStyle.Render(strings.ToUpper(label))
+}
+
+var sectionTitleStyle = lipgloss.NewStyle().Foreground(AccentPink).Bold(true)
 
 // SelectRow renders one row of a selectable list: the "▍" marker plus the
 // accent color when selected, two spaces and the subtle color when not. Both

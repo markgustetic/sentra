@@ -437,8 +437,8 @@ func TestDashboard_ShowsAllSectionsWhenTall(t *testing.T) {
 
 	view := d.View()
 	for _, want := range []string{
-		"tags", "nightly", "weekly", // tags panel
-		"retention", "keep last", // retention panel
+		"TAGS", "nightly", "weekly", // tags panel
+		"RETENTION", "keep last", // retention panel
 		"created", "snap-newest", // snapshots table (header + a row)
 	} {
 		if !strings.Contains(view, want) {
@@ -561,5 +561,20 @@ func TestDashboard_PeriodicRefresh(t *testing.T) {
 	}
 	if d.data.RecCount != 5 {
 		t.Errorf("refresh must preserve RecCount: got %d, want 5", d.data.RecCount)
+	}
+}
+
+// Panel headings must read as chrome, not data: SectionTitle renders them
+// uppercase (the styling half — bold accent — vanishes under the Ascii
+// profile every test runs in, so the capitals are the testable, and
+// NO_COLOR-surviving, half of "more apparent").
+func TestDashboard_SectionTitlesAreUppercase(t *testing.T) {
+	d := NewDashboard(Deps{})
+	m, _ := d.Update(tea.WindowSizeMsg{Width: 100, Height: 40})
+	out := m.(Dashboard).View()
+	for _, want := range []string{"ACTIVITY", "TAGS", "RETENTION", "LAST SNAPSHOT"} {
+		if !strings.Contains(out, want) {
+			t.Errorf("dashboard missing uppercase section title %q:\n%s", want, out)
+		}
 	}
 }
