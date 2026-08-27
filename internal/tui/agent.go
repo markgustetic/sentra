@@ -874,7 +874,7 @@ func (a AgentView) viewApplyDone() string {
 	var b strings.Builder
 	if a.result.err != nil {
 		b.WriteString(ui.Danger.Render("Apply failed"))
-		fmt.Fprintf(&b, "\n\n%s", a.result.err.Error())
+		fmt.Fprintf(&b, "\n\n%s", humanizeErr(a.result.err))
 	} else {
 		b.WriteString(ui.Success.Render("Apply complete"))
 		b.WriteString("\n\n")

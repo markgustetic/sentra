@@ -199,7 +199,7 @@ func (v ConnectView) View() string {
 		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("waiting for aws sso login…"))
 	default:
 		if v.openErr != nil {
-			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.openErr.Error()))
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.openErr))
 		}
 		if v.authErr != nil {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render("login failed: "+v.authErr.Error()))

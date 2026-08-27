@@ -138,7 +138,7 @@ func (v CheckView) View() string {
 
 func (v CheckView) renderReport() string {
 	if v.result.err != nil {
-		return ui.Danger.Render("Check failed") + "\n\n" + v.result.err.Error()
+		return ui.Danger.Render("Check failed") + "\n\n" + humanizeErr(v.result.err)
 	}
 	rep := v.result.report
 	var b strings.Builder

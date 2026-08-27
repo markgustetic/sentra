@@ -357,7 +357,7 @@ func (v RestoreView) View() string {
 	default:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Restore failed"))
-			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
 		} else {
 			b.WriteString(ui.Success.Render("Restore complete"))
 			if v.result.verification != nil {

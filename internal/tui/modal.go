@@ -60,7 +60,7 @@ func (m ErrorModal) View() string {
 	var b strings.Builder
 	b.WriteString(ui.Danger.Bold(true).Render("Error"))
 	b.WriteString("\n\n")
-	b.WriteString(m.err.Error())
+	b.WriteString(humanizeErr(m.err))
 	if m.advice != "" {
 		b.WriteString("\n\n")
 		b.WriteString(ui.Subtle.Render(m.advice))

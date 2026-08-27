@@ -366,7 +366,7 @@ func (v BackupView) View() string {
 	case backupDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Backup failed"))
-			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
 		} else {
 			b.WriteString(ui.Success.Render("Backup complete"))
 			info := v.result.info

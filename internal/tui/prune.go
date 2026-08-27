@@ -196,7 +196,7 @@ func (v PruneView) View() string {
 	case pruneDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Prune failed"))
-			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
 		} else {
 			b.WriteString(ui.Success.Render("Prune complete"))
 			fmt.Fprintf(&b, "\n\n  deleted snapshots  %d\n  reclaimed blobs    %d\n  reclaimed bytes    %s\n  live blobs         %d",

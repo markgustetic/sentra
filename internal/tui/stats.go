@@ -108,7 +108,7 @@ func (v StatsView) View() string {
 
 func (v StatsView) renderReport() string {
 	if v.result.err != nil {
-		return ui.Danger.Render("Stats failed") + "\n\n" + v.result.err.Error()
+		return ui.Danger.Render("Stats failed") + "\n\n" + humanizeErr(v.result.err)
 	}
 	rep := v.result.report
 	var b strings.Builder

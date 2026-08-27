@@ -606,7 +606,7 @@ func (v PoliciesView) View() string {
 		var b strings.Builder
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Policy run failed"))
-			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
 		} else {
 			b.WriteString(ui.Success.Render("Policy run complete"))
 			fmt.Fprintf(&b, "\n\n  policy     %s\n  snapshots  %d", v.result.name, v.result.snapshots)

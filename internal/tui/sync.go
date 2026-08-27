@@ -359,7 +359,7 @@ func (v SyncView) View() string {
 	case syncDone:
 		if v.result.err != nil {
 			b.WriteString(ui.Danger.Render("Sync failed"))
-			fmt.Fprintf(&b, "\n\n%s", v.result.err.Error())
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
 		} else {
 			s := v.result.stats
 			if s.DryRun {
