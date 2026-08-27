@@ -214,12 +214,15 @@ the unlock gate instead.
 
 Configured but unreachable — the config loads and a passphrase source
 answers, but the repository fails to open (expired AWS credentials,
-unreachable bucket) — lands on the **connect gate**: it shows the open
-error and offers `r` retry and, for AWS-proper backends only (no
-`endpoint_url`), `l` to run `aws sso login` (with `--profile` when the
-config names one) via a suspended terminal, auto-retrying on return. A
-successful open swaps the live repo in and lands on the dashboard.
-Config-load errors still exit to the CLI. The login never auto-runs.
+unreachable bucket) — lands on the **connect gate**: it explains the open
+error in plain words when the cause is known (`diag.Explain`; the raw
+chain stays below, muted) and offers its actions as a glyph-selected menu
+(`↑`/`↓` + enter) with matching hotkeys: `r` retry and, for AWS-proper
+backends only (no `endpoint_url`), `l` to run `aws sso login` (with
+`--profile` when the config names one) via a suspended terminal,
+auto-retrying on return, plus `q` quit. A successful open swaps the live
+repo in and lands on the dashboard. Config-load errors still exit to the
+CLI. The login never auto-runs.
 
 Exceptions: `sentra init` writes `./sentra.yaml` only (scripting /
 recovery surface; never reaches outside cwd). `sentra local` always uses

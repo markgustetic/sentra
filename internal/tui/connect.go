@@ -51,7 +51,40 @@ type ConnectView struct {
 	stage   connectStage
 	openErr error // the launch failure, then each retry's failure
 	authErr error // the login child's failure, if any
+	cursor  int   // selected row of the idle menu
 	width   int
+}
+
+// connectMenuAction identifies one selectable row of the idle menu. The
+// rows mirror the r/l/q hotkeys exactly — arrows+enter and the hotkeys are
+// two affordances for the same three actions, never separate feature sets.
+type connectMenuAction int
+
+const (
+	connectMenuRetry connectMenuAction = iota
+	connectMenuLogin
+	connectMenuQuit
+)
+
+// menu returns the idle rows in render order. Login appears only when
+// canSSO does — the menu must never offer an action the hotkey forbids.
+func (v ConnectView) menu() []connectMenuAction {
+	if v.canSSO() {
+		return []connectMenuAction{connectMenuRetry, connectMenuLogin, connectMenuQuit}
+	}
+	return []connectMenuAction{connectMenuRetry, connectMenuQuit}
+}
+
+// selectAction parks the cursor on the given action's row, so a hotkey
+// press leaves the marker on the action it ran — after a failed attempt
+// returns to idle, the menu shows what was last tried.
+func (v *ConnectView) selectAction(a connectMenuAction) {
+	for i, row := range v.menu() {
+		if row == a {
+			v.cursor = i
+			return
+		}
+	}
 }
 
 // NewConnectView seeds the gate with the launch's open error.
@@ -132,10 +165,26 @@ func (v ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage != connectIdle {
 			return v, nil // one in-flight action at a time
 		}
+		switch msg.Type {
+		case tea.KeyUp:
+			if v.cursor > 0 {
+				v.cursor--
+			}
+			return v, nil
+		case tea.KeyDown:
+			if v.cursor < len(v.menu())-1 {
+				v.cursor++
+			}
+			return v, nil
+		case tea.KeyEnter:
+			return v.activate(v.menu()[v.cursor])
+		}
 		switch msg.String() {
 		case "r":
+			v.selectAction(connectMenuRetry)
 			return v.startOpen()
 		case "l":
+			v.selectAction(connectMenuLogin)
 			return v.startAuth()
 		case "q":
 			// Startup gates bypass the shell's global quit binding; this view
@@ -146,6 +195,19 @@ func (v ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 	}
 	return v, nil
+}
+
+// activate runs the menu row enter landed on — the same handlers the
+// hotkeys call, so the two affordances can never drift apart.
+func (v ConnectView) activate(a connectMenuAction) (tea.Model, tea.Cmd) {
+	switch a {
+	case connectMenuRetry:
+		return v.startOpen()
+	case connectMenuLogin:
+		return v.startAuth()
+	default:
+		return v, tea.Quit
+	}
 }
 
 // startOpen runs the injected retry closure in a returned cmd. The
@@ -204,11 +266,20 @@ func (v ConnectView) View() string {
 		if v.authErr != nil {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render("login failed: "+v.authErr.Error()))
 		}
-		fmt.Fprintf(&b, "\n\n%s", "r  retry the connection")
-		if v.canSSO() {
-			fmt.Fprintf(&b, "\n%s  %s", "l  reauthenticate:", ui.Muted.Render(v.loginLabel()))
+		b.WriteString("\n")
+		for i, a := range v.menu() {
+			selected := i == v.cursor
+			switch a {
+			case connectMenuRetry:
+				fmt.Fprintf(&b, "\n%s", ui.SelectRow(selected, "r  retry the connection"))
+			case connectMenuLogin:
+				fmt.Fprintf(&b, "\n%s  %s", ui.SelectRow(selected, "l  reauthenticate"),
+					ui.Muted.Render(v.loginLabel()))
+			case connectMenuQuit:
+				fmt.Fprintf(&b, "\n%s", ui.SelectRow(selected, "q  quit"))
+			}
 		}
-		fmt.Fprintf(&b, "\n%s", ui.Muted.Render("q quits"))
+		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("↑/↓ select · ⏎ run"))
 	}
 	return b.String()
 }

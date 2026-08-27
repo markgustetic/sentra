@@ -187,3 +187,117 @@ func TestConnect_QQuitsFromIdle(t *testing.T) {
 	}
 	_ = m
 }
+
+// lineSelected reports whether the view line containing substr carries the
+// selection glyph. SelectRow's "▍" marker is the only affordance visible
+// under the Ascii profile (selection is a glyph, not a color), so this is
+// how selection stays testable.
+func lineSelected(view, substr string) bool {
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, substr) {
+			return strings.HasPrefix(line, "▍")
+		}
+	}
+	return false
+}
+
+// The idle options are a selectable menu: ↑/↓ move the marker, bounded at
+// both ends, starting on retry.
+func TestConnect_ArrowsMoveMenuSelection(t *testing.T) {
+	v := NewConnectView(connectDeps(nil)) // AWS-proper: retry, login, quit
+	if view := v.View(); !lineSelected(view, "r  retry") {
+		t.Fatalf("first frame must select the retry row:\n%s", view)
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyUp})
+	if view := m.(ConnectView).View(); !lineSelected(view, "r  retry") {
+		t.Fatalf("up at the top must stay on retry:\n%s", view)
+	}
+	m, _ = m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyDown})
+	if view := m.(ConnectView).View(); !lineSelected(view, "l  reauthenticate") {
+		t.Fatalf("down must select the reauthenticate row:\n%s", view)
+	}
+	m, _ = m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyDown})
+	if view := m.(ConnectView).View(); !lineSelected(view, "q  quit") {
+		t.Fatalf("down again must select the quit row:\n%s", view)
+	}
+	m, _ = m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyDown})
+	if view := m.(ConnectView).View(); !lineSelected(view, "q  quit") {
+		t.Fatalf("down at the bottom must stay on quit:\n%s", view)
+	}
+}
+
+// Enter runs the selected row — the same actions the r/l/q hotkeys perform.
+func TestConnect_EnterActivatesSelectedRow(t *testing.T) {
+	opened := false
+	deps := connectDeps(func(context.Context) (*repo.Repo, *config.Config, error) {
+		opened = true
+		return nil, nil, errors.New("still failing")
+	})
+
+	// Row 0: retry.
+	v := NewConnectView(deps)
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.(ConnectView).stage != connectOpening || cmd == nil {
+		t.Fatal("enter on retry did not start an open attempt")
+	}
+	_ = cmd()
+	if !opened {
+		t.Fatal("enter on retry did not invoke OpenRepo")
+	}
+
+	// Row 1: reauthenticate (do not run the cmd — it would exec aws).
+	v = NewConnectView(deps)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, cmd = m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if m.(ConnectView).stage != connectAuthing || cmd == nil {
+		t.Fatal("enter on reauthenticate did not hand off to aws login")
+	}
+
+	// Row 2: quit.
+	v = NewConnectView(deps)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd = m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on quit produced no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("enter on quit returned %T, expected tea.QuitMsg", cmd())
+	}
+}
+
+// Endpoint backends have no login row, so ↓ from retry lands on quit and
+// enter there quits — the menu must never offer an action canSSO forbids.
+func TestConnect_MenuSkipsLoginForEndpointBackends(t *testing.T) {
+	deps := connectDeps(nil)
+	deps.Config.Repo.S3.EndpointURL = "http://127.0.0.1:9000"
+	v := NewConnectView(deps)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+	if view := m.(ConnectView).View(); !lineSelected(view, "q  quit") {
+		t.Fatalf("down must land on quit when login is hidden:\n%s", view)
+	}
+	_, cmd := m.(ConnectView).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter on quit produced no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("enter on quit returned %T, expected tea.QuitMsg", cmd())
+	}
+}
+
+// Shell-level: in the connect startup gate every key routes to the gate
+// view, and only an App test can prove that routing (a view cannot test the
+// shell). With no config the menu is retry/quit: ↓ then enter must quit.
+func TestApp_ConnectGateArrowEnterRouting(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", InitialView: "connect",
+		ConnectError: errors.New("boom")})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, _ := sized.(App).Update(tea.KeyMsg{Type: tea.KeyDown})
+	_, cmd := m.(App).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter in the connect gate produced no command")
+	}
+	if _, ok := cmd().(tea.QuitMsg); !ok {
+		t.Fatalf("down+enter should quit via the gate menu, got %T", cmd())
+	}
+}
