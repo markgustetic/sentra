@@ -69,6 +69,18 @@ type BackupView struct {
 	// runes on this stage.
 	rescan bool
 
+	// repeat arms a standing schedule for the chosen directory: "" is a
+	// one-shot backup, otherwise a policy cadence (daily/weekly/monthly).
+	// ctrl+e cycles it — a chord for the same reason as rescan. On
+	// confirm, the flow writes a named policy into sentra.yaml and
+	// installs the OS scheduler entry BEFORE starting the backup.
+	repeat string
+
+	// schedGOOS/schedHome/schedExe are test seams for the scheduler
+	// install; empty means the production defaults (runtime.GOOS, the
+	// real home, os.Executable).
+	schedGOOS, schedHome, schedExe string
+
 	reporter *opReporter
 	bar      progress.Model
 	result   backupDoneMsg
@@ -180,6 +192,15 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.id != backupConfirmID || v.stage != backupConfigure {
 			return v, nil
 		}
+		if v.repeat != "" {
+			// Install first, run second: a failed install must block the
+			// backup — the operator confirmed a REPEATING backup, and
+			// silently degrading to a one-shot would betray that.
+			if err := v.installRepeat(v.pending); err != nil {
+				v.pathErr = "could not install the schedule: " + err.Error()
+				return v, nil
+			}
+		}
 		return v.startBackup(v.pending)
 
 	case tea.KeyMsg:
@@ -214,6 +235,10 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 		if msg.Type == tea.KeyCtrlR {
 			v.rescan = !v.rescan
+			return v, nil
+		}
+		if msg.Type == tea.KeyCtrlE {
+			v.repeat = nextRepeat(v.repeat)
 			return v, nil
 		}
 		if msg.Type == tea.KeyTab {
@@ -292,6 +317,10 @@ func (v BackupView) requestBackup(root string) (tea.Model, tea.Cmd) {
 		body += "\n\ntag: " + tag
 	} else {
 		body += "\n\nno tag"
+	}
+	if v.repeat != "" {
+		body += fmt.Sprintf("\n\nrepeats %s — installs policy %q and an OS schedule",
+			v.repeat, repeatPolicyName(filepath.Base(root)))
 	}
 	modal := NewConfirmModal("Confirm backup", body, backupConfirmID, v.width, v.height)
 	return v, func() tea.Msg { return pushModalMsg{modal: modal} }
@@ -387,6 +416,11 @@ func (v BackupView) View() string {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  rescan armed — every file will be re-read (ctrl+r to disarm)"))
 		} else {
 			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("  incremental scan on (ctrl+r to force a full rescan)"))
+		}
+		if v.repeat != "" {
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  repeats "+v.repeat+" — confirming installs a schedule (ctrl+e cycles)"))
+		} else {
+			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("  one-shot backup (ctrl+e to repeat daily/weekly/monthly)"))
 		}
 		if v.pathErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.pathErr))
