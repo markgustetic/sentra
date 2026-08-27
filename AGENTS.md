@@ -216,11 +216,15 @@ Configured but unreachable — the config loads and a passphrase source
 answers, but the repository fails to open (expired AWS credentials,
 unreachable bucket) — lands on the **connect gate**: it explains the open
 error in plain words when the cause is known (`diag.Explain`; the raw
-chain stays below, muted) and offers its actions as a glyph-selected menu
+chain renders only for unrecognized causes — the CLI stays verbatim for
+detail) and offers its actions as a glyph-selected menu
 (`↑`/`↓` + enter) with matching hotkeys: `r` retry and, for AWS-proper
-backends only (no `endpoint_url`), `l` to run `aws sso login` (with
-`--profile` when the config names one) via a suspended terminal,
-auto-retrying on return, plus `q` quit. A successful open swaps the live
+backends only (no `endpoint_url`), `l` to run the profile's reauth
+command via a suspended terminal — `aws sso login` when the AWS CLI
+config shows an SSO-configured profile, the browser `aws login` flow
+otherwise (`--region`/`--profile` from config; the child's stderr is
+captured and shown on failure, since the alt-screen restore erases the
+scrollback) — auto-retrying on return, plus `q` quit. A successful open swaps the live
 repo in and lands on the dashboard. Config-load errors still exit to the
 CLI. The login never auto-runs.
 

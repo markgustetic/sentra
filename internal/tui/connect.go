@@ -1,8 +1,13 @@
 package tui
 
 import (
+	"bytes"
+	"context"
 	"errors"
 	"fmt"
+	"io"
+	"os"
+	"os/exec"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
@@ -20,7 +25,7 @@ type connectStage int
 const (
 	connectIdle    connectStage = iota // showing the error, awaiting r/l/q
 	connectOpening                     // OpenRepo running in a returned cmd
-	connectAuthing                     // aws sso login owns the terminal
+	connectAuthing                     // the aws login child owns the terminal
 )
 
 // connectResultMsg carries an open attempt's outcome back into the view.
@@ -32,7 +37,7 @@ type connectResultMsg struct {
 	err    error
 }
 
-// connectAuthDoneMsg carries the `aws sso login` child's exit status.
+// connectAuthDoneMsg carries the aws login child's exit status.
 // Deliberately distinct from the wizard's awsAuthDoneMsg — separate views
 // must not share private message types, or one view's ExecProcess wakes
 // the other.
@@ -43,16 +48,18 @@ type connectAuthDoneMsg struct{ err error }
 // repository failed (expired AWS credentials, unreachable bucket, network
 // down). The other launch states already live in the TUI (first-run →
 // wizard, locked → unlock); this one shows the failure and puts the fix —
-// rerunning `aws sso login` — one keypress away, instead of exiting to a
-// dead CLI error. On a successful retry it hands the live repo to the App
+// rerunning the profile's aws login command — one keypress away, instead
+// of exiting to a dead CLI error. On a successful retry it hands the live repo to the App
 // via repoReadyMsg, exactly like unlock.
 type ConnectView struct {
-	deps    Deps
-	stage   connectStage
-	openErr error // the launch failure, then each retry's failure
-	authErr error // the login child's failure, if any
-	cursor  int   // selected row of the idle menu
-	width   int
+	deps       Deps
+	stage      connectStage
+	openErr    error         // the launch failure, then each retry's failure
+	authErr    error         // the login child's failure, if any
+	authOut    *bytes.Buffer // the login child's captured stderr, if any
+	authMethod setup.AWSAuthMethod
+	cursor     int // selected row of the idle menu
+	width      int
 }
 
 // connectMenuAction identifies one selectable row of the idle menu. The
@@ -67,9 +74,9 @@ const (
 )
 
 // menu returns the idle rows in render order. Login appears only when
-// canSSO does — the menu must never offer an action the hotkey forbids.
+// canReauth does — the menu must never offer an action the hotkey forbids.
 func (v ConnectView) menu() []connectMenuAction {
-	if v.canSSO() {
+	if v.canReauth() {
 		return []connectMenuAction{connectMenuRetry, connectMenuLogin, connectMenuQuit}
 	}
 	return []connectMenuAction{connectMenuRetry, connectMenuQuit}
@@ -87,33 +94,76 @@ func (v *ConnectView) selectAction(a connectMenuAction) {
 	}
 }
 
-// NewConnectView seeds the gate with the launch's open error.
+// NewConnectView seeds the gate with the launch's open error and resolves
+// which reauth command fits the profile. `aws sso login` against a
+// login_session profile fails instantly — and unreadably, since the
+// terminal flips back before the error can be read — so the method is
+// chosen from what the AWS CLI config actually says: SSO-configured
+// profiles get `aws sso login`, everything else the browser `aws login`
+// flow (a probe error included: login is the command that can establish a
+// session from nothing). With no effects to probe through, SSO stands, as
+// it always did.
 func NewConnectView(deps Deps) ConnectView {
-	return ConnectView{deps: deps, openErr: deps.ConnectError}
+	v := ConnectView{deps: deps, openErr: deps.ConnectError,
+		authMethod: setup.AWSAuthSSO}
+	if deps.SetupEffects != nil && deps.Config != nil {
+		profile := strings.TrimSpace(deps.Config.Repo.S3.Profile)
+		sso, err := deps.SetupEffects.CheckAWSSSOConfigured(
+			ctxOrBackground(deps.Ctx), profile)
+		if err != nil || !sso {
+			v.authMethod = setup.AWSAuthLogin
+		}
+	}
+	return v
 }
 
 func (ConnectView) Init() tea.Cmd { return nil }
 
 func (v ConnectView) Title() string { return "Connect" }
 
-// canSSO reports whether the login affordance applies: AWS proper only.
-// An S3-compatible endpoint (MinIO, R2, Wasabi) authenticates with static
-// keys — `aws sso login` cannot fix it, so the hint would only mislead.
-func (v ConnectView) canSSO() bool {
+// canReauth reports whether the login affordance applies: AWS proper
+// only. An S3-compatible endpoint (MinIO, R2, Wasabi) authenticates with
+// static keys — no aws login flow can fix it, so the hint would only
+// mislead.
+func (v ConnectView) canReauth() bool {
 	return v.deps.Config != nil && v.deps.Config.Repo.S3.EndpointURL == ""
 }
 
 // loginLabel is the exact command l will run, shown before it is pressed:
 // an operator should never trigger a subprocess they haven't seen named.
+// It is derived from the same argv the keypress executes, so the label and
+// the command can never drift apart.
 func (v ConnectView) loginLabel() string {
-	profile := ""
-	if v.deps.Config != nil {
-		profile = strings.TrimSpace(v.deps.Config.Repo.S3.Profile)
+	c, _ := newAuthCmd(context.Background(), v.authMethod,
+		v.authProfile(), v.authRegion())
+	return strings.Join(c.Args, " ")
+}
+
+func (v ConnectView) authProfile() string {
+	if v.deps.Config == nil {
+		return ""
 	}
-	if profile == "" {
-		return "aws sso login"
+	return strings.TrimSpace(v.deps.Config.Repo.S3.Profile)
+}
+
+func (v ConnectView) authRegion() string {
+	if v.deps.Config == nil {
+		return ""
 	}
-	return "aws sso login --profile " + profile
+	return strings.TrimSpace(v.deps.Config.Repo.S3.Region)
+}
+
+// newAuthCmd builds the interactive reauth child with its stderr teed into
+// a capture buffer. The stream is pre-set deliberately: tea.ExecProcess
+// only fills nil streams, so the tee survives it — the operator still sees
+// live output on the terminal, and after the alt-screen restore erases the
+// scrollback, the gate can show what the child printed. Stdout/stdin stay
+// nil (the real TTY): the AWS CLI's browser flows check tty-ness there.
+func newAuthCmd(ctx context.Context, method setup.AWSAuthMethod, profile, region string) (*exec.Cmd, *bytes.Buffer) {
+	c := interactiveAWSAuthCommand(ctx, nil, method, profile, region)
+	buf := &bytes.Buffer{}
+	c.Stderr = io.MultiWriter(os.Stderr, buf)
+	return c, buf
 }
 
 func (v ConnectView) ShortHelp() []key.Binding {
@@ -123,7 +173,7 @@ func (v ConnectView) ShortHelp() []key.Binding {
 	bindings := []key.Binding{
 		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "retry")),
 	}
-	if v.canSSO() {
+	if v.canReauth() {
 		bindings = append(bindings,
 			key.NewBinding(key.WithKeys("l"), key.WithHelp("l", "log in")))
 	}
@@ -151,7 +201,9 @@ func (v ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if msg.err != nil {
 			// The child failed (aws missing, login declined): show ITS
 			// error and idle — retrying the open would just repeat the
-			// credential failure the operator hasn't fixed yet.
+			// credential failure the operator hasn't fixed yet. authOut
+			// stays: the captured stderr is the only readable copy of
+			// what the child printed before the alt-screen restore.
 			v.stage = connectIdle
 			v.authErr = msg.err
 			return v, nil
@@ -159,6 +211,7 @@ func (v ConnectView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// Fresh credentials: retry without demanding another keypress.
 		v.stage = connectIdle
 		v.authErr = nil
+		v.authOut = nil
 		return v.startOpen()
 
 	case tea.KeyMsg:
@@ -228,22 +281,18 @@ func (v ConnectView) startOpen() (tea.Model, tea.Cmd) {
 	}
 }
 
-// startAuth suspends the program and hands the terminal to
-// `aws sso login`, reusing the wizard's argv builder: fixed binary,
-// config-sourced profile/region, no shell. Completion returns as this
-// view's own connectAuthDoneMsg.
+// startAuth suspends the program and hands the terminal to the resolved
+// reauth command (`aws login` or `aws sso login`), reusing the wizard's
+// argv builder: fixed binary, config-sourced profile/region, no shell.
+// Completion returns as this view's own connectAuthDoneMsg.
 func (v ConnectView) startAuth() (tea.Model, tea.Cmd) {
-	if !v.canSSO() {
+	if !v.canReauth() {
 		return v, nil
 	}
 	v.stage = connectAuthing
-	profile, region := "", ""
-	if v.deps.Config != nil {
-		profile = v.deps.Config.Repo.S3.Profile
-		region = v.deps.Config.Repo.S3.Region
-	}
-	c := interactiveAWSAuthCommand(ctxOrBackground(v.deps.Ctx),
-		v.deps.SetupEffects, setup.AWSAuthSSO, profile, region)
+	c, buf := newAuthCmd(ctxOrBackground(v.deps.Ctx), v.authMethod,
+		v.authProfile(), v.authRegion())
+	v.authOut = buf
 	return v, tea.ExecProcess(c, func(err error) tea.Msg {
 		return connectAuthDoneMsg{err: err}
 	})
@@ -265,6 +314,11 @@ func (v ConnectView) View() string {
 		}
 		if v.authErr != nil {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render("login failed: "+v.authErr.Error()))
+			if v.authOut != nil {
+				if out := strings.TrimSpace(v.authOut.String()); out != "" {
+					fmt.Fprintf(&b, "\n%s", ui.Muted.Render(out))
+				}
+			}
 		}
 		b.WriteString("\n")
 		for i, a := range v.menu() {

@@ -1,8 +1,10 @@
 package tui
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"fmt"
 	"strings"
 	"testing"
 
@@ -11,6 +13,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/setup"
 )
 
 // connectDeps builds Deps for the gate: an AWS-proper config (no endpoint,
@@ -299,5 +302,84 @@ func TestApp_ConnectGateArrowEnterRouting(t *testing.T) {
 	}
 	if _, ok := cmd().(tea.QuitMsg); !ok {
 		t.Fatalf("down+enter should quit via the gate menu, got %T", cmd())
+	}
+}
+
+// connectStubEffects overrides just the SSO-configured probe: the connect
+// gate must pick its reauth command from what the profile actually is.
+type connectStubEffects struct {
+	stubEffects
+	sso    bool
+	ssoErr error
+}
+
+func (s connectStubEffects) CheckAWSSSOConfigured(context.Context, string) (bool, error) {
+	return s.sso, s.ssoErr
+}
+
+// The reauth command must match the profile's auth method: an SSO-configured
+// profile gets `aws sso login`, anything else gets the browser `aws login`
+// flow — running sso login against a login_session profile fails instantly
+// and unreadably (the terminal flips back before the error can be read).
+func TestConnect_ReauthCommandMatchesProfileMethod(t *testing.T) {
+	tests := []struct {
+		name string
+		eff  setup.Effects
+		want string
+	}{
+		{name: "sso profile", eff: connectStubEffects{sso: true},
+			want: "aws sso login --profile sentra"},
+		{name: "login-session profile", eff: connectStubEffects{sso: false},
+			want: "aws login --region us-east-1 --profile sentra"},
+		{name: "probe error falls back to login", eff: connectStubEffects{ssoErr: errors.New("no aws config")},
+			want: "aws login --region us-east-1 --profile sentra"},
+		{name: "nil effects keep sso", eff: nil,
+			want: "aws sso login --profile sentra"},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			deps := connectDeps(nil)
+			deps.Config.Repo.S3.Region = "us-east-1"
+			deps.SetupEffects = tt.eff
+			v := NewConnectView(deps)
+			if got := v.loginLabel(); got != tt.want {
+				t.Errorf("loginLabel = %q, want %q", got, tt.want)
+			}
+			if view := v.View(); !strings.Contains(view, tt.want) {
+				t.Errorf("view does not name the exact command %q:\n%s", tt.want, view)
+			}
+		})
+	}
+}
+
+// The auth child's stderr is captured (while still reaching the terminal):
+// after the screen flips back, the gate must show what the child printed —
+// the operator cannot read it before the alt-screen restore erases it.
+func TestConnect_AuthFailureShowsCapturedOutput(t *testing.T) {
+	v := NewConnectView(connectDeps(nil))
+	v.stage = connectAuthing
+	v.authOut = bytes.NewBufferString("Error loading SSO Token: profile sentra is not configured\n")
+	m, _ := v.Update(connectAuthDoneMsg{err: errors.New("exit status 252")})
+	view := m.(ConnectView).View()
+	if !strings.Contains(view, "exit status 252") {
+		t.Errorf("view missing the child's exit error:\n%s", view)
+	}
+	if !strings.Contains(view, "profile sentra is not configured") {
+		t.Errorf("view missing the child's captured stderr:\n%s", view)
+	}
+}
+
+// newAuthCmd wires the child's stderr through a capture buffer WITHOUT
+// replacing the terminal stream — bubbletea only fills nil streams, so the
+// pre-set writer survives ExecProcess and the operator still sees live
+// output.
+func TestNewAuthCmd_CapturesStderr(t *testing.T) {
+	cmd, buf := newAuthCmd(context.Background(), setup.AWSAuthLogin, "p", "r")
+	if cmd.Stderr == nil {
+		t.Fatal("auth cmd must pre-set Stderr so ExecProcess cannot replace it")
+	}
+	fmt.Fprint(cmd.Stderr, "hello from the child")
+	if !strings.Contains(buf.String(), "hello from the child") {
+		t.Fatal("stderr writes must land in the capture buffer")
 	}
 }
