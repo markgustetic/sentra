@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
+	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -24,6 +25,11 @@ import (
 // unit tests don't need a real terminal.
 type UIDeps struct {
 	RepoDeps
+
+	// ProviderForConfig builds the LLM provider behind the TUI's chat
+	// overlay from the loaded config. May be nil — the overlay then
+	// renders a configure hint; nothing else needs it.
+	ProviderForConfig func(cfg *config.Config) llm.Provider
 
 	// Run is the actual TUI launcher. Production wires it to a
 	// closure that constructs and runs a tea.Program; tests inject
@@ -185,6 +191,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		repoName := launchCfg.Repo.S3.Bucket
 		app := tui.NewApp(tui.Deps{
 			RepoName:                repoName,
+			Provider:                providerFor(deps, launchCfg),
 			Config:                  launchCfg,
 			Ctx:                     cmd.Context(),
 			ConfigPath:              absCfgPath,
@@ -231,6 +238,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 	app := tui.NewApp(tui.Deps{
 		Repo:     r,
 		RepoName: repoName,
+		Provider: providerFor(deps, cfg),
 		Config:   cfg,
 		// Pass the cobra command's context so:
 		//   1. Signals (Ctrl+C wired by cobra) cancel TUI work.
@@ -260,6 +268,15 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 	return deps.Run(app)
 }
 
+// providerFor resolves the chat overlay's LLM provider for a launch
+// config; nil when unconfigured (the overlay shows its hint).
+func providerFor(deps UIDeps, cfg *config.Config) llm.Provider {
+	if deps.ProviderForConfig == nil {
+		return nil
+	}
+	return deps.ProviderForConfig(cfg)
+}
+
 // launchConnectGate builds the App for the connect gate: no repo, the
 // open failure for the gate to render, and a retry closure that re-runs
 // the launch open end-to-end. The closure re-resolves the passphrase
@@ -276,6 +293,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath string, st launchState, showSplash bool, passphraseFile string, openErr error) error {
 	app := tui.NewApp(tui.Deps{
 		RepoName:                st.Config.Repo.S3.Bucket,
+		Provider:                providerFor(deps, st.Config),
 		Config:                  st.Config,
 		Ctx:                     cmd.Context(),
 		ConfigPath:              absCfgPath,

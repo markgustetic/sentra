@@ -185,6 +185,18 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case chatBackupMsg:
+		// The chat overlay's start_backup intent: seed the tag and raise
+		// the SAME confirm modal a hand-driven backup gets. Ignored
+		// mid-flow — a running backup is not interrupted by chat.
+		if v.stage != backupConfigure {
+			return v, nil
+		}
+		if msg.tag != "" {
+			v.tag.SetValue(msg.tag)
+		}
+		return v.requestBackup(msg.dir)
+
 	case confirmedMsg:
 		// The confirmation gate was accepted (the App pops the modal and
 		// broadcasts this). Ignore a foreign id, or one that arrives when we

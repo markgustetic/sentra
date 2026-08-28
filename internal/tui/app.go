@@ -24,6 +24,7 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -42,6 +43,11 @@ type Deps struct {
 	// Repo is the opened repository. Sub-models read snapshot lists,
 	// manifests, and diff results from it. May be nil for tests.
 	Repo *repo.Repo
+
+	// Provider is the LLM behind the chat overlay (ctrl+a). May be nil
+	// — the overlay then renders a configure hint and stays inert;
+	// everything else in the TUI works without it.
+	Provider llm.Provider
 
 	// RepoName is the human-readable name shown in the top bar. We
 	// pass it explicitly rather than reading from the repo's config
@@ -206,7 +212,11 @@ type App struct {
 	status  StatusBar
 
 	paletteOpen bool
-	modals      []Modal
+	// chat is the conversational command palette; chatOpen mirrors
+	// paletteOpen (the two overlays are mutually exclusive).
+	chat     ChatOverlay
+	chatOpen bool
+	modals   []Modal
 
 	// splashActive is true while the launch splash covers the frame. It is
 	// seeded from Deps.ShowSplash and cleared by the tick or any keystroke.
@@ -274,7 +284,7 @@ func NewApp(deps Deps) App {
 	// construction (dashboard, snapshots, diff, restore, prune) — five separate
 	// ListSnapshots at launch collapse into one. Bounded so a slow store can't
 	// stall startup; each view still falls back gracefully on error.
-	if deps.Repo != nil {
+	if deps.Repo != nil && deps.preload == nil {
 		loadCtx, loadCancel := context.WithTimeout(ctx, 20*time.Second)
 		var pre snapshotPreload
 		pre.snaps, pre.err = deps.Repo.ListSnapshots(loadCtx)
@@ -389,6 +399,7 @@ func NewApp(deps Deps) App {
 		hidden:       hiddenFromRail,
 		sidebar:      sidebar,
 		palette:      NewPalette(registry, minWidth, minHeight),
+		chat:         NewChatOverlay(deps),
 		status:       NewStatusBar(keys, minWidth),
 		ctx:          ctx,
 		cancel:       cancel,
@@ -588,7 +599,26 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
+	case chatEventMsg:
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+
+	case chatBackupMsg:
+		// A chat intent lands in the Backup view's normal confirm path;
+		// the overlay closes so the operator sees the gate it raised.
+		m.chatOpen = false
+		var cmd tea.Cmd
+		for i := range m.views {
+			if m.views[i].id == "backup" {
+				m.views[i].model, cmd = m.views[i].model.Update(msg)
+			}
+		}
+		m2, cmd2 := m.Update(activateMsg{id: "backup"})
+		return m2, tea.Batch(cmd, cmd2)
+
 	case launchRestoreMsg:
+		m.chatOpen = false
 		// Snapshot-first launch: seed the hidden restore view with the
 		// chosen snapshot, then activate it — one keypress in Snapshots
 		// lands inside the flow, picker already answered.
@@ -609,6 +639,7 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case activateMsg:
 		m.paletteOpen = false
+		m.chatOpen = false
 		for i, v := range m.views {
 			if v.id != msg.id {
 				continue
@@ -892,6 +923,27 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// The chat overlay mirrors the palette: while open it owns the keyboard
+	// ahead of any view. esc cancels a streaming turn first, then closes.
+	if m.chatOpen {
+		if msg.Type == tea.KeyEsc {
+			if m.chat.busy {
+				m.chat = m.chat.Cancel()
+				return m, nil
+			}
+			m.chatOpen = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+	}
+	if !m.inStartupGate() && msg.Type == tea.KeyCtrlA {
+		m.chatOpen = true
+		m.paletteOpen = false
+		return m, nil
+	}
+
 	// The palette is an overlay: while open it owns the keyboard ahead of any
 	// view, including one capturing text. It therefore sits ABOVE the
 	// text-capture branch — below it, a palette opened over a text field could
@@ -1131,6 +1183,7 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	m.contentW, m.contentH = contentW, contentH
 	m.sidebar.SetSize(sidebarWidth, contentH)
 	m.palette.SetSize(msg.Width, msg.Height)
+	m.chat = m.chat.SetSize(msg.Width, msg.Height)
 	m.status.SetWidth(msg.Width)
 	for i := range m.modals {
 		m.modals[i] = m.modals[i].SetSize(msg.Width, msg.Height)
@@ -1196,6 +1249,9 @@ func (m App) viewFrame() string {
 	}
 	if m.paletteOpen {
 		return m.palette.View()
+	}
+	if m.chatOpen {
+		return m.chat.View()
 	}
 
 	title := m.headerView()

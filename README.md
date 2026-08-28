@@ -210,6 +210,29 @@ sentra agent scan --local-only --root ./Documents # heuristics only, no LLM
 sentra agent scan --apply                          # review + apply recommendations interactively
 ```
 
+### 🔌 Serve it to your AI (MCP)
+
+`sentra mcp` runs a [Model Context Protocol](https://modelcontextprotocol.io)
+server on stdio, so Claude (or any MCP client) can work with your backups —
+**metadata only, never file contents**, and every mutation is two-phase:
+the client gets a plan and a single-use token, and nothing runs until the
+matching `confirm_*` call.
+
+```bash
+claude mcp add sentra -- sentra mcp
+```
+
+Tools: `list_snapshots`, `snapshot_files`, `find`, `diff_snapshots`,
+`repo_stats`, plus `plan_backup`/`confirm_backup` and
+`plan_restore`/`confirm_restore`. The passphrase must resolve
+non-interactively (keyring, `SENTRA_PASSPHRASE`, or `--passphrase-file`) —
+stdio belongs to the protocol.
+
+The same assistant lives inside the TUI: `ctrl+a` opens a chat overlay
+(needs `ANTHROPIC_API_KEY`) whose actions compile into the exact flows the
+keyboard drives — a chat-requested backup raises the same confirm dialog
+you'd get pressing enter yourself.
+
 The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 
 ## The TUI
@@ -230,6 +253,7 @@ Handy keys (the status bar always shows what's live):
 | `tab` | Toggle focus between the rail and the content pane |
 | `enter` · `esc` | Trigger the primary action · go back |
 | `ctrl+p` | Command palette |
+| `ctrl+a` | Assistant chat — ask questions, or say what to do (actions still confirm) |
 | `r` · `d` (in Snapshots) | Restore · diff the highlighted snapshot |
 | `ctrl+e` · `ctrl+r` (in Backup) | Repeat cadence (daily/weekly/monthly) · force full rescan |
 | `?` · `q` | Help · quit |
