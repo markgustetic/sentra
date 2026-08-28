@@ -113,6 +113,12 @@ release:
 # automatically using the HOMEBREW_TAP_TOKEN PAT.
 homebrew_casks:
   - name: sentra
+    # Publish to the tap only when the token secret is configured; an
+    # empty HOMEBREW_TAP_TOKEN (release.yml always sets the env var) means
+    # skip, so a release without the secret still succeeds — the cask file
+    # lands in dist/ and publishes on the next tagged release after the
+    # secret exists.
+    skip_upload: '{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}'
     ids:
       - sentra
     repository:
