@@ -15,6 +15,12 @@ account needed.
 
 ## 1. Start MinIO
 
+> **Shortcut:** from a clone of this repo, `just local` (or `sentra local`)
+> does this whole page automatically — it starts MinIO, exports throwaway
+> credentials, and opens the TUI on a pre-filled first-run wizard against a
+> `.sentra-local.yaml` that never touches your real config. The steps below
+> are the manual, CLI-first version of the same walk.
+
 Save as `docker-compose.yaml` in a working directory:
 
 ```yaml
@@ -59,7 +65,8 @@ export AWS_SECRET_ACCESS_KEY=minioadmin
 
 When setup initializes the repo, Sentra prompts you to set the repository
 passphrase unless `--passphrase-file` or `SENTRA_PASSPHRASE` supplies it.
-For normal local use, choose `Save in keychain` when setup asks; Sentra saves
+For normal local use, leave the wizard's
+`[x] save passphrase in OS keyring` checkbox ticked; Sentra saves
 the passphrase in your OS keyring and writes only
 `passphrase.use_keyring: true` to `sentra.yaml`. For throwaway local demos,
 you can still set `SENTRA_PASSPHRASE='change-me-to-something-good'` in your
@@ -95,14 +102,14 @@ sentra setup iam-policy --bucket sentra-test --prefix sentra/
 
 Enter these values when prompted:
 
-- Storage target: `S3-compatible or existing bucket`
+- Storage backend: `S3-compatible or existing bucket`
 - S3 bucket: `sentra-test`
 - S3 key prefix: leave blank
 - AWS region: `us-east-1`
 - AWS profile: leave blank
 - S3 endpoint URL: `http://localhost:9000`
-- Initialize repo: `Initialize`
-- Save repository passphrase: `Save in keychain`
+- `[x] initialize repository` — leave ticked (space toggles)
+- `[x] save passphrase in OS keyring` — leave ticked
 
 The generated file will include these settings:
 
@@ -115,6 +122,7 @@ repo:
 backup:
   ignore_file: .sentraignore
   exclude_caches: true
+  concurrency: 0
 retention:
   keep_last: 10
   keep_daily: 7
@@ -300,9 +308,16 @@ dispatching the action.
 sentra ui   # or just `sentra` with no args
 ```
 
-Tabs across the top: `[d]ashboard`, `[s]napshots`, `[D]iff`, `[a]gent`,
-`[o]perations`, `[?]help`, `[q]uit`. The operations view shows repository
-health from the same checks used by `sentra check`.
+A left rail lists six views — **Dashboard, Backup, Snapshots, Maintenance,
+Settings, Help** — with a live preview as you scroll; digits `1`-`6` jump
+straight to one, and `ctrl+p` opens a command palette. The occasional jobs
+live one keypress inside: on a snapshot row `r` restores it and `d` diffs it
+against another; Maintenance holds check / prune / sync / doctor; Settings
+holds policies, the backup schedule, the recovery kit, passphrase rotation,
+and re-running setup. In the Backup view, `ctrl+e` arms a repeating schedule
+(daily/weekly/monthly — it installs a named policy plus a launchd/systemd
+timer when you confirm). `q` quits, and the status bar always shows which
+keys are live.
 
 ## 10. Prune
 

@@ -48,11 +48,11 @@ built-in agent that audits your repository and surfaces recommendations.
   <tr>
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/snapshots.png" alt="Snapshots view: a sortable, filterable table of snapshots with id, date, tag, file count, and size.">
-      <br><sub><b>Snapshots</b> — sort, filter, copy an id, drill into any snapshot.</sub>
+      <br><sub><b>Snapshots</b> — sort, filter, drill in; <code>r</code> restores and <code>d</code> diffs the highlighted row.</sub>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/dashboard.png" alt="Dashboard: repo health, activity sparkline, storage savings, and a recent-snapshots table.">
-      <br><sub><b>Dashboard</b> — repo health, activity, and savings at a glance.</sub>
+      <img src="docs/screenshots/backup.png" alt="Backup view: folder picker with jump-to places (~/Documents, ~/Downloads), a tag field, and a daily repeat schedule armed.">
+      <br><sub><b>Backup</b> — pick a folder (with jump-to places), tag it, and arm a daily/weekly/monthly schedule.</sub>
     </td>
   </tr>
   <tr>
@@ -61,8 +61,8 @@ built-in agent that audits your repository and surfaces recommendations.
       <br><sub><b>First-run wizard</b> — guided setup for AWS or any S3-compatible store.</sub>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts with actions to re-run setup, rotate the passphrase, and toggle the splash.">
-      <br><sub><b>Settings</b> — inspect config and re-run setup, rotate the passphrase, toggle the splash.</sub>
+      <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts plus policies, backup schedule, recovery kit, passphrase rotation, and re-run setup.">
+      <br><sub><b>Settings</b> — config summary plus policies, schedule, recovery kit, passphrase, and setup.</sub>
     </td>
   </tr>
 </table>
@@ -70,7 +70,18 @@ built-in agent that audits your repository and surfaces recommendations.
 ## Install
 
 <details open>
-<summary><b>Homebrew</b></summary>
+<summary><b><code>go install</code></b></summary>
+
+```bash
+go install github.com/markgustetic/sentra/cmd/sentra@latest
+```
+
+Builds from source with your Go toolchain (1.27+); `sentra version` reports
+the module version and commit from the embedded build info.
+</details>
+
+<details>
+<summary><b>Homebrew</b> (from tagged releases)</summary>
 
 ```bash
 brew install markgustetic/tap/sentra
@@ -78,15 +89,7 @@ brew install markgustetic/tap/sentra
 </details>
 
 <details>
-<summary><b><code>go install</code></b></summary>
-
-```bash
-go install github.com/markgustetic/sentra/cmd/sentra@latest
-```
-</details>
-
-<details>
-<summary><b>Docker (GHCR)</b></summary>
+<summary><b>Docker (GHCR)</b> (from tagged releases)</summary>
 
 ```bash
 docker pull ghcr.io/markgustetic/sentra:latest
@@ -95,20 +98,20 @@ docker run --rm -v "$PWD:/work" -w /work ghcr.io/markgustetic/sentra:latest --ve
 </details>
 
 <details>
-<summary><b>Prebuilt binaries (signed)</b></summary>
+<summary><b>Prebuilt binaries (signed)</b> (from tagged releases)</summary>
 
-Download platform archives from the
+Download platform archives (macOS and Linux, amd64/arm64) from the
 [releases page](https://github.com/markgustetic/sentra/releases). Each release
 ships a `checksums.txt` plus a cosign keyless signature (`checksums.txt.sig` and
 `checksums.txt.pem`) and a syft SBOM per archive. The certificate identity is
 the exact release-workflow path bound to a tag ref — substitute the version you
-downloaded (e.g. `v0.2.0`):
+downloaded:
 
 ```bash
 cosign verify-blob \
   --certificate checksums.txt.pem \
   --signature  checksums.txt.sig \
-  --certificate-identity 'https://github.com/markgustetic/sentra/.github/workflows/release.yml@refs/tags/v0.2.0' \
+  --certificate-identity 'https://github.com/markgustetic/sentra/.github/workflows/release.yml@refs/tags/<version>' \
   --certificate-oidc-issuer https://token.actions.githubusercontent.com \
   checksums.txt
 ```
@@ -120,13 +123,15 @@ cosign verify-blob \
 
 `sentra local` starts a local MinIO via docker compose, points Sentra at a
 throwaway `.sentra-local.yaml` (never your real config), and opens the TUI with
-the first-run wizard pre-filled for MinIO:
+the first-run wizard pre-filled for MinIO. It runs `docker compose` in the
+current directory, so run it **from a clone of this repo** (which carries the
+`docker-compose.yaml`):
 
 ```bash
-sentra local          # needs Docker running
+git clone https://github.com/markgustetic/sentra && cd sentra
+just local            # builds the binary and opens the TUI (needs Docker)
 ```
 
-Working from a clone? `just local` builds the binary and does the same thing;
 `just local-reset` wipes everything back to a clean first run.
 
 ### 🪣 Real storage: the setup wizard
@@ -225,6 +230,8 @@ Handy keys (the status bar always shows what's live):
 | `tab` | Toggle focus between the rail and the content pane |
 | `enter` · `esc` | Trigger the primary action · go back |
 | `ctrl+p` | Command palette |
+| `r` · `d` (in Snapshots) | Restore · diff the highlighted snapshot |
+| `ctrl+e` · `ctrl+r` (in Backup) | Repeat cadence (daily/weekly/monthly) · force full rescan |
 | `?` · `q` | Help · quit |
 
 > Selection is carried by a `▍` glyph, not just color, and the neon strips
@@ -286,6 +293,7 @@ repo:
     region: us-west-2             # optional — falls back to the AWS SDK chain
     profile: default              # optional — AWS shared-credentials profile
     endpoint_url: ""              # optional — set for MinIO / LocalStack / R2 / Wasabi
+    storage_class: ""             # optional — e.g. STANDARD_IA or GLACIER_IR
 
 agent:
   provider: anthropic
@@ -295,6 +303,11 @@ agent:
 backup:
   ignore_file: .sentraignore
   exclude_caches: true            # honor CACHEDIR.TAG
+  concurrency: 0                  # 0 = auto; parallel file scan/upload workers
+  max_upload_rate: ""             # optional throttle, e.g. 10MiB
+
+ui:
+  hide_splash: false              # skip the launch splash
 
 retention:
   keep_last: 10
@@ -362,12 +375,15 @@ just integration  # testcontainers + MinIO (needs Docker; Linux)
 The vendored FastCDC is a **separate module** — test it with
 `go test ./third_party/fastcdc-go/...` when you touch chunking. CI enforces
 `go mod tidy -diff`, gofmt over `cmd/` and `internal/`, `go vet`, `go test -race`,
-the FastCDC module tests, and `golangci-lint`.
+the FastCDC module tests, `golangci-lint`, the integration suite
+(testcontainers + MinIO), and an every-commit-builds job that checks out and
+compiles each pushed commit in isolation — a green run vouches for the whole
+series, not just the tip.
 
 ## Releasing
 
 Push a `v*` tag to trigger [`release.yml`](.github/workflows/release.yml):
-goreleaser cross-compiles `linux/darwin/windows × amd64/arm64` archives, writes a
+goreleaser cross-compiles `linux/darwin × amd64/arm64` archives, writes a
 SHA-256 `checksums.txt`, signs it with cosign keyless (GitHub OIDC), builds a
 multi-arch GHCR image, updates the Homebrew tap, and attaches a syft SBOM per
 archive. Requires the `HOMEBREW_TAP_TOKEN` secret (`contents: write` on

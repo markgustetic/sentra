@@ -22,7 +22,14 @@ sentra/
 │   │   └── tools/              # tool-use schema for the agent loop
 │   ├── tui/                    # Bubbletea models + lipgloss theme
 │   ├── ui/                     # shared styled components
-│   └── config/                 # sentra.yaml parsing
+│   ├── config/                 # sentra.yaml parsing + passphrase/keyring resolution
+│   ├── setup/                  # headless setup engine: pure state model, an
+│   │                           #   Effects seam for AWS/keyring, stepwise Engine
+│   ├── policy/                 # named-policy validation + hooks
+│   ├── scheduler/              # launchd/systemd unit rendering + install
+│   ├── recoverykit/            # printable recovery-document rendering
+│   ├── progress/               # progress reporters shared by CLI + TUI
+│   └── diag/                   # doctor's AWS/repo probes (below both surfaces)
 └── .goreleaser.yaml .github/workflows/{ci,release}.yml
 ```
 
