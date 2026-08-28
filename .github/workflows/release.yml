@@ -52,8 +52,9 @@ jobs:
           # Pin the cosign BINARY to the v2 line: v3 changed sign-blob to
           # bundle-format output and rejects the v2-style flag pair the
           # goreleaser signs block (and the README verification snippet)
-          # are written for.
-          cosign-release: 'v2.4.1'
+          # are written for. v2 is actively maintained alongside v3; use a
+          # recent v2 so the installer can verify its download.
+          cosign-release: 'v2.6.5'
 
       - name: Install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
