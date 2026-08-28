@@ -93,7 +93,7 @@ func NewUI(deps UIDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "ui",
 		Short:         "Launch the full-screen TUI dashboard",
-		Long:          "Open the Bubbletea dashboard. Use 'd', 's', 'D', 'a' to switch views; 'q' or Ctrl+C to quit.",
+		Long:          "Open the full-screen TUI: a six-view rail (Dashboard, Backup, Snapshots, Maintenance, Settings, Help). Digits 1-6 jump to a view, ctrl+p opens the command palette, q quits.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,

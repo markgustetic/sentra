@@ -1,6 +1,8 @@
 package cli
 
 import (
+	"runtime/debug"
+
 	"fmt"
 	"io"
 	"log/slog"
@@ -56,6 +58,7 @@ func NewRoot(version, commit, date string) *cobra.Command {
 // Persistent flags:
 //   - --passphrase-file <path>   sourced first by the passphrase resolver
 func NewRootWithFlags(version, commit, date string, flags *RootFlags) *cobra.Command {
+	version, commit, date = ResolveBuildVersion(version, commit, date, debug.ReadBuildInfo)
 	cmd := &cobra.Command{
 		Use:     "sentra",
 		Short:   "Encrypted versioned S3 backups with an agentic sidekick",
@@ -133,4 +136,41 @@ func parseLogLevel(s string) slog.Level {
 	default:
 		return slog.LevelWarn
 	}
+}
+
+// ResolveBuildVersion resolves the identity `sentra version` reports. A
+// release build gets these stamped by goreleaser's ldflags and they pass
+// through untouched. A `go install` build carries the placeholders
+// ("dev"/"none"/"unknown"), and — since go install is the one install path
+// that needs no release pipeline — falls back to the toolchain's embedded
+// build info: the module version (a tag or pseudo-version), the VCS
+// revision (shortened), and the VCS commit time. bi is a seam over
+// debug.ReadBuildInfo so tests can inject a canned build.
+func ResolveBuildVersion(version, commit, date string, bi func() (*debug.BuildInfo, bool)) (string, string, string) {
+	if version != "dev" && version != "" {
+		return version, commit, date
+	}
+	info, ok := bi()
+	if !ok || info == nil {
+		return version, commit, date
+	}
+	if v := info.Main.Version; v != "" && v != "(devel)" {
+		version = v
+	}
+	for _, s := range info.Settings {
+		switch s.Key {
+		case "vcs.revision":
+			if commit == "none" || commit == "" {
+				commit = s.Value
+				if len(commit) > 12 {
+					commit = commit[:12]
+				}
+			}
+		case "vcs.time":
+			if date == "unknown" || date == "" {
+				date = s.Value
+			}
+		}
+	}
+	return version, commit, date
 }

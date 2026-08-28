@@ -1,0 +1,4 @@
+# goreleaser prepares its own minimal context (COPY sentra only);
+# this guards a stray `docker build .` from shipping the repo.
+*
+!sentra

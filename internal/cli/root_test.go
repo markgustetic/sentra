@@ -5,6 +5,7 @@ import (
 	"log/slog"
 	"os"
 	"path/filepath"
+	"runtime/debug"
 	"strings"
 	"testing"
 )
@@ -156,5 +157,55 @@ func TestParseLogLevel(t *testing.T) {
 				t.Errorf("parseLogLevel(%q) = %v, want %v", in, got, want)
 			}
 		})
+	}
+}
+
+// ResolveBuildVersion fills the goreleaser ldflags' place when the binary
+// came from `go install`: the module version (or VCS revision/time) from
+// the embedded build info replaces the "dev/none/unknown" placeholders, so
+// `sentra version` identifies the build on the ONLY install path that
+// works without a release pipeline.
+func TestResolveBuildVersion_FallsBackToBuildInfo(t *testing.T) {
+	bi := &debug.BuildInfo{}
+	bi.Main.Version = "v0.1.2"
+	bi.Settings = []debug.BuildSetting{
+		{Key: "vcs.revision", Value: "abcdef1234567890"},
+		{Key: "vcs.time", Value: "2026-08-28T12:00:00Z"},
+	}
+	v, c, d := ResolveBuildVersion("dev", "none", "unknown", func() (*debug.BuildInfo, bool) { return bi, true })
+	if v != "v0.1.2" {
+		t.Errorf("version = %q, want v0.1.2", v)
+	}
+	if c != "abcdef123456" {
+		t.Errorf("commit = %q, want short revision", c)
+	}
+	if d != "2026-08-28T12:00:00Z" {
+		t.Errorf("date = %q", d)
+	}
+}
+
+// Explicit ldflags (a real release build) always win — build info must
+// never override what goreleaser stamped.
+func TestResolveBuildVersion_LdflagsWin(t *testing.T) {
+	v, c, d := ResolveBuildVersion("v1.0.0", "cafe", "2026-01-01", func() (*debug.BuildInfo, bool) {
+		t.Fatal("build info must not be consulted when ldflags are set")
+		return nil, false
+	})
+	if v != "v1.0.0" || c != "cafe" || d != "2026-01-01" {
+		t.Errorf("ldflags overridden: %q %q %q", v, c, d)
+	}
+}
+
+// (devel) module versions keep "dev" but still pick up the VCS revision.
+func TestResolveBuildVersion_DevelKeepsDevWithRevision(t *testing.T) {
+	bi := &debug.BuildInfo{}
+	bi.Main.Version = "(devel)"
+	bi.Settings = []debug.BuildSetting{{Key: "vcs.revision", Value: "0123456789ab"}}
+	v, c, _ := ResolveBuildVersion("dev", "none", "unknown", func() (*debug.BuildInfo, bool) { return bi, true })
+	if v != "dev" {
+		t.Errorf("version = %q, want dev for (devel)", v)
+	}
+	if c != "0123456789ab" {
+		t.Errorf("commit = %q, want revision", c)
 	}
 }
