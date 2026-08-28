@@ -48,6 +48,12 @@ jobs:
 
       - name: Install cosign
         uses: sigstore/cosign-installer@6f9f17788090df1f26f669e9d70d6ae9567deba6 # v3.10.1
+        with:
+          # Pin the cosign BINARY to the v2 line: v3 changed sign-blob to
+          # bundle-format output and rejects the v2-style flag pair the
+          # goreleaser signs block (and the README verification snippet)
+          # are written for.
+          cosign-release: 'v2.4.1'
 
       - name: Install syft
         uses: anchore/sbom-action/download-syft@e22c389904149dbc22b58101806040fa8d37a610 # v0.24.0
