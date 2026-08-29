@@ -1,24 +1,18 @@
 package tui
 
 import (
-	"bytes"
-	"context"
 	"errors"
 	"fmt"
 	"sort"
 	"strings"
-	"time"
 
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
-	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // policiesStage tracks the Policies view's position. The read-only skeleton
@@ -397,151 +391,13 @@ func (v PoliciesView) startRun() (tea.Model, tea.Cmd) {
 	}
 	name := v.names[v.selected]
 	p := v.policies[name]
-	r := v.deps.Repo
 	reporter := newOpReporter()
 	v.run = policyRunState{reporter: reporter, name: name}
 	v.stage = policiesRunning
 
-	var wopts walker.Options
-	var retention repo.RetentionPolicy
-	if v.deps.Config != nil {
-		wopts = walker.Options{
-			IgnoreFile:    v.deps.Config.Backup.IgnoreFile,
-			ExcludeCaches: v.deps.Config.Backup.ExcludeCaches,
-			Concurrency:   v.deps.Config.Backup.Concurrency,
-		}
-		retention = repo.RetentionPolicy{
-			KeepLast:    v.deps.Config.Retention.KeepLast,
-			KeepDaily:   v.deps.Config.Retention.KeepDaily,
-			KeepWeekly:  v.deps.Config.Retention.KeepWeekly,
-			KeepMonthly: v.deps.Config.Retention.KeepMonthly,
-		}
-	}
-	paths := append([]string(nil), p.Paths...)
-	tag := policyRunTag(name, p.Tags)
-	doCheck := p.AfterBackup.Check
-	pruneMode := policyPruneModeOrOff(p.AfterBackup.Prune)
-	hooks := p.Hooks
-
-	start := startOpMsg{
-		name: "policy-run",
-		run: func(ctx context.Context) tea.Msg {
-			// Hooks run exactly as the CLI's `policy run` runs them
-			// (internal/policy owns the execution, below both surfaces)
-			// — a TUI run that skipped an operator's pg_dump before
-			// hook would back up different data. Hook output goes to a
-			// buffer whose tail rides along on failure.
-			var hookOut bytes.Buffer
-			count := 0
-			runErr := func() error {
-				if hooks.Before != "" {
-					if err := policycfg.RunHook(ctx, &hookOut, "before", hooks.Before); err != nil {
-						return err
-					}
-				}
-				for _, path := range paths {
-					if _, err := r.CreateSnapshot(ctx, path, repo.SnapshotOptions{
-						Tag:      tag,
-						Progress: reporter,
-						Walker:   wopts,
-					}); err != nil {
-						return fmt.Errorf("snapshot %s: %w", path, err)
-					}
-					count++
-				}
-				if doCheck {
-					report, err := r.Check(ctx, repo.CheckOptions{StaleLockAfter: 24 * time.Hour})
-					if err != nil {
-						return fmt.Errorf("check: %w", err)
-					}
-					if !report.Healthy() {
-						return errors.New("post-backup check found integrity issues")
-					}
-				}
-				if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
-					return err
-				}
-				if hooks.After != "" {
-					if err := policycfg.RunHook(ctx, &hookOut, "after", hooks.After); err != nil {
-						return err
-					}
-				}
-				return nil
-			}()
-			if runErr != nil {
-				policycfg.FireFailureHooks(ctx, &hookOut, name, hooks, runErr)
-				return policyRunDoneMsg{name: name, snapshots: count, err: runErr}
-			}
-			return policyRunDoneMsg{name: name, snapshots: count}
-		},
-	}
-	return v, tea.Batch(func() tea.Msg { return start }, opTick())
-}
-
-// runPolicyRetentionPrune applies the policy's post-backup prune. It
-// mirrors the CLI's runPolicyPrune (internal/cli/policy.go:331): off is a
-// no-op; dry-run computes but deletes nothing; apply deletes the dropped
-// snapshots (skipping already-gone ones) and runs GC. Apply refuses to
-// drop every snapshot — the same guard the CLI enforces.
-//
-// The mode switch is FAIL-CLOSED: only the three known constants trigger
-// their behavior, and anything else (an unrecognized/corrupt mode) is
-// treated as off — a no-op — rather than falling through to the delete
-// path. Callers already validate the policy (policycfg.Validate rejects
-// unknown prune modes) before reaching here, so this is defense in depth:
-// even if an invalid mode slips through, it can never silently delete.
-func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.RetentionPolicy, mode string) error {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	// Only apply performs deletions. off, dry-run, and any unrecognized
-	// value are no-ops here (dry-run's preview is surfaced elsewhere).
-	if mode != policycfg.PruneApply {
-		return nil
-	}
-	snaps, err := r.ListSnapshots(ctx)
-	if err != nil {
-		return fmt.Errorf("list snapshots: %w", err)
-	}
-	decisions := repo.PlanRetentionExplain(snaps, policy)
-	var keep, drop []string
-	for _, d := range decisions {
-		if d.Keep {
-			keep = append(keep, d.Snapshot.ID)
-		} else {
-			drop = append(drop, d.Snapshot.ID)
-		}
-	}
-	if len(drop) == 0 {
-		return nil
-	}
-	if len(keep) == 0 {
-		return errors.New("policy prune would drop every snapshot; refusing automatic apply")
-	}
-	for _, id := range drop {
-		if err := r.DeleteSnapshot(ctx, id); err != nil && !errors.Is(err, blobstore.ErrNotFound) {
-			return fmt.Errorf("delete snapshot %s: %w", id, err)
-		}
-	}
-	keepIDs := make(map[string]bool, len(keep))
-	for _, id := range keep {
-		keepIDs[id] = true
-	}
-	if _, err := r.GC(ctx, keepIDs); err != nil {
-		return fmt.Errorf("gc: %w", err)
-	}
-	return nil
-}
-
-// policyRunTag mirrors the CLI's policySnapshotTag: "policy:<name>" plus
-// any configured tags, space-joined.
-func policyRunTag(name string, tags []string) string {
-	parts := []string{"policy:" + name}
-	for _, tag := range tags {
-		tag = strings.TrimSpace(tag)
-		if tag != "" {
-			parts = append(parts, tag)
-		}
-	}
-	return strings.Join(parts, " ")
+	return v, tea.Batch(func() tea.Msg {
+		return buildPolicyRunOp(v.deps, "policy-run", name, p, reporter)
+	}, opTick())
 }
 
 // removeSelected deletes the selected policy from sentra.yaml and reloads.
@@ -668,16 +524,6 @@ func (v PoliciesView) renderDetail() string {
 	return b.String()
 }
 
-// policyPruneModeOrOff normalizes an empty prune string to "off" for
-// display, matching the CLI's policyPruneMode.
-func policyPruneModeOrOff(mode string) string {
-	mode = strings.ToLower(strings.TrimSpace(mode))
-	if mode == "" {
-		return policycfg.PruneOff
-	}
-	return mode
-}
-
 // policyForm is the inline ADD form: name + path + optional schedule
 // shorthand ("daily@03:00", "manual", …). It stays deliberately minimal —
 // the same fields the CLI's `policy add` exposes for the common case;
@@ -756,19 +602,3 @@ func (f policyForm) build() (string, config.PolicyConfig, error) {
 	}
 	return name, p, nil
 }
-
-type policyRunState struct {
-	reporter *opReporter
-	name     string
-}
-
-// policyRunDoneMsg is the RUN flow's terminal, guard-clearing message.
-// Defined here (the struct field references it); the RUN task fills its
-// body and the startOpMsg that produces it.
-type policyRunDoneMsg struct {
-	name      string
-	snapshots int
-	err       error
-}
-
-func (policyRunDoneMsg) opResult() {}

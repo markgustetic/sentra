@@ -192,6 +192,88 @@ func TestJobs_LastRunColumnFromPreload(t *testing.T) {
 	}
 }
 
+// pressKey drives one rune key through the view.
+func pressJobsKey(v JobsView, r rune) (JobsView, tea.Cmd) {
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+	return m.(JobsView), cmd
+}
+
+func TestJobs_InstallThenUninstallTimer(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.osOverride = "darwin"
+	v.exeOverride = "/usr/local/bin/sentra"
+	v.tbl.SetCursor(0) // alpha (daily)
+
+	v2, cmd := pressJobsKey(v, 'i')
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatal("i must push the install confirm modal")
+	}
+	_ = push
+	m, cmd := v2.Update(confirmedMsg{id: jobInstallConfirmID})
+	res := cmd() // filesystem-only tea.Cmd, runs inline
+	m2, _ := m.(JobsView).Update(res)
+	v3 := m2.(JobsView)
+	paths, _ := scheduler.PathsFor("darwin", v3.homeOverride, "alpha")
+	if installed, _ := scheduler.Installed(paths); !installed {
+		t.Fatal("confirm must write the timer files")
+	}
+	if !v3.rows[0].installed {
+		t.Fatal("reload after install must show installed")
+	}
+
+	v4, cmd := pressJobsKey(v3, 'u')
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatal("u must push the uninstall confirm modal")
+	}
+	m, cmd = v4.Update(confirmedMsg{id: jobUninstallConfirmID})
+	m2, _ = m.(JobsView).Update(cmd())
+	if installed, _ := scheduler.Installed(paths); installed {
+		t.Fatal("confirm must remove the timer files")
+	}
+	if m2.(JobsView).rows[0].installed {
+		t.Fatal("reload after uninstall must show not installed")
+	}
+}
+
+func TestJobs_InstallRejectsManual(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(1) // beta (manual)
+	m, cmd := v.Update(confirmedMsg{id: jobInstallConfirmID})
+	res := cmd()
+	m2, _ := m.(JobsView).Update(res)
+	if !strings.Contains(m2.(JobsView).notice, "manual") {
+		t.Fatalf("manual install must be refused with a notice, got %q", m2.(JobsView).notice)
+	}
+}
+
+// Run-now raises the typed confirm only for prune:apply — the same gate
+// contract PoliciesView carried (validate first, so a corrupt mode can
+// never hide behind the simple confirm).
+func TestJobs_RunNowConfirmVariants(t *testing.T) {
+	deps, path := jobsDeps(t)
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.AfterBackup.Prune = "apply"
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(0)
+	_, cmd := pressJobsKey(v, 'r')
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatal("r must push a confirm modal")
+	}
+	if _, typed := push.modal.(TypedConfirmModal); !typed {
+		t.Fatal("prune:apply must get the TYPED confirm")
+	}
+}
+
 func TestJobs_RegisteredHiddenAndRoutable(t *testing.T) {
 	app := NewApp(Deps{RepoName: "x"})
 	for _, c := range app.registry.Commands() {

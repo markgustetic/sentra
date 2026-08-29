@@ -154,18 +154,20 @@ type JobsView struct {
 	width    int
 	height   int
 
+	// run + result carry the in-flight/most-recent run-now state, shared
+	// with PoliciesView via buildPolicyRunOp (see jobs_run.go).
+	run    policyRunState
+	result policyRunDoneMsg
+
 	// Test seams. osOverride/homeOverride/exeOverride pin the scheduler
 	// platform/home/executable (zero values fall back to runtime); now
 	// pins the clock for next-run/last-run rendering; homeDir feeds ~
 	// expansion in normalizeJobPath.
 	osOverride   string
 	homeOverride string
-	//nolint:unused // consumed by the install/uninstall flow a later task in this
-	// SDD plan wires onto handleListKey (mirrors ScheduleView.exeOverride); this
-	// task only implements the list stage.
-	exeOverride string
-	now         func() time.Time
-	homeDir     func() (string, error)
+	exeOverride  string
+	now          func() time.Time
+	homeDir      func() (string, error)
 }
 
 func NewJobsView(deps Deps) JobsView {
@@ -325,32 +327,98 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.tbl.SetColumns(jobsColumns(pickerContentWidth(v.width)))
 		v.tbl.SetHeight(max(msg.Height-8, 3))
 		return v, nil
+
 	case tea.KeyMsg:
-		if v.stage == jobsList {
+		switch v.stage {
+		case jobsList:
 			return v.handleListKey(msg)
+		case jobsRunDone:
+			if msg.Type == tea.KeyEnter {
+				v.stage = jobsList
+				v.notice = ""
+				return v, nil
+			}
+			return v, nil
+		default:
+			return v, nil
+		}
+
+	case jobTimerMsg:
+		v.notice = msg.notice
+		if msg.err != nil {
+			v.notice = msg.err.Error()
+		}
+		v.reload()
+		return v, nil
+
+	case confirmedMsg:
+		switch msg.id {
+		case jobInstallConfirmID:
+			return v.runTimerInstall()
+		case jobUninstallConfirmID:
+			return v.runTimerUninstall()
+		case jobRunConfirmID:
+			return v.startRun()
+		}
+		return v, nil
+
+	case policyRunDoneMsg:
+		v.stage = jobsRunDone
+		v.result = msg
+		v.reload()
+		return v, nil
+
+	case opRejectedMsg:
+		if v.stage == jobsRunning && msg.name == "job-run" {
+			v.stage = jobsList
+			v.notice = "another operation is in progress — try again when it finishes"
+		}
+		return v, nil
+
+	case opTickMsg:
+		if v.stage == jobsRunning {
+			return v, opTick()
 		}
 		return v, nil
 	}
 	return v, nil
 }
 
-// handleListKey grows a case per action in later tasks; this task only
-// wires R (refresh) and table navigation.
+// handleListKey routes single-key job actions (install/uninstall timer, run
+// now, refresh) before falling through to table navigation.
 func (v JobsView) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
-	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'R' {
-		v.notice = ""
-		v.reload()
-		return v, nil
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case 'R':
+			v.notice = ""
+			v.reload()
+			return v, nil
+		case 'i':
+			if row, ok := v.currentJob(); ok {
+				v.notice = ""
+				body := fmt.Sprintf("Install the OS scheduler entry for job %q?\nThis writes files under your home directory only.", row.name)
+				modal := NewConfirmModal("Install timer", body, jobInstallConfirmID, 80, 24)
+				return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+			}
+		case 'u':
+			if row, ok := v.currentJob(); ok {
+				v.notice = ""
+				body := fmt.Sprintf("Remove the scheduler entry for job %q?", row.name)
+				modal := NewConfirmModal("Uninstall timer", body, jobUninstallConfirmID, 80, 24)
+				return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+			}
+		case 'r':
+			if _, ok := v.currentJob(); ok {
+				return v.armRun()
+			}
+		}
 	}
 	var cmd tea.Cmd
 	v.tbl, cmd = v.tbl.Update(msg)
 	return v, cmd
 }
 
-// currentJob returns the row under the cursor. Unused until a later task
-// wires detail/run/delete onto handleListKey.
-//
-//nolint:unused // consumed by a later task in this SDD plan
+// currentJob returns the row under the cursor.
 func (v JobsView) currentJob() (jobRow, bool) {
 	i := v.tbl.Cursor()
 	if i < 0 || i >= len(v.rows) {
@@ -362,6 +430,27 @@ func (v JobsView) currentJob() (jobRow, bool) {
 func (v JobsView) View() string {
 	if v.loadErr != "" {
 		return ui.Danger.Render(v.loadErr)
+	}
+	if v.stage == jobsRunning {
+		var b strings.Builder
+		b.WriteString(ui.Primary.Render("Running job " + v.run.name + "…"))
+		if v.run.reporter != nil {
+			total, done := v.run.reporter.Snapshot()
+			fmt.Fprintf(&b, "\n\n  %s / %s uploaded", ui.FormatBytes(done), ui.FormatBytes(total))
+		}
+		return b.String()
+	}
+	if v.stage == jobsRunDone {
+		var b strings.Builder
+		if v.result.err != nil {
+			b.WriteString(ui.Danger.Render("Job run failed"))
+			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
+		} else {
+			b.WriteString(ui.Success.Render("Job run complete"))
+			fmt.Fprintf(&b, "\n\n  job        %s\n  snapshots  %d", v.result.name, v.result.snapshots)
+		}
+		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("return to the job list", ""))
+		return b.String()
 	}
 	if len(v.rows) == 0 {
 		return ui.Muted.Render("no scheduled backups — press a to add one, or ctrl+e in Backup")
