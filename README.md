@@ -66,7 +66,7 @@ built-in agent that audits your repository and surfaces recommendations.
     </td>
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts plus policies, backup schedule, recovery kit, passphrase rotation, and re-run setup.">
-      <br><sub><b>Settings</b> — config summary plus policies, schedule, recovery kit, passphrase, and setup.</sub>
+      <br><sub><b>Settings</b> — config summary plus scheduled backups, recovery kit, passphrase, and setup.</sub>
     </td>
   </tr>
 </table>
@@ -246,8 +246,8 @@ Bare `sentra` falls through to `sentra ui`. Where it lands depends on your state
 otherwise **the dashboard**. The rail holds six destinations — Dashboard,
 Backup, Snapshots, Maintenance, Settings, Help — and the occasional jobs
 live one keypress inside them: restore and diff launch from a snapshot row,
-check/prune/sync/doctor from Maintenance, policies/schedule/recovery-kit/
-passphrase/setup from Settings.
+check/prune/sync/doctor from Maintenance, scheduled backups (jobs)/
+recovery-kit/passphrase/setup from Settings.
 
 Handy keys (the status bar always shows what's live):
 
@@ -260,6 +260,7 @@ Handy keys (the status bar always shows what's live):
 | `ctrl+a` | Assistant chat — ask questions, or say what to do (actions still confirm) |
 | `r` · `d` (in Snapshots) | Restore · diff the highlighted snapshot |
 | `ctrl+e` · `ctrl+r` (in Backup) | Repeat cadence (daily/weekly/monthly) · force full rescan |
+| `enter` · `e` · `d` (in Scheduled backups) | Drill into a job's files · edit · delete (policy + timer) |
 | `?` · `q` | Help · quit |
 
 > Selection is carried by a `▍` glyph, not just color, and the neon strips
@@ -285,7 +286,7 @@ Handy keys (the status bar always shows what's live):
 | `sentra stats` | Dedup factor, logical vs stored bytes, per-snapshot unique footprint. |
 | `sentra pin` / `unpin` | Protect a snapshot from prune and deletion. |
 | `sentra prune` | Dry-run retention by default; `--apply` reclaims, `--explain` shows reasons. |
-| `sentra policy …` | Manage named backup policies (`add`/`list`/`show`/`remove`/`run`). |
+| `sentra policy …` | Manage named backup policies (`add`/`list`/`show`/`remove`/`run`); removing a policy also uninstalls its OS timer. |
 | `sentra schedule …` | Install user-level OS schedules for named policies. |
 | `sentra password` | Rotate or forget the repository passphrase (`passwd` is an alias). |
 | `sentra sync --dst-config` | Replicate this repo to a clone destination (additive; `--snapshot` selects a subset). |

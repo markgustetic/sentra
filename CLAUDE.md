@@ -88,7 +88,8 @@ git worktree remove --force /tmp/chk
 - `internal/walker` — filesystem walk + ignore matching
 - `internal/agent` — local heuristics, LLM orchestration, tools, actions
 - `internal/cli` — cobra commands; `internal/tui` / `internal/ui` — Bubbletea
-- `internal/policy` — named-policy validation; `internal/progress` — reporters
+- `internal/policy` — named-policy validation + `NextRun` (next wall-clock
+  fire); `internal/progress` — reporters
 - `internal/setup` — headless setup engine: pure state model + transforms, an
   `Effects` seam for AWS/keyring, and a stepwise `Engine`
   (`PrepareAWS` → `WriteConfig` → `InitRepo`). Both wizards drive it.

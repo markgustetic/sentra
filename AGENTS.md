@@ -106,11 +106,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   post-backup check/prune preferences, but must never include passphrases,
   key material, AWS credentials, or other secrets. `sentra policy run` should
   reuse existing repo snapshot/check/prune primitives instead of duplicating
-  storage logic.
+  storage logic. `policy remove` uninstalls the policy's OS timer files when
+  present (best-effort, warning on failure) — an installed timer for a
+  deleted policy can only fail.
 - `sentra schedule` installs user-level OS scheduler files for named policies.
   It should generate launchd/systemd files that invoke `sentra policy run`;
   do not introduce a resident Sentra daemon or write secrets into scheduler
-  files.
+  files. `schedule status` prints the computed next run for an installed
+  schedule (`policy.NextRun` — wall-clock, mirrors the renderers).
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
@@ -172,12 +175,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   mean rail-listed: the rail holds six destinations (Dashboard, Backup,
   Snapshots, Maintenance, Settings, Help) and the rest of the floor lives
   one launcher inside them — restore/diff from a snapshot row,
-  check/prune/sync/doctor from Maintenance, policies/schedule/recovery-kit/
-  passphrase/setup from Settings. Stats and the agent are CLI-only
-  (outside the floor by the sentence above). Per-run knobs
-  (`prune --keep-*`, `--concurrency`, `--stale-lock-after`, agent
-  `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come from config
-  in the TUI by design.
+  check/prune/sync/doctor from Maintenance, scheduled backups (jobs)/
+  recovery-kit/passphrase/setup from Settings. The jobs view (id `jobs`,
+  title "Scheduled backups") replaced the separate Policies and Schedule
+  views and is what satisfies the floor's run-a-named-policy item. Stats
+  and the agent are CLI-only (outside the floor by the sentence above).
+  Per-run knobs (`prune --keep-*`, `--concurrency`, `--stale-lock-after`,
+  agent `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come
+  from config in the TUI by design.
 - `repo.s3.storage_class` passes through to PutObject; GLACIER and
   DEEP_ARCHIVE must stay refused (synchronous chunk reads cannot retrieve
   them). `backup.max_upload_rate` paces uploads only — never throttle
