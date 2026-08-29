@@ -106,10 +106,11 @@ func (f policyForm) build() (string, config.PolicyConfig, error) {
 	return name, p, nil
 }
 
-// errPolicyExists signals the replace-confirm gate from inside the
-// config.Update closure: the duplicate check runs against the on-disk
-// map, the same base `policy add` checks. Shared by PoliciesView.addFromForm
-// and JobsView.saveForm.
+// errPolicyExists signals the replace-confirm gate from inside
+// JobsView.saveForm's config.Update closure: the duplicate check runs
+// against the on-disk map, the same base `policy add` checks. Ported from
+// the deleted PoliciesView.addFromForm, which used the same sentinel the
+// same way.
 var errPolicyExists = errors.New("policy exists")
 
 // prefilledPolicyForm seeds the shared form from an existing policy for
