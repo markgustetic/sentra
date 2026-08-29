@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -136,6 +137,19 @@ type jobRow struct {
 	lastAt    time.Time
 }
 
+// jobDetailMsg carries a finished manifest load for the drill-in
+// detail stage back to the view. name+pathIdx echo the request the
+// load cmd was built from, so Update can drop a result the operator
+// has since navigated away from — closed the detail page, or cycled
+// to a different one of the job's paths.
+type jobDetailMsg struct {
+	name    string
+	pathIdx int
+	snapID  string
+	man     repo.Manifest
+	err     error
+}
+
 // JobsView is the scheduled-backups manager: every named policy with
 // its cadence, timer state, computed next run, and last run, plus
 // drill-in / add / edit / run / install / uninstall / delete. It
@@ -165,6 +179,20 @@ type JobsView struct {
 	form     policyForm
 	editName string
 
+	// Drill-in detail stage. detailName/detailPathIdx identify the job
+	// and which of its paths is on screen; loading/snapID/man/err carry
+	// the async manifest load for that path's newest snapshot, mirroring
+	// snapshots.go's detail state machine. loader is the manifest fetch
+	// hook — production wires it to repo.LoadSnapshot, tests inject a
+	// canned closure.
+	detailName    string
+	detailPathIdx int
+	detailLoading bool
+	detailSnapID  string
+	detailMan     repo.Manifest
+	detailErr     error
+	loader        detailLoader
+
 	// Test seams. osOverride/homeOverride/exeOverride pin the scheduler
 	// platform/home/executable (zero values fall back to runtime); now
 	// pins the clock for next-run/last-run rendering; homeDir feeds ~
@@ -177,10 +205,25 @@ type JobsView struct {
 }
 
 func NewJobsView(deps Deps) JobsView {
+	// Mirrors NewSnapshots' production loader wiring: repo.LoadSnapshot
+	// behind a 10s timeout derived from deps.Ctx, or an error stub when
+	// no repo is configured (keeps the view constructible in tests that
+	// only exercise navigation).
+	loader := func(_ string) (repo.Manifest, error) {
+		return repo.Manifest{}, fmt.Errorf("jobs: no repo configured")
+	}
+	if deps.Repo != nil {
+		loader = func(id string) (repo.Manifest, error) {
+			ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 10*time.Second)
+			defer cancel()
+			return deps.Repo.LoadSnapshot(ctx, id)
+		}
+	}
 	v := JobsView{
 		deps:    deps,
 		now:     time.Now,
 		homeDir: os.UserHomeDir,
+		loader:  loader,
 	}
 	v.tbl = table.New(
 		table.WithColumns(jobsColumns(pickerIdealWidth)),
@@ -349,6 +392,8 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch v.stage {
 		case jobsList:
 			return v.handleListKey(msg)
+		case jobsDetail:
+			return v.handleDetailKey(msg)
 		case jobsForm:
 			return v.updateForm(msg)
 		case jobsRunDone:
@@ -368,6 +413,18 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.notice = msg.err.Error()
 		}
 		v.reload()
+		return v, nil
+
+	case jobDetailMsg:
+		// Stale-result guard: drop a load the operator has since
+		// navigated away from (esc back to the list, or cycled to a
+		// different path before this one resolved).
+		if msg.name != v.detailName || msg.pathIdx != v.detailPathIdx || v.stage != jobsDetail {
+			return v, nil
+		}
+		v.detailLoading = false
+		v.detailMan = msg.man
+		v.detailErr = msg.err
 		return v, nil
 
 	case confirmedMsg:
@@ -414,6 +471,21 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // handleListKey routes single-key job actions (install/uninstall timer, run
 // now, refresh) before falling through to table navigation.
 func (v JobsView) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	if msg.Type == tea.KeyEnter {
+		if row, ok := v.currentJob(); ok {
+			v.detailName = row.name
+			v.detailPathIdx = 0
+			v.notice = ""
+			// openDetail as its own statement, not inlined into the return:
+			// the Go spec only orders function/method calls relative to
+			// each other within a return statement, not relative to a
+			// plain operand like the leading v — combining them would
+			// leave whether v reflects openDetail's mutations unspecified.
+			cmd := v.openDetail()
+			return v, cmd
+		}
+		return v, nil
+	}
 	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
 		switch msg.Runes[0] {
 		case 'R':
@@ -475,9 +547,107 @@ func (v JobsView) currentJob() (jobRow, bool) {
 	return v.rows[i], true
 }
 
+// rowByName finds a job's row by name (linear scan of v.rows — the
+// table is small, one row per policy). Used by viewDetail, which
+// knows the job by name (v.detailName) rather than by table cursor.
+func (v JobsView) rowByName(name string) (jobRow, bool) {
+	for _, r := range v.rows {
+		if r.name == name {
+			return r, true
+		}
+	}
+	return jobRow{}, false
+}
+
+// openDetail resolves the newest snapshot for the job at v.detailName
+// and the path at v.detailPathIdx — both already set by the caller:
+// enter-in-list sets detailPathIdx to 0, path-cycling sets it to the
+// cycled index. No snapshot at that path leaves detailSnapID empty,
+// which viewDetail renders as the "not backed up yet" placeholder —
+// there is nothing to load. Otherwise it arms the loading state and
+// returns the load cmd; the manifest fetch itself never runs inline
+// here, which would freeze the whole TUI while S3 responds.
+func (v *JobsView) openDetail() tea.Cmd {
+	v.stage = jobsDetail
+	v.detailErr = nil
+	v.detailLoading = false
+	v.detailSnapID = ""
+	v.detailMan = repo.Manifest{}
+	p := v.policies[v.detailName]
+	if v.detailPathIdx >= len(p.Paths) {
+		return nil
+	}
+	pathAbs := normalizeJobPath(p.Paths[v.detailPathIdx], v.jobsHome())
+	snap, ok := newestJobSnapshot(v.detailName, pathAbs, v.snaps)
+	if !ok {
+		return nil
+	}
+	v.detailSnapID = snap.ID
+	v.detailLoading = true
+	return v.loadDetailCmd()
+}
+
+// loadDetailCmd builds the tea.Cmd that fetches v.detailSnapID's
+// manifest via v.loader. Captures the request's identity (name,
+// pathIdx, id) by value so the resulting jobDetailMsg can be matched
+// back against the view's current state even if the operator has
+// since navigated elsewhere.
+func (v JobsView) loadDetailCmd() tea.Cmd {
+	name, idx, id, loader := v.detailName, v.detailPathIdx, v.detailSnapID, v.loader
+	return func() tea.Msg {
+		man, err := loader(id)
+		return jobDetailMsg{name: name, pathIdx: idx, snapID: id, man: man, err: err}
+	}
+}
+
+// handleDetailKey routes keys on the drill-in detail stage: esc backs
+// out to the list; left/right/tab cycle which of the job's paths is
+// shown, wrapping modulo the path count; e/d/r delegate to the list's
+// own handlers, but first move the table cursor to the detail job's
+// row so currentJob() (which those handlers read) resolves to the job
+// actually on screen rather than whatever row the cursor was last
+// left on.
+func (v JobsView) handleDetailKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
+	switch msg.Type {
+	case tea.KeyEsc:
+		v.stage = jobsList
+		v.detailLoading = false
+		v.detailErr = nil
+		return v, nil
+	case tea.KeyLeft, tea.KeyRight, tea.KeyTab:
+		n := len(v.policies[v.detailName].Paths)
+		if n == 0 {
+			return v, nil
+		}
+		if msg.Type == tea.KeyLeft {
+			v.detailPathIdx = (v.detailPathIdx - 1 + n) % n
+		} else {
+			v.detailPathIdx = (v.detailPathIdx + 1) % n
+		}
+		cmd := v.openDetail()
+		return v, cmd
+	}
+	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
+		switch msg.Runes[0] {
+		case 'e', 'd', 'r':
+			for i, row := range v.rows {
+				if row.name == v.detailName {
+					v.tbl.SetCursor(i)
+					break
+				}
+			}
+			return v.handleListKey(msg)
+		}
+	}
+	return v, nil
+}
+
 func (v JobsView) View() string {
 	if v.loadErr != "" {
 		return ui.Danger.Render(v.loadErr)
+	}
+	if v.stage == jobsDetail {
+		return v.viewDetail()
 	}
 	if v.stage == jobsForm {
 		var b strings.Builder
@@ -544,6 +714,41 @@ func (v JobsView) View() string {
 	}
 	b.WriteString(ui.Muted.Render("⏎ detail · a add · e edit · r run · i/u timer · d delete · R refresh"))
 	return b.String()
+}
+
+// viewDetail renders the drill-in stage: a policy summary (schedule,
+// the active path, timer/next/last) followed by the newest snapshot's
+// file tree for that path — mirroring snapshots.go's viewDetail state
+// machine (loading / error / placeholder / tree), with the summary
+// block and path-cycling footer a job view adds on top.
+func (v JobsView) viewDetail() string {
+	name := v.detailName
+	p := v.policies[name]
+	var b strings.Builder
+	fmt.Fprintf(&b, "%s  %s\n", ui.Primary.Render(name), ui.Subtle.Render(policycfg.FormatScheduleSpec(p.Schedule)))
+	path := ""
+	if v.detailPathIdx < len(p.Paths) {
+		path = p.Paths[v.detailPathIdx]
+	}
+	fmt.Fprintf(&b, "  path %d/%d: %s\n", v.detailPathIdx+1, len(p.Paths), path)
+	row, _ := v.rowByName(name)
+	fmt.Fprintf(&b, "  timer: %s   next: %s   last: %s\n\n",
+		jobTimerLabel(row), jobNextLabel(row), jobLastLabel(row, v.now()))
+	switch {
+	case v.detailSnapID == "":
+		b.WriteString(ui.Muted.Render("not backed up yet — run the job to take its first snapshot"))
+	case v.detailLoading:
+		b.WriteString(ui.Subtle.Render("loading snapshot " + v.detailSnapID + " …"))
+	case v.detailErr != nil:
+		b.WriteString(ui.Danger.Render("error loading snapshot: ") + v.detailErr.Error())
+	default:
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("snapshot "+v.detailMan.ID))
+		textW := maxInt(v.width-4, 24)
+		for _, line := range renderDirTree(buildDirTree(v.detailMan.Tree), textW) {
+			fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(line))
+		}
+	}
+	return ui.Panel.Render(b.String()) + "\n" + ui.Subtle.Render("←→ path · e edit · r run · d delete · esc back") + "\n"
 }
 
 // jobsColumns lays out the five columns in the interior width, the same

@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -448,5 +449,160 @@ func TestJobs_DeleteConfirmBodyMentionsTimerAndSnapshots(t *testing.T) {
 		if !strings.Contains(body, want) {
 			t.Fatalf("delete confirm must mention %q:\n%s", want, body)
 		}
+	}
+}
+
+// jobsDepsWithRepo returns deps whose config points a policy at a real
+// backed-up directory in the in-memory repo, so drill-in has a manifest.
+// newFlowRepo alone hands back an EMPTY repo (other tests rely on that
+// zero-snapshot starting point), so this helper takes the one extra step
+// of actually creating a snapshot before pointing a policy at its root.
+func jobsDepsWithRepo(t *testing.T) (Deps, string, string) {
+	t.Helper()
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
+		t.Fatalf("seed snapshot: %v", err)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil || len(snaps) == 0 {
+		t.Fatalf("flow repo must carry snapshots: %v", err)
+	}
+	root := snaps[0].Root
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Policies["alpha"] = config.PolicyConfig{
+		Paths:    []string{root},
+		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
+	}
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	return Deps{Repo: r, Config: &cfg, ConfigPath: path}, path, root
+}
+
+func TestJobs_DrillInShowsNewestSnapshotTree(t *testing.T) {
+	deps, _, _ := jobsDepsWithRepo(t)
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+	v.tbl.SetCursor(0)
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v2 := m.(JobsView)
+	if v2.stage != jobsDetail || !v2.detailLoading {
+		t.Fatalf("enter must open detail loading: stage=%v loading=%t", v2.stage, v2.detailLoading)
+	}
+	m2, _ := v2.Update(cmd()) // run the load cmd inline
+	v3 := m2.(JobsView)
+	out := v3.View()
+	if v3.detailErr != nil {
+		t.Fatalf("detail load failed: %v", v3.detailErr)
+	}
+	// Summary block + a tree line from the manifest.
+	for _, want := range []string{"alpha", "daily@03:00", "snap-"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("detail missing %q:\n%s", want, out)
+		}
+	}
+	// esc returns to the list.
+	m3, _ := v3.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	if m3.(JobsView).stage != jobsList {
+		t.Fatal("esc must return to the list")
+	}
+}
+
+func TestJobs_DrillInPathWithoutSnapshotShowsPlaceholder(t *testing.T) {
+	deps, _ := jobsDeps(t) // policies point at /data/alpha — no repo, no snapshots
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+	v.tbl.SetCursor(0)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	out := m.(JobsView).View()
+	if !strings.Contains(out, "not backed up yet") {
+		t.Fatalf("no-snapshot path must show the placeholder:\n%s", out)
+	}
+}
+
+// TestJobs_DrillInCyclesPaths locks the left/right/tab path-cycling
+// contract: detailPathIdx advances modulo len(Paths) and wraps both
+// directions, and the summary's "path N/M" line tracks it.
+func TestJobs_DrillInCyclesPaths(t *testing.T) {
+	deps, path := jobsDeps(t)
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.Paths = []string{"/data/alpha", "/data/alpha2"}
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+	v.tbl.SetCursor(0)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v2 := m.(JobsView)
+	if v2.detailPathIdx != 0 {
+		t.Fatalf("enter must start at path 0, got %d", v2.detailPathIdx)
+	}
+
+	m2, _ := v2.Update(tea.KeyMsg{Type: tea.KeyRight})
+	v3 := m2.(JobsView)
+	if v3.detailPathIdx != 1 {
+		t.Fatalf("right must advance to path 1, got %d", v3.detailPathIdx)
+	}
+	if out := v3.View(); !strings.Contains(out, "path 2/2") {
+		t.Fatalf("detail must show path 2/2:\n%s", out)
+	}
+
+	m3, _ := v3.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v4 := m3.(JobsView)
+	if v4.detailPathIdx != 0 {
+		t.Fatalf("tab must wrap modulo len(paths), got %d", v4.detailPathIdx)
+	}
+
+	m4, _ := v4.Update(tea.KeyMsg{Type: tea.KeyLeft})
+	v5 := m4.(JobsView)
+	if v5.detailPathIdx != 1 {
+		t.Fatalf("left must wrap backward, got %d", v5.detailPathIdx)
+	}
+}
+
+// TestJobs_DrillInDeleteOperatesOnDetailJob pins the requirement that
+// e/d/r pressed on the detail stage act on the job actually shown in
+// detail, not whatever row the list cursor was last left on — a drift
+// that could otherwise happen if something moved the table cursor
+// while detail stayed open.
+func TestJobs_DrillInDeleteOperatesOnDetailJob(t *testing.T) {
+	deps, _ := jobsDeps(t) // alpha, beta
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+	v.tbl.SetCursor(1) // beta
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v2 := m.(JobsView)
+	if v2.detailName != "beta" {
+		t.Fatalf("enter must open detail for the row under cursor: got %q", v2.detailName)
+	}
+	// Simulate the cursor drifting away from the detail job.
+	v2.tbl.SetCursor(0)
+
+	_, cmd := pressJobsKey(v2, 'd')
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatal("d in detail must push the delete confirm")
+	}
+	body := push.modal.View()
+	if !strings.Contains(body, "beta") {
+		t.Fatalf("delete confirm must target the DETAIL job (beta), not the drifted cursor row:\n%s", body)
+	}
+	if strings.Contains(body, `"alpha"`) {
+		t.Fatalf("delete confirm must not target the drifted cursor row (alpha):\n%s", body)
 	}
 }
