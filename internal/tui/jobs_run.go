@@ -26,6 +26,7 @@ const (
 	jobRunConfirmID       = "job-run"
 	jobInstallConfirmID   = "job-install"
 	jobUninstallConfirmID = "job-uninstall"
+	jobDeleteConfirmID    = "job-delete"
 )
 
 // jobTimerMsg carries an install/uninstall/delete filesystem result.
@@ -326,6 +327,40 @@ func (v JobsView) runTimerUninstall() (tea.Model, tea.Cmd) {
 			return jobTimerMsg{err: err}
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("removed timer for %q", name)}
+	}
+	return v, run
+}
+
+// runDelete removes the selected job: the policy leaves sentra.yaml
+// (config.Update, on-disk base) and the timer files are uninstalled —
+// in that order, so a half-failure can only leave a policy-less timer
+// briefly, never a timer-less zombie policy the table would still show.
+// Snapshots are deliberately untouched: data deletion belongs to
+// retention/prune, not a config view. Uninstall tolerates absent files,
+// so it runs unconditionally.
+func (v JobsView) runDelete() (tea.Model, tea.Cmd) {
+	row, ok := v.currentJob()
+	if !ok {
+		return v, nil
+	}
+	name := row.name
+	cfgPath := v.deps.ConfigPath
+	goos, home := v.osOverride, v.homeOverride
+	run := func() tea.Msg {
+		if err := config.Update(cfgPath, func(cfg *config.Config) error {
+			delete(cfg.Policies, name)
+			return nil
+		}); err != nil {
+			return jobTimerMsg{err: fmt.Errorf("remove policy: %w", err)}
+		}
+		paths, err := scheduler.PathsFor(goos, home, name)
+		if err != nil {
+			return jobTimerMsg{notice: fmt.Sprintf("deleted %q (timer cleanup skipped: %v)", name, err)}
+		}
+		if err := scheduler.Uninstall(paths); err != nil {
+			return jobTimerMsg{notice: fmt.Sprintf("deleted %q, but removing its timer failed: %v", name, err)}
+		}
+		return jobTimerMsg{notice: fmt.Sprintf("deleted %q — policy and timer removed; snapshots kept", name)}
 	}
 	return v, run
 }

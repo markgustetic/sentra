@@ -398,3 +398,55 @@ func TestJobs_RegisteredHiddenAndRoutable(t *testing.T) {
 		t.Fatalf("activateMsg must route to jobs, got %q", got)
 	}
 }
+
+func TestJobs_DeleteRemovesPolicyAndTimer(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.osOverride = "darwin"
+	paths, _ := scheduler.PathsFor("darwin", v.homeOverride, "alpha")
+	if err := scheduler.Install(map[string]string{paths.Files[0]: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	v.reload()
+	v.tbl.SetCursor(0)
+
+	v2, cmd := pressJobsKey(v, 'd')
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatal("d must push the delete confirm")
+	}
+	_ = push
+	m, cmd := v2.Update(confirmedMsg{id: jobDeleteConfirmID})
+	m2, _ := m.(JobsView).Update(cmd())
+	v3 := m2.(JobsView)
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, still := cfg.Policies["alpha"]; still {
+		t.Fatal("delete must remove the policy from sentra.yaml")
+	}
+	if installed, _ := scheduler.Installed(paths); installed {
+		t.Fatal("delete must uninstall the timer files")
+	}
+	if len(v3.rows) != 1 || v3.rows[0].name != "beta" {
+		t.Fatalf("rows after delete = %+v", v3.rows)
+	}
+}
+
+// The confirm body must state the full effect — and that snapshots
+// survive.
+func TestJobs_DeleteConfirmBodyMentionsTimerAndSnapshots(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(0)
+	_, cmd := pressJobsKey(v, 'd')
+	push := cmd().(pushModalMsg)
+	body := push.modal.View()
+	for _, want := range []string{"timer", "napshot"} {
+		if !strings.Contains(body, want) {
+			t.Fatalf("delete confirm must mention %q:\n%s", want, body)
+		}
+	}
+}

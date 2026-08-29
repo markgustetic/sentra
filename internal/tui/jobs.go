@@ -378,6 +378,8 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.runTimerUninstall()
 		case jobRunConfirmID:
 			return v.startRun()
+		case jobDeleteConfirmID:
+			return v.runDelete()
 		case jobAddConfirmID:
 			return v.saveForm(false)
 		case jobReplaceConfirmID:
@@ -449,6 +451,13 @@ func (v JobsView) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case 'r':
 			if _, ok := v.currentJob(); ok {
 				return v.armRun()
+			}
+		case 'd':
+			if row, ok := v.currentJob(); ok {
+				v.notice = ""
+				body := fmt.Sprintf("Delete job %q?\nRemoves the policy from sentra.yaml AND uninstalls its OS timer.\nExisting snapshots are kept and age out via retention.", row.name)
+				modal := NewConfirmModal("Delete job", body, jobDeleteConfirmID, 80, 24)
+				return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 			}
 		}
 	}
