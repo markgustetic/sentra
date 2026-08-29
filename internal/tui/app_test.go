@@ -114,8 +114,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing %q", want)
 		}
 	}
-	if got := len(app.views); got != 19 {
-		t.Fatalf("views = %d, want 19 (6 rail views + 13 hidden: diff, check, doctor, recovery-kit, policies, schedule, restore, prune, sync, password, unlock, connect, setup)", got)
+	if got := len(app.views); got != 20 {
+		t.Fatalf("views = %d, want 20 (6 rail views + 14 hidden: diff, check, doctor, recovery-kit, policies, schedule, jobs, restore, prune, sync, password, unlock, connect, setup)", got)
 	}
 }
 
@@ -939,7 +939,7 @@ func TestApp_AllViewsRegistered(t *testing.T) {
 
 	want := []string{
 		"dashboard", "backup", "snapshots", "maintenance", "settings", "help",
-		"diff", "check", "doctor", "recovery-kit", "policies", "schedule",
+		"diff", "check", "doctor", "recovery-kit", "policies", "schedule", "jobs",
 		"restore", "prune", "sync", "password", "unlock", "connect", "setup",
 	}
 	got := make(map[string]bool, len(app.views))

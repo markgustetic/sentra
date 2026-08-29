@@ -2,10 +2,15 @@ package tui
 
 import (
 	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/scheduler"
 )
 
 var jobsNow = time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC)
@@ -100,5 +105,103 @@ func TestRelAge(t *testing.T) {
 		if got := relAge(jobsNow.Add(-tc.d), jobsNow); got != tc.want {
 			t.Fatalf("relAge(-%s) = %q, want %q", tc.d, got, tc.want)
 		}
+	}
+}
+
+// jobsDeps writes a sentra.yaml with two policies (one daily, one
+// manual) and returns Deps pointing at it. homeOverride steers the
+// scheduler stat into an empty temp dir, so "not installed" is
+// deterministic.
+func jobsDeps(t *testing.T) (Deps, string) {
+	t.Helper()
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Policies["alpha"] = config.PolicyConfig{
+		Paths:    []string{"/data/alpha"},
+		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
+	}
+	cfg.Policies["beta"] = config.PolicyConfig{
+		Paths:    []string{"/data/beta"},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+	}
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatalf("write config: %v", err)
+	}
+	return Deps{Config: &cfg, ConfigPath: path}, path
+}
+
+func newJobsForTest(t *testing.T, deps Deps) JobsView {
+	t.Helper()
+	v := NewJobsView(deps)
+	v.homeOverride = t.TempDir() // no scheduler files -> not installed
+	v.now = func() time.Time { return jobsNow }
+	v.reload()
+	return v
+}
+
+func TestJobs_ListShowsScheduleTimerAndNextRun(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	out := sized.(JobsView).View()
+	for _, want := range []string{"alpha", "beta", "daily@03:00", "manual", "not installed"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("list missing %q:\n%s", want, out)
+		}
+	}
+	// alpha's timer is NOT installed, and beta is manual: neither may
+	// promise a next run.
+	if strings.Contains(out, "Mar 11") {
+		t.Fatalf("uninstalled/manual rows must not show a next run:\n%s", out)
+	}
+}
+
+func TestJobs_InstalledRowComputesNextRun(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	// Fake an installed timer: create the launchd plist path for alpha.
+	paths, err := scheduler.PathsFor("darwin", v.homeOverride, "alpha")
+	if err != nil {
+		t.Fatal(err)
+	}
+	v.osOverride = "darwin"
+	if err := scheduler.Install(map[string]string{paths.Files[0]: "x"}); err != nil {
+		t.Fatal(err)
+	}
+	v.reload()
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	out := sized.(JobsView).View()
+	// jobsNow is Mar 10 14:30; daily@03:00 -> next run Mar 11 03:00.
+	if !strings.Contains(out, "installed") || !strings.Contains(out, "Mar 11 03:00") {
+		t.Fatalf("installed daily job must show next run:\n%s", out)
+	}
+}
+
+func TestJobs_LastRunColumnFromPreload(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	deps.preload = &snapshotPreload{snaps: []repo.SnapshotInfo{
+		snapAt("s1", "/data/alpha", "policy:alpha", 2*time.Hour),
+	}}
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	out := sized.(JobsView).View()
+	if !strings.Contains(out, "2h ago") {
+		t.Fatalf("last-run column missing:\n%s", out)
+	}
+}
+
+func TestJobs_RegisteredHiddenAndRoutable(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x"})
+	for _, c := range app.registry.Commands() {
+		if c.ID == "jobs" {
+			t.Fatal("jobs must be hidden from the rail")
+		}
+	}
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, _ := sized.(App).Update(activateMsg{id: "jobs"})
+	if got := m.(App).views[m.(App).active].id; got != "jobs" {
+		t.Fatalf("activateMsg must route to jobs, got %q", got)
 	}
 }

@@ -315,6 +315,7 @@ func NewApp(deps Deps) App {
 		{id: "recovery-kit", model: NewRecoveryKitView(deps)},
 		{id: "policies", model: NewPoliciesView(deps)},
 		{id: "schedule", model: NewScheduleView(deps)},
+		{id: "jobs", model: NewJobsView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
 		{id: "sync", model: NewSyncView(deps)},
@@ -344,7 +345,7 @@ func NewApp(deps Deps) App {
 		"unlock": true, "connect": true,
 		"diff": true, "restore": true,
 		"check": true, "prune": true, "sync": true, "doctor": true,
-		"policies": true, "schedule": true, "recovery-kit": true,
+		"policies": true, "schedule": true, "jobs": true, "recovery-kit": true,
 		"password": true, "setup": true,
 	}
 	for _, v := range views {
