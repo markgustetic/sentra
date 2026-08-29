@@ -35,7 +35,7 @@ func TestApp_RailShowsExactlySixViews(t *testing.T) {
 func TestApp_DemotedViewsStayRoutable(t *testing.T) {
 	for _, id := range []string{
 		"diff", "restore", "check", "prune", "sync", "doctor",
-		"policies", "schedule", "jobs", "recovery-kit", "password", "setup",
+		"jobs", "recovery-kit", "password", "setup",
 	} {
 		t.Run(id, func(t *testing.T) {
 			app := NewApp(Deps{RepoName: "x"})

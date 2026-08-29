@@ -352,13 +352,11 @@ func TestJobs_EditToManualUninstallsTimer(t *testing.T) {
 	v2, _ := pressJobsKey(v, 'e')
 	v2.form.schedule.SetValue("manual")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
-	if cmd != nil {
-		if res := cmd(); res != nil {
-			m2m, _ := m2.(JobsView).Update(res)
-			m2 = m2m
-		}
-	}
+	// saveForm runs synchronously (config write + timer sync) and, for an
+	// edit confirm, always returns a nil cmd — there is nothing async to
+	// chain here. The assertion below reads disk state, not the returned
+	// view, so both results are discarded.
+	m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
 	if installed, _ := scheduler.Installed(paths); installed {
 		t.Fatal("editing an installed job to manual must uninstall its timer")
 	}
@@ -683,5 +681,197 @@ func TestJobs_DrillInDropsResultForSupersededSnapID(t *testing.T) {
 	}
 	if v2.detailSnapID != "B" {
 		t.Fatalf("detailSnapID must remain the one actually being waited on, got %q", v2.detailSnapID)
+	}
+}
+
+// --- Ports from the deleted PoliciesView/ScheduleView test suites ---
+//
+// The five tests below port behaviors from policies_test.go that were the
+// only proof of the shared run/form machinery (buildPolicyRunOp, armRun,
+// saveForm's replace guard) once PoliciesView itself was deleted. Every one
+// of them is GREEN ON ARRIVAL: JobsView's run/form machinery (jobs.go,
+// jobs_run.go, jobs_form.go) already implements the behavior being ported
+// — these tests were written and run against that existing code, not used
+// to drive new implementation, so there is no RED phase to show here.
+// schedule_test.go was also skimmed per the task brief; its
+// install/uninstall/manual-refusal/nil-config coverage is already
+// subsumed by TestJobs_InstallThenUninstallTimer,
+// TestJobs_InstallRejectsManual, and the loadErr placeholder path, and its
+// reload-cursor-preservation logic is identical code copied verbatim into
+// JobsView.reload (jobs.go) with no dedicated test on either side to port.
+
+// TestJobs_RunOffModeUsesSimpleConfirm is the port of the deleted
+// TestPoliciesView_RunOffModeUsesSimpleConfirm: a job whose prune mode is
+// off (or unset, which normalizes to off) must gate run-now behind the
+// SIMPLE confirm — TYPED is reserved for prune:apply (see
+// TestJobs_RunNowConfirmVariants, which covers that side of the gate).
+func TestJobs_RunOffModeUsesSimpleConfirm(t *testing.T) {
+	deps, _ := jobsDeps(t) // alpha has no AfterBackup.Prune set -> "off"
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(0) // alpha
+	_, cmd := pressJobsKey(v, 'r')
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("r must push a confirm modal, got %#v", cmd())
+	}
+	if _, ok := push.modal.(ConfirmModal); !ok {
+		t.Fatalf("prune=off must use the SIMPLE ConfirmModal, got %T", push.modal)
+	}
+}
+
+// TestJobs_RunRefusesInvalidPolicy is the port of the deleted
+// TestPoliciesView_RunRefusesInvalidPolicy: a corrupt on-disk prune mode
+// (a typo like "aply") must not slip past armRun's validation and arm the
+// simple confirm — policyPruneModeOrOff only lowercases/trims, so armRun
+// must validate first (mirroring the CLI's runPolicy, which calls
+// policycfg.Validate) and refuse via notice instead of pushing a modal.
+func TestJobs_RunRefusesInvalidPolicy(t *testing.T) {
+	deps, path := jobsDeps(t)
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.AfterBackup.Prune = "aply"
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(0)
+	v2, cmd := pressJobsKey(v, 'r')
+	if cmd != nil {
+		if push, ok := cmd().(pushModalMsg); ok {
+			t.Fatalf("invalid prune mode must not arm a RUN modal, got %T", push.modal)
+		}
+	}
+	if v2.stage == jobsRunning {
+		t.Fatal("invalid policy must not enter the running stage")
+	}
+	if v2.notice == "" {
+		t.Fatal("invalid policy must surface a notice explaining the refusal")
+	}
+}
+
+// TestJobs_RunConfirmedTakesOpGuardAndSnapshots is the port of the deleted
+// TestPoliciesView_RunConfirmedTakesOpGuardAndSnapshots: confirming RUN
+// emits a startOpMsg (name "job-run") whose run creates a real snapshot
+// under the one-op guard. jobsDepsWithRepo seeds one snapshot for the
+// drill-in tests, so the post-run store carries two.
+func TestJobs_RunConfirmedTakesOpGuardAndSnapshots(t *testing.T) {
+	deps, _, _ := jobsDepsWithRepo(t) // alpha, prune unset -> off
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(0) // alpha
+	v2, _ := pressJobsKey(v, 'r')
+	m, cmd := v2.Update(confirmedMsg{id: jobRunConfirmID})
+	v3 := m.(JobsView)
+	if v3.stage != jobsRunning {
+		t.Fatalf("stage = %v, want jobsRunning", v3.stage)
+	}
+	msgs := execCmds(t, cmd)
+	var start startOpMsg
+	var foundStart bool
+	for _, msg := range msgs {
+		if s, ok := msg.(startOpMsg); ok {
+			start, foundStart = s, true
+		}
+	}
+	if !foundStart {
+		t.Fatalf("confirmed run must emit a startOpMsg, got %#v", msgs)
+	}
+	if start.name != "job-run" {
+		t.Fatalf("op name = %q, want job-run", start.name)
+	}
+	// Run the op synchronously; it must create a snapshot and report done.
+	res := start.run(context.Background())
+	done, ok := res.(policyRunDoneMsg)
+	if !ok {
+		t.Fatalf("expected policyRunDoneMsg, got %#v", res)
+	}
+	if done.err != nil {
+		t.Fatalf("run failed: %v", done.err)
+	}
+	if done.snapshots != 1 {
+		t.Fatalf("snapshots = %d, want 1", done.snapshots)
+	}
+	snaps, err := deps.Repo.ListSnapshots(context.Background())
+	if err != nil || len(snaps) != 2 {
+		t.Fatalf("ListSnapshots = %v, %v, want 2 (jobsDepsWithRepo's seed + this run)", snaps, err)
+	}
+	// Delivering the result moves to the done stage.
+	m2, _ := v3.Update(res)
+	v4 := m2.(JobsView)
+	if v4.stage != jobsRunDone {
+		t.Fatalf("stage after result = %v, want jobsRunDone", v4.stage)
+	}
+}
+
+// TestJobs_RunRejectedResetsToList is the port of the deleted
+// TestPoliciesView_RunRejectedResetsToList: if the op guard rejects the
+// start (another op running), the view must leave the running stage and
+// surface a notice.
+func TestJobs_RunRejectedResetsToList(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.tbl.SetCursor(0)
+	v2, _ := pressJobsKey(v, 'r')
+	m, _ := v2.Update(confirmedMsg{id: jobRunConfirmID})
+	v3 := m.(JobsView)
+	m2, _ := v3.Update(opRejectedMsg{name: "job-run"})
+	v4 := m2.(JobsView)
+	if v4.stage != jobsList {
+		t.Fatalf("stage after rejection = %v, want jobsList", v4.stage)
+	}
+	if v4.notice == "" {
+		t.Fatal("rejection must set a notice banner")
+	}
+}
+
+// TestJobs_FormReplaceGuardPreservesHooks is the port of the deleted
+// TestPoliciesForm_ReplaceGuardPreservesHooks: adding a job whose name
+// already exists must NOT silently overwrite — it pushes a replace
+// confirm, and confirming preserves the existing policy's config-authored
+// hooks, matching `policy add --replace`.
+func TestJobs_FormReplaceGuardPreservesHooks(t *testing.T) {
+	deps, path := jobsDeps(t)
+	// Give alpha a hand-authored hook the form can't express.
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.Hooks = config.PolicyHooks{OnFailureWebhookEnv: "SENTRA_ALERT_URL"}
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+
+	v := newJobsForTest(t, deps)
+	v2, _ := pressJobsKey(v, 'a')
+	v2.form.name.SetValue("alpha")
+	v2.form.path.SetValue("/data/alpha-new")
+	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v3 := m.(JobsView)
+	m2, _ := v3.Update(confirmedMsg{id: jobAddConfirmID})
+	v4 := m2.(JobsView)
+
+	// The write must NOT have happened yet — a replace confirm is up.
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policies["alpha"].Paths[0] == "/data/alpha-new" {
+		t.Fatal("existing policy overwritten without the replace confirm")
+	}
+
+	// The replace confirm's side effect is the config write; the returned
+	// view is never inspected again.
+	v4.Update(confirmedMsg{id: jobReplaceConfirmID})
+	cfg, err = config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p := cfg.Policies["alpha"]
+	if len(p.Paths) != 1 || p.Paths[0] != "/data/alpha-new" {
+		t.Fatalf("replace did not apply: %+v", p.Paths)
+	}
+	if p.Hooks.OnFailureWebhookEnv != "SENTRA_ALERT_URL" {
+		t.Errorf("replace dropped the config-authored hooks: %+v", p.Hooks)
 	}
 }

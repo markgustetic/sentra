@@ -259,10 +259,11 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with all 19 views — 18 navigable commands plus
+// NewApp constructs the shell with all 18 views — 18 navigable commands plus
 // the unlock startup gate: the original read-only views (dashboard, snapshots,
 // files, diff), the async-check views (check, doctor), the management views
-// (recovery-kit, policies, schedule), the agent view (which now also hosts
+// (recovery-kit, jobs — the scheduled-backups manager that replaced the
+// split Policies and Schedule views), the agent view (which now also hosts
 // agent-apply in place, so it gets no separate id), the direct data operations
 // (backup, restore, prune, sync, password), the "Settings" category (setup,
 // settings), the Help directory of the other screens, and the unlock gate.
@@ -313,8 +314,6 @@ func NewApp(deps Deps) App {
 		{id: "check", model: NewCheckView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
 		{id: "recovery-kit", model: NewRecoveryKitView(deps)},
-		{id: "policies", model: NewPoliciesView(deps)},
-		{id: "schedule", model: NewScheduleView(deps)},
 		{id: "jobs", model: NewJobsView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
@@ -339,13 +338,13 @@ func NewApp(deps Deps) App {
 	// connect are login/repair screens; the rest left the rail in the
 	// six-view simplification — each keeps exactly one launcher (diff and
 	// restore in Snapshots, check/prune/sync/doctor in Maintenance,
-	// policies/schedule/recovery-kit/password/setup in Settings), because
-	// hidden must never mean unreachable.
+	// jobs/recovery-kit/password/setup in Settings), because hidden must
+	// never mean unreachable.
 	hiddenFromRail := map[string]bool{
 		"unlock": true, "connect": true,
 		"diff": true, "restore": true,
 		"check": true, "prune": true, "sync": true, "doctor": true,
-		"policies": true, "schedule": true, "jobs": true, "recovery-kit": true,
+		"jobs": true, "recovery-kit": true,
 		"password": true, "setup": true,
 	}
 	for _, v := range views {

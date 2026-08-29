@@ -114,8 +114,8 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 			t.Errorf("sidebar missing %q", want)
 		}
 	}
-	if got := len(app.views); got != 20 {
-		t.Fatalf("views = %d, want 20 (6 rail views + 14 hidden: diff, check, doctor, recovery-kit, policies, schedule, jobs, restore, prune, sync, password, unlock, connect, setup)", got)
+	if got := len(app.views); got != 18 {
+		t.Fatalf("views = %d, want 18 (6 rail views + 12 hidden: diff, check, doctor, recovery-kit, jobs, restore, prune, sync, password, unlock, connect, setup)", got)
 	}
 }
 
@@ -914,22 +914,6 @@ func TestApp_DepsCarryNewFields(t *testing.T) {
 	}
 }
 
-func TestApp_RegistersPoliciesView(t *testing.T) {
-	app := newTestApp(t)
-	var found bool
-	for _, v := range app.views {
-		if v.id == "policies" {
-			found = true
-			if _, ok := v.model.(PoliciesView); !ok {
-				t.Fatalf("policies entry is %T, want PoliciesView", v.model)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("App must register the policies view")
-	}
-}
-
 // TestApp_AllViewsRegistered pins the views slice after the six-view rail
 // simplification: every view — rail and hidden alike — is present exactly
 // once. Rail/palette membership itself is pinned by
@@ -939,7 +923,7 @@ func TestApp_AllViewsRegistered(t *testing.T) {
 
 	want := []string{
 		"dashboard", "backup", "snapshots", "maintenance", "settings", "help",
-		"diff", "check", "doctor", "recovery-kit", "policies", "schedule", "jobs",
+		"diff", "check", "doctor", "recovery-kit", "jobs",
 		"restore", "prune", "sync", "password", "unlock", "connect", "setup",
 	}
 	got := make(map[string]bool, len(app.views))

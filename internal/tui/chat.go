@@ -89,7 +89,7 @@ func chatTools() []llm.Tool {
 			Schema: obj(map[string]any{})},
 		{Name: "repo_stats", Description: "Repository totals: snapshot count, logical vs stored bytes.",
 			Schema: obj(map[string]any{})},
-		{Name: "open_view", Description: "Open a view in the TUI (dashboard, backup, snapshots, maintenance, settings, help, or a flow like restore/diff/check/prune/sync/doctor).",
+		{Name: "open_view", Description: "Open a view in the TUI (dashboard, backup, snapshots, maintenance, settings, help, or a flow like restore/diff/check/prune/sync/doctor/jobs).",
 			Schema: obj(map[string]any{"id": map[string]any{"type": "string"}}, "id")},
 		{Name: "start_backup", Description: "Hand a backup intent to the UI: the operator sees the directory and tag in a confirm dialog and decides there.",
 			Schema: obj(map[string]any{

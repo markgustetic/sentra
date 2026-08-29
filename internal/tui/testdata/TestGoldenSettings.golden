@@ -6,10 +6,8 @@ Settings
   keyring  off
   config   /repo/sentra.yaml
 
-▍ Retention policies
-    named retention policies and dry-runs
-  Backup schedule
-    emit cron entries for scheduled backups
+▍ Scheduled backups
+    jobs: cadence, next run, edit, and drill-in
   Recovery kit
     render the printable recovery document
   Change passphrase

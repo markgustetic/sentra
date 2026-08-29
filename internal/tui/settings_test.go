@@ -129,8 +129,8 @@ func TestApp_SetupAndSettingsRegistered(t *testing.T) {
 			t.Errorf("view %q not registered", id)
 		}
 	}
-	if got := len(app.views); got != 20 {
-		t.Fatalf("views = %d, want 20 (six rail views + fourteen hidden)", got)
+	if got := len(app.views); got != 18 {
+		t.Fatalf("views = %d, want 18 (six rail views + twelve hidden)", got)
 	}
 }
 
@@ -384,10 +384,10 @@ func TestSettings_ForgetKeyringEntry(t *testing.T) {
 	}
 }
 
-// The management views that left the rail — policies, schedule, recovery
-// kit — must each keep a launcher here, alongside the setup and password
-// entries that always lived in Settings. This pins the fold: a view hidden
-// from the rail with no launcher would be unreachable.
+// The management views that left the rail — jobs, recovery kit — must each
+// keep a launcher here, alongside the setup and password entries that
+// always lived in Settings. This pins the fold: a view hidden from the
+// rail with no launcher would be unreachable.
 func TestSettings_NavigateEntriesCoverDemotedViews(t *testing.T) {
 	v := NewSettingsView(Deps{})
 	got := map[string]bool{}
@@ -396,9 +396,28 @@ func TestSettings_NavigateEntriesCoverDemotedViews(t *testing.T) {
 			got[e.targetID] = true
 		}
 	}
-	for _, want := range []string{"setup", "password", "policies", "schedule", "recovery-kit"} {
+	for _, want := range []string{"setup", "password", "jobs", "recovery-kit"} {
 		if !got[want] {
 			t.Errorf("settings has no navigate entry for %q", want)
 		}
+	}
+}
+
+// TestSettings_JobsRowRoutes: the jobs view replaces the deleted
+// Policies/Schedule launchers — settings must carry a navigate entry for
+// "jobs" and must not carry either old id.
+func TestSettings_JobsRowRoutes(t *testing.T) {
+	v := NewSettingsView(Deps{})
+	found := false
+	for _, e := range v.entries {
+		if e.kind == entryNavigate && e.targetID == "jobs" {
+			found = true
+		}
+		if e.targetID == "policies" || e.targetID == "schedule" {
+			t.Fatalf("old launcher %q must be gone", e.targetID)
+		}
+	}
+	if !found {
+		t.Fatal("settings must carry the jobs launcher")
 	}
 }

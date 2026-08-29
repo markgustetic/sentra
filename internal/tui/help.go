@@ -49,7 +49,7 @@ var viewDescriptions = map[string]string{
 	"backup":      "Snapshot a folder into the repository",
 	"snapshots":   "Browse snapshots, inspect, diff, and restore",
 	"maintenance": "Check, prune, sync, and doctor in one place",
-	"settings":    "Configuration, policies, schedule, and recovery",
+	"settings":    "Configuration, scheduled backups, and recovery",
 	"help":        "What each screen in the rail does",
 }
 

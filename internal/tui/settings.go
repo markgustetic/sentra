@@ -63,8 +63,7 @@ func NewSettingsView(deps Deps) SettingsView {
 			// taxed the daily backup/snapshot/restore loop. Every demoted
 			// view keeps a navigate entry here — hidden from the rail must
 			// never mean unreachable.
-			{kind: entryNavigate, label: "Retention policies", desc: "named retention policies and dry-runs", targetID: "policies"},
-			{kind: entryNavigate, label: "Backup schedule", desc: "emit cron entries for scheduled backups", targetID: "schedule"},
+			{kind: entryNavigate, label: "Scheduled backups", desc: "jobs: cadence, next run, edit, and drill-in", targetID: "jobs"},
 			{kind: entryNavigate, label: "Recovery kit", desc: "render the printable recovery document", targetID: "recovery-kit"},
 			{kind: entryNavigate, label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
 			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
