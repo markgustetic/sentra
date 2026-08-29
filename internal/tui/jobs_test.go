@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -272,6 +273,116 @@ func TestJobs_RunNowConfirmVariants(t *testing.T) {
 	if _, typed := push.modal.(TypedConfirmModal); !typed {
 		t.Fatal("prune:apply must get the TYPED confirm")
 	}
+}
+
+func TestJobs_EditPrefillsAndSavesWithTimerReinstall(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.osOverride = "darwin"
+	v.exeOverride = "/usr/local/bin/sentra"
+	// Install alpha's timer so the edit has something to re-render.
+	paths, _ := scheduler.PathsFor("darwin", v.homeOverride, "alpha")
+	files, err := scheduler.Render(paths, v.exeOverride, path, "alpha",
+		config.PolicySchedule{Cadence: "daily", At: "03:00"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Install(files); err != nil {
+		t.Fatal(err)
+	}
+	v.reload()
+	v.tbl.SetCursor(0)
+
+	v2, _ := pressJobsKey(v, 'e')
+	if v2.stage != jobsForm || v2.editName != "alpha" {
+		t.Fatalf("e must open the edit form: stage=%v editName=%q", v2.stage, v2.editName)
+	}
+	if got := v2.form.schedule.Value(); got != "daily@03:00" {
+		t.Fatalf("schedule not prefilled: %q", got)
+	}
+	if v2.form.focus == 0 {
+		t.Fatal("edit mode must not focus the read-only name field")
+	}
+
+	v2.form.schedule.SetValue("daily@09:00")
+	m, cmd := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatal("enter must push the edit confirm")
+	}
+	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	if cmd != nil {
+		if res := cmd(); res != nil {
+			m2m, _ := m2.(JobsView).Update(res)
+			m2 = m2m
+		}
+	}
+	v3 := m2.(JobsView)
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policies["alpha"].Schedule.At != "09:00" {
+		t.Fatalf("edit must persist: %+v", cfg.Policies["alpha"].Schedule)
+	}
+	body, err := os.ReadFile(paths.Files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(body), "9") {
+		t.Fatalf("installed timer must be re-rendered for 09:00:\n%s", body)
+	}
+	_ = v3
+}
+
+func TestJobs_EditToManualUninstallsTimer(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.osOverride = "darwin"
+	v.exeOverride = "/usr/local/bin/sentra"
+	paths, _ := scheduler.PathsFor("darwin", v.homeOverride, "alpha")
+	files, _ := scheduler.Render(paths, v.exeOverride, path, "alpha",
+		config.PolicySchedule{Cadence: "daily", At: "03:00"})
+	if err := scheduler.Install(files); err != nil {
+		t.Fatal(err)
+	}
+	v.reload()
+	v.tbl.SetCursor(0)
+
+	v2, _ := pressJobsKey(v, 'e')
+	v2.form.schedule.SetValue("manual")
+	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	if cmd != nil {
+		if res := cmd(); res != nil {
+			m2m, _ := m2.(JobsView).Update(res)
+			m2 = m2m
+		}
+	}
+	if installed, _ := scheduler.Installed(paths); installed {
+		t.Fatal("editing an installed job to manual must uninstall its timer")
+	}
+}
+
+func TestJobs_AddFormStillWorks(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v2, _ := pressJobsKey(v, 'a')
+	if v2.stage != jobsForm || v2.editName != "" {
+		t.Fatalf("a must open a blank add form: stage=%v editName=%q", v2.stage, v2.editName)
+	}
+	v2.form.name.SetValue("gamma")
+	v2.form.path.SetValue("/data/gamma")
+	v2.form.schedule.SetValue("weekly@mon:04:00")
+	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, _ := m.(JobsView).Update(confirmedMsg{id: jobAddConfirmID})
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := cfg.Policies["gamma"]; !ok {
+		t.Fatal("add must persist the new policy")
+	}
+	_ = m2
 }
 
 func TestJobs_RegisteredHiddenAndRoutable(t *testing.T) {

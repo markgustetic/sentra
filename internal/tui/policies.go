@@ -7,7 +7,6 @@ import (
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -291,11 +290,6 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return v, cmd
 }
 
-// errPolicyExists signals the replace-confirm gate from inside the
-// config.Update closure: the duplicate check runs against the on-disk
-// map, the same base `policy add` checks.
-var errPolicyExists = errors.New("policy exists")
-
 // addFromForm rebuilds + revalidates the form, writes the new policy into
 // sentra.yaml, and reloads. Config-only: no repo lock, no op guard.
 // replace=false refuses an existing name (pushing the replace confirm);
@@ -524,81 +518,5 @@ func (v PoliciesView) renderDetail() string {
 	return b.String()
 }
 
-// policyForm is the inline ADD form: name + path + optional schedule
-// shorthand ("daily@03:00", "manual", …). It stays deliberately minimal —
-// the same fields the CLI's `policy add` exposes for the common case;
-// power users still edit sentra.yaml directly. A built policy is validated
-// with policycfg.Validate before the confirm modal, so a bad entry never
-// reaches disk.
-type policyForm struct {
-	name     textinput.Model
-	path     textinput.Model
-	tags     textinput.Model
-	schedule textinput.Model
-	// check and prune mirror `policy add`'s --check / --prune so the
-	// TUI form carries the same policy shape as the CLI.
-	check bool
-	prune string // off | dry-run | apply
-	focus int    // 0=name, 1=path, 2=tags, 3=schedule, 4=check, 5=prune
-	err   string
-}
-
-// policyFormFields is the tab cycle length: four text inputs plus the
-// check toggle and the prune-mode cycle.
-const policyFormFields = 6
-
-func newPolicyForm() policyForm {
-	name := textinput.New()
-	name.Prompt = "name>     "
-	name.Placeholder = "policy name"
-	name.Focus()
-	path := textinput.New()
-	path.Prompt = "paths>    "
-	path.Placeholder = "directories to back up, comma-separated"
-	tags := textinput.New()
-	tags.Prompt = "tags>     "
-	tags.Placeholder = "optional tags, comma-separated"
-	schedule := textinput.New()
-	schedule.Prompt = "schedule> "
-	schedule.Placeholder = "manual | daily@03:00 | weekly@mon:03:00"
-	return policyForm{name: name, path: path, tags: tags, schedule: schedule, prune: policycfg.PruneOff}
-}
-
-// splitCommaList turns a comma-separated field into trimmed entries,
-// dropping empties — "a, b," parses as ["a", "b"].
-func splitCommaList(s string) []string {
-	var out []string
-	for _, part := range strings.Split(s, ",") {
-		if p := strings.TrimSpace(part); p != "" {
-			out = append(out, p)
-		}
-	}
-	return out
-}
-
-// build assembles a config.PolicyConfig from the form and validates it.
-// Returns the built name + policy, or a non-nil error to display inline.
-func (f policyForm) build() (string, config.PolicyConfig, error) {
-	name := strings.TrimSpace(f.name.Value())
-	spec := strings.TrimSpace(f.schedule.Value())
-	if spec == "" {
-		spec = policycfg.CadenceManual
-	}
-	sched, err := policycfg.ParseScheduleSpec(spec)
-	if err != nil {
-		return "", config.PolicyConfig{}, err
-	}
-	p := config.PolicyConfig{
-		Paths:    splitCommaList(f.path.Value()),
-		Tags:     splitCommaList(f.tags.Value()),
-		Schedule: sched,
-		AfterBackup: config.PolicyAfterBackup{
-			Check: f.check,
-			Prune: f.prune,
-		},
-	}
-	if err := policycfg.Validate(name, p); err != nil {
-		return "", config.PolicyConfig{}, err
-	}
-	return name, p, nil
-}
+// policyForm, newPolicyForm, splitCommaList, and (policyForm).build moved
+// to jobs_form.go — shared by PoliciesView and JobsView's add/edit forms.

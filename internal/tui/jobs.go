@@ -159,6 +159,12 @@ type JobsView struct {
 	run    policyRunState
 	result policyRunDoneMsg
 
+	// form + editName drive the add/edit stage (see jobs_form.go).
+	// editName is non-empty in edit mode, which keeps the name field
+	// read-only (never focused) and reconciles the OS timer on save.
+	form     policyForm
+	editName string
+
 	// Test seams. osOverride/homeOverride/exeOverride pin the scheduler
 	// platform/home/executable (zero values fall back to runtime); now
 	// pins the clock for next-run/last-run rendering; homeDir feeds ~
@@ -192,6 +198,17 @@ func (v JobsView) Title() string { return "Scheduled backups" }
 
 func (v JobsView) ConsumesArrows() bool {
 	return (v.stage == jobsList && len(v.rows) > 0) || v.stage == jobsDetail
+}
+
+// CapturesText is true only on the add/edit form stage, where the
+// name/path/tags/schedule text inputs are focused and tab moves between
+// them. The list stage uses single-key commands and must keep the globals.
+func (v JobsView) CapturesText() bool { return v.stage == jobsForm }
+
+// ConsumesEscape: esc abandons the add/edit form, or backs out of the
+// drill-in detail page.
+func (v JobsView) ConsumesEscape() bool {
+	return v.stage == jobsForm || v.stage == jobsDetail
 }
 
 // jobsHome resolves the home dir used for both ~ expansion and the
@@ -332,6 +349,8 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		switch v.stage {
 		case jobsList:
 			return v.handleListKey(msg)
+		case jobsForm:
+			return v.updateForm(msg)
 		case jobsRunDone:
 			if msg.Type == tea.KeyEnter {
 				v.stage = jobsList
@@ -359,6 +378,12 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v.runTimerUninstall()
 		case jobRunConfirmID:
 			return v.startRun()
+		case jobAddConfirmID:
+			return v.saveForm(false)
+		case jobReplaceConfirmID:
+			return v.saveForm(true)
+		case jobEditConfirmID:
+			return v.saveForm(true)
 		}
 		return v, nil
 
@@ -393,6 +418,20 @@ func (v JobsView) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.notice = ""
 			v.reload()
 			return v, nil
+		case 'a':
+			v.stage = jobsForm
+			v.editName = ""
+			v.form = newPolicyForm()
+			v.notice = ""
+			return v, nil
+		case 'e':
+			if row, ok := v.currentJob(); ok {
+				v.stage = jobsForm
+				v.editName = row.name
+				v.form = prefilledPolicyForm(row.name, v.policies[row.name])
+				v.notice = ""
+				return v, nil
+			}
 		case 'i':
 			if row, ok := v.currentJob(); ok {
 				v.notice = ""
@@ -430,6 +469,39 @@ func (v JobsView) currentJob() (jobRow, bool) {
 func (v JobsView) View() string {
 	if v.loadErr != "" {
 		return ui.Danger.Render(v.loadErr)
+	}
+	if v.stage == jobsForm {
+		var b strings.Builder
+		title := "New job"
+		if v.editName != "" {
+			title = "Edit job"
+		}
+		fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render(title))
+		if v.editName != "" {
+			// Never wrap an already-styled string: build the plain name
+			// line ourselves rather than wrapping v.form.name.View()
+			// (which textinput has already styled) in ui.Muted.
+			fmt.Fprintf(&b, "%s\n", ui.Muted.Render(fmt.Sprintf("name>     %s", v.editName)))
+		} else {
+			fmt.Fprintf(&b, "%s\n", v.form.name.View())
+		}
+		fmt.Fprintf(&b, "%s\n", v.form.path.View())
+		fmt.Fprintf(&b, "%s\n", v.form.tags.View())
+		fmt.Fprintf(&b, "%s\n", v.form.schedule.View())
+		checkMark, pruneMark := "[ ]", "  "
+		if v.form.check {
+			checkMark = "[x]"
+		}
+		checkRow := fmt.Sprintf("%s check after backup", checkMark)
+		pruneRow := fmt.Sprintf("%s prune after backup: %s", pruneMark, v.form.prune)
+		checkRow = ui.SelectRow(v.form.focus == 4, checkRow)
+		pruneRow = ui.SelectRow(v.form.focus == 5, pruneRow)
+		fmt.Fprintf(&b, "%s\n%s\n", checkRow, pruneRow)
+		if v.form.err != "" {
+			fmt.Fprintf(&b, "\n%s\n", ui.Danger.Render(v.form.err))
+		}
+		fmt.Fprintf(&b, "\n%s", ui.ActionLine("save the job", "tab field · esc cancel"))
+		return b.String()
 	}
 	if v.stage == jobsRunning {
 		var b strings.Builder
