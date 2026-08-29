@@ -7,6 +7,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/config"
 )
@@ -240,5 +241,65 @@ func TestScheduleInstall_DiscoversHomeConfigAndEmbedsAbsolutePath(t *testing.T) 
 	}
 	if !strings.Contains(string(raw), cfgPath) {
 		t.Errorf("launch agent does not embed the discovered absolute config path %q:\n%s", cfgPath, raw)
+	}
+}
+
+func TestScheduleStatusPrintsNextRun(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	cfgPath := scheduleConfigWithPolicy(t, dir, "home", config.PolicySchedule{Cadence: "daily", At: "03:00"})
+	home := filepath.Join(dir, "home")
+	deps := ScheduleDeps{
+		OS:         "darwin",
+		HomeDir:    func() (string, error) { return home, nil },
+		Executable: func() (string, error) { return "/usr/local/bin/sentra", nil },
+		Now:        func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) },
+	}
+
+	install := NewSchedule(deps)
+	install.SetOut(io.Discard)
+	install.SetErr(io.Discard)
+	install.SetArgs([]string{"install", "home", "--config", cfgPath})
+	if err := install.Execute(); err != nil {
+		t.Fatalf("install: %v", err)
+	}
+
+	out := &bytes.Buffer{}
+	deps.Stdout = out
+	status := NewSchedule(deps)
+	status.SetOut(out)
+	status.SetErr(io.Discard)
+	status.SetArgs([]string{"status", "home", "--config", cfgPath})
+	if err := status.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if !strings.Contains(out.String(), "next run: 2026-03-11 03:00") {
+		t.Fatalf("status must print the computed next run:\n%s", out.String())
+	}
+}
+
+// A not-installed schedule must not print a next run — the timer will
+// not fire, and the status output must not promise otherwise.
+func TestScheduleStatusNoNextRunWhenNotInstalled(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	cfgPath := scheduleConfigWithPolicy(t, dir, "home", config.PolicySchedule{Cadence: "daily", At: "03:00"})
+	home := filepath.Join(dir, "home")
+	out := &bytes.Buffer{}
+	deps := ScheduleDeps{
+		OS:      "darwin",
+		HomeDir: func() (string, error) { return home, nil },
+		Now:     func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) },
+		Stdout:  out,
+	}
+	status := NewSchedule(deps)
+	status.SetOut(out)
+	status.SetErr(io.Discard)
+	status.SetArgs([]string{"status", "home", "--config", cfgPath})
+	if err := status.Execute(); err != nil {
+		t.Fatalf("status: %v", err)
+	}
+	if strings.Contains(out.String(), "next run:") {
+		t.Fatalf("not-installed status must not print a next run:\n%s", out.String())
 	}
 }

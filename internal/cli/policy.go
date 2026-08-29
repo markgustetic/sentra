@@ -15,6 +15,7 @@ import (
 	"github.com/markgustetic/sentra/internal/crypto"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/scheduler"
 	"github.com/markgustetic/sentra/internal/ui"
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -23,6 +24,11 @@ import (
 type PolicyDeps struct {
 	RepoDeps
 	Stderr io.Writer
+
+	// OS and HomeDir steer the timer-file cleanup in remove; zero
+	// values fall back to the runtime platform and home directory.
+	OS      string
+	HomeDir func() (string, error)
 }
 
 type policyAddFlags struct {
@@ -257,6 +263,24 @@ func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) 
 	out := policyStdout(cmd, deps)
 	fmt.Fprintln(out, ui.Success.Render("Policy removed"))
 	fmt.Fprintf(out, "  name: %s\n", name)
+
+	// An installed timer for a deleted policy can only ever fail
+	// (`sentra policy run` on a missing name), so clean it up. Best
+	// effort: the policy is already removed, so a cleanup problem is a
+	// warning, not a command failure.
+	home := ""
+	if deps.HomeDir != nil {
+		home, _ = deps.HomeDir()
+	}
+	if paths, pErr := scheduler.PathsFor(deps.OS, home, name); pErr == nil {
+		if installed, iErr := scheduler.Installed(paths); iErr == nil && installed {
+			if uErr := scheduler.Uninstall(paths); uErr != nil {
+				fmt.Fprintf(out, "  warning: schedule entry not removed: %v\n", uErr)
+			} else {
+				fmt.Fprintln(out, "  schedule entry removed")
+			}
+		}
+	}
 	return nil
 }
 
