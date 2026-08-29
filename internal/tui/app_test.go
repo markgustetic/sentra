@@ -571,6 +571,72 @@ func TestApp_KeysRouteToFocusedContent(t *testing.T) {
 	}
 }
 
+// TestApp_TabCyclesJobsDetailPathsNotFocus is the regression test for the
+// review finding that tab never reached JobsView's detail-stage path
+// cycling in the real app. handleDetailKey has handled tea.KeyTab since
+// the view shipped, but nothing told the shell's routeKey to let it: the
+// global Focus binding (see newGlobalKeymap) intercepts tab before the
+// active view ever sees it unless the view opts out via ConsumesTab (the
+// same interface BackupView's folder picker uses), so the spec's "←/→
+// (and tab) cycle paths" was dead for tab — only view-level tests, which
+// drive JobsView.Update directly and skip the shell entirely, ever
+// exercised it. This test drives a real App so the shell's routing is
+// actually on the hook.
+func TestApp_TabCyclesJobsDetailPathsNotFocus(t *testing.T) {
+	deps, path := jobsDeps(t) // alpha (daily), beta (manual)
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.Paths = []string{"/data/alpha", "/data/alpha2"}
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	jv := newJobsForTest(t, deps)
+
+	app := newTestApp(t)
+	installView(t, &app, "jobs", jv)
+
+	m, _ := app.Update(activateMsg{id: "jobs"})
+	a := m.(App)
+	if a.focus != focusContent {
+		t.Fatalf("activating jobs must focus content, got %v", a.focus)
+	}
+
+	// tab on the jobs LIST stage must still toggle shell focus — the
+	// ConsumesTab guard is stage-scoped, not view-scoped.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
+	a = m.(App)
+	if a.focus != focusSidebar {
+		t.Fatalf("tab on the jobs LIST stage must toggle focus to the sidebar, got %v", a.focus)
+	}
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
+	a = m.(App)
+	if a.focus != focusContent {
+		t.Fatalf("tab must toggle focus back to content, got %v", a.focus)
+	}
+
+	// Enter drills into alpha's detail stage at path 0.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	a = m.(App)
+	after := a.views[a.active].model.(JobsView)
+	if after.stage != jobsDetail || after.detailPathIdx != 0 {
+		t.Fatalf("enter must open detail at path 0: stage=%v idx=%d", after.stage, after.detailPathIdx)
+	}
+
+	// tab on the jobs DETAIL stage must cycle the path index, not toggle
+	// shell focus.
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
+	a = m.(App)
+	if a.focus != focusContent {
+		t.Fatalf("tab on the jobs DETAIL stage must not toggle focus, got %v", a.focus)
+	}
+	after = a.views[a.active].model.(JobsView)
+	if after.stage != jobsDetail || after.detailPathIdx != 1 {
+		t.Fatalf("tab must cycle the detail path index to 1, got stage=%v idx=%d", after.stage, after.detailPathIdx)
+	}
+}
+
 // T2 — TestApp_ResizeForwardsInnerSize: resize() must forward the
 // content-pane inner size to views, not the raw terminal size. We
 // install a Snapshots view, resize the shell to 100x30, and assert the

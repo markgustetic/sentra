@@ -259,20 +259,21 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with all 18 views — 18 navigable commands plus
-// the unlock startup gate: the original read-only views (dashboard, snapshots,
-// files, diff), the async-check views (check, doctor), the management views
-// (recovery-kit, jobs — the scheduled-backups manager that replaced the
-// split Policies and Schedule views), the agent view (which now also hosts
-// agent-apply in place, so it gets no separate id), the direct data operations
-// (backup, restore, prune, sync, password), the "Settings" category (setup,
-// settings), the Help directory of the other screens, and the unlock gate.
+// NewApp constructs the shell with all 18 views, only 6 of which are
+// navigable commands (the rail/palette registry: dashboard, backup,
+// snapshots, maintenance, settings, help) — the other 12 are reachable
+// only by routing, never by name from the rail: the async-check views
+// (check, doctor), the management views (recovery-kit, jobs — the
+// scheduled-backups manager that replaced the split Policies and Schedule
+// views), the remaining direct data operations (diff, restore, prune,
+// sync, password), and the three startup gates (setup, unlock, connect).
 //
-// unlock is a startup gate, not a navigable operation: it is present
-// in the views slice (so InitialView can land on it) but excluded from
-// the command registry, so it never appears in the sidebar or palette.
-// Deps semantics (nil-tolerant, cancellable ctx) are unchanged from
-// the previous implementation.
+// setup, unlock, and connect are startup gates, not navigable operations:
+// each is present in the views slice (so InitialView can land on one) but
+// excluded from the command registry, so none of them ever appears in the
+// sidebar or palette (see inStartupGate and hiddenFromRail below). Deps
+// semantics (nil-tolerant, cancellable ctx) are unchanged from the
+// previous implementation.
 func NewApp(deps Deps) App {
 	parent := deps.Ctx
 	if parent == nil {

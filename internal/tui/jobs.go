@@ -254,6 +254,17 @@ func (v JobsView) ConsumesEscape() bool {
 	return v.stage == jobsForm || v.stage == jobsDetail
 }
 
+// ConsumesTab: on the detail stage tab is a third way to cycle which of the
+// job's paths is shown (alongside ←/→ — see handleDetailKey), matching
+// BackupView's use of the same interface for its folder picker. Without
+// this the shell's global Focus binding (tab) intercepts the key before
+// the view ever sees it, so the drill-in's "tab cycles paths" promise
+// (docs/superpowers/specs/2026-08-29-jobs-view-design.md) was dead in the
+// real app. Scoped to jobsDetail only: the list and form stages must keep
+// tab as the ordinary focus toggle / field-hop (form stage gets tab via
+// CapturesText instead).
+func (v JobsView) ConsumesTab() bool { return v.stage == jobsDetail }
+
 // jobsHome resolves the home dir used for both ~ expansion and the
 // scheduler stat, honoring the test override.
 func (v JobsView) jobsHome() string {
@@ -376,7 +387,9 @@ func (v JobsView) ShortHelp() []key.Binding {
 		key.NewBinding(key.WithKeys("a"), key.WithHelp("a", "add")),
 		key.NewBinding(key.WithKeys("e"), key.WithHelp("e", "edit")),
 		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "run")),
+		key.NewBinding(key.WithKeys("i", "u"), key.WithHelp("i/u", "timer")),
 		key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "delete")),
+		key.NewBinding(key.WithKeys("R"), key.WithHelp("R", "refresh")),
 	}
 }
 
@@ -753,9 +766,23 @@ func (v JobsView) viewDetail() string {
 		path = p.Paths[v.detailPathIdx]
 	}
 	fmt.Fprintf(&b, "  path %d/%d: %s\n", v.detailPathIdx+1, len(p.Paths), path)
+	// Inline empty->"-" substitution here rather than importing cli's
+	// emptyDash (which stays put per the extraction contract) — mirrors
+	// the deleted PoliciesView.renderDetail, the only other read-only
+	// surface that showed a policy's tags and prune mode (see
+	// docs/superpowers/specs/2026-08-29-jobs-view-design.md: the drill-in
+	// summary must carry "paths, tags, schedule spec, timer state,
+	// next/last run, check/prune").
+	tags := strings.Join(p.Tags, ", ")
+	if tags == "" {
+		tags = "-"
+	}
+	fmt.Fprintf(&b, "  tags: %s\n", tags)
 	row, _ := v.rowByName(name)
-	fmt.Fprintf(&b, "  timer: %s   next: %s   last: %s\n\n",
+	fmt.Fprintf(&b, "  timer: %s   next: %s   last: %s\n",
 		jobTimerLabel(row), jobNextLabel(row), jobLastLabel(row, v.now()))
+	fmt.Fprintf(&b, "  check: %t   prune: %s\n\n",
+		p.AfterBackup.Check, policyPruneModeOrOff(p.AfterBackup.Prune))
 	switch {
 	case v.detailSnapID == "":
 		b.WriteString(ui.Muted.Render("not backed up yet — run the job to take its first snapshot"))

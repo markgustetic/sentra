@@ -18,10 +18,14 @@ import (
 	"github.com/markgustetic/sentra/internal/walker"
 )
 
-// Confirm-modal IDs for JobsView's run/install/uninstall flows. jobRunConfirmID
-// drives a simple-vs-typed split (armRun below); install and uninstall are
-// always reversible filesystem edits, so they stay on the simple ConfirmModal
-// — the same split the deleted ScheduleView used for its own install/uninstall.
+// Confirm-modal IDs for JobsView's run/install/uninstall/delete flows.
+// jobRunConfirmID drives a simple-vs-typed split (armRun below); install
+// and uninstall are always reversible filesystem edits, so they stay on
+// the simple ConfirmModal — the same split the deleted ScheduleView used
+// for its own install/uninstall. jobDeleteConfirmID is always simple too:
+// deleting a job removes the policy from sentra.yaml and uninstalls its
+// timer, but snapshots are untouched (see runDelete), so there is nothing
+// here that needs the typed gate's extra friction.
 const (
 	jobRunConfirmID       = "job-run"
 	jobInstallConfirmID   = "job-install"

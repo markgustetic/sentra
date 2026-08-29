@@ -684,6 +684,48 @@ func TestJobs_DrillInDropsResultForSupersededSnapID(t *testing.T) {
 	}
 }
 
+// TestJobs_DrillInSummaryShowsTagsAndPruneMode is the regression test for
+// review Finding 2: the drill-in summary omitted tags and the after-backup
+// check/prune settings, even though the deleted PoliciesView.renderDetail
+// was the only other read-only surface that showed a policy's prune mode
+// — dropping it left prune mode invisible anywhere in the TUI. Covers both
+// a populated job (alpha: tags set, check on, prune apply) and the
+// dash-for-empty case (beta: no tags, check off, prune unset -> "off").
+func TestJobs_DrillInSummaryShowsTagsAndPruneMode(t *testing.T) {
+	deps, path := jobsDeps(t) // alpha (daily), beta (manual)
+	if err := config.Update(path, func(cfg *config.Config) error {
+		p := cfg.Policies["alpha"]
+		p.Tags = []string{"nightly", "important"}
+		p.AfterBackup.Check = true
+		p.AfterBackup.Prune = "apply"
+		cfg.Policies["alpha"] = p
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+
+	v.tbl.SetCursor(0) // alpha
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	out := m.(JobsView).View()
+	for _, want := range []string{"nightly, important", "check: true", "prune: apply"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("alpha detail missing %q:\n%s", want, out)
+		}
+	}
+
+	v.tbl.SetCursor(1) // beta
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	out = m.(JobsView).View()
+	for _, want := range []string{"tags: -", "check: false", "prune: off"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("beta detail missing %q:\n%s", want, out)
+		}
+	}
+}
+
 // --- Ports from the deleted PoliciesView/ScheduleView test suites ---
 //
 // The tests below port behaviors from policies_test.go (and one from
