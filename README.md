@@ -38,6 +38,10 @@ built-in agent that audits your repository and surfaces recommendations.
   **summaries only — never file contents or secret values**. Recommendations are
   read-only by default (prune candidates, ignore-list additions, secret
   findings, retention drift).
+- 🔌 **MCP built in.** `sentra mcp` serves your snapshots to Claude — or any
+  MCP client — over stdio: metadata only, with two-phase confirm-gated
+  mutations. Inside the TUI, `ctrl+a` opens a built-in assistant chat with
+  the same guarantees.
 - 🌆 **A synthwave TUI.** `sentra ui` — or just `sentra` — opens a Bubbletea app
   that lands on a first-run wizard, an unlock gate, or the dashboard depending on
   your state.
@@ -228,10 +232,10 @@ Tools: `list_snapshots`, `snapshot_files`, `find`, `diff_snapshots`,
 non-interactively (keyring, `SENTRA_PASSPHRASE`, or `--passphrase-file`) —
 stdio belongs to the protocol.
 
-The same assistant lives inside the TUI: `ctrl+a` opens a chat overlay
-(needs `ANTHROPIC_API_KEY`) whose actions compile into the exact flows the
-keyboard drives — a chat-requested backup raises the same confirm dialog
-you'd get pressing enter yourself.
+The TUI carries its own assistant with the same boundary: `ctrl+a` opens a
+chat overlay (needs `ANTHROPIC_API_KEY`) whose actions compile into the exact
+flows the keyboard drives — a chat-requested backup raises the same confirm
+dialog you'd get pressing enter yourself.
 
 The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 
@@ -410,8 +414,10 @@ Push a `v*` tag to trigger [`release.yml`](.github/workflows/release.yml):
 goreleaser cross-compiles `linux/darwin × amd64/arm64` archives, writes a
 SHA-256 `checksums.txt`, signs it with cosign keyless (GitHub OIDC), builds a
 multi-arch GHCR image, updates the Homebrew tap, and attaches a syft SBOM per
-archive. Requires the `HOMEBREW_TAP_TOKEN` secret (`contents: write` on
-`markgustetic/homebrew-tap`); `GITHUB_TOKEN` is provided automatically.
+archive. The Homebrew step publishes only when the `HOMEBREW_TAP_TOKEN` secret
+(`contents: write` on `markgustetic/homebrew-tap`) is present — without it the
+cask is skipped and everything else still ships. `GITHUB_TOKEN` is provided
+automatically.
 
 ## License
 

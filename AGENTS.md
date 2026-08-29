@@ -19,6 +19,10 @@ Sentra code, docs, CI, or release workflow changes.
   `sentra` falls through to `sentra ui`, fronted by a first-run setup wizard. It
   owes the CLI no flag-for-flag coverage — see the surface contract in Feature
   Notes below.
+- The MCP server lives in `internal/mcpserver` (official
+  `modelcontextprotocol/go-sdk`); `sentra mcp` (`internal/cli/mcp.go`) serves
+  it over stdio. See its Feature Note for the metadata-only / two-phase
+  mutation contract.
 - The headless setup engine — a pure state model plus an `Effects` seam for
   AWS/keyring and a stepwise `Engine` — lives in `internal/setup`; the TUI
   wizard drives it directly, and `sentra setup` is a thin CLI launcher for that
@@ -198,6 +202,31 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra agent scan --local-only` and `--no-llm` must not call the LLM provider.
 - `sentra agent advise-ignore` is read-only and must not edit `.sentraignore`.
 - `sentra recovery-kit` is non-secret documentation only.
+- `sentra mcp` serves the repository to MCP clients over stdio. stdin/stdout
+  ARE the protocol channel, so the passphrase must resolve non-interactively
+  (`--passphrase-file` / `SENTRA_PASSPHRASE` / OS keyring) — a missing source
+  is a startup error, never a prompt — and diagnostics go to stderr only.
+  The read tools (`list_snapshots`, `snapshot_files`, `find`,
+  `diff_snapshots`, `repo_stats`) return METADATA only — ids, tags, dates,
+  file names and sizes — never file contents and never secret values.
+  Mutations are two-phase because MCP has no interactive confirm:
+  `plan_backup` / `plan_restore` change nothing and return a human-readable
+  plan plus a single-use token (10-minute TTL, bound to its own kind — a
+  backup token cannot confirm a restore); only the matching `confirm_*`
+  call carrying that token executes. A token is consumed on use, success
+  or failure. Never add an MCP tool that mutates in one call or that can
+  return file contents.
+- The TUI assistant chat overlay (`ctrl+a`, `internal/tui/chat.go`) is a
+  conversational command palette, distinct from `sentra agent`. It requires a
+  configured LLM provider (`ANTHROPIC_API_KEY`); without one it opens with a
+  setup hint and stays inert. Its read tools answer from snapshot METADATA
+  only, and its action tools never execute anything — they compile into the
+  exact messages the keyboard already routes (`activateMsg`, `chatBackupMsg`,
+  `launchRestoreMsg`), so every existing confirmation gate applies by
+  construction. Do not add a chat tool that bypasses those messages or the
+  one-op guard. The overlay is unavailable inside the startup gates
+  (wizard / unlock / connect), and `esc` cancels an in-flight streaming turn
+  before a second `esc` closes the overlay.
 
 ## Config resolution
 

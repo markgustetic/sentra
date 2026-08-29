@@ -18,8 +18,13 @@ gate — retry or run the profile's aws login command from inside the TUI; only
 config-file errors exit to the CLI. The TUI covers the human floor through a
 six-view rail (Dashboard, Backup, Snapshots, Maintenance, Settings, Help) with
 the occasional jobs launched from inside those; stats and the agent are
-CLI-only. The CLI is the machine and recovery surface (see the surface
-contract in AGENTS.md).
+CLI-only. `ctrl+a` opens the assistant chat overlay anywhere outside the
+startup gates: it answers from snapshot metadata and compiles actions into the
+same confirm-gated flows the keyboard drives (needs `ANTHROPIC_API_KEY`; inert
+with a hint without it). The CLI is the machine and recovery surface (see the
+surface contract in AGENTS.md), and `sentra mcp` serves the repo to MCP
+clients over stdio — metadata-only reads, two-phase (plan → single-use token →
+confirm) mutations.
 
 Config discovery: with no `--config`, commands use `./sentra.yaml` when
 present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default
@@ -88,7 +93,10 @@ git worktree remove --force /tmp/chk
   `Effects` seam for AWS/keyring, and a stepwise `Engine`
   (`PrepareAWS` → `WriteConfig` → `InitRepo`). Both wizards drive it.
 - `internal/recoverykit` — recovery-kit rendering; `internal/scheduler` — cron
-  emission; `internal/diag` — doctor's AWS/repo probes
+  emission; `internal/diag` — doctor's AWS/repo probes + `Explain` (known-cause
+  error prose for the TUI)
+- `internal/mcpserver` — `sentra mcp`: stdio MCP server; metadata-only reads,
+  two-phase plan→confirm mutations (see AGENTS.md for the contract)
 
 **Import direction: `internal/cli` imports `internal/tui`, so `internal/tui`
 must never import `internal/cli`.** `setup`, `recoverykit`, `scheduler`, and
@@ -124,7 +132,10 @@ below both.
   lock whose ownership can't be confirmed.
 - **Agent / LLM.** Local heuristics run first; the LLM sees **summaries only —
   never file contents or secret values**. Recommendations are read-only by
-  default.
+  default. The same boundary binds the TUI chat overlay and `sentra mcp`:
+  metadata only, and nothing mutates without a human confirm — the chat's
+  action tools emit UI intents into the existing confirm gates, and MCP
+  mutations execute only via a plan's single-use, kind-bound token.
 - **No secrets in artifacts.** Never write passphrases, wrapped keys, salts, MAC
   material, or AWS credentials into `sentra.yaml`, setup drafts, logs, recovery
   kits, tests, or fixtures.
@@ -183,3 +194,9 @@ below both.
   scrolling still works. Every other view is focusable by default.
 - Mutating operations go through the App's one-op guard (`startOpMsg` /
   `opResultMsg`); read-only flows use a plain `tea.Cmd` and a spinner.
+- The palette (`ctrl+p`) and the chat overlay (`ctrl+a`) are mutually
+  exclusive full-screen overlays; opening one closes the other. The chat
+  never executes anything itself — its action tools return the same
+  messages the keyboard routes (`activateMsg` / `chatBackupMsg` /
+  `launchRestoreMsg`), so the existing gates and the one-op guard apply.
+  While a turn streams, `esc` cancels it; the next `esc` closes the overlay.
