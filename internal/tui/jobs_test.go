@@ -362,6 +362,65 @@ func TestJobs_EditToManualUninstallsTimer(t *testing.T) {
 	}
 }
 
+// TestJobs_ReplaceViaAddResyncsTimer mirrors
+// TestJobs_EditPrefillsAndSavesWithTimerReinstall for the OTHER route to
+// overwriting an installed job: add → duplicate name → replace confirm.
+// That path runs saveForm(true) with editName == "", so without its own
+// old-spec capture the OS timer silently keeps firing on the old cadence
+// while sentra.yaml says the new one.
+func TestJobs_ReplaceViaAddResyncsTimer(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.osOverride = "darwin"
+	v.exeOverride = "/usr/local/bin/sentra"
+	// Install alpha's timer rendered for its current daily@03:00.
+	paths, _ := scheduler.PathsFor("darwin", v.homeOverride, "alpha")
+	files, err := scheduler.Render(paths, v.exeOverride, path, "alpha",
+		config.PolicySchedule{Cadence: "daily", At: "03:00"})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Install(files); err != nil {
+		t.Fatal(err)
+	}
+	v.reload()
+
+	// Re-add alpha under a new schedule through the ADD form, not edit.
+	v2, _ := pressJobsKey(v, 'a')
+	v2.form.name.SetValue("alpha")
+	v2.form.path.SetValue("/data/alpha")
+	v2.form.schedule.SetValue("daily@09:00")
+	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobAddConfirmID})
+	if cmd == nil {
+		t.Fatal("duplicate name must push the replace confirm")
+	}
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatalf("duplicate name must push the replace confirm, got %#v", cmd())
+	}
+	// The replace confirm's side effects (config write + timer sync) run
+	// synchronously; the assertions below read disk state.
+	m2.(JobsView).Update(confirmedMsg{id: jobReplaceConfirmID})
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Policies["alpha"].Schedule.At != "09:00" {
+		t.Fatalf("replace must persist the new schedule: %+v", cfg.Policies["alpha"].Schedule)
+	}
+	body, err := os.ReadFile(paths.Files[0])
+	if err != nil {
+		t.Fatal(err)
+	}
+	// launchd renders the hour as <integer>N</integer>: 09:00 must be
+	// present and the stale 03:00 hour gone.
+	if !strings.Contains(string(body), "<integer>9</integer>") ||
+		strings.Contains(string(body), "<integer>3</integer>") {
+		t.Fatalf("installed timer must be re-rendered for 09:00:\n%s", body)
+	}
+}
+
 func TestJobs_AddFormStillWorks(t *testing.T) {
 	deps, path := jobsDeps(t)
 	v := newJobsForTest(t, deps)
@@ -919,6 +978,95 @@ func TestJobs_FormReplaceGuardPreservesHooks(t *testing.T) {
 	}
 	if p.Hooks.OnFailureWebhookEnv != "SENTRA_ALERT_URL" {
 		t.Errorf("replace dropped the config-authored hooks: %+v", p.Hooks)
+	}
+}
+
+// typeIntoJobs feeds each rune of s through the view as a real key event,
+// landing in whichever form field currently has focus — the port of the
+// deleted typeIntoPolicies. SetValue-based tests bypass updateForm's key
+// routing entirely; these ports exist precisely to exercise it.
+func typeIntoJobs(v JobsView, s string) JobsView {
+	for _, r := range s {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(JobsView)
+	}
+	return v
+}
+
+// TestJobs_AddRejectsInvalidPolicy is the port of the deleted
+// TestPoliciesView_AddRejectsInvalidPolicy: enter on an invalid form (name
+// only, no path — policycfg.Validate requires >=1 path) must surface the
+// error inline and NOT push a confirm modal.
+func TestJobs_AddRejectsInvalidPolicy(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v2, _ := pressJobsKey(v, 'a')
+	v2 = typeIntoJobs(v2, "noPaths")
+	m, cmd := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v3 := m.(JobsView)
+	if cmd != nil {
+		t.Fatalf("invalid policy must not push a modal, got %#v", cmd())
+	}
+	if v3.form.err == "" {
+		t.Fatal("invalid policy must set a form error")
+	}
+}
+
+// TestJobs_FormFullFieldSet is the port of the deleted
+// TestPoliciesForm_FullFieldSet: driven entirely by real key events, the
+// add form carries the same policy shape as `policy add` — tab traverses
+// the fields, comma-separated paths/tags parse into trimmed lists, and
+// space toggles the check field / cycles the prune mode at focus 4/5.
+func TestJobs_FormFullFieldSet(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v2, _ := pressJobsKey(v, 'a')
+
+	v2 = typeIntoJobs(v2, "gamma")
+	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyTab}) // → paths
+	v2 = m.(JobsView)
+	v2 = typeIntoJobs(v2, "/data/one, /data/two")
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeyTab}) // → tags
+	v2 = m.(JobsView)
+	v2 = typeIntoJobs(v2, "nightly, offsite")
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeyTab}) // → schedule
+	v2 = m.(JobsView)
+	v2 = typeIntoJobs(v2, "daily@04:00")
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeyTab}) // → check toggle
+	v2 = m.(JobsView)
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeySpace}) // check on
+	v2 = m.(JobsView)
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeyTab}) // → prune mode
+	v2 = m.(JobsView)
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeySpace}) // off → dry-run
+	v2 = m.(JobsView)
+
+	m, _ = v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v2 = m.(JobsView)
+	// The confirm's side effect is the config write, which is what the
+	// rest of this test asserts against — the returned view is never
+	// inspected again.
+	v2.Update(confirmedMsg{id: jobAddConfirmID})
+
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	p, ok := cfg.Policies["gamma"]
+	if !ok {
+		t.Fatalf("gamma not written: %+v", cfg.Policies)
+	}
+	if len(p.Paths) != 2 || p.Paths[0] != "/data/one" || p.Paths[1] != "/data/two" {
+		t.Errorf("paths: %+v, want the two comma-separated entries", p.Paths)
+	}
+	if len(p.Tags) != 2 || p.Tags[0] != "nightly" || p.Tags[1] != "offsite" {
+		t.Errorf("tags: %+v", p.Tags)
+	}
+	if p.Schedule.Cadence != "daily" || p.Schedule.At != "04:00" {
+		t.Errorf("schedule: %+v", p.Schedule)
+	}
+	if !p.AfterBackup.Check || p.AfterBackup.Prune != "dry-run" {
+		t.Errorf("after_backup: %+v", p.AfterBackup)
 	}
 }
 

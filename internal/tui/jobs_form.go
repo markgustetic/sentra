@@ -221,9 +221,12 @@ func (v JobsView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // Edit mode always calls this with replace=true: the job being edited
 // already exists under this name (the name field is read-only, so it can't
 // have changed), and the edit confirm already asked "save changes?" — a
-// second replace confirm would be redundant. On a successful EDIT save
-// (not ADD), it reconciles the OS timer via syncTimerAfterEdit using the
-// schedule spec captured from the on-disk policy before config.Update ran.
+// second replace confirm would be redundant. Whenever the save overwrote
+// an existing job — EDIT, or ADD routed through the replace confirm — it
+// reconciles the OS timer via syncTimerAfterSave, using the schedule spec
+// captured from the on-disk policy before the overwrite; without that, a
+// replace-via-add would leave an installed timer firing on the old
+// cadence while sentra.yaml says the new one.
 func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 	name, p, err := v.form.build()
 	if err != nil {
@@ -233,9 +236,7 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 	}
 	editing := v.editName != ""
 	var oldSpec string
-	if editing {
-		oldSpec = policycfg.FormatScheduleSpec(v.policies[v.editName].Schedule)
-	}
+	var replaced bool
 	// config.Update rewrites against the on-disk sentra.yaml, so saving a
 	// job can't persist this process's SENTRA_* overrides into repo.s3.
 	err = config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
@@ -246,6 +247,8 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 			if !replace {
 				return errPolicyExists
 			}
+			oldSpec = policycfg.FormatScheduleSpec(existing.Schedule)
+			replaced = true
 			p.Hooks = existing.Hooks
 		}
 		cfg.Policies[name] = p
@@ -267,15 +270,19 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 	v.stage = jobsList
 	v.editName = ""
 	notice := fmt.Sprintf("added %q", name)
-	if editing {
-		syncNotice, syncErr := v.syncTimerAfterEdit(name, oldSpec, p)
+	switch {
+	case editing:
+		notice = fmt.Sprintf("saved %q", name)
+	case replaced:
+		notice = fmt.Sprintf("replaced %q", name)
+	}
+	if editing || replaced {
+		syncNotice, syncErr := v.syncTimerAfterSave(name, oldSpec, p)
 		switch {
 		case syncErr != nil:
 			notice = syncErr.Error()
 		case syncNotice != "":
 			notice = syncNotice
-		default:
-			notice = fmt.Sprintf("saved %q", name)
 		}
 	}
 	v.reload()
@@ -283,11 +290,12 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 	return v, nil
 }
 
-// syncTimerAfterEdit reconciles the OS timer with an edited schedule:
-// not installed -> nothing; unchanged spec -> nothing; new cadence
-// manual -> uninstall (a manual job must not keep firing on the old
-// cadence); otherwise re-render + reinstall. Returns a human notice.
-func (v JobsView) syncTimerAfterEdit(name, oldSpec string, p config.PolicyConfig) (string, error) {
+// syncTimerAfterSave reconciles the OS timer after a save that overwrote
+// an existing job (edit, or add-with-replace): not installed -> nothing;
+// unchanged spec -> nothing; new cadence manual -> uninstall (a manual
+// job must not keep firing on the old cadence); otherwise re-render +
+// reinstall. Returns a human notice.
+func (v JobsView) syncTimerAfterSave(name, oldSpec string, p config.PolicyConfig) (string, error) {
 	newSpec := policycfg.FormatScheduleSpec(p.Schedule)
 	if newSpec == oldSpec {
 		return "", nil
