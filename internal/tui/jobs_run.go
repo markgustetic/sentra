@@ -19,9 +19,9 @@ import (
 )
 
 // Confirm-modal IDs for JobsView's run/install/uninstall flows. jobRunConfirmID
-// mirrors policyRunConfirmID's simple-vs-typed split (armRun below); install
-// and uninstall are always reversible filesystem edits, so they stay on the
-// simple ConfirmModal, matching ScheduleView.
+// drives a simple-vs-typed split (armRun below); install and uninstall are
+// always reversible filesystem edits, so they stay on the simple ConfirmModal
+// — the same split the deleted ScheduleView used for its own install/uninstall.
 const (
 	jobRunConfirmID       = "job-run"
 	jobInstallConfirmID   = "job-install"
@@ -37,17 +37,18 @@ type jobTimerMsg struct {
 }
 
 // policyRunState tracks the in-flight run for the running-stage View().
-// Shared by PoliciesView and JobsView, which both drive buildPolicyRunOp
-// under the one-op guard.
+// Drives buildPolicyRunOp under the one-op guard; JobsView is its sole
+// owner now — the name predates the deletion of the PoliciesView it used
+// to be shared with.
 type policyRunState struct {
 	reporter *opReporter
 	name     string
 }
 
-// policyRunDoneMsg is the RUN flow's terminal, guard-clearing message.
-// Shared by PoliciesView and JobsView (see buildPolicyRunOp) — Bubbletea
-// only routes a message to the active view, so both may define a case for
-// it without colliding.
+// policyRunDoneMsg is the RUN flow's terminal, guard-clearing message
+// returned by buildPolicyRunOp's run func. JobsView is its sole producer
+// and consumer now; the name predates the deletion of the PoliciesView it
+// used to be shared with.
 type policyRunDoneMsg struct {
 	name      string
 	snapshots int
@@ -58,9 +59,11 @@ func (policyRunDoneMsg) opResult() {}
 
 // buildPolicyRunOp assembles the one-op-guarded policy run: hooks,
 // CreateSnapshot per path, optional check, optional retention prune —
-// the CLI's runPolicy sequence. opName distinguishes the guard owner
-// ("policy-run" for the legacy view, "job-run" for JobsView) so each
-// view recognizes its own opRejectedMsg.
+// the CLI's runPolicy sequence. opName is a caller-supplied label so an
+// opRejectedMsg reports which view's guard was rejected; JobsView is the
+// only caller now (opName "job-run"), left as a parameter because a
+// second run-taking view once shared this function ("policy-run", the
+// deleted PoliciesView).
 func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter) startOpMsg {
 	r := deps.Repo
 	var wopts walker.Options
@@ -217,7 +220,8 @@ func policyPruneModeOrOff(mode string) string {
 // armRun pushes the RUN confirmation modal for the job under the cursor. A
 // prune mode of "apply" is destructive (it deletes snapshots + GCs), so it
 // gets the TYPED confirm; every other mode (off, dry-run, or check-only)
-// gets the simple confirm — mirroring PoliciesView.armRun's gate contract.
+// gets the simple confirm — the same gate contract the deleted
+// PoliciesView.armRun used.
 //
 // It validates the policy first (mirroring the CLI's runPolicy, which calls
 // policycfg.Validate before doing any work): policyPruneModeOrOff only
@@ -247,8 +251,8 @@ func (v JobsView) armRun() (tea.Model, tea.Cmd) {
 }
 
 // startRun launches the job under the cursor via buildPolicyRunOp, under
-// the App's one-op guard (opName "job-run" — distinct from PoliciesView's
-// "policy-run" so the two views' opRejectedMsg handlers never cross wires).
+// the App's one-op guard (opName "job-run", scoped so only JobsView's own
+// opRejectedMsg case matches its rejected start).
 func (v JobsView) startRun() (tea.Model, tea.Cmd) {
 	if v.deps.Repo == nil {
 		v.notice = "no repository configured"

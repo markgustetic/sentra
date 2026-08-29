@@ -13,9 +13,9 @@ import (
 	"github.com/markgustetic/sentra/internal/scheduler"
 )
 
-// Confirm-modal IDs for JobsView's add/edit form. Distinct from
-// PoliciesView's policy-add/policy-replace ids — both views coexist until
-// the legacy Policies/Schedule views are deleted.
+// Confirm-modal IDs for JobsView's add/edit form. Named distinctly from
+// the deleted PoliciesView's policy-add/policy-replace ids, back when the
+// two views coexisted and shared this file's form machinery.
 const (
 	jobAddConfirmID     = "job-add"
 	jobReplaceConfirmID = "job-replace"
@@ -29,9 +29,10 @@ const (
 // with policycfg.Validate before the confirm modal, so a bad entry never
 // reaches disk.
 //
-// Shared by PoliciesView and JobsView (both drive it through their own
-// add/edit forms) — moved here from policies.go so JobsView's edit-mode
-// prefill (prefilledPolicyForm) lives next to the type it fills in.
+// JobsView drives it through its own add/edit form; it was moved here
+// from policies.go — back when the deleted PoliciesView also drove it
+// through its own form — so JobsView's edit-mode prefill
+// (prefilledPolicyForm) lives next to the type it fills in.
 type policyForm struct {
 	name     textinput.Model
 	path     textinput.Model

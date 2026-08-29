@@ -686,17 +686,21 @@ func TestJobs_DrillInDropsResultForSupersededSnapID(t *testing.T) {
 
 // --- Ports from the deleted PoliciesView/ScheduleView test suites ---
 //
-// The five tests below port behaviors from policies_test.go that were the
-// only proof of the shared run/form machinery (buildPolicyRunOp, armRun,
-// saveForm's replace guard) once PoliciesView itself was deleted. Every one
-// of them is GREEN ON ARRIVAL: JobsView's run/form machinery (jobs.go,
-// jobs_run.go, jobs_form.go) already implements the behavior being ported
-// — these tests were written and run against that existing code, not used
-// to drive new implementation, so there is no RED phase to show here.
-// schedule_test.go was also skimmed per the task brief; its
-// install/uninstall/manual-refusal/nil-config coverage is already
-// subsumed by TestJobs_InstallThenUninstallTimer,
-// TestJobs_InstallRejectsManual, and the loadErr placeholder path, and its
+// The tests below port behaviors from policies_test.go (and one from
+// schedule_test.go) that were the only proof of machinery shared with
+// JobsView — the run/form machinery (buildPolicyRunOp, armRun, saveForm's
+// replace guard, runPolicyRetentionPrune's fail-closed guard, hook
+// execution through the run path) and the nil-config placeholder — once
+// PoliciesView/ScheduleView were deleted. Every one of them is GREEN ON
+// ARRIVAL: JobsView's machinery (jobs.go, jobs_run.go, jobs_form.go)
+// already implements the behavior being ported — these tests were written
+// and run against that existing code, not used to drive new
+// implementation, so there is no RED phase to show here.
+//
+// schedule_test.go's install/uninstall/manual-refusal coverage is already
+// subsumed by TestJobs_InstallThenUninstallTimer and
+// TestJobs_InstallRejectsManual; TestScheduleView_NilConfigPlaceholder is
+// ported below as TestJobs_NilConfigPlaceholder. schedule.go's
 // reload-cursor-preservation logic is identical code copied verbatim into
 // JobsView.reload (jobs.go) with no dedicated test on either side to port.
 
@@ -873,5 +877,148 @@ func TestJobs_FormReplaceGuardPreservesHooks(t *testing.T) {
 	}
 	if p.Hooks.OnFailureWebhookEnv != "SENTRA_ALERT_URL" {
 		t.Errorf("replace dropped the config-authored hooks: %+v", p.Hooks)
+	}
+}
+
+// TestJobs_NilConfigPlaceholder is the port of the deleted
+// TestScheduleView_NilConfigPlaceholder (mirroring PoliciesView's own
+// analogous test): an empty Deps — no ConfigPath, no Config — must not
+// panic; it must set loadErr and View() must render the placeholder
+// reload() actually writes ("no config file configured"), not some other
+// text.
+func TestJobs_NilConfigPlaceholder(t *testing.T) {
+	v := NewJobsView(Deps{})
+	if v.loadErr == "" {
+		t.Fatal("empty deps must set a load error")
+	}
+	if !strings.Contains(v.View(), "no config file configured") {
+		t.Errorf("view must surface the missing-config placeholder:\n%s", v.View())
+	}
+}
+
+// TestRunPolicyRetentionPrune_UnknownModeIsFailClosed is the port of the
+// deleted policies_test.go test of the same name — runPolicyRetentionPrune
+// itself moved to jobs_run.go verbatim, so this test needed no adaptation
+// beyond its new home. Even if an unrecognized mode reaches
+// runPolicyRetentionPrune (defense in depth — armRun/policycfg.Validate
+// should already have refused it upstream), it must be a no-op — never
+// fall through to DeleteSnapshot+GC. With KeepLast=1 and two snapshots, an
+// "apply" would drop one; an unknown mode must delete nothing.
+func TestRunPolicyRetentionPrune_UnknownModeIsFailClosed(t *testing.T) {
+	r := newFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	policy := repo.RetentionPolicy{KeepLast: 1}
+	if err := runPolicyRetentionPrune(context.Background(), r, policy, "aply"); err != nil {
+		t.Fatalf("unknown mode should be a no-op, got error: %v", err)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("ListSnapshots: %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Fatalf("unknown prune mode deleted snapshots: have %d, want 2 (fail-closed)", len(snaps))
+	}
+}
+
+// TestJobs_RunExecutesHooks is the port of the deleted
+// TestPoliciesRun_ExecutesHooks: a TUI job run executes the same hooks the
+// CLI run does — a before hook lands its output in the snapshot, and a
+// failing before hook aborts the run and fires on_failure. Skipping hooks
+// would make TUI runs back up different data than CLI runs of the same
+// policy. Hooks are config-authored only — the JobsView form has no field
+// for them (see TestJobs_FormReplaceGuardPreservesHooks, which relies on
+// the same fact) — so this test writes them straight into sentra.yaml
+// rather than through the form, exactly like the deleted original did.
+func TestJobs_RunExecutesHooks(t *testing.T) {
+	r := newFlowRepo(t)
+	dir := t.TempDir()
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(dir, "failed.marker")
+
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Policies["hooked"] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks: config.PolicyHooks{
+			Before: "echo dumped > " + filepath.Join(src, "dump.txt"),
+		},
+	}
+	cfg.Policies["failing"] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks: config.PolicyHooks{
+			Before:    "exit 7",
+			OnFailure: "touch " + marker,
+		},
+	}
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	deps := Deps{Repo: r, Config: &cfg, ConfigPath: path}
+
+	runJobByName := func(name string) policyRunDoneMsg {
+		t.Helper()
+		v := newJobsForTest(t, deps)
+		for i, n := range v.names {
+			if n == name {
+				v.tbl.SetCursor(i)
+			}
+		}
+		m, cmd := v.startRun()
+		_ = m
+		var start startOpMsg
+		for _, msg := range execCmds(t, cmd) {
+			if s, ok := msg.(startOpMsg); ok {
+				start = s
+			}
+		}
+		if start.run == nil {
+			t.Fatal("startRun emitted no op")
+		}
+		done, ok := start.run(context.Background()).(policyRunDoneMsg)
+		if !ok {
+			t.Fatal("op did not return policyRunDoneMsg")
+		}
+		return done
+	}
+
+	if done := runJobByName("hooked"); done.err != nil {
+		t.Fatalf("hooked run: %v", done.err)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("snapshots: %v err=%v", snaps, err)
+	}
+	man, err := r.LoadSnapshot(context.Background(), snaps[0].ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	found := false
+	for _, fe := range man.Tree {
+		if fe.Path == "dump.txt" {
+			found = true
+		}
+	}
+	if !found {
+		t.Error("before-hook output missing from the TUI-run snapshot")
+	}
+
+	if done := runJobByName("failing"); done.err == nil {
+		t.Fatal("failing before hook must fail the TUI run")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("on_failure hook did not run from the TUI path: %v", err)
+	}
+	snaps, _ = r.ListSnapshots(context.Background())
+	if len(snaps) != 1 {
+		t.Errorf("aborted run must not snapshot; got %d", len(snaps))
 	}
 }
