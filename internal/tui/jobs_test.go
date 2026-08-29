@@ -606,3 +606,82 @@ func TestJobs_DrillInDeleteOperatesOnDetailJob(t *testing.T) {
 		t.Fatalf("delete confirm must not target the drifted cursor row (alpha):\n%s", body)
 	}
 }
+
+// TestJobs_DrillInDeleteFromDetailReturnsToList is the regression test for
+// review Finding 1: enter -> d -> confirm -> the delete's jobTimerMsg must
+// land the view back on jobsList (with detail state cleared) when the job
+// it just deleted is the one that was on screen in detail — before the
+// fix, stage stayed jobsDetail and viewDetail rendered a ghost page (a
+// zero-value summary over the last-cached manifest) that only esc could
+// escape, since left/right/tab short-circuit on len(Paths)==0.
+func TestJobs_DrillInDeleteFromDetailReturnsToList(t *testing.T) {
+	deps, path := jobsDeps(t) // alpha, beta
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+	v.tbl.SetCursor(0) // alpha
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v2 := m.(JobsView)
+	if v2.stage != jobsDetail || v2.detailName != "alpha" {
+		t.Fatalf("enter must open detail for alpha: stage=%v name=%q", v2.stage, v2.detailName)
+	}
+
+	v3, cmd := pressJobsKey(v2, 'd')
+	if _, ok := cmd().(pushModalMsg); !ok {
+		t.Fatal("d in detail must push the delete confirm")
+	}
+	m2, cmd := v3.Update(confirmedMsg{id: jobDeleteConfirmID})
+	v4 := m2.(JobsView)
+	res := cmd() // the delete op's tea.Cmd — filesystem-only, runs inline
+	m3, _ := v4.Update(res)
+	v5 := m3.(JobsView)
+
+	if v5.stage != jobsList {
+		t.Fatalf("deleting the detail job must return to the list, got stage=%v", v5.stage)
+	}
+	if v5.detailName != "" || v5.detailSnapID != "" || v5.detailErr != nil || v5.detailLoading {
+		t.Fatalf("detail state must be cleared after the delete: %+v", v5)
+	}
+	cfg, err := config.Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, still := cfg.Policies["alpha"]; still {
+		t.Fatal("delete must remove the policy from sentra.yaml")
+	}
+}
+
+// TestJobs_DrillInDropsResultForSupersededSnapID is the regression test
+// for review Finding 2: the stale-result guard must key on snapID, not
+// just name+pathIdx — a load kicked off for an older snapshot at the
+// same path must not clobber a newer load already in flight for the
+// same name+pathIdx (mirrors snapshots.go's detailID-keyed guard).
+func TestJobs_DrillInDropsResultForSupersededSnapID(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	v.stage = jobsDetail
+	v.detailName = "alpha"
+	v.detailPathIdx = 0
+	v.detailSnapID = "B"
+	v.detailLoading = true
+	v.detailMan = repo.Manifest{}
+
+	stale := jobDetailMsg{
+		name:    "alpha",
+		pathIdx: 0,
+		snapID:  "A", // superseded — the view is now waiting on "B"
+		man:     repo.Manifest{ID: "A-manifest"},
+	}
+	m, _ := v.Update(stale)
+	v2 := m.(JobsView)
+
+	if !v2.detailLoading {
+		t.Fatal("a superseded-snapID result must not clear detailLoading")
+	}
+	if v2.detailMan.ID != "" {
+		t.Fatalf("a superseded-snapID result must not overwrite detailMan, got %+v", v2.detailMan)
+	}
+	if v2.detailSnapID != "B" {
+		t.Fatalf("detailSnapID must remain the one actually being waited on, got %q", v2.detailSnapID)
+	}
+}

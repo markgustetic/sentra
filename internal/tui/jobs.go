@@ -413,13 +413,35 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.notice = msg.err.Error()
 		}
 		v.reload()
+		// A delete (or any other timer/policy op) resolving while the
+		// deleted job is the one on screen in detail would otherwise
+		// leave a ghost page: viewDetail rendering a zero-value summary
+		// over the last-loaded manifest, with left/right/tab a no-op
+		// (n==0 short-circuits) so only esc could recover. reload()
+		// above has already rebuilt v.policies, so an absent detailName
+		// means exactly that.
+		if v.stage == jobsDetail {
+			if _, ok := v.policies[v.detailName]; !ok {
+				v.stage = jobsList
+				v.detailName = ""
+				v.detailPathIdx = 0
+				v.detailSnapID = ""
+				v.detailMan = repo.Manifest{}
+				v.detailErr = nil
+				v.detailLoading = false
+			}
+		}
 		return v, nil
 
 	case jobDetailMsg:
 		// Stale-result guard: drop a load the operator has since
-		// navigated away from (esc back to the list, or cycled to a
-		// different path before this one resolved).
-		if msg.name != v.detailName || msg.pathIdx != v.detailPathIdx || v.stage != jobsDetail {
+		// navigated away from (esc back to the list, cycled to a
+		// different path, or a fresh load for the same name+pathIdx
+		// superseded this one — snapID is the actual resource identity,
+		// the way snapshots.go's analogous guard keys on detailID; name
+		// and pathIdx alone don't uniquely pin which load this is).
+		if msg.name != v.detailName || msg.pathIdx != v.detailPathIdx ||
+			msg.snapID != v.detailSnapID || v.stage != jobsDetail {
 			return v, nil
 		}
 		v.detailLoading = false
