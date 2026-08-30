@@ -409,3 +409,77 @@ func TestReadPreview_SymlinkNotFollowed(t *testing.T) {
 		}
 	}
 }
+
+// The preview answers "what is inside the thing enter would act on": the
+// highlighted row's path, or the current directory on the Start button.
+func TestDirPicker_PreviewFollowsCursor(t *testing.T) {
+	root := tempTree(t)
+	p := newDirPicker(root)
+
+	// A fresh picker opens on the Start button — preview the cwd.
+	if p.previewTarget() != root || p.preview.target != root {
+		t.Fatalf("fresh picker must preview cwd: target=%q preview=%q", p.previewTarget(), p.preview.target)
+	}
+	// cursor 1 = ".." — preview the parent.
+	p = p.moveDown()
+	if want := filepath.Dir(root); p.preview.target != want {
+		t.Fatalf("on .., preview = %q, want %q", p.preview.target, want)
+	}
+	// cursor 2 = alpha — preview the hovered child.
+	p = p.moveDown()
+	if want := filepath.Join(root, "alpha"); p.preview.target != want {
+		t.Fatalf("on alpha, preview = %q, want %q", p.preview.target, want)
+	}
+	// Descend: back on the Start button, preview the new cwd.
+	p, _ = p.activate()
+	if want := filepath.Join(root, "alpha"); p.preview.target != want {
+		t.Fatalf("after descend, preview = %q, want %q", p.preview.target, want)
+	}
+}
+
+// Place rows preview their bookmark target like any other row.
+func TestDirPicker_PreviewOnPlaceRow(t *testing.T) {
+	home := fakeHome(t, "Documents")
+	p := newDirPicker(tempTree(t))
+	for i := 1; i <= len(p.rows); i++ {
+		if p.rows[i-1].kind == rowPlace && p.rows[i-1].label == "~/Documents" {
+			p.cursor = i
+			break
+		}
+	}
+	p = p.refreshPreview()
+	if want := filepath.Join(home, "Documents"); p.preview.target != want {
+		t.Fatalf("place preview = %q, want %q", p.preview.target, want)
+	}
+}
+
+// The cache is keyed by target: a refresh against the SAME target must not
+// re-read the disk (repaints are free), and moving away and back must —
+// that replacement is what keeps the pane honest after navigation.
+func TestDirPicker_PreviewCachedByTarget(t *testing.T) {
+	root := tempTree(t)
+	p := newDirPicker(root)
+	before := p.preview.total
+
+	// Mutate the directory behind the cache's back.
+	if err := os.WriteFile(filepath.Join(root, "new.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if got := p.refreshPreview().preview.total; got != before {
+		t.Errorf("same-target refresh must serve the cache, total %d → %d", before, got)
+	}
+	// Away (target "..") and back (target cwd) re-reads.
+	p = p.moveDown().moveUp()
+	if got := p.preview.total; got != before+1 {
+		t.Errorf("away-and-back must re-read, total = %d, want %d", got, before+1)
+	}
+}
+
+// An unreadable cwd still yields a preview (its error line): reload's
+// error path must refresh too, not leave a stale pane.
+func TestDirPicker_PreviewOnUnreadableCwd(t *testing.T) {
+	p := newDirPicker(filepath.Join(t.TempDir(), "no-such-dir"))
+	if p.preview.err == "" {
+		t.Errorf("preview of an unreadable cwd must carry the error, got %+v", p.preview)
+	}
+}

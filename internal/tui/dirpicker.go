@@ -32,6 +32,9 @@ import (
 // folder rows at cursor 1..len(rows). Modelling it as a sentinel rather than a
 // list entry keeps it pinned above the scrolling folder window so it never
 // scrolls out of reach, and keeps rows holding only real filesystem entries.
+//
+// The preview pane (rendered by the backup view beside the picker) shows
+// what is inside previewTarget() — metadata only, never file contents.
 type dirPicker struct {
 	cwd    string
 	rows   []dirRow
@@ -40,6 +43,12 @@ type dirPicker struct {
 
 	// height is how many rows fit; the view scrolls a window around the cursor.
 	height int
+
+	// preview is the pane's data for previewTarget(), cached by path and
+	// refreshed by every transform that can move the target (see
+	// refreshPreview). It lives on the model for the same reason the rows
+	// do: a pure, synchronously readable picker is drivable from tests.
+	preview dirPreview
 }
 
 type rowKind int
@@ -99,7 +108,7 @@ func (p dirPicker) reload() dirPicker {
 	if err != nil {
 		p.err = "cannot read " + p.cwd + ": " + errReason(err)
 		p.clampCursor()
-		return p
+		return p.refreshPreview()
 	}
 
 	names := make([]string, 0, len(entries))
@@ -124,7 +133,7 @@ func (p dirPicker) reload() dirPicker {
 		p.rows = append(p.rows, dirRow{kind: rowChild, label: n, path: filepath.Join(p.cwd, n)})
 	}
 	p.clampCursor()
-	return p
+	return p.refreshPreview()
 }
 
 // placeRows builds the jump-to bookmarks: the home directory and its
@@ -182,7 +191,7 @@ func (p dirPicker) moveUp() dirPicker {
 	if p.cursor > 0 {
 		p.cursor--
 	}
-	return p
+	return p.refreshPreview()
 }
 
 func (p dirPicker) moveDown() dirPicker {
@@ -191,7 +200,7 @@ func (p dirPicker) moveDown() dirPicker {
 	if p.cursor < len(p.rows) {
 		p.cursor++
 	}
-	return p
+	return p.refreshPreview()
 }
 
 // activate applies enter to the current cursor position. On the Start button it
@@ -358,4 +367,25 @@ func readPreview(dir string, maxShown int) dirPreview {
 		pv.entries = append(pv.entries, pe)
 	}
 	return pv
+}
+
+// previewTarget is the directory whose contents the pane shows: whatever
+// enter would act on — the highlighted row's path, or the current
+// directory on the Start button (exactly what the backup would include).
+func (p dirPicker) previewTarget() string {
+	if p.onStart() {
+		return p.cwd
+	}
+	return p.rows[p.cursor-1].path
+}
+
+// refreshPreview rebuilds the pane data when the target changed. Cached
+// by path so repaints and same-row refreshes cost nothing; the cache is
+// deliberately not time-based — navigation is the only signal the picker
+// reacts to anywhere else, and the pane follows the same rule.
+func (p dirPicker) refreshPreview() dirPicker {
+	if target := p.previewTarget(); p.preview.target != target {
+		p.preview = readPreview(target, previewMaxEntries)
+	}
+	return p
 }
