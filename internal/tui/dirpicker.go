@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
@@ -388,4 +389,37 @@ func (p dirPicker) refreshPreview() dirPicker {
 		p.preview = readPreview(target, previewMaxEntries)
 	}
 	return p
+}
+
+// previewView renders the pane beside the picker: what is inside the
+// directory the cursor points at. The header names the target so the pane
+// reads as "inside X" even while the cursor moves; directories lead with
+// a trailing separator; files carry right-aligned sizes. Every line is
+// bounded to width, and styled fragments are appended to plain text,
+// never wrapped around it (the ANSI-reset trap).
+func (p dirPicker) previewView(width int) string {
+	var b strings.Builder
+	head := "in " + filepath.Base(p.preview.target) + string(filepath.Separator)
+	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(truncateToWidth(head, width)))
+	if p.preview.err != "" {
+		fmt.Fprintf(&b, "%s\n", ui.Muted.Render(truncateToWidth(p.preview.err, width)))
+		return b.String()
+	}
+	if p.preview.total == 0 {
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("(empty)"))
+		return b.String()
+	}
+	for _, e := range p.preview.entries {
+		if e.isDir {
+			fmt.Fprintf(&b, "%s\n", truncateToWidth(e.name+string(filepath.Separator), width))
+			continue
+		}
+		size := shortBytes(e.size)
+		name := truncateToWidth(e.name, max(width-lipgloss.Width(size)-1, 1))
+		fmt.Fprintf(&b, "%s\n", spread(width, name, ui.Subtle.Render(size)))
+	}
+	if more := p.preview.total - len(p.preview.entries); more > 0 {
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(truncateToWidth(fmt.Sprintf("… +%d more", more), width)))
+	}
+	return b.String()
 }

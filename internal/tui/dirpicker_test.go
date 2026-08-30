@@ -6,6 +6,8 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+
+	"github.com/charmbracelet/lipgloss"
 )
 
 // tempTree builds  root/{alpha, beta, gamma}  plus a file, which must not appear.
@@ -481,5 +483,86 @@ func TestDirPicker_PreviewOnUnreadableCwd(t *testing.T) {
 	p := newDirPicker(filepath.Join(t.TempDir(), "no-such-dir"))
 	if p.preview.err == "" {
 		t.Errorf("preview of an unreadable cwd must carry the error, got %+v", p.preview)
+	}
+}
+
+// The pane: a header naming the target, dirs with a trailing separator,
+// files with right-aligned sizes, a "+N more" tail. Assertions are text —
+// the Ascii profile emits no ANSI, so glyphs and layout are the contract.
+func TestDirPicker_PreviewViewContents(t *testing.T) {
+	root := previewTree(t)
+	p := newDirPicker(root) // Start button → previews root
+	out := p.previewView(24)
+	lines := strings.Split(strings.TrimRight(out, "\n"), "\n")
+
+	if want := "in " + filepath.Base(root) + string(filepath.Separator); !strings.Contains(lines[0], want) {
+		t.Errorf("header = %q, want it to contain %q", lines[0], want)
+	}
+	for _, dir := range []string{"apple/", "zeta/"} {
+		if !strings.Contains(out, dir) {
+			t.Errorf("missing directory entry %q:\n%s", dir, out)
+		}
+	}
+	// A file's name and size share one right-aligned line.
+	found := false
+	for _, line := range lines {
+		if strings.Contains(line, "Banana.txt") {
+			found = true
+			if !strings.HasSuffix(line, "2B") {
+				t.Errorf("file line must end with its size: %q", line)
+			}
+			if w := lipgloss.Width(line); w != 24 {
+				t.Errorf("file line must be spread to the pane width, got %d: %q", w, line)
+			}
+		}
+	}
+	if !found {
+		t.Errorf("missing file entry Banana.txt:\n%s", out)
+	}
+}
+
+// The tail names how many entries the cap elided.
+func TestDirPicker_PreviewViewMoreTail(t *testing.T) {
+	root := t.TempDir()
+	for i := range previewMaxEntries + 3 {
+		if err := os.WriteFile(filepath.Join(root, fmt.Sprintf("f%02d.txt", i)), []byte("x"), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+	out := newDirPicker(root).previewView(24)
+	if !strings.Contains(out, "… +3 more") {
+		t.Errorf("pane must count the elided entries:\n%s", out)
+	}
+}
+
+func TestDirPicker_PreviewViewEmptyAndError(t *testing.T) {
+	if out := newDirPicker(t.TempDir()).previewView(24); !strings.Contains(out, "(empty)") {
+		t.Errorf("empty dir must render (empty):\n%s", out)
+	}
+	p := newDirPicker(filepath.Join(t.TempDir(), "no-such-dir"))
+	if out := p.previewView(24); !strings.Contains(out, "cannot read") {
+		t.Errorf("unreadable target must render its reason:\n%s", out)
+	}
+}
+
+// Every pane line is bounded to the given width — the rule, not one case:
+// long names, the header, and the size column must all clip, or the
+// two-column join wraps and misaligns.
+func TestDirPicker_PreviewViewBoundedWidth(t *testing.T) {
+	root := t.TempDir()
+	long := strings.Repeat("verylongname", 8)
+	if err := os.WriteFile(filepath.Join(root, long+".txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Mkdir(filepath.Join(root, long), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	for _, width := range []int{12, 20, 24} {
+		out := newDirPicker(root).previewView(width)
+		for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width %d: line %d overflows (%d): %q", width, i, w, line)
+			}
+		}
 	}
 }
