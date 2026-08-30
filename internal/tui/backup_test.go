@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -544,6 +545,12 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 	}
 	if !strings.Contains(out, "hello.txt") {
 		t.Errorf("pane must list the cwd's files:\n%s", out)
+	}
+	region := pickerContentWidth(forwarded)
+	for i, line := range strings.Split(out, "\n") {
+		if w := lipgloss.Width(line); w > region {
+			t.Errorf("line %d exceeds content region (%d > %d): %q", i, w, region, line)
+		}
 	}
 }
 
