@@ -406,7 +406,7 @@ func (p dirPicker) previewView(width int) string {
 		return b.String()
 	}
 	if p.preview.total == 0 {
-		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("(empty)"))
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(truncateToWidth("(empty)", width)))
 		return b.String()
 	}
 	for _, e := range p.preview.entries {
@@ -415,6 +415,13 @@ func (p dirPicker) previewView(width int) string {
 			continue
 		}
 		size := shortBytes(e.size)
+		// When the size column cannot fit (size + 2 for gap and margin), drop
+		// the size and render just the name: it's better to show a truncated
+		// file name than to overflow the pane.
+		if lipgloss.Width(size)+2 > width {
+			fmt.Fprintf(&b, "%s\n", truncateToWidth(e.name, width))
+			continue
+		}
 		name := truncateToWidth(e.name, max(width-lipgloss.Width(size)-1, 1))
 		fmt.Fprintf(&b, "%s\n", spread(width, name, ui.Subtle.Render(size)))
 	}

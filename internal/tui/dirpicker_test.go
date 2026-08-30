@@ -557,8 +557,29 @@ func TestDirPicker_PreviewViewBoundedWidth(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(root, long), 0o755); err != nil {
 		t.Fatal(err)
 	}
+	// Test on-disk case with small files.
 	for _, width := range []int{12, 20, 24} {
 		out := newDirPicker(root).previewView(width)
+		for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width %d: line %d overflows (%d): %q", width, i, w, line)
+			}
+		}
+	}
+
+	// Test synthesized case with very large file size: when size column is
+	// wide (9.0P ≈ 4 cells), it must not overflow even in tiny panes.
+	for _, width := range []int{3, 5, 12, 20, 24} {
+		p := dirPicker{
+			preview: dirPreview{
+				target: "/tmp",
+				entries: []previewEntry{
+					{name: "bigfile.bin", size: 9_000_000_000_000_000, isDir: false},
+				},
+				total: 1,
+			},
+		}
+		out := p.previewView(width)
 		for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
 			if w := lipgloss.Width(line); w > width {
 				t.Errorf("width %d: line %d overflows (%d): %q", width, i, w, line)
