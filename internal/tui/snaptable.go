@@ -150,3 +150,33 @@ func truncateToWidth(s string, w int) string {
 	}
 	return string(out) + ellipsis
 }
+
+// truncateToWidthLeft clips s to at most w display cells by dropping the
+// HEAD, marking the clip with a leading ellipsis. The picker's path line
+// uses it: a deep path's leaf answers "where am I?" while its root is
+// noise, the opposite trade from truncateToWidth's tail clip.
+func truncateToWidthLeft(s string, w int) string {
+	if w <= 0 {
+		return ""
+	}
+	if lipgloss.Width(s) <= w {
+		return s
+	}
+	const ellipsis = "…" // one cell
+	if w == 1 {
+		return ellipsis
+	}
+	budget := w - 1
+	runes := []rune(s)
+	width := 0
+	start := len(runes)
+	for i := len(runes) - 1; i >= 0; i-- {
+		rw := lipgloss.Width(string(runes[i]))
+		if width+rw > budget {
+			break
+		}
+		width += rw
+		start = i
+	}
+	return ellipsis + string(runes[start:])
+}

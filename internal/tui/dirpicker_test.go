@@ -587,3 +587,58 @@ func TestDirPicker_PreviewViewBoundedWidth(t *testing.T) {
 		}
 	}
 }
+
+// truncateToWidthLeft clips the HEAD and keeps the tail: for paths, the
+// leaf answers "where am I?" while the root is noise.
+func TestTruncateToWidthLeft(t *testing.T) {
+	cases := []struct{ in string; w int; want string }{
+		{"short", 10, "short"},
+		{"/a/very/long/path/leaf", 8, "…th/leaf"},
+		{"abc", 1, "…"},
+		{"abc", 0, ""},
+	}
+	for _, c := range cases {
+		if got := truncateToWidthLeft(c.in, c.w); got != c.want {
+			t.Errorf("truncateToWidthLeft(%q, %d) = %q, want %q", c.in, c.w, got, c.want)
+		}
+		if got := truncateToWidthLeft(c.in, c.w); lipgloss.Width(got) > c.w {
+			t.Errorf("result %q wider than %d", got, c.w)
+		}
+	}
+}
+
+// With a width set, EVERY picker line fits it — the rule: the path line
+// (which keeps its leaf), the Start button, and long folder labels.
+func TestDirPicker_ViewBoundedWhenWidthSet(t *testing.T) {
+	root := tempTree(t)
+	deep := filepath.Join(root, "alpha")
+	long := strings.Repeat("deepfolder", 6)
+	if err := os.Mkdir(filepath.Join(deep, long), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	p := newDirPicker(deep)
+	p.width = 32
+	out := p.View(true)
+	for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+		if w := lipgloss.Width(line); w > 32 {
+			t.Errorf("line %d overflows 32 (%d): %q", i, w, line)
+		}
+	}
+	// The path line keeps its tail: the leaf must survive the clip.
+	first := strings.Split(out, "\n")[0]
+	if !strings.Contains(first, "alpha") {
+		t.Errorf("clipped path must keep its leaf: %q", first)
+	}
+}
+
+// Width 0 is today's behavior, verbatim — no clipping anywhere.
+func TestDirPicker_ViewUnboundedAtZeroWidth(t *testing.T) {
+	root := tempTree(t)
+	long := strings.Repeat("deepfolder", 6)
+	if err := os.Mkdir(filepath.Join(root, long), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if out := newDirPicker(root).View(true); !strings.Contains(out, long) {
+		t.Errorf("zero width must not clip labels:\n%s", out)
+	}
+}

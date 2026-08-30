@@ -45,6 +45,12 @@ type dirPicker struct {
 	// height is how many rows fit; the view scrolls a window around the cursor.
 	height int
 
+	// width bounds every rendered line when > 0; 0 leaves lines unbounded
+	// (today's behavior — set only by the backup view's two-column layout,
+	// where an overlong line would wrap inside the fixed picker column and
+	// break the row model).
+	width int
+
 	// preview is the pane's data for previewTarget(), cached by path and
 	// refreshed by every transform that can move the target (see
 	// refreshPreview). It lives on the model for the same reason the rows
@@ -283,6 +289,29 @@ func (p dirPicker) enterVerb() string {
 	}
 }
 
+// clip helpers bound a line to the picker's column width. clipRow reserves
+// SelectRow's 2-cell prefix; clipLeft keeps the TAIL for the path line.
+func (p dirPicker) clip(s string) string {
+	if p.width <= 0 {
+		return s
+	}
+	return truncateToWidth(s, p.width)
+}
+
+func (p dirPicker) clipRow(s string) string {
+	if p.width <= 0 {
+		return s
+	}
+	return truncateToWidth(s, p.width-2)
+}
+
+func (p dirPicker) clipLeft(s string) string {
+	if p.width <= 0 {
+		return s
+	}
+	return truncateToWidthLeft(s, p.width)
+}
+
 // View renders the picker. focused controls whether the highlighted row carries
 // the ▍ marker: an unfocused picker must not look like it still owns the
 // keyboard while the tag field does.
@@ -293,18 +322,18 @@ func (p dirPicker) enterVerb() string {
 // the cursor is one past it (cursor == start+i+1).
 func (p dirPicker) View(focused bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(p.cwd))
+	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(p.clipLeft(p.cwd)))
 	if p.err != "" {
-		fmt.Fprintf(&b, "%s\n", ui.Danger.Render(p.err))
+		fmt.Fprintf(&b, "%s\n", ui.Danger.Render(p.clip(p.err)))
 	}
-	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), "▸ backup the current directory"))
+	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), p.clipRow("▸ backup the current directory")))
 	rows, start := p.window()
 	for i, r := range rows {
 		label := r.label
 		if r.kind == rowChild {
 			label += string(filepath.Separator)
 		}
-		fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && start+i == p.cursor-1, label))
+		fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && start+i == p.cursor-1, p.clipRow(label)))
 	}
 	if len(p.rows) > len(rows) {
 		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("  …"))
