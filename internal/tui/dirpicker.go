@@ -336,7 +336,7 @@ func (p dirPicker) View(focused bool) string {
 		fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && start+i == p.cursor-1, p.clipRow(label)))
 	}
 	if len(p.rows) > len(rows) {
-		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("  …"))
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(p.clip("  …")))
 	}
 	return b.String()
 }

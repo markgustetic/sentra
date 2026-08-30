@@ -591,7 +591,11 @@ func TestDirPicker_PreviewViewBoundedWidth(t *testing.T) {
 // truncateToWidthLeft clips the HEAD and keeps the tail: for paths, the
 // leaf answers "where am I?" while the root is noise.
 func TestTruncateToWidthLeft(t *testing.T) {
-	cases := []struct{ in string; w int; want string }{
+	cases := []struct {
+		in   string
+		w    int
+		want string
+	}{
 		{"short", 10, "short"},
 		{"/a/very/long/path/leaf", 8, "…th/leaf"},
 		{"abc", 1, "…"},
@@ -616,18 +620,29 @@ func TestDirPicker_ViewBoundedWhenWidthSet(t *testing.T) {
 	if err := os.Mkdir(filepath.Join(deep, long), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	p := newDirPicker(deep)
-	p.width = 32
-	out := p.View(true)
-	for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
-		if w := lipgloss.Width(line); w > 32 {
-			t.Errorf("line %d overflows 32 (%d): %q", i, w, line)
+	// Create more folders than dirPickerHeight so the overflow indicator renders.
+	for i := 0; i < dirPickerHeight+5; i++ {
+		if err := os.Mkdir(filepath.Join(deep, fmt.Sprintf("d%02d", i)), 0o755); err != nil {
+			t.Fatal(err)
 		}
 	}
-	// The path line keeps its tail: the leaf must survive the clip.
-	first := strings.Split(out, "\n")[0]
-	if !strings.Contains(first, "alpha") {
-		t.Errorf("clipped path must keep its leaf: %q", first)
+	p := newDirPicker(deep)
+	// Test multiple widths, including tiny ones that stress the 2-cell prefix.
+	for _, width := range []int{3, 12, 20, 32} {
+		p.width = width
+		out := p.View(true)
+		for i, line := range strings.Split(strings.TrimRight(out, "\n"), "\n") {
+			if w := lipgloss.Width(line); w > width {
+				t.Errorf("width %d: line %d overflows (%d): %q", width, i, w, line)
+			}
+		}
+		// The path line keeps its tail: the leaf survives (partially at tiny widths).
+		// At wider widths, the full "alpha" should appear; at width 3, at least
+		// part of it remains (e.g., "…ha").
+		first := strings.Split(out, "\n")[0]
+		if width >= 12 && !strings.Contains(first, "alpha") {
+			t.Errorf("width %d: clipped path must keep its leaf: %q", width, first)
+		}
 	}
 }
 
