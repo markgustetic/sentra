@@ -512,3 +512,95 @@ func TestBackupFlow_RescanToggle(t *testing.T) {
 		t.Error("second ctrl+r should disarm rescan")
 	}
 }
+
+// pickerAt points the view's picker at a hermetic tree so preview
+// assertions don't depend on the process cwd. It keeps the width the
+// resize already derived — a fresh picker starts at 0 (unbounded), and
+// losing the bound would let a long temp path wrap inside the column and
+// mask the very defect the width field exists to prevent.
+func pickerAt(v BackupView, dir string) BackupView {
+	w := v.picker.width
+	v.picker = newDirPicker(dir)
+	v.picker.width = w
+	return v
+}
+
+// At the 80-col minimum (the App forwards 59) the pane renders beside the
+// picker, previewing the current directory, and NO line exceeds the
+// panel's text region — the rule the two-column join must uphold.
+func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
+	root := t.TempDir()
+	if err := os.WriteFile(filepath.Join(root, "hello.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v := NewBackupView(Deps{})
+	const forwarded = 59 // contentW the App forwards at an 80-col terminal
+	m, _ := v.Update(tea.WindowSizeMsg{Width: forwarded, Height: 16})
+	v = pickerAt(m.(BackupView), root)
+
+	out := v.View()
+	if want := "in " + filepath.Base(root) + string(filepath.Separator); !strings.Contains(out, want) {
+		t.Errorf("pane must preview the cwd (missing %q):\n%s", want, out)
+	}
+	if !strings.Contains(out, "hello.txt") {
+		t.Errorf("pane must list the cwd's files:\n%s", out)
+	}
+}
+
+// The pane follows the picker cursor through real key routing, not just
+// the model: two ↓ from the Start button rest on the first child dir.
+func TestBackupView_PreviewFollowsCursorThroughKeys(t *testing.T) {
+	root := t.TempDir()
+	sub := filepath.Join(root, "docs")
+	if err := os.Mkdir(sub, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(sub, "inner.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	v := NewBackupView(Deps{})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 59, Height: 16})
+	v = pickerAt(m.(BackupView), root)
+
+	for range 2 { // Start button → ".." → docs
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(BackupView)
+	}
+	out := v.View()
+	if !strings.Contains(out, "in docs"+string(filepath.Separator)) {
+		t.Errorf("pane must preview the hovered folder:\n%s", out)
+	}
+	if !strings.Contains(out, "inner.txt") {
+		t.Errorf("pane must list the hovered folder's files:\n%s", out)
+	}
+}
+
+// Below the width threshold the pane hides entirely and the picker keeps
+// the full interior — the degraded layout IS today's layout.
+func TestBackupView_PreviewPaneHidesWhenNarrow(t *testing.T) {
+	root := t.TempDir()
+	v := NewBackupView(Deps{})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 50, Height: 16}) // interior 48 → pane would get 14 < 20
+	v = pickerAt(m.(BackupView), root)
+
+	if out := v.View(); strings.Contains(out, "in "+filepath.Base(root)+string(filepath.Separator)) {
+		t.Errorf("pane must hide below the threshold:\n%s", out)
+	}
+}
+
+// The threshold rule itself: pane width is interior minus the fixed
+// picker column and gap, floored to hidden below previewMinWidth.
+func TestPreviewPaneWidth(t *testing.T) {
+	cases := []struct{ interior, want int }{
+		{57, 23}, // 80-col terminal: 57 - 32 - 2
+		{54, 20}, // exactly the floor
+		{53, 0},  // one below → hidden
+		{0, 0},   // no size yet (fresh view before WindowSizeMsg)
+		{-2, 0},  // pickerContentWidth(0)
+	}
+	for _, c := range cases {
+		if got := previewPaneWidth(c.interior); got != c.want {
+			t.Errorf("previewPaneWidth(%d) = %d, want %d", c.interior, got, c.want)
+		}
+	}
+}

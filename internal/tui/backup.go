@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -163,6 +164,15 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		v.bar.Width = min(msg.Width-8, 60)
+		// The picker's column width depends on whether the pane fits:
+		// beside it the picker is pinned to pickerColWidth so the join
+		// stays aligned; alone it may use the whole interior (which also
+		// stops a deep path from wrapping inside the panel).
+		if interior := pickerContentWidth(msg.Width); previewPaneWidth(interior) > 0 {
+			v.picker.width = pickerColWidth
+		} else {
+			v.picker.width = interior
+		}
 		return v, nil
 
 	case backupDoneMsg:
@@ -422,7 +432,17 @@ func (v BackupView) View() string {
 		if v.notice != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		fmt.Fprintf(&b, "\n\n%s", v.picker.View(v.focus == focusPicker))
+		pickerCol := v.picker.View(v.focus == focusPicker)
+		if paneW := previewPaneWidth(pickerContentWidth(v.width)); paneW > 0 {
+			// A Width-only style pads the picker block to its fixed column
+			// without adding color codes, so the styled rows inside survive
+			// (same pattern as the App's rail at app.go View). Top-aligned:
+			// the pane's header sits beside the picker's path line.
+			left := lipgloss.NewStyle().Width(pickerColWidth).Render(pickerCol)
+			pickerCol = lipgloss.JoinHorizontal(lipgloss.Top,
+				left, strings.Repeat(" ", previewGapWidth), v.picker.previewView(paneW))
+		}
+		fmt.Fprintf(&b, "\n\n%s", pickerCol)
 		fmt.Fprintf(&b, "\n%s", v.tag.View())
 		if v.rescan {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  rescan armed — every file will be re-read (ctrl+r to disarm)"))

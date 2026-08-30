@@ -81,6 +81,27 @@ type dirRow struct {
 // dirPickerHeight is the default window size; the view scrolls within it.
 const dirPickerHeight = 10
 
+// Two-column layout for the backup view: the picker column is fixed and
+// the preview pane takes the rest of the interior — but never squeezed.
+// Below previewMinWidth usable columns the pane hides and the picker
+// returns to the full interior (the single-column layout). 32 fits the
+// Start button's label exactly; 20 fits a real file name plus a size.
+const (
+	pickerColWidth  = 32
+	previewGapWidth = 2
+	previewMinWidth = 20
+)
+
+// previewPaneWidth converts the view's interior text width into the
+// pane's width, or 0 when the pane must hide.
+func previewPaneWidth(interior int) int {
+	w := interior - pickerColWidth - previewGapWidth
+	if w < previewMinWidth {
+		return 0
+	}
+	return w
+}
+
 // newDirPicker opens start. An unreadable directory is not fatal: the picker
 // still renders its parent row and Start button so the operator can climb back
 // out or commit anyway, with the error shown alongside.
