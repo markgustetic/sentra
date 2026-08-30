@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/progress"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -163,6 +164,21 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		v.bar.Width = min(msg.Width-8, 60)
+		// The picker's column width depends on whether the pane fits:
+		// beside it the picker is pinned to pickerColWidth so the join
+		// stays aligned; alone it may use the whole interior (which also
+		// stops a deep path from wrapping inside the panel).
+		if interior := pickerContentWidth(msg.Width); previewPaneWidth(interior) > 0 {
+			v.picker.width = pickerColWidth
+		} else {
+			v.picker.width = interior
+		}
+		// The panel must never wrap the tag line: give textinput its own
+		// Width so it scrolls horizontally instead of the render growing
+		// past the interior. Budget is the interior minus the "tag>  "
+		// prompt (6 cells) and one cell for the cursor, floored so a very
+		// narrow terminal still leaves a usable field.
+		v.tag.Width = max(pickerContentWidth(msg.Width)-6-1, 10)
 		return v, nil
 
 	case backupDoneMsg:
@@ -388,6 +404,28 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	return v, tea.Batch(func() tea.Msg { return start }, opTick())
 }
 
+// fit bounds a line to the view's interior so the panel never wraps it;
+// width 0 (no resize yet) leaves it alone, the picker's own rule.
+func (v BackupView) fit(s string) string {
+	if v.width <= 0 {
+		return s
+	}
+	return truncateToWidth(s, pickerContentWidth(v.width))
+}
+
+// actionLine renders the footer bounded to the interior. ui.ActionLine
+// adds an 18-cell "⏎  Press enter to " prefix to the primary and a 3-cell
+// indent to the secondary, so each is clipped to its remaining budget
+// BEFORE styling — clipping afterwards would cut styled text.
+func (v BackupView) actionLine(primary, secondary string) string {
+	if v.width > 0 {
+		region := pickerContentWidth(v.width)
+		primary = truncateToWidth(primary, max(region-18, 1))
+		secondary = truncateToWidth(secondary, max(region-3, 1))
+	}
+	return ui.ActionLine(primary, secondary)
+}
+
 func (v BackupView) View() string {
 	var b strings.Builder
 	switch v.stage {
@@ -415,27 +453,37 @@ func (v BackupView) View() string {
 				info.ID, info.Stats.Files,
 				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes))
 		}
-		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("run another backup", ""))
+		fmt.Fprintf(&b, "\n\n%s", v.actionLine("run another backup", ""))
 
 	default:
 		b.WriteString(ui.Primary.Render("New backup"))
 		if v.notice != "" {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(v.notice)))
 		}
-		fmt.Fprintf(&b, "\n\n%s", v.picker.View(v.focus == focusPicker))
+		pickerCol := v.picker.View(v.focus == focusPicker)
+		if paneW := previewPaneWidth(pickerContentWidth(v.width)); paneW > 0 {
+			// A Width-only style pads the picker block to its fixed column
+			// without adding color codes, so the styled rows inside survive
+			// (same pattern as the App's rail at app.go View). Top-aligned:
+			// the pane's header sits beside the picker's path line.
+			left := lipgloss.NewStyle().Width(pickerColWidth).Render(pickerCol)
+			pickerCol = lipgloss.JoinHorizontal(lipgloss.Top,
+				left, strings.Repeat(" ", previewGapWidth), v.picker.previewView(paneW))
+		}
+		fmt.Fprintf(&b, "\n\n%s", pickerCol)
 		fmt.Fprintf(&b, "\n%s", v.tag.View())
 		if v.rescan {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  rescan armed — every file will be re-read (ctrl+r to disarm)"))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit("  rescan armed — every file re-read (ctrl+r disarms)")))
 		} else {
-			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("  incremental scan on (ctrl+r to force a full rescan)"))
+			fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.fit("  incremental scan on (ctrl+r to force a full rescan)")))
 		}
 		if v.repeat != "" {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render("  repeats "+v.repeat+" — confirming installs a schedule (ctrl+e cycles)"))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(fmt.Sprintf("  repeats %s — installs a schedule (ctrl+e cycles)", v.repeat))))
 		} else {
-			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("  one-shot backup (ctrl+e to repeat daily/weekly/monthly)"))
+			fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.fit("  one-shot backup (ctrl+e to repeat daily/weekly/monthly)")))
 		}
 		if v.pathErr != "" {
-			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.pathErr))
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.fit(v.pathErr)))
 		}
 
 		// The action line names what enter does to the FOCUSED control right now.
@@ -443,9 +491,9 @@ func (v BackupView) View() string {
 		// (open a folder / go up / start on the Start button), so it is read from
 		// the picker.
 		if v.focus == focusPicker {
-			fmt.Fprintf(&b, "\n\n%s", ui.ActionLine(v.picker.enterVerb(), "↑↓ move · ↓ to browse folders · backspace up a level · tab to add a tag"))
+			fmt.Fprintf(&b, "\n\n%s", v.actionLine(v.picker.enterVerb(), "↑↓ move · ↓ browses folders · bksp up · tab to tag"))
 		} else {
-			fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
+			fmt.Fprintf(&b, "\n\n%s", v.actionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
 		}
 	}
 	return b.String()
