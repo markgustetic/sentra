@@ -539,6 +539,15 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 	m, _ := v.Update(tea.WindowSizeMsg{Width: forwarded, Height: 16})
 	v = pickerAt(m.(BackupView), root)
 
+	// Strengthen the test by arming the long variants before rendering,
+	// so both "rescan armed — every file will be re-read (ctrl+r to disarm)"
+	// and "repeats daily — confirming installs a schedule (ctrl+e cycles)"
+	// are rendered, guaranteeing the worst-case line widths.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
+	v = m.(BackupView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
+	v = m.(BackupView)
+
 	out := v.View()
 	if want := "in " + filepath.Base(root) + string(filepath.Separator); !strings.Contains(out, want) {
 		t.Errorf("pane must preview the cwd (missing %q):\n%s", want, out)
