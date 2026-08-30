@@ -540,13 +540,20 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 	v = pickerAt(m.(BackupView), root)
 
 	// Strengthen the test by arming the long variants before rendering,
-	// so both "rescan armed — every file will be re-read (ctrl+r to disarm)"
-	// and "repeats daily — confirming installs a schedule (ctrl+e cycles)"
-	// are rendered, guaranteeing the worst-case line widths.
+	// so both "rescan armed — every file re-read (ctrl+r disarms)" and
+	// "repeats daily — installs a schedule (ctrl+e cycles)" are rendered,
+	// guaranteeing the worst-case line widths.
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
 	v = m.(BackupView)
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
 	v = m.(BackupView)
+
+	// Also arm the notice banner and an unbounded tag value — both must
+	// clip to the panel just like the rescan/repeat hints do (review
+	// findings 1 and 2: the notice line and the tag field could each
+	// overflow the interior on their own before the fit/Width fixes).
+	v.notice = "another operation is in progress — try again when it finishes"
+	v.tag.SetValue(strings.Repeat("tag-", 30))
 
 	out := v.View()
 	if want := "in " + filepath.Base(root) + string(filepath.Separator); !strings.Contains(out, want) {
@@ -571,6 +578,15 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 	}
 	if !strings.Contains(out, "tab to tag") {
 		t.Errorf("footer must contain action hint 'tab to tag':\n%s", out)
+	}
+
+	// Cheap focus-independence check: switch focus to the tag field and
+	// confirm the preview pane's header survives — pane rendering does not
+	// key off which control owns the keyboard.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+	if focused := v.View(); !strings.Contains(focused, "in "+filepath.Base(root)+string(filepath.Separator)) {
+		t.Errorf("pane header must render regardless of focus:\n%s", focused)
 	}
 }
 

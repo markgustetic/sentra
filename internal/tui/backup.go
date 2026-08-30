@@ -173,6 +173,12 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			v.picker.width = interior
 		}
+		// The panel must never wrap the tag line: give textinput its own
+		// Width so it scrolls horizontally instead of the render growing
+		// past the interior. Budget is the interior minus the "tag>  "
+		// prompt (6 cells) and one cell for the cursor, floored so a very
+		// narrow terminal still leaves a usable field.
+		v.tag.Width = max(pickerContentWidth(msg.Width)-6-1, 10)
 		return v, nil
 
 	case backupDoneMsg:
@@ -452,7 +458,7 @@ func (v BackupView) View() string {
 	default:
 		b.WriteString(ui.Primary.Render("New backup"))
 		if v.notice != "" {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(v.notice)))
 		}
 		pickerCol := v.picker.View(v.focus == focusPicker)
 		if paneW := previewPaneWidth(pickerContentWidth(v.width)); paneW > 0 {
