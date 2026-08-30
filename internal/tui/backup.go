@@ -467,12 +467,12 @@ func (v BackupView) View() string {
 		fmt.Fprintf(&b, "\n\n%s", pickerCol)
 		fmt.Fprintf(&b, "\n%s", v.tag.View())
 		if v.rescan {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit("  rescan armed — every file will be re-read (ctrl+r to disarm)")))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit("  rescan armed — every file re-read (ctrl+r disarms)")))
 		} else {
 			fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.fit("  incremental scan on (ctrl+r to force a full rescan)")))
 		}
 		if v.repeat != "" {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit("  repeats "+v.repeat+" — confirming installs a schedule (ctrl+e cycles)")))
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(fmt.Sprintf("  repeats %s — installs a schedule (ctrl+e cycles)", v.repeat))))
 		} else {
 			fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.fit("  one-shot backup (ctrl+e to repeat daily/weekly/monthly)")))
 		}
@@ -485,7 +485,7 @@ func (v BackupView) View() string {
 		// (open a folder / go up / start on the Start button), so it is read from
 		// the picker.
 		if v.focus == focusPicker {
-			fmt.Fprintf(&b, "\n\n%s", v.actionLine(v.picker.enterVerb(), "↑↓ move · ↓ to browse folders · backspace up a level · tab to add a tag"))
+			fmt.Fprintf(&b, "\n\n%s", v.actionLine(v.picker.enterVerb(), "↑↓ move · ↓ browses folders · bksp up · tab to tag"))
 		} else {
 			fmt.Fprintf(&b, "\n\n%s", v.actionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
 		}

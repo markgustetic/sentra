@@ -561,6 +561,17 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 			t.Errorf("line %d exceeds content region (%d > %d): %q", i, w, region, line)
 		}
 	}
+	// Assert the armed variants stay actionable at min size: keybinds and
+	// hints must remain present so the operator knows what the keys do.
+	if !strings.Contains(out, "ctrl+r") {
+		t.Errorf("rescan armed hint must contain keybind 'ctrl+r':\n%s", out)
+	}
+	if !strings.Contains(out, "ctrl+e") {
+		t.Errorf("repeat armed hint must contain keybind 'ctrl+e':\n%s", out)
+	}
+	if !strings.Contains(out, "tab to tag") {
+		t.Errorf("footer must contain action hint 'tab to tag':\n%s", out)
+	}
 }
 
 // The pane follows the picker cursor through real key routing, not just
