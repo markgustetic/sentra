@@ -301,3 +301,61 @@ func (p dirPicker) View(focused bool) string {
 	}
 	return b.String()
 }
+
+// dirPreview is the pane's data for one target directory: the first
+// window of entries plus how many exist in total, so the tail row can say
+// what was elided. target doubles as the cache key (see refreshPreview).
+type dirPreview struct {
+	target  string
+	entries []previewEntry
+	total   int
+	err     string
+}
+
+// previewEntry is one name in the pane. Metadata only — the preview must
+// never read file contents, only what ReadDir and lstat already hold.
+type previewEntry struct {
+	name  string
+	size  int64
+	isDir bool
+}
+
+// previewMaxEntries caps the pane at the picker's own window height so
+// the two columns stay visually matched.
+const previewMaxEntries = dirPickerHeight
+
+// readPreview reads what is inside dir for the pane: directories first,
+// then files, each case-insensitive — the picker's own sort — capped at
+// maxShown but counting everything. Info is lstat on the dirent, so sizes
+// come without following symlinks (a link to a directory reads as a plain
+// entry, deliberately: the preview reports the directory as it is, not as
+// it resolves), and only the shown rows pay for it.
+func readPreview(dir string, maxShown int) dirPreview {
+	pv := dirPreview{target: dir}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		pv.err = "cannot read: " + errReason(err)
+		return pv
+	}
+	pv.total = len(entries)
+	sort.SliceStable(entries, func(i, j int) bool {
+		di, dj := entries[i].IsDir(), entries[j].IsDir()
+		if di != dj {
+			return di
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
+	for _, e := range entries {
+		if len(pv.entries) == maxShown {
+			break
+		}
+		pe := previewEntry{name: e.Name(), isDir: e.IsDir()}
+		if !e.IsDir() {
+			if info, err := e.Info(); err == nil {
+				pe.size = info.Size()
+			}
+		}
+		pv.entries = append(pv.entries, pe)
+	}
+	return pv
+}

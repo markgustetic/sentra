@@ -319,3 +319,93 @@ func TestDirPicker_PlaceEnterVerb(t *testing.T) {
 		t.Fatalf("enterVerb = %q, want it to name ~/Downloads", got)
 	}
 }
+
+// previewTree builds a mixed directory: two dirs and two files whose case
+// exercises the case-insensitive sort, plus known file sizes.
+func previewTree(t *testing.T) string {
+	t.Helper()
+	root := t.TempDir()
+	for _, d := range []string{"zeta", "apple"} {
+		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
+			t.Fatal(err)
+		}
+	}
+	if err := os.WriteFile(filepath.Join(root, "Banana.txt"), []byte("xy"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(root, "cherry.txt"), []byte("xyz"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	return root
+}
+
+// The pane's data: directories first, then files, each case-insensitive —
+// the picker's own sort — with file sizes from lstat.
+func TestReadPreview_DirsFirstThenFilesSorted(t *testing.T) {
+	pv := readPreview(previewTree(t), previewMaxEntries)
+	if pv.err != "" {
+		t.Fatalf("unexpected err: %s", pv.err)
+	}
+	want := []previewEntry{
+		{name: "apple", isDir: true},
+		{name: "zeta", isDir: true},
+		{name: "Banana.txt", size: 2},
+		{name: "cherry.txt", size: 3},
+	}
+	if fmt.Sprint(pv.entries) != fmt.Sprint(want) {
+		t.Fatalf("entries = %+v, want %+v", pv.entries, want)
+	}
+	if pv.total != 4 {
+		t.Fatalf("total = %d, want 4", pv.total)
+	}
+}
+
+// The cap bounds what is SHOWN, never what is COUNTED — the "+N more" tail
+// needs the real total.
+func TestReadPreview_CapsShownKeepsTotal(t *testing.T) {
+	pv := readPreview(previewTree(t), 2)
+	if len(pv.entries) != 2 {
+		t.Fatalf("shown = %d, want 2", len(pv.entries))
+	}
+	if pv.total != 4 {
+		t.Fatalf("total = %d, want 4", pv.total)
+	}
+}
+
+// An unreadable target is a message, not a failure — the picker's own
+// unreadable-cwd rule.
+func TestReadPreview_UnreadableTarget(t *testing.T) {
+	pv := readPreview(filepath.Join(t.TempDir(), "no-such-dir"), previewMaxEntries)
+	if pv.err == "" {
+		t.Error("an unreadable target must set err")
+	}
+	if len(pv.entries) != 0 {
+		t.Errorf("no entries on error, got %+v", pv.entries)
+	}
+}
+
+func TestReadPreview_EmptyDir(t *testing.T) {
+	pv := readPreview(t.TempDir(), previewMaxEntries)
+	if pv.err != "" || pv.total != 0 || len(pv.entries) != 0 {
+		t.Fatalf("empty dir: %+v", pv)
+	}
+}
+
+// Symlinks are listed by name and never followed: a link to a directory
+// must NOT read as a directory, and its size is the link's own (lstat).
+func TestReadPreview_SymlinkNotFollowed(t *testing.T) {
+	root := t.TempDir()
+	target := filepath.Join(root, "real")
+	if err := os.Mkdir(target, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(target, filepath.Join(root, "link")); err != nil {
+		t.Skipf("symlinks unavailable: %v", err)
+	}
+	pv := readPreview(root, previewMaxEntries)
+	for _, e := range pv.entries {
+		if e.name == "link" && e.isDir {
+			t.Error("a symlink to a directory must not be listed as a directory")
+		}
+	}
+}
