@@ -632,14 +632,18 @@ func TestBackupView_PreviewPaneHidesWhenNarrow(t *testing.T) {
 }
 
 // The threshold rule itself: pane width is interior minus the fixed
-// picker column and gap, floored to hidden below previewMinWidth.
+// picker column and gap, floored to hidden below previewMinWidth and
+// capped at previewMaxWidth — on a very wide terminal an uncapped pane
+// pushes the right-aligned sizes far from their names.
 func TestPreviewPaneWidth(t *testing.T) {
 	cases := []struct{ interior, want int }{
-		{57, 23}, // 80-col terminal: 57 - 32 - 2
-		{54, 20}, // exactly the floor
-		{53, 0},  // one below → hidden
-		{0, 0},   // no size yet (fresh view before WindowSizeMsg)
-		{-2, 0},  // pickerContentWidth(0)
+		{57, 23},  // 80-col terminal: 57 - 32 - 2
+		{54, 20},  // exactly the floor
+		{53, 0},   // one below → hidden
+		{0, 0},    // no size yet (fresh view before WindowSizeMsg)
+		{-2, 0},   // pickerContentWidth(0)
+		{82, 48},  // exactly the cap
+		{196, 48}, // ~200-col terminal → capped, not 162
 	}
 	for _, c := range cases {
 		if got := previewPaneWidth(c.interior); got != c.want {

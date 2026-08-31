@@ -405,10 +405,20 @@ func TestReadPreview_SymlinkNotFollowed(t *testing.T) {
 		t.Skipf("symlinks unavailable: %v", err)
 	}
 	pv := readPreview(root, previewMaxEntries)
+	found := false
 	for _, e := range pv.entries {
-		if e.name == "link" && e.isDir {
+		if e.name != "link" {
+			continue
+		}
+		found = true
+		if e.isDir {
 			t.Error("a symlink to a directory must not be listed as a directory")
 		}
+	}
+	// Without this the test passes vacuously if readPreview ever starts
+	// skipping symlinks — the link must be listed, just not as a directory.
+	if !found {
+		t.Errorf("the link entry must appear in the preview, got %v", pv.entries)
 	}
 }
 
@@ -518,6 +528,22 @@ func TestDirPicker_PreviewViewContents(t *testing.T) {
 	}
 	if !found {
 		t.Errorf("missing file entry Banana.txt:\n%s", out)
+	}
+}
+
+// filepath.Base of the filesystem root is already the separator, so
+// blindly appending one rendered "in //" when hovering ".." from a
+// top-level directory. The root is the one base that ends with the
+// separator; the header must not double it.
+func TestDirPicker_PreviewViewRootHeader(t *testing.T) {
+	sep := string(filepath.Separator)
+	p := dirPicker{preview: dirPreview{target: sep}}
+	out := p.previewView(24)
+	if strings.Contains(out, sep+sep) {
+		t.Errorf("root header must not double the separator:\n%s", out)
+	}
+	if !strings.Contains(out, "in "+sep) {
+		t.Errorf("header must still name the root:\n%s", out)
 	}
 }
 

@@ -82,14 +82,17 @@ type dirRow struct {
 const dirPickerHeight = 10
 
 // Two-column layout for the backup view: the picker column is fixed and
-// the preview pane takes the rest of the interior — but never squeezed.
-// Below previewMinWidth usable columns the pane hides and the picker
-// returns to the full interior (the single-column layout). 32 fits the
-// Start button's label exactly; 20 fits a real file name plus a size.
+// the preview pane takes the rest of the interior — but never squeezed,
+// and never stretched. Below previewMinWidth usable columns the pane
+// hides and the picker returns to the full interior (the single-column
+// layout); above previewMaxWidth it stops growing — a size right-aligned
+// across 160 columns no longer reads as belonging to its name. 32 fits
+// the Start button's label exactly; 20 fits a real file name plus a size.
 const (
 	pickerColWidth  = 32
 	previewGapWidth = 2
 	previewMinWidth = 20
+	previewMaxWidth = 48
 )
 
 // previewPaneWidth converts the view's interior text width into the
@@ -99,7 +102,7 @@ func previewPaneWidth(interior int) int {
 	if w < previewMinWidth {
 		return 0
 	}
-	return w
+	return min(w, previewMaxWidth)
 }
 
 // newDirPicker opens start. An unreadable directory is not fatal: the picker
@@ -449,7 +452,12 @@ func (p dirPicker) refreshPreview() dirPicker {
 // never wrapped around it (the ANSI-reset trap).
 func (p dirPicker) previewView(width int) string {
 	var b strings.Builder
-	head := "in " + filepath.Base(p.preview.target) + string(filepath.Separator)
+	// filepath.Base of the filesystem root is already the separator;
+	// appending another would render "in //".
+	head := "in " + filepath.Base(p.preview.target)
+	if !strings.HasSuffix(head, string(filepath.Separator)) {
+		head += string(filepath.Separator)
+	}
 	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(truncateToWidth(head, width)))
 	if p.preview.err != "" {
 		fmt.Fprintf(&b, "%s\n", ui.Muted.Render(truncateToWidth(p.preview.err, width)))
