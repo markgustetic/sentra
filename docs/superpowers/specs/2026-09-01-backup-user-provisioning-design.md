@@ -103,7 +103,10 @@ credentials that just signed in — and runs, in order:
    idempotent; a rerun re-puts the same document.
 3. `CreateAccessKey(sentra-backup)`.
 4. Write the key into the credentials file (below).
-5. Zeroize the secret.
+5. Pass the secret straight from the `CreateAccessKey` output to the
+   writer. It is never bound to a variable of its own and never
+   returned — a Go `string` the SDK hands back as a `*string` cannot be
+   wiped, so narrow scope, not zeroization, is the guarantee.
 
 The IAM calls sit behind a four-method interface (`CreateUser`,
 `PutUserPolicy`, `CreateAccessKey`, `DeleteAccessKey`) so the default
@@ -194,8 +197,8 @@ allows two per user), which is why the limit case has its own warning.
   encryption): a `[x] create dedicated backup user (sentra-backup)`
   toggle and a `profile` text input. Visibility and default follow the
   decision: pre-checked for login, unchecked for SSO, absent otherwise.
-  The input is visible whenever the toggle row is; its value is ignored
-  when the toggle is off.
+  The input is visible only while the toggle is on, so the cursor never
+  lands on a row that cannot affect the plan.
 - **Review stage** — one line from `ReviewText`:
   `Backup user: create sentra-backup, keys → ~/.aws/credentials [sentra]`
   when on; `Backup user: skipped` when offered but off; no line when
