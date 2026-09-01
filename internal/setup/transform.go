@@ -1,6 +1,8 @@
 package setup
 
 import (
+	"errors"
+	"fmt"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -183,4 +185,39 @@ func ResolveAWSAuthMethod(p *Plan) AWSAuthMethod {
 // the only live bucket-name gate in the product.
 func ValidateBucketName(bucket string) error {
 	return diag.ValidateBucketName(bucket)
+}
+
+// ErrBackupUserProfileDefault is returned when the operator names the
+// "default" credentials profile for the backup user. That section is the
+// operator's everyday identity; Sentra must never write into it.
+var ErrBackupUserProfileDefault = errors.New("backup user profile must not be \"default\"")
+
+// ValidateBackupUserProfile checks a ~/.aws/credentials section name. The
+// rules are the INI file's, not AWS's: the name becomes a "[name]" header
+// line, so brackets and whitespace would corrupt the file the operator's
+// other tools read.
+func ValidateBackupUserProfile(name string) error {
+	name = strings.TrimSpace(name)
+	if name == "" {
+		return errors.New("backup user profile is required")
+	}
+	if name == "default" {
+		return ErrBackupUserProfileDefault
+	}
+	if strings.ContainsAny(name, "[] \t\r\n") {
+		return fmt.Errorf("backup user profile %q must not contain brackets or whitespace", name)
+	}
+	return nil
+}
+
+// ShouldProvisionBackupUser is the single gate for the IAM provisioning
+// stage. Existing-credentials and skip never provision: the operator already
+// chose a durable identity, and an IAM mutation they did not ask for is the
+// worst surprise a setup wizard can spring.
+func ShouldProvisionBackupUser(p *Plan) bool {
+	if p == nil || !p.ProvisionBackupUser || !p.PrepareAWS {
+		return false
+	}
+	m := ResolveAWSAuthMethod(p)
+	return m == AWSAuthLogin || m == AWSAuthSSO
 }

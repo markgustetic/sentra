@@ -32,6 +32,14 @@ type Plan struct {
 	// safe everywhere a plan is rendered. The engine ignores it: the secret
 	// itself is passed to InitRepo as an argument.
 	PassphraseSource string
+
+	// ProvisionBackupUser asks PrepareAWS to create the scoped IAM user and
+	// switch the config to its static-key profile after a login/SSO sign-in.
+	// Ignored for existing-credentials and skip (see ShouldProvisionBackupUser).
+	ProvisionBackupUser bool
+	// BackupUserProfile is the ~/.aws/credentials section for the minted
+	// key; empty means DefaultBackupUserProfile.
+	BackupUserProfile string
 }
 
 // AWSPrepareOptions controls the AWS-side setup work. Bucket existence is
@@ -49,6 +57,9 @@ type AWSPrepareReport struct {
 	BucketCreated            bool
 	PublicAccessBlocked      bool
 	DefaultEncryptionEnabled bool
+	// BackupUser is nil when provisioning was not attempted (gate false);
+	// otherwise the non-secret outcome, Warning set on failure.
+	BackupUser *BackupUserReport
 }
 
 // AWSAuthReport summarizes the optional AWS CLI auth preflight.
