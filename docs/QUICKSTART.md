@@ -82,9 +82,20 @@ For real AWS S3, choose `AWS S3`. The wizard can create or verify the
 bucket before initializing Sentra. The default AWS sign-in method is
 browser login with the AWS CLI, which stores temporary local credentials.
 You can also choose IAM Identity Center / SSO, use an existing
-profile/environment/role, or write config only. Setup shows a final
-review screen before applying changes. If you need an AWS administrator
-to grant permissions first, the wizard can print the non-secret
+profile/environment/role, or write config only.
+
+Browser-login and SSO sessions are temporary — hours, not days — so on those
+paths the wizard offers **create dedicated backup user** (pre-checked for
+browser login). It creates IAM user `sentra-backup` with the least-privilege
+policy, stores its access key under the `sentra` profile in
+`~/.aws/credentials`, and points `sentra.yaml` at that profile once the key
+verifies. Leave it on if you plan to schedule backups. If it cannot run (the
+signed-in identity lacks IAM permissions, say), setup still completes on the
+session credentials and tells you so; you can create the user later with the
+policy from `sentra setup iam-policy`.
+
+Setup shows a final review screen before applying changes. If you need an
+AWS administrator to grant permissions first, the wizard can print the non-secret
 least-privilege IAM policy and stop before writing config or touching AWS.
 If AWS auth fails, setup lets you retry, switch sign-in methods, edit
 profile/region, or continue with config only. For a normal AWS CLI

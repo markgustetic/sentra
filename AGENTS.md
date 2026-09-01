@@ -83,6 +83,20 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   passphrase field: the repo must initialize under the same secret every later
   command resolves, or the mismatch surfaces later as an undecryptable repo.
   The review screen names the SOURCE, never the secret.
+  After a browser-login or SSO sign-in it may create IAM user
+  `sentra-backup` with the canonical `BuildIAMPolicy` inline policy, mint an
+  access key into a dedicated `~/.aws/credentials` profile (default
+  `sentra`), verify it, and switch `sentra.yaml` to that profile — the
+  session identity is used once and retired. The step is pre-checked for
+  browser login, offered unchecked for SSO, and absent for
+  existing-credentials/skip/S3-compatible (`setup.ShouldProvisionBackupUser`
+  is the single gate). It must never write the `default` credentials
+  profile, never modify `~/.aws/config`, never overwrite a credentials
+  section that already holds keys, and never let the secret reach the
+  report, plan, draft, review text, logs, or an error. The profile switch
+  happens only after the new identity verifies (bounded retry); any failure
+  degrades to `BackupUserReport.Warning` and setup continues on the session
+  credentials — provisioning never blocks setup.
   AWS CLI **brew auto-install is currently absent**: it needed a confirm prompt,
   and `huh` cannot run inside a live `tea.Program`. `setup.DefaultEnsureAWSCLI`
   keeps the machinery behind a confirm no caller arms, so restoring it means a

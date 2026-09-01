@@ -152,9 +152,13 @@ initialize the encrypted repo** — all in one flow, reviewing a non-secret plan
 before it touches anything.
 
 - **AWS S3** → sign in with AWS CLI browser login (the default), IAM Identity
-  Center / SSO, an existing profile/role, or write config only. Need an admin to
-  grant permissions first? The wizard can print the least-privilege IAM policy
-  and stop:
+  Center / SSO, an existing profile/role, or write config only. After a
+  browser or SSO sign-in the wizard offers to **create a dedicated backup
+  user** — a scoped IAM user whose static keys never expire — and switches
+  your config to it, so scheduled backups survive the night. Browser login
+  alone is for trying Sentra: its session expires within hours. Need an admin
+  to grant permissions first? The wizard can print the least-privilege IAM
+  policy and stop:
 
   ```bash
   sentra setup iam-policy --bucket my-backups --prefix sentra/
