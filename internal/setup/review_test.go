@@ -129,3 +129,65 @@ func TestLabelMaps(t *testing.T) {
 		t.Fatalf("AWSAuthMethodLabel(skip) = %q", AWSAuthMethodLabel(AWSAuthSkip))
 	}
 }
+
+func TestReviewTextBackupUserLine(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.Bucket = "b"
+	base := Plan{Config: cfg, Backend: BackendAWS, PrepareAWS: true}
+
+	tests := []struct {
+		name    string
+		method  AWSAuthMethod
+		on      bool
+		profile string
+		want    string // substring that must appear
+		absent  string // substring that must not appear ("" to skip)
+	}{
+		{"login on", AWSAuthLogin, true, "sentra", "Backup user: create sentra-backup, keys → ~/.aws/credentials [sentra]", ""},
+		{"login on custom profile", AWSAuthLogin, true, "backups", "~/.aws/credentials [backups]", ""},
+		{"login on blank profile defaults", AWSAuthLogin, true, "", "[sentra]", ""},
+		{"sso off", AWSAuthSSO, false, "", "Backup user: skipped", ""},
+		{"existing", AWSAuthExisting, true, "sentra", "AWS sign-in", "Backup user"},
+		{"skip", AWSAuthSkip, true, "sentra", "AWS sign-in", "Backup user"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			p.AWSAuthMethod = tc.method
+			p.ProvisionBackupUser = tc.on
+			p.BackupUserProfile = tc.profile
+			got := ReviewText("sentra.yaml", p)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("review text missing %q:\n%s", tc.want, got)
+			}
+			if tc.absent != "" && strings.Contains(got, tc.absent) {
+				t.Fatalf("review text must not mention %q:\n%s", tc.absent, got)
+			}
+		})
+	}
+}
+
+// The dangerous condition: nothing secret-shaped may ever reach the review
+// screen, whatever the plan holds. An access key ID prefix or a 40-character
+// secret in this output would mean a field leaked.
+func TestReviewTextBackupUserNeverRendersSecretShapes(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.Bucket = "b"
+	p := Plan{Config: cfg, Backend: BackendAWS, PrepareAWS: true, AWSAuthMethod: AWSAuthLogin,
+		ProvisionBackupUser: true, BackupUserProfile: "sentra"}
+	got := ReviewText("sentra.yaml", p)
+	if strings.Contains(got, "AKIA") {
+		t.Fatalf("review text contains an access key ID shape:\n%s", got)
+	}
+	isBase64Rune := func(r rune) bool {
+		return r >= 'A' && r <= 'Z' || r >= 'a' && r <= 'z' || r >= '0' && r <= '9' || r == '+' || r == '/'
+	}
+	for _, word := range strings.Fields(got) {
+		if len(word) == 40 && strings.IndexFunc(word, func(r rune) bool { return !isBase64Rune(r) }) == -1 {
+			t.Fatalf("review text contains a 40-char base64 token %q:\n%s", word, got)
+		}
+	}
+	if !strings.Contains(got, "No passphrases, AWS credentials, salts, wrapped keys, or MAC material are written to the config.") {
+		t.Fatalf("no-secrets assertion line must remain:\n%s", got)
+	}
+}

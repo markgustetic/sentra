@@ -31,6 +31,9 @@ func ReviewText(cfgPath string, p Plan) string {
 		fmt.Fprintf(&b, "Create missing bucket: %t\n", p.CreateBucket)
 		fmt.Fprintf(&b, "Block public access: %t\n", p.BlockPublicAccess)
 		fmt.Fprintf(&b, "Enable default encryption: %t\n", p.DefaultEncryption)
+		if line := backupUserPlanLine(p); line != "" {
+			fmt.Fprintf(&b, "%s\n", line)
+		}
 	} else {
 		fmt.Fprintln(&b, "AWS setup: skipped")
 	}
@@ -98,4 +101,24 @@ func AWSAuthMethodLabel(m AWSAuthMethod) string {
 	default:
 		return string(m)
 	}
+}
+
+// backupUserPlanLine says what the provisioning stage will do, in the same
+// voice as the other plan lines. It names the profile (a section header,
+// not a secret) so the operator learns where the key will land before it
+// exists. Methods that never provision get no line at all — "skipped"
+// would imply a choice they were never offered.
+func backupUserPlanLine(p Plan) string {
+	m := ResolveAWSAuthMethod(&p)
+	if m != AWSAuthLogin && m != AWSAuthSSO {
+		return ""
+	}
+	if !p.ProvisionBackupUser {
+		return "Backup user: skipped"
+	}
+	profile := strings.TrimSpace(p.BackupUserProfile)
+	if profile == "" {
+		profile = DefaultBackupUserProfile
+	}
+	return fmt.Sprintf("Backup user: create %s, keys → ~/.aws/credentials [%s]", BackupUserName, profile)
 }
