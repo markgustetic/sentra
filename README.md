@@ -65,7 +65,7 @@ built-in agent that audits your repository and surfaces recommendations.
       <br><sub><b>First-run wizard</b> — guided setup for AWS or any S3-compatible store.</sub>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts plus policies, backup schedule, recovery kit, passphrase rotation, and re-run setup.">
+      <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts plus scheduled backups, recovery kit, passphrase rotation, and re-run setup.">
       <br><sub><b>Settings</b> — config summary plus scheduled backups, recovery kit, passphrase, and setup.</sub>
     </td>
   </tr>
