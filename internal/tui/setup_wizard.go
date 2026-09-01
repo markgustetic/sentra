@@ -1303,6 +1303,21 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
 		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
 		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
+		if bu := v.backupUserReport(); bu != nil {
+			if bu.ProfileSwitched {
+				b.WriteString(v.checklistLine(true,
+					fmt.Sprintf("backup user %s (profile %s)", bu.UserName, bu.Profile)))
+			} else {
+				method := setup.AWSAuthLogin
+				if v.result.auth != nil {
+					method = v.result.auth.Method
+				}
+				fmt.Fprintf(&b, "\n%s\n%s\n%s\n",
+					ui.Warn.Render("Backup user not set up"),
+					bu.Warning,
+					ui.Subtle.Render("Session credentials from "+setupAuthMethodLabel(method)+" expire; see docs/QUICKSTART.md"))
+			}
+		}
 		fmt.Fprintf(&b, "\n%s", ui.ActionLine("restart setup", ""))
 	case stageError:
 		fmt.Fprintf(&b, "%s\n\n", ui.Danger.Render("Setup failed"))
@@ -1332,6 +1347,16 @@ func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
 		box = "[x]"
 	}
 	return ui.SelectRow(v.actionCursor == row, box+" "+label) + "\n"
+}
+
+// backupUserReport is the provisioning outcome carried by the done message,
+// nil when the stage never ran (gate false) — which renders nothing, since a
+// "skipped" line would imply a choice the operator may never have been offered.
+func (v SetupWizardView) backupUserReport() *setup.BackupUserReport {
+	if v.result.prep == nil {
+		return nil
+	}
+	return v.result.prep.BackupUser
 }
 
 // backupUserOffered: the provisioning step exists only where a powerful

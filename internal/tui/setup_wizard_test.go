@@ -1905,3 +1905,54 @@ func TestSetupWizard_ActionCursorSkipsHiddenRows(t *testing.T) {
 		t.Fatal("cursor never reached the visible backup-user row")
 	}
 }
+
+func TestSetupWizard_DoneShowsBackupUserSuccess(t *testing.T) {
+	v := NewSetupWizardView(Deps{})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(setupDoneMsg{
+		steps: setupProgress{bucketCreated: true, repoInited: true},
+		prep: &setup.AWSPrepareReport{BackupUser: &setup.BackupUserReport{
+			UserName: setup.BackupUserName, Profile: "sentra", ProfileSwitched: true,
+		}},
+	})
+	v = m.(SetupWizardView)
+	out := v.View()
+	if !strings.Contains(out, "backup user sentra-backup (profile sentra)") {
+		t.Fatalf("done screen must name the backup user and profile:\n%s", out)
+	}
+	if strings.Contains(out, "expire") {
+		t.Fatalf("a switched profile must not warn about expiry:\n%s", out)
+	}
+}
+
+func TestSetupWizard_DoneShowsBackupUserWarning(t *testing.T) {
+	v := NewSetupWizardView(Deps{})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(setupDoneMsg{
+		steps: setupProgress{bucketCreated: true, repoInited: true},
+		auth:  &setup.AWSAuthReport{Method: setup.AWSAuthLogin},
+		prep: &setup.AWSPrepareReport{BackupUser: &setup.BackupUserReport{
+			UserName: setup.BackupUserName, Warning: "backup user not created: the signed-in identity is not allowed to perform iam:CreateUser.",
+		}},
+	})
+	v = m.(SetupWizardView)
+	out := v.View()
+	for _, want := range []string{"Backup user not set up", "iam:CreateUser", "browser login", "expire"} {
+		if !strings.Contains(out, want) {
+			t.Fatalf("done screen missing %q:\n%s", want, out)
+		}
+	}
+}
+
+func TestSetupWizard_DoneWithoutProvisioningIsSilent(t *testing.T) {
+	v := NewSetupWizardView(Deps{})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(setupDoneMsg{steps: setupProgress{repoInited: true}, prep: &setup.AWSPrepareReport{}})
+	v = m.(SetupWizardView)
+	if strings.Contains(strings.ToLower(v.View()), "backup user") {
+		t.Fatalf("no provisioning attempt must render no backup-user line:\n%s", v.View())
+	}
+}
