@@ -203,7 +203,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   may remove current and legacy keyring entries and disable keyring lookup
   locally, but must not change the repo passphrase or delete S3 data.
 - `sentra prune` is dry-run by default. `--apply` mutates; `--explain` shows
-  retention reasons.
+  retention reasons. `--apply` runs GC even when retention drops nothing —
+  orphaned blobs (crashed backups, out-of-band deletes) never enter the drop
+  set, and prune is the only sanctioned way to reclaim them. The empty-drop
+  pass calls GC with nil keepIDs (bare-orphans mode), which refuses a
+  zero-snapshot store rather than treat "no manifests" as "everything is
+  garbage". The same rule binds `policy run`'s apply-mode prune step and the
+  TUI job runner; there the ErrEmptyRepo refusal is a calm no-op, never a
+  failed run.
 - `sentra agent scan --local-only` and `--no-llm` must not call the LLM provider.
 - `sentra agent advise-ignore` is read-only and must not edit `.sentraignore`.
 - `sentra recovery-kit` is non-secret documentation only.

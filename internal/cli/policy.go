@@ -427,7 +427,24 @@ func runPolicyPrune(cmd *cobra.Command, out io.Writer, r *repo.Repo, cfg *config
 		return nil
 	}
 	if len(drop) == 0 {
-		fmt.Fprintln(out, "  prune: nothing to delete")
+		// Retention drops nothing, but apply still owes a GC pass:
+		// crashed backups leave blobs no manifest references, and policy
+		// runs are unattended — skipping GC here would let that garbage
+		// accumulate forever on the surface meant to run without an
+		// operator. nil keepIDs selects GC's bare-orphans mode, which
+		// refuses a zero-snapshot store (ErrEmptyRepo) instead of
+		// treating "no manifests" as "everything is garbage" — the guard
+		// that makes this safe against a misconfigured bucket or prefix.
+		stats, err := r.GC(cmd.Context(), nil)
+		if err != nil {
+			if errors.Is(err, repo.ErrEmptyRepo) {
+				fmt.Fprintln(out, "  prune: nothing to delete")
+				return nil
+			}
+			return fmt.Errorf("gc: %w", err)
+		}
+		fmt.Fprintf(out, "  prune: nothing to delete; gc reclaimed=%s\n",
+			ui.FormatBytes(stats.DeletedBytes))
 		return nil
 	}
 	if len(keep) == 0 {

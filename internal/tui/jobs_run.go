@@ -178,6 +178,14 @@ func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.Rete
 		}
 	}
 	if len(drop) == 0 {
+		// Same rule as the CLI surfaces: apply still reclaims orphaned
+		// blobs when retention drops nothing (crashed backups leave
+		// chunks no manifest references). The nil-keepIDs bare pass
+		// refuses a zero-snapshot store (ErrEmptyRepo) — treat that as
+		// the no-op it is rather than failing the whole job run.
+		if _, err := r.GC(ctx, nil); err != nil && !errors.Is(err, repo.ErrEmptyRepo) {
+			return fmt.Errorf("gc: %w", err)
+		}
 		return nil
 	}
 	if len(keep) == 0 {
