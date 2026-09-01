@@ -191,3 +191,44 @@ func TestReviewTextBackupUserNeverRendersSecretShapes(t *testing.T) {
 		t.Fatalf("no-secrets assertion line must remain:\n%s", got)
 	}
 }
+
+// TestReviewTextBackupUserAlreadyProvisioned covers the retry after a late
+// failure: the plan no longer asks to provision, but "skipped" would tell the
+// operator the user they just created does not exist. The line names the
+// section holding its key instead. An explicit re-request still wins, and the
+// methods that never provision still get no line.
+func TestReviewTextBackupUserAlreadyProvisioned(t *testing.T) {
+	var cfg config.Config
+	cfg.Repo.S3.Bucket = "b"
+	cfg.Repo.S3.Profile = "sentra"
+	base := Plan{Config: cfg, Backend: BackendAWS, PrepareAWS: true, ProvisionedBackupUserProfile: "sentra"}
+
+	tests := []struct {
+		name    string
+		method  AWSAuthMethod
+		on      bool
+		profile string
+		want    string
+		absent  string
+	}{
+		{"adopted", AWSAuthLogin, false, "", "Backup user: sentra-backup already created, keys in ~/.aws/credentials [sentra]", "skipped"},
+		{"adopted sso", AWSAuthSSO, false, "", "already created, keys in ~/.aws/credentials [sentra]", "skipped"},
+		{"adopted then re-requested", AWSAuthLogin, true, "backups", "Backup user: create sentra-backup, keys → ~/.aws/credentials [backups]", "already"},
+		{"adopted then existing credentials", AWSAuthExisting, false, "", "AWS sign-in", "Backup user"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := base
+			p.AWSAuthMethod = tc.method
+			p.ProvisionBackupUser = tc.on
+			p.BackupUserProfile = tc.profile
+			got := ReviewText("sentra.yaml", p)
+			if !strings.Contains(got, tc.want) {
+				t.Fatalf("review text missing %q:\n%s", tc.want, got)
+			}
+			if strings.Contains(got, tc.absent) {
+				t.Fatalf("review text must not mention %q:\n%s", tc.absent, got)
+			}
+		})
+	}
+}

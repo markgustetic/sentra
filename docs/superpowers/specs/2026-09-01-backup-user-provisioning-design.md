@@ -201,9 +201,25 @@ allows two per user), which is why the limit case has its own warning.
   lands on a row that cannot affect the plan.
 - **Review stage** — one line from `ReviewText`:
   `Backup user: create sentra-backup, keys → ~/.aws/credentials [sentra]`
-  when on; `Backup user: skipped` when offered but off; no line when
-  not applicable. The trailing no-secrets assertion line is unchanged
-  and remains load-bearing.
+  when on; `Backup user: skipped` when offered but off; `Backup user:
+  sentra-backup already created, keys in ~/.aws/credentials [sentra]` on
+  a retry after the previous attempt provisioned it (see below); no line
+  when not applicable. The trailing no-secrets assertion line is
+  unchanged and remains load-bearing.
+- **Retry after a late failure** — `PrepareAWS` switches the profile on
+  the copy of the plan the op holds, so a failure after it (`WriteConfig`,
+  `InitRepo`) would otherwise return to a wizard still asking to provision
+  on the session profile: the retry would hit `ErrCredentialsProfileExists`
+  and write the session profile over the verified one. The failure branch
+  adopts a *verified* switch (`ProfileSwitched`; a warning-only report is
+  left alone): the plan takes the durable profile, stops asking to
+  provision, and records the section in `Plan.ProvisionedBackupUserProfile`
+  for the review line above. Because every forward step rebuilds the plan
+  from the inputs, the adoption lands there too — the toggle goes off and
+  the details-stage profile field takes the durable name — so backing out
+  to actions, details, or backend and advancing again rebuilds the same
+  adopted plan. The login default no longer re-seeds the toggle on after
+  adoption; an explicit space on it still asks.
 - **Provision stage** — unchanged shape; the pipeline already runs
   `PrepareAWS` before `WriteConfig`, so the switched profile is what
   gets written.

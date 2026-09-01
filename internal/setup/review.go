@@ -114,6 +114,12 @@ func backupUserPlanLine(p Plan) string {
 		return ""
 	}
 	if !p.ProvisionBackupUser {
+		if existing := strings.TrimSpace(p.ProvisionedBackupUserProfile); existing != "" {
+			// A retry after a late failure: the user was created and verified
+			// on the previous attempt. "skipped" would send the operator back to
+			// switch it on again, straight into the profile-exists refusal.
+			return fmt.Sprintf("Backup user: %s already created, keys in ~/.aws/credentials [%s]", BackupUserName, existing)
+		}
 		return "Backup user: skipped"
 	}
 	profile := strings.TrimSpace(p.BackupUserProfile)

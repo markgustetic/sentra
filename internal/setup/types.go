@@ -40,6 +40,16 @@ type Plan struct {
 	// BackupUserProfile is the ~/.aws/credentials section for the minted
 	// key; empty means DefaultBackupUserProfile.
 	BackupUserProfile string
+
+	// ProvisionedBackupUserProfile names the ~/.aws/credentials section an
+	// earlier attempt in the same wizard run already filled: the backup user
+	// exists, its key is saved there, and the engine verified the identity
+	// before a later step failed. The TUI wizard sets it when it adopts that
+	// switch on the way to its failure screen, so the retry's review can say
+	// the user is already there instead of "skipped" — a word that invites
+	// the operator to go back and ask for it again. A label only: the engine
+	// ignores it, and an explicit ProvisionBackupUser still wins.
+	ProvisionedBackupUserProfile string
 }
 
 // AWSPrepareOptions controls the AWS-side setup work. Bucket existence is

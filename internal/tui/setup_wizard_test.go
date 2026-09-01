@@ -1558,6 +1558,207 @@ func TestSetupWizard_FailureWithoutProfileSwitchLeavesPlanAlone(t *testing.T) {
 	}
 }
 
+// setupAdoptedAfterLateFailure drives the wizard to the failure screen after a
+// first attempt that provisioned and verified the backup user and then failed
+// in InitRepo — the state adoptBackupUserSwitch folds into the plan. The
+// session profile is named explicitly so a developer ~/.aws with a profile
+// called "sentra" cannot make "runs as the backup user" vacuously true (see
+// TestSetupWizard_RetryAfterLateFailureKeepsBackupUserProfile).
+func setupAdoptedAfterLateFailure(t *testing.T) SetupWizardView {
+	t.Helper()
+	t.Setenv("SENTRA_PASSPHRASE", "")
+	var seed config.Config
+	seed.Repo.S3.Profile = "session-sso"
+	deps := Deps{Config: &seed, ConfigPath: filepath.Join(t.TempDir(), "sentra.yaml"), SetupEffects: stubEffects{}}
+
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	v.backendCursor = 0                             // AWS
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // details
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // actions
+	v = m.(SetupWizardView)
+	if !v.backupUser {
+		t.Fatal("precondition: browser login seeds the backup-user toggle on")
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // passphrase (initRepo on)
+	v = m.(SetupWizardView)
+	v = setupTypePass(v, "correcthorse", "correcthorse")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // review
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("precondition: want stageReview, got %v", v.stage)
+	}
+	if !v.plan.ProvisionBackupUser || v.plan.Config.Repo.S3.Profile != "session-sso" {
+		t.Fatalf("precondition: the plan must ask to provision on the session profile, got provision=%t profile=%q",
+			v.plan.ProvisionBackupUser, v.plan.Config.Repo.S3.Profile)
+	}
+
+	// What a late InitRepo failure carries back once PrepareAWS has created the
+	// user, saved its key, and verified the new identity.
+	m, _ = v.Update(setupDoneMsg{
+		err: errors.New("init repo: AccessDenied: s3:ListBucket"),
+		prep: &setup.AWSPrepareReport{BackupUser: &setup.BackupUserReport{
+			UserName:        setup.BackupUserName,
+			UserCreated:     true,
+			PolicyAttached:  true,
+			Profile:         setup.DefaultBackupUserProfile,
+			CredentialsPath: "/home/op/.aws/credentials",
+			ProfileSwitched: true,
+		}},
+	})
+	v = m.(SetupWizardView)
+	if v.stage != stageError {
+		t.Fatalf("precondition: a failed op must land on stageError, got %v", v.stage)
+	}
+	if v.plan.ProvisionBackupUser || v.plan.Config.Repo.S3.Profile != setup.DefaultBackupUserProfile {
+		t.Fatalf("precondition: adoption must have taken, got provision=%t profile=%q",
+			v.plan.ProvisionBackupUser, v.plan.Config.Repo.S3.Profile)
+	}
+	return v
+}
+
+// TestSetupWizard_BacktrackAfterAdoptionRebuildsAdoptedPlan pins the other
+// route to the harm the ⏎-retry test closes. adoptBackupUserSwitch edits the
+// PLAN, but every forward step rebuilds the plan from the wizard's inputs:
+// advanceFromActions re-reads the backup-user toggle and commitDetails re-reads
+// the profile field. An operator who backs out of the retry's passphrase stage
+// — to fix a bucket name, say — and advances again would get the original plan
+// back: provision again (a guaranteed ErrCredentialsProfileExists refusal,
+// blamed on the profile name) and write the session profile over the verified
+// one.
+//
+// The rule: adoption changes what the operator ASKED for, so it lands in the
+// inputs, and every path forward rebuilds the same adopted plan — however far
+// back they went.
+func TestSetupWizard_BacktrackAfterAdoptionRebuildsAdoptedPlan(t *testing.T) {
+	tests := []struct {
+		name string
+		back int        // esc presses from the retry's passphrase stage
+		want setupStage // where they land
+	}{
+		{"actions", 1, stageActions},
+		{"details", 2, stageDetails},
+		{"backend", 3, stageBackend},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			v := setupAdoptedAfterLateFailure(t)
+			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // retry → passphrase
+			v = m.(SetupWizardView)
+			if v.stage != stagePassphrase {
+				t.Fatalf("precondition: retry must land on stagePassphrase, got %v", v.stage)
+			}
+			for i := 0; i < tc.back; i++ {
+				m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+				v = m.(SetupWizardView)
+			}
+			if v.stage != tc.want {
+				t.Fatalf("precondition: %d esc presses must land on %v, got %v", tc.back, tc.want, v.stage)
+			}
+			// Forward again exactly as the operator would: ⏎ through each stage
+			// they backed out of. Bounded by the same count, so a stage that
+			// refuses to advance is reported below rather than looping.
+			for i := 0; i < tc.back && v.stage != stagePassphrase; i++ {
+				m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+				v = m.(SetupWizardView)
+			}
+			if v.stage != stagePassphrase {
+				t.Fatalf("advancing must return to stagePassphrase, got %v (notice %q, detailErr %q)", v.stage, v.notice, v.detailErr)
+			}
+			if v.plan.ProvisionBackupUser {
+				t.Error("advancing after adoption re-armed provisioning of a backup user that already exists")
+			}
+			if got := v.plan.Config.Repo.S3.Profile; got != setup.DefaultBackupUserProfile {
+				t.Errorf("advancing after adoption rebuilt the plan on profile %q, want the verified %q", got, setup.DefaultBackupUserProfile)
+			}
+			// And the review the operator is about to confirm says so: the masked
+			// fields kept the passphrase, so one ⏎ re-commits it.
+			m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			v = m.(SetupWizardView)
+			if v.stage != stageReview {
+				t.Fatalf("re-committing the passphrase must reach stageReview, got %v (passErr %q)", v.stage, v.passErr)
+			}
+			if out := v.View(); !strings.Contains(out, "Backup user: "+setup.BackupUserName+" already created") {
+				t.Errorf("the rebuilt review must say the backup user already exists, got:\n%s", out)
+			}
+		})
+	}
+}
+
+// TestSetupWizard_ReviewAfterAdoptionNamesExistingBackupUser: the retry's
+// review must not read "Backup user: skipped". The operator did not skip it —
+// the previous attempt created it — and "skipped" invites them to back out and
+// switch it on again, which is the refusal adoption exists to prevent. Name
+// the section holding its key instead.
+func TestSetupWizard_ReviewAfterAdoptionNamesExistingBackupUser(t *testing.T) {
+	v := setupAdoptedAfterLateFailure(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // retry → passphrase
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // re-commit (fields kept) → review
+	v = m.(SetupWizardView)
+	if v.stage != stageReview {
+		t.Fatalf("precondition: re-committing the passphrase must reach stageReview, got %v (passErr %q)", v.stage, v.passErr)
+	}
+	out := v.View()
+	want := "Backup user: " + setup.BackupUserName + " already created, keys in ~/.aws/credentials [" + setup.DefaultBackupUserProfile + "]"
+	if !strings.Contains(out, want) {
+		t.Errorf("review after adoption must contain %q, got:\n%s", want, out)
+	}
+	if strings.Contains(out, "Backup user: skipped") {
+		t.Errorf("review after adoption must not call the backup user skipped, got:\n%s", out)
+	}
+}
+
+// TestSetupWizard_AuthMethodChangeAfterAdoptionKeepsProvisionOff: the login
+// default (toggle ON) steers first-timers away from the expiring session. Once
+// the user exists that default IS the trap — an operator who backs out to the
+// actions stage and flips through the sign-in methods would have provisioning
+// silently re-armed against a profile that already holds the key. The toggle
+// stays off across method changes; an explicit space on it is still honored.
+func TestSetupWizard_AuthMethodChangeAfterAdoptionKeepsProvisionOff(t *testing.T) {
+	v := setupAdoptedAfterLateFailure(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // retry → passphrase
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // → actions
+	v = m.(SetupWizardView)
+	if v.stage != stageActions || v.actionCursor != actionRowAuth {
+		t.Fatalf("precondition: want stageActions with the cursor on the sign-in row, got stage %v cursor %d", v.stage, v.actionCursor)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRight}) // → SSO
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyLeft}) // → browser login
+	v = m.(SetupWizardView)
+	if v.backupUser {
+		t.Fatal("re-selecting browser login after adoption re-seeded the backup-user toggle on")
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // → passphrase
+	v = m.(SetupWizardView)
+	if v.stage != stagePassphrase {
+		t.Fatalf("precondition: want stagePassphrase, got %v (notice %q)", v.stage, v.notice)
+	}
+	if v.plan.ProvisionBackupUser {
+		t.Fatal("changing the sign-in method after adoption re-armed provisioning")
+	}
+
+	// The counter-case: asking again on purpose still asks.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc}) // → actions
+	v = m.(SetupWizardView)
+	for v.actionCursor != actionRowBackupUser {
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
+		v = m.(SetupWizardView)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeySpace})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if !v.plan.ProvisionBackupUser {
+		t.Fatal("an explicit toggle after adoption must still ask to provision")
+	}
+}
+
 // findSetupOp extracts the single startOpMsg{name:"setup"} from a command.
 func findSetupOp(t *testing.T, cmd tea.Cmd) startOpMsg {
 	t.Helper()

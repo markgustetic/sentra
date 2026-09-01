@@ -600,8 +600,23 @@ func (v SetupWizardView) adoptBackupUserSwitch(msg setupDoneMsg) SetupWizardView
 	if msg.prep == nil || msg.prep.BackupUser == nil || !msg.prep.BackupUser.ProfileSwitched {
 		return v
 	}
-	v.plan.Config.Repo.S3.Profile = msg.prep.BackupUser.Profile
+	profile := msg.prep.BackupUser.Profile
+	v.plan.Config.Repo.S3.Profile = profile
 	v.plan.ProvisionBackupUser = false
+	v.plan.ProvisionedBackupUserProfile = profile
+	// The plan is not the source of truth for the next forward step: every
+	// advance rebuilds it from the inputs (advanceFromActions re-reads the
+	// toggle, commitDetails re-reads the profile field). So the adoption has to
+	// land in the inputs too, or an esc back from the retry's passphrase stage
+	// and one ⏎ would rebuild the original plan and take the same route to the
+	// same refusal. With the toggle off the profile row disappears; park the
+	// cursor on a visible row as seedBackupUserDefault does.
+	v.backupUser = false
+	if !v.actionRowVisible(v.actionCursor) {
+		v.actionCursor = actionRowAuth
+	}
+	v = v.syncProfileFocus()
+	v.fields[setupFieldProfile].SetValue(profile)
 	return v
 }
 
@@ -1433,9 +1448,14 @@ func (v SetupWizardView) syncProfileFocus() SetupWizardView {
 
 // seedBackupUserDefault applies the per-method default — ON for browser
 // login (the expiry-trap path), OFF for SSO — and parks the cursor on a
-// visible row if the method change hid the one it was on.
+// visible row if the method change hid the one it was on. Once a previous
+// attempt has created the user (adoptBackupUserSwitch), the login default is
+// itself the trap: flipping through the methods on the way back would silently
+// re-arm provisioning against a section that already holds the key. The toggle
+// stays off; a space on it still asks on purpose.
 func (v SetupWizardView) seedBackupUserDefault() SetupWizardView {
-	v.backupUser = setupAuthOrder[v.authCursor] == setup.AWSAuthLogin
+	v.backupUser = setupAuthOrder[v.authCursor] == setup.AWSAuthLogin &&
+		v.plan.ProvisionedBackupUserProfile == ""
 	if !v.actionRowVisible(v.actionCursor) {
 		v.actionCursor = actionRowAuth
 	}
