@@ -73,7 +73,7 @@ func TestWriteAWSCredentialsProfile(t *testing.T) {
 				if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 					t.Fatal(err)
 				}
-				if err := os.WriteFile(path, []byte(tc.existing), 0o644); err != nil {
+				if err := os.WriteFile(path, []byte(tc.existing), 0o644); err != nil { //nolint:gosec // deliberately permissive: the writer must replace it with 0600
 					t.Fatal(err)
 				}
 			}
