@@ -35,9 +35,15 @@ type AWSCLIInstallReport struct {
 // lookup. Only the credentials profile is chosen by the operator.
 const (
 	// BackupUserName is the IAM user the wizard creates for day-to-day
-	// backups. Its inline policy is BuildIAMPolicy(bucket, prefix).
+	// backups. Each bucket it may reach is granted by its own customer-managed
+	// policy, BackupUserPolicyNameFor(bucket), holding
+	// BuildIAMPolicy(bucket, prefix) — so buckets accumulate on the user.
 	BackupUserName = "sentra-backup"
-	// BackupUserPolicyName is the inline policy attached to BackupUserName.
+	// BackupUserPolicyName is the stem of the per-bucket managed policy
+	// names (see BackupUserPolicyNameFor) and, on its own, the name of the
+	// single inline policy that installs from before per-bucket policies
+	// carried on BackupUserName. The provisioner deletes that inline policy
+	// once a managed policy covering its grant is attached.
 	BackupUserPolicyName = "sentra-s3-backup"
 	// DefaultBackupUserProfile is where the minted key lands in
 	// ~/.aws/credentials when the operator leaves the field blank. Never
@@ -56,13 +62,23 @@ type BackupUserOptions struct {
 // the secret exists only inside the Effects implementation, between
 // CreateAccessKey and the credentials-file write.
 type BackupUserReport struct {
-	UserName        string
-	UserCreated     bool // CreateUser succeeded
-	UserExisted     bool // EntityAlreadyExists → reused
-	PolicyAttached  bool
-	AccessKeyID     string
-	Profile         string
-	CredentialsPath string
+	UserName    string
+	UserCreated bool // CreateUser succeeded
+	UserExisted bool // EntityAlreadyExists → reused
+	// PolicyName is this bucket's managed policy, BackupUserPolicyNameFor(bucket).
+	PolicyName    string
+	PolicyCreated bool // CreatePolicy succeeded; false when it already existed
+	// PolicyUpdated: an existing policy received a new default version — a
+	// second prefix merged in, or the canonical policy changed since it was
+	// written. False on a rerun that changed nothing.
+	PolicyUpdated  bool
+	PolicyAttached bool // AttachUserPolicy succeeded (idempotent on rerun)
+	// LegacyPolicyRemoved: the inline policy from before per-bucket managed
+	// policies was found, fully covered by the managed one, and deleted.
+	LegacyPolicyRemoved bool
+	AccessKeyID         string
+	Profile             string
+	CredentialsPath     string
 	// ProfileSwitched is set by the engine once the new identity verified
 	// and sentra.yaml's profile now names it.
 	ProfileSwitched bool

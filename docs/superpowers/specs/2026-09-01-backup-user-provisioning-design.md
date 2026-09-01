@@ -24,7 +24,8 @@ night", and no warning that one is needed.
 The wizard gains an optional **create dedicated backup user** step that
 runs right after a browser-login or SSO sign-in succeeds — the moment
 the operator holds maximal power and attention. It creates IAM user
-`sentra-backup`, attaches the canonical least-privilege policy inline,
+`sentra-backup`, attaches the canonical least-privilege policy as that
+bucket's customer-managed policy,
 mints an access key, writes it into `~/.aws/credentials` under a
 dedicated profile (default `sentra`), verifies the new identity, and
 points `sentra.yaml` at it. The login session is used once and retired.
@@ -37,8 +38,9 @@ Two product decisions, both made in conversation:
 - **Failure degrades to a warning, never a blocked setup.** The step is
   hardening; a working setup on session credentials beats no setup.
 
-Names are constants, not operator inputs: user `sentra-backup`, inline
-policy `sentra-s3-backup`. The only operator input is the profile name.
+Names are constants, not operator inputs: user `sentra-backup`, managed
+policy `sentra-s3-backup-<bucket>` (the bucket is its only variable part).
+The only operator input is the profile name.
 
 ## Engine (`internal/setup`)
 
@@ -79,7 +81,11 @@ type BackupUserReport struct {
     UserName        string // "sentra-backup"
     UserCreated     bool   // CreateUser succeeded
     UserExisted     bool   // EntityAlreadyExists → reused
-    PolicyAttached  bool
+    PolicyName      string // sentra-s3-backup-<bucket>
+    PolicyCreated   bool   // CreatePolicy succeeded
+    PolicyUpdated   bool   // existing policy received a new default version
+    PolicyAttached  bool   // AttachUserPolicy succeeded
+    LegacyPolicyRemoved bool // pre-managed-policy inline policy deleted
     AccessKeyID     string // non-secret identifier; never the secret
     Profile         string
     CredentialsPath string
@@ -98,22 +104,37 @@ client from the same AWS config loader `awsprepare.go` uses — i.e. the
 credentials that just signed in — and runs, in order:
 
 1. `CreateUser(sentra-backup)`; `EntityAlreadyExists` is not an error
-   (`UserExisted = true`).
-2. `PutUserPolicy(sentra-backup, sentra-s3-backup, policy JSON)` —
-   idempotent; a rerun re-puts the same document.
-3. `CreateAccessKey(sentra-backup)`.
-4. Write the key into the credentials file (below).
-5. Pass the secret straight from the `CreateAccessKey` output to the
+   (`UserExisted = true`, and `GetUser` then supplies the ARN the policy
+   ARN is derived from — partition included).
+2. `CreatePolicy(sentra-s3-backup-<bucket>, policy JSON)`. On
+   `EntityAlreadyExists` the existing policy is reconciled instead: read
+   its default version, merge its per-statement resources into the
+   canonical document, and write a new default version only when that
+   changes something (see "Multi-bucket accounts").
+3. `AttachUserPolicy(sentra-backup, <policy ARN>)` — idempotent; a rerun
+   re-attaches without error.
+4. Best-effort cleanup of the pre-managed-policy inline policy
+   `sentra-s3-backup`, only when the managed policy covers every grant
+   it made. Never an error.
+5. `CreateAccessKey(sentra-backup)`.
+6. Write the key into the credentials file (below).
+7. Pass the secret straight from the `CreateAccessKey` output to the
    writer. It is never bound to a variable of its own and never
    returned — a Go `string` the SDK hands back as a `*string` cannot be
    wiped, so narrow scope, not zeroization, is the guarantee.
 
-The IAM calls sit behind a four-method interface (`CreateUser`,
-`PutUserPolicy`, `CreateAccessKey`, `DeleteAccessKey`) so the default
-implementation is unit-testable with a fake; production passes
-`*iam.Client`. This adds `github.com/aws/aws-sdk-go-v2/service/iam`.
+Every IAM mutation that can fail comes before step 5, so a policy-side
+failure never strands a live secret.
 
-The secret exists only inside step 3–5 of this one function. It is
+The IAM calls sit behind a twelve-method interface (`CreateUser`,
+`GetUser`, `CreatePolicy`, `ListPolicyVersions`, `GetPolicyVersion`,
+`CreatePolicyVersion`, `DeletePolicyVersion`, `AttachUserPolicy`,
+`GetUserPolicy`, `DeleteUserPolicy`, `CreateAccessKey`,
+`DeleteAccessKey`) so the default implementation is unit-testable
+against a stateful fake; production passes `*iam.Client`. This adds
+`github.com/aws/aws-sdk-go-v2/service/iam`.
+
+The secret exists only inside steps 5–7 of this one function. It is
 never returned, never placed in the report, the plan, the draft, review
 text, logs, or an error message.
 
@@ -178,8 +199,9 @@ specific per cause:
 
 | Cause | Warning names |
 |---|---|
-| `AccessDenied` on any IAM call | the exact missing action (`iam:CreateUser`, `iam:PutUserPolicy`, `iam:CreateAccessKey`) and that the session credentials will expire |
+| `AccessDenied` on any IAM call | the exact missing action (`iam:CreateUser`, `iam:GetUser`, `iam:CreatePolicy`, `iam:ListPolicyVersions`, `iam:GetPolicyVersion`, `iam:CreatePolicyVersion`, `iam:DeletePolicyVersion`, `iam:AttachUserPolicy`, `iam:CreateAccessKey`) and that the session credentials will expire |
 | `LimitExceeded` on `CreateAccessKey` | the user already has two keys; remove one in IAM and rerun setup |
+| `LimitExceeded` on `AttachUserPolicy` | the user already has the maximum number of managed policies attached (ten by default); detach one in IAM and rerun setup |
 | `ErrCredentialsProfileExists` / `default` | the colliding profile name; pick another |
 | credentials write failed after the key was minted | the engine's one ordering hazard: a live secret in AWS with nowhere to live on disk. `DeleteAccessKey` is attempted as best-effort cleanup and the warning states whether it succeeded, naming the access key ID if it did not |
 | identity verification timed out | keys were written to the named profile but not yet usable; how to switch `sentra.yaml` to it once it is |
@@ -188,7 +210,7 @@ The propagation timeout fails toward "setup works right now": the
 profile is not switched, so `InitRepo` runs on credentials known to
 work.
 
-Reruns are idempotent for user and policy. Key creation is not (IAM
+Reruns are idempotent for user, policy, and attachment. Key creation is not (IAM
 allows two per user), which is why the limit case has its own warning.
 
 ## Wizard (`internal/tui/setup_wizard.go`)
@@ -277,14 +299,49 @@ The `steps` result struct gains the fields the done stage needs.
   session).
 - `CLAUDE.md`: one sentence on the setup package line.
 
+## Multi-bucket accounts
+
+One customer-managed policy per bucket, named `sentra-s3-backup-<bucket>`
+and attached to `sentra-backup`, is what lets buckets accumulate: a
+second wizard run in the same account adds a policy rather than
+replacing the one grant an inline policy could hold. Decisions:
+
+- **Naming.** The bucket is the only variable part. Bucket names are
+  `[a-z0-9.-]` and at most 63 characters, so the name is always valid
+  and at most 80 characters (IAM allows 128). The prefix is not in the
+  name: two repos sharing a bucket under different prefixes share one
+  policy and are merged into it (next point).
+- **Existing policy: merge, then reuse or version.** `CreatePolicy`
+  answers `EntityAlreadyExists` with no ARN, so the ARN is derived from
+  the user's ARN (partition and account). The default version's
+  document is read, and each canonical statement's resources are
+  unioned with the stored statement of the same Sid — actions, effects,
+  and conditions come from the canonical document alone, so it stays
+  authoritative for WHAT is allowed while the stored one contributes
+  only WHERE. Resources are sorted so a rerun reproduces the stored
+  bytes and is recognised as a reuse (no version written). Anything
+  else — a new prefix, a canonical policy that gained an action, a
+  document not in Sentra's shape — is written as a new default version.
+- **Five versions per policy.** IAM's cap is fixed. At the cap the
+  oldest non-default version is deleted before the new one is created,
+  so the limit never fails a run; reuse keeps ordinary reruns from
+  consuming versions at all.
+- **Ten managed policies per user.** `AttachUserPolicy` past the quota
+  is `PolicyLimit`, its own warning naming the fix. The two-keys quota
+  (`KeyLimit`) is bound to `CreateAccessKey`; a quota on any other step
+  is reported verbatim with its step, so no warning names the wrong fix.
+- **Migration.** Installs from before this design carried one inline
+  policy `sentra-s3-backup`. After the managed policy is attached, the
+  inline one is read and deleted only if the managed document covers
+  every statement it makes (same Sid and effect, no conditions, actions
+  and resources subsets). An inline policy for a different bucket is
+  that bucket's only grant and stays. The cleanup is best-effort: a
+  leftover inline policy is inert, and failing setup over it would keep
+  the operator on expiring session credentials for nothing.
+
 ## Out of scope
 
 Key rotation, MFA setup, bucket versioning, a headless CLI command for
 provisioning, editing `~/.aws/config`, and a connect-gate affordance for
 converting an existing browser-login setup after the fact. Each is a
 separate decision.
-
-Multi-bucket accounts (per-bucket managed policies) are out of scope too:
-`PutUserPolicy` writes the one inline policy `sentra-s3-backup`, so a
-second wizard run in the same account replaces the first bucket's grant.
-Documented as a known limitation in `docs/QUICKSTART.md`.

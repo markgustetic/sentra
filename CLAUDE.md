@@ -93,9 +93,10 @@ git worktree remove --force /tmp/chk
 - `internal/setup` — headless setup engine: pure state model + transforms, an
   `Effects` seam for AWS/keyring, and a stepwise `Engine`
   (`PrepareAWS` → `WriteConfig` → `InitRepo`). Both wizards drive it. Also
-  provisions the dedicated backup user (`backupuser.go`, `credentialsfile.go`):
-  the secret never crosses the Effects seam, `~/.aws/config` and the `default`
-  credentials profile are never written.
+  provisions the dedicated backup user (`backupuser.go`, `backuppolicy.go`,
+  `credentialsfile.go`): one customer-managed policy per bucket so buckets
+  accumulate on the user, the secret never crosses the Effects seam,
+  `~/.aws/config` and the `default` credentials profile are never written.
 - `internal/recoverykit` — recovery-kit rendering; `internal/scheduler` — cron
   emission; `internal/diag` — doctor's AWS/repo probes + `Explain` (known-cause
   error prose for the TUI)

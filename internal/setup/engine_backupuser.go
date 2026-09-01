@@ -104,6 +104,8 @@ func backupUserWarning(err error, minted bool) string {
 		return fmt.Sprintf("backup user not created: the signed-in identity is not allowed to perform %s. Ask an administrator for that permission, or create the user by hand with `sentra setup iam-policy`.", perr.Step) + tail
 	case perr.KeyLimit:
 		return fmt.Sprintf("backup user %s already has two access keys; remove one in IAM and rerun setup.", BackupUserName) + tail
+	case perr.PolicyLimit:
+		return fmt.Sprintf("backup user %s already has the maximum number of managed policies attached (IAM allows 10 by default); detach one in IAM and rerun setup.", BackupUserName) + tail
 	case perr.KeyOrphaned != "":
 		return fmt.Sprintf("backup user key %s was created but could not be saved (%v), and deleting it failed — delete that key in IAM.", perr.KeyOrphaned, perr.Err) + tail
 	case perr.Step == "credentials" && errors.Is(perr.Err, ErrCredentialsProfileExists):

@@ -84,7 +84,8 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   command resolves, or the mismatch surfaces later as an undecryptable repo.
   The review screen names the SOURCE, never the secret.
   After a browser-login or SSO sign-in it may create IAM user
-  `sentra-backup` with the canonical `BuildIAMPolicy` inline policy, mint an
+  `sentra-backup`, attach the canonical `BuildIAMPolicy` document as that
+  bucket's customer-managed policy (`sentra-s3-backup-<bucket>`), mint an
   access key into a dedicated `~/.aws/credentials` profile (default
   `sentra`), verify it, and switch `sentra.yaml` to that profile — the
   session identity is used once and retired. The step is pre-checked for
@@ -96,10 +97,20 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   report, plan, draft, review text, logs, or an error. The profile switch
   happens only after the new identity verifies (bounded retry); any failure
   degrades to `BackupUserReport.Warning` and setup continues on the session
-  credentials — provisioning never blocks setup. The provisioner puts a
-  single inline policy (`sentra-s3-backup`) on `sentra-backup`, replacing any
-  prior one, so the wizard supports one bucket per account until per-bucket
-  managed policies land; documented in QUICKSTART.
+  credentials — provisioning never blocks setup. Buckets accumulate on the
+  user: each has its own managed policy, so a later wizard run in the same
+  account must never revoke an earlier bucket's grant. An existing policy is
+  reconciled by merging its stored resources into the canonical document (a
+  sibling prefix in the same bucket keeps its access) and rewritten as a new
+  default version only when that changes something, deleting the oldest
+  non-default version first at IAM's five-version cap. The inline policy
+  from before per-bucket policies (`sentra-s3-backup`) is deleted only after
+  the managed policy is attached and only when the managed one covers every
+  grant it made; that cleanup is best-effort and never fails setup. Every
+  IAM mutation that can fail precedes the key mint, so a policy failure
+  never strands a live secret. The ten-managed-policies-per-user quota is
+  its own warning (`PolicyLimit`); the two-keys quota (`KeyLimit`) is bound
+  to `CreateAccessKey` alone.
   AWS CLI **brew auto-install is currently absent**: it needed a confirm prompt,
   and `huh` cannot run inside a live `tea.Program`. `setup.DefaultEnsureAWSCLI`
   keeps the machinery behind a confirm no caller arms, so restoring it means a

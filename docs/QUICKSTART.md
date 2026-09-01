@@ -94,14 +94,17 @@ signed-in identity lacks IAM permissions, say), setup still completes on the
 session credentials and tells you so; you can create the user later with the
 policy from `sentra setup iam-policy`.
 
-**One bucket per AWS account.** `sentra-backup` carries a single inline policy,
-and each wizard run replaces it — so running setup for a second bucket in the
-same account with the toggle on revokes the first bucket's access, and that
-repo's scheduled backups start failing with AccessDenied. For a second bucket,
-untick the toggle and grant the user the second bucket's policy by hand
-(`sentra setup iam-policy --bucket <second> --prefix <prefix>`), or point the
-second repo at a separate AWS account or profile. Per-bucket policies are
-planned.
+**More than one bucket.** Each bucket gets its own customer-managed policy,
+`sentra-s3-backup-<bucket>`, attached to `sentra-backup` — so running setup
+for a second bucket in the same account adds a grant instead of replacing the
+first one, and two machines backing up into one bucket under different
+prefixes both keep access (the second run merges its prefix into that
+bucket's policy). IAM attaches at most ten managed policies to one user; past
+that, setup warns and continues on the session credentials until you detach
+one. Installs from before per-bucket policies carried a single inline policy
+named `sentra-s3-backup`; the wizard deletes it once the managed policy that
+covers the same grant is attached, and otherwise leaves it in place, since it
+may still be a bucket's only grant.
 
 Setup shows a final review screen before applying changes. If you need an
 AWS administrator to grant permissions first, the wizard can print the non-secret

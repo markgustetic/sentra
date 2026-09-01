@@ -50,6 +50,9 @@ func TestLiveProvisionBackupUser(t *testing.T) {
 	if !report.UserExisted {
 		t.Fatalf("expected the existing sentra-backup user to be reused: %+v", report)
 	}
+	if !report.PolicyAttached || report.PolicyName != BackupUserPolicyNameFor(bucket) {
+		t.Fatalf("expected the bucket's managed policy to be attached: %+v", report)
+	}
 
 	// Verify through the file the provisioner wrote, exactly as the engine does.
 	verify := *cfg

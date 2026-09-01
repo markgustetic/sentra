@@ -181,6 +181,7 @@ func TestEngineBackupUser_ProvisionFailureWarnsAndContinues(t *testing.T) {
 	}{
 		{"access denied", &BackupUserError{Step: "iam:CreateUser", AccessDenied: true, Err: errors.New("x")}, BackupUserReport{UserName: BackupUserName}, "iam:CreateUser"},
 		{"key limit", &BackupUserError{Step: "iam:CreateAccessKey", KeyLimit: true, Err: errors.New("x")}, BackupUserReport{UserName: BackupUserName}, "two access keys"},
+		{"policy limit", &BackupUserError{Step: "iam:AttachUserPolicy", PolicyLimit: true, Err: errors.New("x")}, BackupUserReport{UserName: BackupUserName}, "managed policies"},
 		{"profile taken", &BackupUserError{Step: "credentials", Err: ErrCredentialsProfileExists}, BackupUserReport{UserName: BackupUserName}, "another profile name"},
 		{"orphaned key", &BackupUserError{Step: "credentials", KeyOrphaned: "AKIAORPHAN", Err: errors.New("disk full")}, BackupUserReport{UserName: BackupUserName, AccessKeyID: "AKIAORPHAN"}, "AKIAORPHAN"},
 		{"write failed, cleaned up", &BackupUserError{Step: "credentials", Err: errors.New("disk full")}, BackupUserReport{UserName: BackupUserName, AccessKeyID: "AKIAX"}, "deleted again"},
