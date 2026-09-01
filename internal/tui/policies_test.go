@@ -604,7 +604,14 @@ func TestPoliciesRun_ExecutesHooks(t *testing.T) {
 // shape for the add form's four text fields. The form only exists once the
 // operator presses 'a' — that first-focus keypress (which runs
 // newPolicyForm's name.Focus() at policies.go:708) is this view's
-// activation path, so its returned cmd must schedule the blink.
+// activation path, so its returned cmd must schedule the blink. That cmd is
+// the REAL one Focus() produces, and newPolicyForm builds `name` fresh
+// inside the same call 'a' triggers — there is no pre-existing field handle
+// to drop BlinkSpeed on before the call runs, so entryCmd is checked for
+// existence only (executing it would block for the default ~530ms).
+// TestBlinkChain_ClosesEndToEnd (snapshots_test.go) proves the real
+// round-trip once, on a key-triggered site where BlinkSpeed CAN be dropped
+// first.
 func TestPolicies_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 	deps, _ := policiesDeps(t, nil)
 	v := NewPoliciesView(deps)
@@ -614,7 +621,9 @@ func TestPolicies_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 	if v.stage != policiesForm {
 		t.Fatalf("stage = %v, want policiesForm", v.stage)
 	}
-	assertBlinkCmd(t, entryCmd)
+	if entryCmd == nil {
+		t.Fatal("expected a blink command, got nil")
+	}
 
 	base := v
 	base.form.name.Blur()
@@ -627,6 +636,11 @@ func TestPolicies_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 		t.Fatalf("name focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
 	}
 
+	// v.form.path already exists (the form was already built by 'a' above),
+	// so its BlinkSpeed can be dropped before tab fires — the tab handler's
+	// cmd is the REAL one Focus() produces, and executing it (assertBlinkCmd
+	// does) would otherwise block for the default ~530ms.
+	v.form.path.Cursor.BlinkSpeed = time.Millisecond
 	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // name -> path
 	tv := tabbed.(PoliciesView)
 	if got := boxCount(tv.View()); got != n+1 {

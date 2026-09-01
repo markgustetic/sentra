@@ -215,9 +215,13 @@ func TestRecoveryKit_SavePathIsBoxedOnlyWhenFocused(t *testing.T) {
 }
 
 // TestRecoveryKit_SaveKeySchedulesBlink: 's' opening the save-path prompt
-// must start the cursor blinking.
+// must start the cursor blinking. savePath already exists on v before 's'
+// is sent, so BlinkSpeed can be dropped first — the returned cmd is the
+// REAL one Focus() produced, and executing it (assertBlinkCmd does) would
+// otherwise block for the default ~530ms.
 func TestRecoveryKit_SaveKeySchedulesBlink(t *testing.T) {
 	v := recoveryKitAtDone(t)
+	v.savePath.Cursor.BlinkSpeed = time.Millisecond
 	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 	assertBlinkCmd(t, cmd)
 }

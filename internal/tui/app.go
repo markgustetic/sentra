@@ -952,8 +952,8 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		m.palette.Reset()
 		// Bootstrap the search field's cursor blink — Palette.Init() (never
 		// auto-invoked; Palette isn't in m.views, so App.Init's batching
-		// never reaches it) returns the same textinput.Blink sentinel a
-		// landing view's Init would.
+		// never reaches it) returns the real, tag-matched cmd Focus()
+		// produced back at construction (see Palette's initBlink field).
 		return m, m.palette.Init()
 	}
 

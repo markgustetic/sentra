@@ -531,9 +531,13 @@ func TestBackup_TagFieldIsBoxedOnlyWhenFocused(t *testing.T) {
 }
 
 // TestBackup_TabToTagFieldSchedulesBlink: tabbing onto the tag field must
-// start the cursor blinking.
+// start the cursor blinking. v.tag already exists before tab is sent, so
+// BlinkSpeed can be dropped first — the returned cmd is the REAL one
+// Focus() produced, and executing it (assertBlinkCmd does) would otherwise
+// block for the default ~530ms.
 func TestBackup_TabToTagFieldSchedulesBlink(t *testing.T) {
 	v := backupAt(t, tempTree(t))
+	v.tag.Cursor.BlinkSpeed = time.Millisecond
 	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	assertBlinkCmd(t, cmd)
 }

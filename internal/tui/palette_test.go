@@ -113,10 +113,19 @@ func TestPalette_CursorStaysVisibleAndActivates(t *testing.T) {
 // TestPalette_InitSchedulesBlink: the search field is constructed already
 // focused (NewPalette) and never blurred, so there is no later Focus()
 // transition to hang the blink cmd on — Init is where it starts, mirroring
-// UnlockView.Init for the same "focused from birth" shape.
+// UnlockView.Init for the same "focused from birth" shape. Init's cmd is
+// the REAL one Focus() produced at construction (see Palette.initBlink);
+// executing it for real would block for the field's Cursor.BlinkSpeed
+// (~530ms), and there is no field handle to preset that BEFORE
+// construction runs Focus() internally, so this only checks the cmd
+// exists. TestBlinkChain_ClosesEndToEnd (snapshots_test.go) proves the
+// real round-trip once, on a key-triggered site where BlinkSpeed can be
+// dropped first.
 func TestPalette_InitSchedulesBlink(t *testing.T) {
 	p := NewPalette(testRegistry(), 60, 20)
-	assertBlinkCmd(t, p.Init())
+	if p.Init() == nil {
+		t.Fatal("expected a blink command, got nil")
+	}
 }
 
 // TestPalette_RoutesBlinkTicks: blink ticks must reach the search field so

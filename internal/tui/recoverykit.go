@@ -183,8 +183,9 @@ func (v RecoveryKitView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.stage = rkSaving
 			v.saveErr = ""
 			v.savePath.SetValue("")
-			v.savePath.Focus()
-			return v, textinput.Blink
+			// Focus()'s own return is the real, tag-matched blink cmd; the
+			// dead-end textinput.Blink sentinel is never used.
+			return v, v.savePath.Focus()
 		case msg.Type == tea.KeyEnter:
 			return v.startBuild()
 		}

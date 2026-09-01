@@ -209,9 +209,11 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// scope input.
 			v.focusScope = false
 			v.scope.Blur()
-			v.dest.Focus()
 			// Choosing a snapshot is dest's first focus — start the blink.
-			return v, textinput.Blink
+			// Focus()'s own return is the real, tag-matched cmd; textinput.
+			// Blink resolves to cursor's unexported bootstrap message, which
+			// no view's Update switch can name, so it was a dead end.
+			return v, v.dest.Focus()
 		}
 		var cmd tea.Cmd
 		v.tbl, cmd = v.tbl.Update(msg)
@@ -226,15 +228,17 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			return v.planIt()
 		case tea.KeyTab:
 			v.focusScope = !v.focusScope
+			// Every focus transition (re)starts the blink; Focus()'s own
+			// return is the real cmd, not the dead-end textinput.Blink.
+			var cmd tea.Cmd
 			if v.focusScope {
 				v.dest.Blur()
-				v.scope.Focus()
+				cmd = v.scope.Focus()
 			} else {
 				v.scope.Blur()
-				v.dest.Focus()
+				cmd = v.dest.Focus()
 			}
-			// Every focus transition (re)starts the blink.
-			return v, textinput.Blink
+			return v, cmd
 		}
 		var cmd tea.Cmd
 		if v.focusScope {

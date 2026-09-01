@@ -297,6 +297,11 @@ func TestPassword_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 		t.Fatalf("newPass focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
 	}
 
+	// confirmPass already exists on v, so its BlinkSpeed can be dropped
+	// before tab fires — the tab handler's cmd is the REAL one Focus()
+	// produces, and executing it (assertBlinkCmd does) would otherwise
+	// block for the default ~530ms.
+	v.confirmPass.Cursor.BlinkSpeed = time.Millisecond
 	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	tv := tabbed.(PasswordView)
 	if got := boxCount(tv.View()); got != n+1 {
@@ -317,10 +322,18 @@ func TestPassword_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 // TestPassword_ConstructionFocusSchedulesBlink: newPass is focused at
 // construction (password.go:82) and this is the flow's landing state, so
 // Init — not a later Focus() transition — must schedule the blink, the same
-// contract unlock's Init established.
+// contract unlock's Init established. Init's cmd is the REAL one Focus()
+// produced at construction (see PasswordView.initBlink); executing it would
+// block for the field's Cursor.BlinkSpeed (~530ms), and there is no field
+// handle to preset that before NewPasswordView's internal Focus() call
+// runs, so this only checks the cmd exists. TestBlinkChain_ClosesEndToEnd
+// (snapshots_test.go) proves the real round-trip once, on a key-triggered
+// site where BlinkSpeed can be dropped first.
 func TestPassword_ConstructionFocusSchedulesBlink(t *testing.T) {
 	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
-	assertBlinkCmd(t, v.Init())
+	if v.Init() == nil {
+		t.Fatal("expected a blink command, got nil")
+	}
 }
 
 // TestPassword_RoutesBlinkTicksToNewPassField exercises the other arm of the

@@ -165,12 +165,15 @@ func (v PoliciesView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				switch msg.Runes[0] {
 				case 'a':
 					v.stage = policiesForm
-					v.form = newPolicyForm()
+					// newPolicyForm focuses the name field (below) — this
+					// keypress is the form's first-focus activation, so its
+					// returned cmd (the real, tag-matched one Focus()
+					// itself produced, not the dead-end textinput.Blink)
+					// must start the blink.
+					var cmd tea.Cmd
+					v.form, cmd = newPolicyForm()
 					v.notice = ""
-					// newPolicyForm focuses the name field (policies.go
-					// below) — this keypress is the form's first-focus
-					// activation, so it must start the blink.
-					return v, textinput.Blink
+					return v, cmd
 				case 'd':
 					if len(v.names) > 0 {
 						name := v.names[v.selected]
@@ -266,19 +269,17 @@ func (v PoliciesView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		v.form.path.Blur()
 		v.form.tags.Blur()
 		v.form.schedule.Blur()
+		// Focus()'s own return is the real, tag-matched blink cmd; the
+		// dead-end textinput.Blink sentinel is never used.
 		switch v.form.focus {
 		case 0:
-			v.form.name.Focus()
-			return v, textinput.Blink
+			return v, v.form.name.Focus()
 		case 1:
-			v.form.path.Focus()
-			return v, textinput.Blink
+			return v, v.form.path.Focus()
 		case 2:
-			v.form.tags.Focus()
-			return v, textinput.Blink
+			return v, v.form.tags.Focus()
 		case 3:
-			v.form.schedule.Focus()
-			return v, textinput.Blink
+			return v, v.form.schedule.Focus()
 		}
 		// Landed on the check/prune toggle steps: no text field is
 		// focused, so no blink to (re)start.
@@ -740,11 +741,17 @@ type policyForm struct {
 // check toggle and the prune-mode cycle.
 const policyFormFields = 6
 
-func newPolicyForm() policyForm {
+// newPolicyForm builds the ADD form with name focused, and also returns the
+// cmd that Focus() produced — the caller (the 'a' key handler) needs it to
+// start the blink, and there is no struct to hang an initBlink field on
+// here the way the construction-focused views do, since the form is
+// rebuilt fresh on every 'a' press rather than once at PoliciesView
+// construction.
+func newPolicyForm() (policyForm, tea.Cmd) {
 	name := textinput.New()
 	name.Prompt = "name>     "
 	name.Placeholder = "policy name"
-	name.Focus()
+	cmd := name.Focus()
 	path := textinput.New()
 	path.Prompt = "paths>    "
 	path.Placeholder = "directories to back up, comma-separated"
@@ -754,7 +761,7 @@ func newPolicyForm() policyForm {
 	schedule := textinput.New()
 	schedule.Prompt = "schedule> "
 	schedule.Placeholder = "manual | daily@03:00 | weekly@mon:03:00"
-	return policyForm{name: name, path: path, tags: tags, schedule: schedule, prune: policycfg.PruneOff}
+	return policyForm{name: name, path: path, tags: tags, schedule: schedule, prune: policycfg.PruneOff}, cmd
 }
 
 // splitCommaList turns a comma-separated field into trimmed entries,

@@ -81,6 +81,12 @@ type SyncView struct {
 	// op goroutine so the store is built exactly once per run.
 	dstStore blobstore.Store
 
+	// initBlink is the cmd path.Focus() returned at construction, captured
+	// so Init can return it. Focus() (not textinput.Blink) is the only
+	// source of a REAL, tag-matched blink cmd — see unlock.go's initBlink
+	// doc comment for why the bootstrap sentinel is a dead end.
+	initBlink tea.Cmd
+
 	reporter *opReporter
 	bar      progress.Model
 	result   syncDoneMsg
@@ -92,15 +98,16 @@ func NewSyncView(deps Deps) SyncView {
 	path := textinput.New()
 	path.Prompt = "dst>  "
 	path.Placeholder = "path to the destination's sentra.yaml"
-	path.Focus()
+	cmd := path.Focus()
 	refs := textinput.New()
 	refs.Prompt = "snap> "
 	refs.Placeholder = "optional snapshot refs, space-separated (blank = everything)"
 	return SyncView{
-		deps:     deps,
-		dstPath:  path,
-		snapRefs: refs,
-		bar:      progress.New(progress.WithDefaultGradient()),
+		deps:      deps,
+		dstPath:   path,
+		snapRefs:  refs,
+		bar:       progress.New(progress.WithDefaultGradient()),
+		initBlink: cmd,
 	}
 }
 
@@ -108,7 +115,7 @@ func NewSyncView(deps Deps) SyncView {
 // (NewSyncView) and this is the flow's landing state — there is no later
 // Focus() transition to hang the blink on, so Init carries it, same as
 // unlock's/password's.
-func (SyncView) Init() tea.Cmd { return textinput.Blink }
+func (v SyncView) Init() tea.Cmd { return v.initBlink }
 
 func (v SyncView) Title() string { return "Sync" }
 
@@ -231,13 +238,13 @@ func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.field = (v.field + 1) % syncFieldCount
 			v.dstPath.Blur()
 			v.snapRefs.Blur()
+			// Focus()'s own return is the real, tag-matched blink cmd; the
+			// dead-end textinput.Blink sentinel is never used.
 			switch v.field {
 			case syncFieldPath:
-				v.dstPath.Focus()
-				return v, textinput.Blink
+				return v, v.dstPath.Focus()
 			case syncFieldSnapshots:
-				v.snapRefs.Focus()
-				return v, textinput.Blink
+				return v, v.snapRefs.Focus()
 			}
 			// Landed on a toggle: neither text field is focused, so no
 			// blink to (re)start.

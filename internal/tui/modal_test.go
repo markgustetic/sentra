@@ -94,9 +94,18 @@ func TestTypedConfirmModal_EscCancelsAndQTypes(t *testing.T) {
 // is up, so there is no later Focus() transition to hang the blink cmd on —
 // Init is where it starts, mirroring UnlockView.Init for the same
 // "focused from birth" shape.
+// Init's cmd is the REAL one Focus() produced at construction (see
+// TypedConfirmModal.initBlink); executing it for real would block for the
+// field's Cursor.BlinkSpeed (~530ms), and there is no field handle to
+// preset that BEFORE construction runs Focus() internally, so this only
+// checks the cmd exists. TestBlinkChain_ClosesEndToEnd (snapshots_test.go)
+// proves the real round-trip once, on a key-triggered site where
+// BlinkSpeed can be dropped first.
 func TestTypedConfirmModal_InitSchedulesBlink(t *testing.T) {
 	m := NewTypedConfirmModal("Confirm prune", "b", "prune", "id", 80, 24)
-	assertBlinkCmd(t, m.Init())
+	if m.Init() == nil {
+		t.Fatal("expected a blink command, got nil")
+	}
 }
 
 // TestTypedConfirmModal_RoutesBlinkTicks: blink ticks must reach the typed

@@ -32,14 +32,23 @@ type Palette struct {
 	top    int
 	width  int
 	height int
+
+	// initBlink is the cmd ti.Focus() returned at construction, captured
+	// so Init can return it. Focus() (not textinput.Blink) is the only
+	// source of a REAL, tag-matched blink cmd — see unlock.go's initBlink
+	// doc comment for why the bootstrap sentinel is a dead end. This
+	// matters even more here: Init() has a value receiver and is called
+	// fresh on every ctrl+p open, long after construction, so it can only
+	// ever return what was captured once, back when Focus() actually ran.
+	initBlink tea.Cmd
 }
 
 func NewPalette(registry *Registry, width, height int) Palette {
 	ti := textinput.New()
 	ti.Placeholder = "type a command…"
 	ti.Prompt = "> "
-	ti.Focus()
-	p := Palette{registry: registry, input: ti, width: width, height: height}
+	cmd := ti.Focus()
+	p := Palette{registry: registry, input: ti, width: width, height: height, initBlink: cmd}
 	p.refilter()
 	return p
 }
@@ -48,8 +57,9 @@ func NewPalette(registry *Registry, width, height int) Palette {
 // already focused (NewPalette) and never blurred for as long as the palette
 // exists, so — mirroring UnlockView.Init, the same "focused from birth"
 // shape — Init is where the blink schedule starts rather than a later
-// Focus() transition.
-func (p Palette) Init() tea.Cmd { return textinput.Blink }
+// Focus() transition; it returns the cmd Focus() produced back at
+// construction (see initBlink's doc comment).
+func (p Palette) Init() tea.Cmd { return p.initBlink }
 
 // Reset clears the query for the next open.
 func (p *Palette) Reset() {

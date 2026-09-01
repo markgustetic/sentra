@@ -70,6 +70,13 @@ type PasswordView struct {
 	inputErr string
 	notice   string // transient banner, e.g. after an op rejection
 
+	// initBlink is the cmd newField.Focus() returned at construction,
+	// captured so Init can return it. Focus() (not textinput.Blink) is the
+	// only source of a REAL, tag-matched blink cmd — see unlock.go's
+	// initBlink doc comment for why the bootstrap sentinel is a dead end
+	// and why this can't be recomputed inside a value-receiver Init.
+	initBlink tea.Cmd
+
 	result passwordDoneMsg
 	width  int
 }
@@ -80,7 +87,7 @@ func NewPasswordView(deps Deps) PasswordView {
 	newField.Placeholder = "new passphrase"
 	newField.EchoMode = textinput.EchoPassword
 	newField.EchoCharacter = '•'
-	newField.Focus()
+	cmd := newField.Focus()
 
 	confirmField := textinput.New()
 	confirmField.Prompt = "confirm> "
@@ -88,14 +95,14 @@ func NewPasswordView(deps Deps) PasswordView {
 	confirmField.EchoMode = textinput.EchoPassword
 	confirmField.EchoCharacter = '•'
 
-	return PasswordView{deps: deps, newPass: newField, confirmPass: confirmField}
+	return PasswordView{deps: deps, newPass: newField, confirmPass: confirmField, initBlink: cmd}
 }
 
 // Init starts the cursor blinking. newPass is constructed already focused
 // (NewPasswordView) and this is the flow's landing state — there is no
 // later Focus() transition to hang the blink on, so Init carries it, same
 // as unlock's.
-func (PasswordView) Init() tea.Cmd { return textinput.Blink }
+func (v PasswordView) Init() tea.Cmd { return v.initBlink }
 
 func (v PasswordView) Title() string { return "Password" }
 
@@ -181,15 +188,17 @@ func (v PasswordView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyTab:
 			v.focusConfirm = !v.focusConfirm
+			// Every focus transition (re)starts the blink; Focus()'s own
+			// return is the real cmd, not the dead-end textinput.Blink.
+			var cmd tea.Cmd
 			if v.focusConfirm {
 				v.newPass.Blur()
-				v.confirmPass.Focus()
+				cmd = v.confirmPass.Focus()
 			} else {
 				v.confirmPass.Blur()
-				v.newPass.Focus()
+				cmd = v.newPass.Focus()
 			}
-			// Every focus transition (re)starts the blink.
-			return v, textinput.Blink
+			return v, cmd
 		case tea.KeyEnter:
 			return v.requestConfirm()
 		}

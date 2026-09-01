@@ -130,10 +130,20 @@ func TestUnlock_FocusedFieldIsBoxed(t *testing.T) {
 	}
 }
 
-// Landing on unlock must start the cursor blinking.
+// Landing on unlock must start the cursor blinking. Init returns the cmd
+// Focus() produced back at construction (see UnlockView.initBlink) — that
+// cmd is REAL (BlinkCmd()'s own tag-matched output, not the dead-end
+// textinput.Blink sentinel), so executing it for real would block for the
+// field's Cursor.BlinkSpeed (~530ms by default). There is no field handle
+// to drop BlinkSpeed on before construction runs Focus() internally, so
+// this only checks the cmd exists rather than executing it; the real
+// end-to-end round-trip is proven once, on a key-triggered (presettable)
+// site, by TestBlinkChain_ClosesEndToEnd in snapshots_test.go.
 func TestUnlock_InitSchedulesBlink(t *testing.T) {
 	v := NewUnlockView(unlockDeps(t, "hunter2"))
-	assertBlinkCmd(t, v.Init())
+	if v.Init() == nil {
+		t.Fatal("expected a blink command, got nil")
+	}
 }
 
 // Blink ticks must reach the focused input so the schedule continues. A bare
@@ -158,6 +168,11 @@ func TestUnlock_RoutesBlinkTicks(t *testing.T) {
 // the cursor looks dead after a failed attempt.
 func TestUnlock_WrongPassphraseReschedulesBlink(t *testing.T) {
 	v := NewUnlockView(unlockDeps(t, "correct-horse"))
+	// The retry's Focus() call reads v.input.Cursor.BlinkSpeed at the time
+	// it runs, which is after construction — so, unlike the construction-
+	// time Init cmd, this one CAN be preset before triggering the
+	// transition, keeping the real cmd's execution below fast.
+	v.input.Cursor.BlinkSpeed = time.Millisecond
 	v = typeIntoUnlock(v, "wrong-passphrase")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(UnlockView)

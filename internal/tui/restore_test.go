@@ -237,6 +237,13 @@ func TestRestore_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 	r := newFlowRepo(t)
 	seedSnapshotReal(t, r)
 	v := NewRestoreView(Deps{Repo: r})
+	// dest/scope already exist on v (just unfocused) before either
+	// transition below fires, so their BlinkSpeed can be dropped up front —
+	// both handlers' cmds are the REAL ones Focus() produces, and executing
+	// them (assertBlinkCmd does) would otherwise block for the default
+	// ~530ms each.
+	v.dest.Cursor.BlinkSpeed = time.Millisecond
+	v.scope.Cursor.BlinkSpeed = time.Millisecond
 
 	m, entryCmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick -> dest
 	v = m.(RestoreView)

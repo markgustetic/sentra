@@ -171,25 +171,33 @@ type TypedConfirmModal struct {
 	input  textinput.Model
 	width  int
 	height int
+
+	// initBlink is the cmd ti.Focus() returned at construction, captured so
+	// Init can return it. Focus() (not textinput.Blink) is the only source
+	// of a REAL, tag-matched blink cmd — see unlock.go's initBlink doc
+	// comment for why the bootstrap sentinel is a dead end and why a
+	// value-receiver Init can't recompute it itself.
+	initBlink tea.Cmd
 }
 
 func NewTypedConfirmModal(title, body, word, id string, width, height int) TypedConfirmModal {
 	ti := textinput.New()
 	ti.Prompt = "> "
-	ti.Focus()
+	cmd := ti.Focus()
 	return TypedConfirmModal{title: title, body: body, word: word, id: id,
-		input: ti, width: width, height: height}
+		input: ti, width: width, height: height, initBlink: cmd}
 }
 
 // Init starts the typed field's cursor blinking. The field is constructed
 // already focused (NewTypedConfirmModal) and never blurred while the modal
 // is up — esc dismisses the whole modal rather than blurring the field — so
-// there is no later Focus() transition to hang the blink cmd on. Not part of
-// the Modal interface: the App pushes modals via pushModalMsg without an
-// Init hook, so this is a plain method the constructor's caller (or a test)
-// invokes directly, mirroring UnlockView.Init for the same "focused from
-// birth" shape.
-func (m TypedConfirmModal) Init() tea.Cmd { return textinput.Blink }
+// there is no later Focus() transition to hang the blink cmd on; it returns
+// the cmd Focus() produced back at construction (see initBlink's doc
+// comment). Not part of the Modal interface: the App pushes modals via
+// pushModalMsg without an Init hook, so this is a plain method the
+// constructor's caller (or a test) invokes directly, mirroring
+// UnlockView.Init for the same "focused from birth" shape.
+func (m TypedConfirmModal) Init() tea.Cmd { return m.initBlink }
 
 func (m TypedConfirmModal) Update(msg tea.Msg) (Modal, tea.Cmd) {
 	// The typed field is always focused for as long as this modal exists

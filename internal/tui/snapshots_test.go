@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/repo"
@@ -334,10 +335,62 @@ func TestSnapshots_FilterFieldIsBoxedOnlyWhenFocused(t *testing.T) {
 
 // TestSnapshots_SlashSchedulesBlink: opening the filter with '/' must start
 // the cursor blinking, or the field looks inert until the first keystroke.
+// s.filter already exists before '/' is sent, so BlinkSpeed can be dropped
+// first — the returned cmd is the REAL one Focus() produced, and executing
+// it (assertBlinkCmd does) would otherwise block for the default ~530ms.
 func TestSnapshots_SlashSchedulesBlink(t *testing.T) {
 	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	s.filter.Cursor.BlinkSpeed = time.Millisecond
 	_, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 	assertBlinkCmd(t, cmd)
+}
+
+// TestBlinkChain_ClosesEndToEnd proves the ACTUAL cmd a real focus
+// transition returns — not a hand-minted tick — closes the loop:
+// executing it yields a message that this view's own Update then routes
+// back to the field with a live follow-up cmd, exactly the round trip a
+// running program performs.
+//
+// This is the regression a textinput.Blink-sentinel bug would produce:
+// that sentinel resolves to cursor's UNEXPORTED bootstrap message
+// (initialBlinkMsg{}), which no view's Update switch can name (only
+// cursor.BlinkMsg is exported) — so a cmd built from it is silently
+// dropped, and the blink chain never starts in a live terminal. Every
+// OTHER test in this package that exercises tick routing hand-mints a
+// tag-matched cursor.BlinkMsg (via field.Cursor.BlinkCmd()) specifically
+// to sidestep bubbles/cursor's stale-tick guard — which means none of them
+// would have caught a bug in the FIRST link of the chain (the cmd Focus()
+// itself returns). This test is the one place that starts from the real
+// cmd instead of a hand-minted message.
+//
+// snapshots' '/' handler is used as the representative site: s.filter
+// already exists before '/' fires, so BlinkSpeed can be dropped first,
+// keeping the real cmd's execution fast rather than waiting out the
+// default ~530ms.
+func TestBlinkChain_ClosesEndToEnd(t *testing.T) {
+	s := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+	s.filter.Cursor.BlinkSpeed = time.Millisecond
+
+	m, cmd := s.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	s = m.(Snapshots)
+	if cmd == nil {
+		t.Fatal("'/' must return a real focus cmd")
+	}
+
+	// Execute the REAL cmd Update returned — no hand-minted tick.
+	msg := cmd()
+	if _, ok := msg.(cursor.BlinkMsg); !ok {
+		t.Fatalf("executing the real focus cmd should yield cursor.BlinkMsg, got %T (%#v)", msg, msg)
+	}
+
+	m, follow := s.Update(msg)
+	s = m.(Snapshots)
+	if follow == nil {
+		t.Fatal("the real tick must route back to the filter field with a live follow-up cmd")
+	}
+	if !yieldsBlink(follow()) {
+		t.Fatal("follow-up cmd did not yield a blink message")
+	}
 }
 
 // TestSnapshots_RoutesBlinkTicksWhileFiltering: blink ticks must reach the

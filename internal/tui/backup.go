@@ -228,8 +228,9 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyTab {
 			if v.focus == focusPicker {
 				v.focus = focusTagField
-				v.tag.Focus()
-				return v, textinput.Blink
+				// Focus()'s own return is the real, tag-matched blink cmd;
+				// the dead-end textinput.Blink sentinel is never used.
+				return v, v.tag.Focus()
 			}
 			v.focus = focusPicker
 			v.tag.Blur()

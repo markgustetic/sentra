@@ -343,10 +343,19 @@ func TestSyncFlow_SelectedSnapshotOnly(t *testing.T) {
 // TestSync_ExactlyOneBoxAndItFollowsFocus mirrors the brief's canonical
 // shape for the dst/snapshots pair. Construction focuses dstPath
 // (sync.go:94) — the landing state for this flow — so Init must schedule
-// the blink, the same contract unlock's/password's Init establishes.
+// the blink, the same contract unlock's/password's Init establishes. Init's
+// cmd is the REAL one Focus() produced at construction (see
+// SyncView.initBlink); executing it would block for the field's
+// Cursor.BlinkSpeed (~530ms), and there is no field handle to preset that
+// before NewSyncView's internal Focus() call runs, so this only checks the
+// cmd exists — TestBlinkChain_ClosesEndToEnd (snapshots_test.go) proves the
+// real round-trip once, on a key-triggered site where BlinkSpeed can be
+// dropped first.
 func TestSync_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
-	assertBlinkCmd(t, v.Init())
+	if v.Init() == nil {
+		t.Fatal("expected a blink command, got nil")
+	}
 
 	base := v
 	base.dstPath.Blur()
@@ -357,6 +366,11 @@ func TestSync_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 		t.Fatalf("dstPath focused: boxCount = %d, want %d (+1 over blurred)", got, n+1)
 	}
 
+	// snapRefs already exists on v, so its BlinkSpeed can be dropped before
+	// tab fires — the tab handler's cmd is the REAL one Focus() produces,
+	// and executing it (assertBlinkCmd does) would otherwise block for the
+	// default ~530ms.
+	v.snapRefs.Cursor.BlinkSpeed = time.Millisecond
 	tabbed, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // path -> snapshots
 	tv := tabbed.(SyncView)
 	if got := boxCount(tv.View()); got != n+1 {

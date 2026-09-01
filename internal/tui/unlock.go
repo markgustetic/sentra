@@ -58,6 +58,17 @@ type UnlockView struct {
 	inputErr string // local validation (empty entry)
 	openErr  error  // mapped repo.Open failure
 
+	// initBlink is the cmd field.Focus() returned at construction, captured
+	// here so Init can return it. Focus() (not textinput.Blink) is the only
+	// source of a REAL, tag-matched blink cmd: textinput.Blink resolves to
+	// cursor's unexported bootstrap message, which no view's Update switch
+	// can name, so it was silently dropped and the blink chain never
+	// started in a live terminal. A value-receiver Init can't call Focus()
+	// itself — it would mutate a throwaway copy and orphan the tick — so
+	// the cmd has to be captured once, right here, against the same model
+	// value that ends up live.
+	initBlink tea.Cmd
+
 	width int
 }
 
@@ -69,14 +80,16 @@ func NewUnlockView(deps Deps) UnlockView {
 	field.Placeholder = "repository passphrase"
 	field.EchoMode = textinput.EchoPassword
 	field.EchoCharacter = '•'
-	field.Focus()
-	return UnlockView{deps: deps, input: field}
+	cmd := field.Focus()
+	return UnlockView{deps: deps, input: field, initBlink: cmd}
 }
 
 // Init starts the cursor blinking. The unlock field is constructed already
 // focused (NewUnlockView) — it's the landing view, not one the operator tabs
-// into — so there is no later Focus() transition to hang the blink cmd on.
-func (UnlockView) Init() tea.Cmd { return textinput.Blink }
+// into — so there is no later Focus() transition to hang the blink cmd on;
+// Init returns the cmd Focus() produced back at construction (see
+// initBlink's doc comment).
+func (v UnlockView) Init() tea.Cmd { return v.initBlink }
 
 func (v UnlockView) Title() string { return "Unlock" }
 
@@ -107,12 +120,12 @@ func (v UnlockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear the buffer so the failed secret doesn't linger and the
 			// user starts a fresh attempt.
 			v.input.SetValue("")
-			v.input.Focus()
 			// Re-focusing for the retry is a second focus transition (the
 			// first was at construction, covered by Init) — it must also
 			// restart the blink, or the cursor looks dead after a failed
-			// attempt.
-			return v, textinput.Blink
+			// attempt. Focus()'s own return is the real, tag-matched cmd;
+			// textinput.Blink would be the dead-end bootstrap sentinel.
+			return v, v.input.Focus()
 		}
 		// Success: forward to the App, which rebuilds the shell against the
 		// live repo and switches to the dashboard.

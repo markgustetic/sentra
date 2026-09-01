@@ -524,8 +524,9 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		case "/":
 			s.notice = ""
 			s.filtering = true
-			s.filter.Focus()
-			return s, textinput.Blink
+			// Focus()'s own return is the real, tag-matched blink cmd; the
+			// dead-end textinput.Blink sentinel is never used.
+			return s, s.filter.Focus()
 		case "s":
 			s.notice = ""
 			s.sortMode = (s.sortMode + 1) % 5
