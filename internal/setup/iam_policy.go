@@ -14,7 +14,10 @@ type IAMPolicyDocument struct {
 }
 
 // IAMPolicyStatement is one statement in an IAMPolicyDocument. Condition is
-// omitted from the JSON when nil so a prefix-less policy stays clean.
+// part of the general IAM shape but BuildIAMPolicy never sets it — see
+// BuildIAMPolicy for why the bucket statements must stay unconditioned. It is
+// kept so the simulator in iam_policy_test.go evaluates any future condition
+// against the calls Sentra actually makes instead of ignoring it.
 type IAMPolicyStatement struct {
 	Sid       string         `json:"Sid"`
 	Effect    string         `json:"Effect"`
@@ -51,43 +54,47 @@ func WriteIAMPolicy(w io.Writer, bucket string, prefix string) error {
 }
 
 // BuildIAMPolicy assembles the three-statement least-privilege policy: bucket
-// controls used during setup, list access scoped by prefix, and object CRUD on
-// the repo keys. The prefix condition is only attached when a prefix is set.
+// controls used during setup and doctor, bucket listing, and object CRUD on
+// the repo keys.
+//
+// The bucket-level statements are deliberately unconditioned. HeadBucket —
+// the doctor's reachability probe and setup's bucket-exists check and waiter
+// — authorizes as s3:ListBucket, and its request context (like
+// GetBucketLocation's) carries no s3:prefix key; IAM evaluates a condition on
+// an absent key as false, so a StringLike s3:prefix condition here denies
+// Sentra's own probes under Sentra's own recommended policy. The trade-off is
+// that the identity can list every key NAME in the bucket; object reads and
+// writes stay scoped to the prefix by SentraRepositoryObjects.
 func BuildIAMPolicy(bucket string, prefix string) IAMPolicyDocument {
 	bucketResource := BucketARN(bucket)
 	objectResource := ObjectARN(bucket, prefix)
-	listStatement := IAMPolicyStatement{
-		Sid:    "SentraListBucket",
-		Effect: "Allow",
-		Action: []string{
-			"s3:GetBucketLocation",
-			"s3:ListBucket",
-		},
-		Resource: []string{bucketResource},
-	}
-	if prefix != "" {
-		listStatement.Condition = map[string]any{
-			"StringLike": map[string]any{
-				"s3:prefix": []string{prefix + "*"},
-			},
-		}
-	}
 	return IAMPolicyDocument{
 		Version: "2012-10-17",
 		Statement: []IAMPolicyStatement{
 			{
 				Sid:    "SentraSetupBucketControls",
 				Effect: "Allow",
+				// The encryption APIs authorize under the
+				// *EncryptionConfiguration action names, not their API names —
+				// s3:GetBucketEncryption does not exist as an IAM action.
 				Action: []string{
 					"s3:CreateBucket",
-					"s3:GetBucketEncryption",
 					"s3:GetBucketPublicAccessBlock",
-					"s3:PutBucketEncryption",
+					"s3:GetEncryptionConfiguration",
 					"s3:PutBucketPublicAccessBlock",
+					"s3:PutEncryptionConfiguration",
 				},
 				Resource: []string{bucketResource},
 			},
-			listStatement,
+			{
+				Sid:    "SentraListBucket",
+				Effect: "Allow",
+				Action: []string{
+					"s3:GetBucketLocation",
+					"s3:ListBucket",
+				},
+				Resource: []string{bucketResource},
+			},
 			{
 				Sid:    "SentraRepositoryObjects",
 				Effect: "Allow",

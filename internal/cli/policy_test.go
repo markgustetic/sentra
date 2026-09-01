@@ -15,6 +15,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/scheduler"
 )
 
 func writePolicyConfigFile(t *testing.T, dir string, cfg *config.Config) string {
@@ -460,5 +461,52 @@ func TestPolicyAdd_ReplacePreservesHooks(t *testing.T) {
 	}
 	if p.Hooks.Before != "pg_dump > dump.sql" || p.Hooks.OnFailureWebhookEnv != "SENTRA_ALERT_URL" {
 		t.Errorf("replace dropped the hand-authored hooks: %+v", p.Hooks)
+	}
+}
+
+func TestPolicyRemoveUninstallsTimer(t *testing.T) {
+	dir := t.TempDir()
+	chDir(t, dir)
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["home"] = config.PolicyConfig{
+		Paths:    []string{"."},
+		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
+	}
+	writePolicyConfigFile(t, dir, &cfg)
+	home := filepath.Join(dir, "home")
+	paths, err := scheduler.PathsFor("darwin", home, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := scheduler.Install(map[string]string{paths.Files[0]: "timer"}); err != nil {
+		t.Fatal(err)
+	}
+
+	out := &bytes.Buffer{}
+	cmd := NewPolicy(PolicyDeps{
+		RepoDeps: RepoDeps{Stdout: out},
+		OS:       "darwin",
+		HomeDir:  func() (string, error) { return home, nil },
+	})
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"remove", "home"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if installed, _ := scheduler.Installed(paths); installed {
+		t.Fatal("policy remove must uninstall the timer files")
+	}
+	if !strings.Contains(out.String(), "schedule entry removed") {
+		t.Fatalf("output must say the schedule entry was removed:\n%s", out.String())
+	}
+	got, err := config.Load(filepath.Join(dir, "sentra.yaml"))
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if _, ok := got.Policies["home"]; ok {
+		t.Fatal("policy must be gone from the config")
 	}
 }

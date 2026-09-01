@@ -126,6 +126,15 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 		PassphraseWithConfig: openPassphrase,
 		Stdout:               os.Stdout,
 	}))
+	root.AddCommand(cli.NewMCP(cli.MCPDeps{
+		RepoDeps: cli.RepoDeps{
+			NewStore:             newS3Store,
+			PassphraseWithConfig: openPassphrase,
+			Stdout:               os.Stdout,
+		},
+		Version:        version,
+		PassphraseFile: func() string { return rootFlags.PassphraseFile },
+	}))
 	root.AddCommand(cli.NewAgent(cli.AgentDeps{
 		RepoDeps: cli.RepoDeps{
 			NewStore:             newS3Store,
@@ -145,7 +154,6 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 			Stdout:               os.Stdout,
 		},
 		ProviderForConfig: newAgentProvider,
-		Actions:           action.NewDefaultRegistry(),
 		SavePassphrase:    saveRepoPassphraseToKeyring,
 		DeletePassphrase:  deleteRepoPassphraseFromKeyring,
 		Run:               cli.DefaultUIRunner,

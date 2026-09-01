@@ -7,12 +7,13 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 )
 
-// PrepareAWS runs one pass of the AWS auth + bucket-prep sequence for p and
-// returns the auth report, the prepare report, and any error. It is the
-// headless body of the deleted CLI wizard's auth+prepare loop MINUS the huh
-// repair prompt and stdout progress: on failure it classifies and returns the
-// error rather than prompting. Callers own the retry decision (the TUI
-// wizard mutates the plan and calls PrepareAWS again).
+// PrepareAWS runs one pass of the AWS auth + bucket-prep + backup-user
+// sequence for p and returns the auth report, the prepare report, and any
+// error. It is the headless body of the deleted CLI wizard's auth+prepare
+// loop MINUS the huh repair prompt and stdout progress: on failure it
+// classifies and returns the error rather than prompting. Callers own the
+// retry decision (the TUI wizard mutates the plan and calls PrepareAWS
+// again).
 func (e *Engine) PrepareAWS(ctx context.Context, p *Plan) (AWSAuthReport, AWSPrepareReport, error) {
 	method := ResolveAWSAuthMethod(p)
 	auth, err := e.runAWSAuth(ctx, method, &p.Config)
@@ -27,6 +28,12 @@ func (e *Engine) PrepareAWS(ctx context.Context, p *Plan) (AWSAuthReport, AWSPre
 	})
 	if err != nil {
 		return AWSAuthReport{}, AWSPrepareReport{}, WrapAWSPrepareError(p.Config, method, err)
+	}
+	// Bucket prep ran on the session identity that just signed in; the scoped
+	// user only has to USE the bucket. Provisioning comes last so a failure
+	// here can never undo a prepared bucket, and never fails setup.
+	if ShouldProvisionBackupUser(p) {
+		prep.BackupUser = e.provisionBackupUser(ctx, p)
 	}
 	return auth, prep, nil
 }

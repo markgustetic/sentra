@@ -188,16 +188,8 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 
 	// Print the dry-run / what-would-happen summary unconditionally.
 	// In apply-mode this doubles as the prompt context.
-	if len(drop) == 0 && flags.asJSON {
-		return writePruneJSON(out, decisions, drop, false, 0, nil, false)
-	}
 	if len(drop) == 0 {
-		fmt.Fprintln(out, ui.Subtle.Render("Nothing to delete; current snapshots match retention policy."))
-		fmt.Fprintf(out, "  keep: %d\n", len(keep))
-		if flags.explain {
-			writeRetentionExplanation(out, decisions)
-		}
-		return nil
+		return runPruneGCOnly(cmd, deps, flags, r, decisions, keep, out)
 	}
 
 	// Every text line below is gated on !asJSON: in JSON mode stdout
@@ -282,6 +274,66 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	}
 	fmt.Fprintln(out, ui.Success.Render("Prune complete"))
 	fmt.Fprintf(out, "  deleted snapshots: %d\n", deletedCount)
+	fmt.Fprintf(out, "  reclaimed blobs:   %d\n", stats.DeletedBlobs)
+	fmt.Fprintf(out, "  reclaimed bytes:   %s (%d)\n",
+		ui.FormatBytes(stats.DeletedBytes), stats.DeletedBytes)
+	fmt.Fprintf(out, "  live blobs:        %d\n", stats.LiveBlobs)
+	return nil
+}
+
+// runPruneGCOnly is the empty-drop tail of `sentra prune`: retention
+// keeps everything, but --apply still owes the operator a GC pass.
+// Orphaned blobs — a backup killed mid-run, an out-of-band snapshot
+// delete — never put a snapshot in the drop set, and prune is the only
+// sanctioned way to reclaim them; returning early here would make that
+// garbage uncollectable exactly when it is all that needs collecting.
+//
+// GC runs with nil keepIDs — the bare-orphans mode — so a store that
+// lists zero snapshots refuses (ErrEmptyRepo) instead of treating "no
+// manifests" as "every blob is garbage"; that guard is what makes this
+// path safe to reach against a misconfigured bucket or prefix.
+func runPruneGCOnly(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags, r *repo.Repo, decisions []repo.RetentionDecision, keep []string, out io.Writer) error {
+	if !flags.asJSON {
+		fmt.Fprintln(out, ui.Subtle.Render("Nothing to delete; current snapshots match retention policy."))
+		fmt.Fprintf(out, "  keep: %d\n", len(keep))
+		if flags.explain {
+			writeRetentionExplanation(out, decisions)
+		}
+	}
+	if !flags.apply {
+		if !flags.asJSON {
+			fmt.Fprintln(out, ui.Subtle.Render("Re-run with --apply to run GC and reclaim unreferenced storage."))
+		}
+		return nil
+	}
+	if !flags.yes {
+		ok, err := deps.Confirm("No snapshots to delete. Run GC to reclaim unreferenced storage?")
+		if err != nil {
+			return fmt.Errorf("confirm: %w", err)
+		}
+		if !ok {
+			if flags.asJSON {
+				return writePruneJSON(out, decisions, nil, false, 0, nil, true)
+			}
+			fmt.Fprintln(out, ui.Subtle.Render("Aborted by user."))
+			return nil
+		}
+	}
+	stats, err := r.GC(cmd.Context(), nil)
+	if err != nil {
+		if errors.Is(err, repo.ErrEmptyRepo) {
+			if flags.asJSON {
+				return writePruneJSON(out, decisions, nil, false, 0, nil, false)
+			}
+			fmt.Fprintln(out, ui.Subtle.Render("Repository has no snapshots; GC skipped."))
+			return nil
+		}
+		return fmt.Errorf("gc: %w", err)
+	}
+	if flags.asJSON {
+		return writePruneJSON(out, decisions, nil, false, 0, &stats, false)
+	}
+	fmt.Fprintln(out, ui.Success.Render("GC complete"))
 	fmt.Fprintf(out, "  reclaimed blobs:   %d\n", stats.DeletedBlobs)
 	fmt.Fprintf(out, "  reclaimed bytes:   %s (%d)\n",
 		ui.FormatBytes(stats.DeletedBytes), stats.DeletedBytes)

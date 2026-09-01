@@ -152,6 +152,20 @@ func TestFieldBox_RendersRoundedFrame(t *testing.T) {
 	}
 }
 
+// TestFieldBoxOverhead_MatchesRenderedWidth pins the constant callers
+// subtract from an interior-derived textinput Width to what FieldBox
+// ACTUALLY costs when it renders. Asserting the derived constant against
+// itself would prove nothing; measuring a real render is what catches a
+// future border/padding change silently invalidating every call site's
+// width budget.
+func TestFieldBoxOverhead_MatchesRenderedWidth(t *testing.T) {
+	const content = "hello"
+	got := lipgloss.Width(FieldBox.Render(content)) - lipgloss.Width(content)
+	if got != FieldBoxOverhead {
+		t.Fatalf("FieldBox costs %d columns but FieldBoxOverhead = %d", got, FieldBoxOverhead)
+	}
+}
+
 func stripANSI(s string) string {
 	var b strings.Builder
 	inEsc := false

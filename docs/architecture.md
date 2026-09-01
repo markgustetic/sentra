@@ -22,7 +22,14 @@ sentra/
 │   │   └── tools/              # tool-use schema for the agent loop
 │   ├── tui/                    # Bubbletea models + lipgloss theme
 │   ├── ui/                     # shared styled components
-│   └── config/                 # sentra.yaml parsing
+│   ├── config/                 # sentra.yaml parsing + passphrase/keyring resolution
+│   ├── setup/                  # headless setup engine: pure state model, an
+│   │                           #   Effects seam for AWS/keyring, stepwise Engine
+│   ├── policy/                 # named-policy validation + hooks
+│   ├── scheduler/              # launchd/systemd unit rendering + install
+│   ├── recoverykit/            # printable recovery-document rendering
+│   ├── progress/               # progress reporters shared by CLI + TUI
+│   └── diag/                   # doctor's AWS/repo probes (below both surfaces)
 └── .goreleaser.yaml .github/workflows/{ci,release}.yml
 ```
 
@@ -192,11 +199,13 @@ Two important rails on the agent loop:
 
 `sentra ui` (and bare `sentra`) launches a single Bubbletea program
 with one parent `App` model and one `tea.Model` per view (dashboard,
-snapshots, diff, agent). Inline-mode commands and the TUI both pull
-from `internal/ui` for theme + reusable styled components, so the
-visual language is consistent across both surfaces.
+snapshots, diff, restore, …). The rail lists six destinations; the
+other views stay registered but hidden, launched from a parent
+(Snapshots, Maintenance, Settings) via `activateMsg` routing. Inline-
+mode commands and the TUI both pull from `internal/ui` for theme +
+reusable styled components, so the visual language is consistent
+across both surfaces.
 
-The agent view in particular is a split-pane: the top half streams
-LLM tokens live (a Bubbletea-friendly channel feeds the viewport),
-and the bottom half is a recommendations table that fills in as
-tool calls return.
+The agent (`sentra agent scan`) is CLI-only: local heuristics first,
+LLM summaries second, recommendations printed with confirm-gated
+apply.

@@ -242,45 +242,6 @@ func TestPasswordFlow_OpRejectedResets(t *testing.T) {
 	}
 }
 
-// TestPasswordView_RegisteredUnderOperations verifies the view is wired
-// into NewApp's registry as an "Operations" command so it appears in the
-// sidebar rail and the command palette alongside backup/restore/prune.
-//
-// The plan sketched this against a `registry.Get(id)` accessor, but the
-// real Registry exposes only Commands() (registry.go:55) — no Get — so we
-// scan that slice for the password command's Category instead.
-func TestPasswordView_RegisteredUnderOperations(t *testing.T) {
-	app := NewApp(Deps{Repo: newFlowRepo(t)})
-
-	var found bool
-	for _, v := range app.views {
-		if v.id == "password" {
-			found = true
-			if _, ok := v.model.(PasswordView); !ok {
-				t.Fatalf("password view model is %T, want PasswordView", v.model)
-			}
-		}
-	}
-	if !found {
-		t.Fatal("NewApp did not register a 'password' view")
-	}
-
-	var cmd Command
-	var ok bool
-	for _, c := range app.registry.Commands() {
-		if c.ID == "password" {
-			cmd, ok = c, true
-			break
-		}
-	}
-	if !ok {
-		t.Fatal("registry has no 'password' command")
-	}
-	if cmd.Category != "Operations" {
-		t.Fatalf("password category = %q, want Operations", cmd.Category)
-	}
-}
-
 // TestPassword_ExactlyOneBoxAndItFollowsFocus verifies the focused-field box
 // marks exactly one field at a time and follows focus across tab — the delta
 // over a fully-blurred baseline proves it tracks focus, not a fixed field

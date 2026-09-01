@@ -8,15 +8,23 @@ quick reference and the load-bearing invariants.
 
 Sentra is a single-binary Go CLI/TUI (`cmd/sentra`) that backs up local
 directories to S3 / S3-compatible storage as **encrypted, deduplicated,
-content-addressed** snapshots. Go 1.25, module `github.com/markgustetic/sentra`.
+content-addressed** snapshots. Go 1.27, module `github.com/markgustetic/sentra`.
 
 The TUI is the default surface: bare `sentra` falls through to `sentra ui`. With
 no `sentra.yaml` it lands on the first-run setup wizard; configured but locked,
 it lands on the unlock gate; otherwise the dashboard. A configured repo that
 fails to *open* (expired AWS SSO, unreachable bucket) lands on the connect
-gate — retry or run `aws sso login` from inside the TUI; only config-file
-errors exit to the CLI. The TUI covers every job a human does; the CLI is the
-machine and recovery surface (see the surface contract in AGENTS.md).
+gate — retry or run the profile's aws login command from inside the TUI; only
+config-file errors exit to the CLI. The TUI covers the human floor through a
+six-view rail (Dashboard, Backup, Snapshots, Maintenance, Settings, Help) with
+the occasional jobs launched from inside those; stats and the agent are
+CLI-only. `ctrl+a` opens the assistant chat overlay anywhere outside the
+startup gates: it answers from snapshot metadata and compiles actions into the
+same confirm-gated flows the keyboard drives (needs `ANTHROPIC_API_KEY`; inert
+with a hint without it). The CLI is the machine and recovery surface (see the
+surface contract in AGENTS.md), and `sentra mcp` serves the repo to MCP
+clients over stdio — metadata-only reads, two-phase (plan → single-use token →
+confirm) mutations.
 
 Config discovery: with no `--config`, commands use `./sentra.yaml` when
 present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default
@@ -80,12 +88,20 @@ git worktree remove --force /tmp/chk
 - `internal/walker` — filesystem walk + ignore matching
 - `internal/agent` — local heuristics, LLM orchestration, tools, actions
 - `internal/cli` — cobra commands; `internal/tui` / `internal/ui` — Bubbletea
-- `internal/policy` — named-policy validation; `internal/progress` — reporters
+- `internal/policy` — named-policy validation + `NextRun` (next wall-clock
+  fire); `internal/progress` — reporters
 - `internal/setup` — headless setup engine: pure state model + transforms, an
   `Effects` seam for AWS/keyring, and a stepwise `Engine`
-  (`PrepareAWS` → `WriteConfig` → `InitRepo`). Both wizards drive it.
+  (`PrepareAWS` → `WriteConfig` → `InitRepo`). Both wizards drive it. Also
+  provisions the dedicated backup user (`backupuser.go`, `backuppolicy.go`,
+  `credentialsfile.go`): one customer-managed policy per bucket so buckets
+  accumulate on the user, the secret never crosses the Effects seam,
+  `~/.aws/config` and the `default` credentials profile are never written.
 - `internal/recoverykit` — recovery-kit rendering; `internal/scheduler` — cron
-  emission; `internal/diag` — doctor's AWS/repo probes
+  emission; `internal/diag` — doctor's AWS/repo probes + `Explain` (known-cause
+  error prose for the TUI)
+- `internal/mcpserver` — `sentra mcp`: stdio MCP server; metadata-only reads,
+  two-phase plan→confirm mutations (see AGENTS.md for the contract)
 
 **Import direction: `internal/cli` imports `internal/tui`, so `internal/tui`
 must never import `internal/cli`.** `setup`, `recoverykit`, `scheduler`, and
@@ -121,7 +137,10 @@ below both.
   lock whose ownership can't be confirmed.
 - **Agent / LLM.** Local heuristics run first; the LLM sees **summaries only —
   never file contents or secret values**. Recommendations are read-only by
-  default.
+  default. The same boundary binds the TUI chat overlay and `sentra mcp`:
+  metadata only, and nothing mutates without a human confirm — the chat's
+  action tools emit UI intents into the existing confirm gates, and MCP
+  mutations execute only via a plan's single-use, kind-bound token.
 - **No secrets in artifacts.** Never write passphrases, wrapped keys, salts, MAC
   material, or AWS credentials into `sentra.yaml`, setup drafts, logs, recovery
   kits, tests, or fixtures.
@@ -165,6 +184,19 @@ below both.
   color profile, which emits **no ANSI at all**, so a color-only affordance is
   both invisible to `NO_COLOR` users and untestable. The same reasoning drives
   the splash animation, which twinkles by changing shape.
+- **The focused text field is boxed, and its cursor blinks.** A view's focused
+  input renders through `boxedField` / `ui.FieldBox` (a rounded frame — a
+  glyph, per the rule above), and every `Focus()` transition returns
+  **`Focus()`'s own cmd**, never `textinput.Blink`: that package var resolves
+  to bubbles/cursor's *unexported* bootstrap message, which no `Update` switch
+  can name, so it is silently dropped and the blink never starts. Views route
+  `cursor.BlinkMsg` to the focused field so the schedule keeps itself alive; a
+  model focused at construction captures the cmd in an `initBlink` field for
+  its `Init` (a value-receiver `Init` calling `Focus()` would mutate a
+  throwaway copy). Two exceptions take blink only, no box: inputs already
+  inside dedicated chrome (palette, typed-confirm modal, chat overlay), and
+  the setup wizard, whose rows already carry `ui.SelectRow`'s `▍`. Sizing an
+  input from the pane interior? Subtract `ui.FieldBoxOverhead`.
 - **Never wrap an already-styled string.** `outer.Render(s)` where `s` contains
   `ui.Muted.Render(help)` embeds an ANSI reset that terminates the outer style
   mid-line. Style the plain text and append styled fragments after it.
@@ -180,3 +212,9 @@ below both.
   scrolling still works. Every other view is focusable by default.
 - Mutating operations go through the App's one-op guard (`startOpMsg` /
   `opResultMsg`); read-only flows use a plain `tea.Cmd` and a spinner.
+- The palette (`ctrl+p`) and the chat overlay (`ctrl+a`) are mutually
+  exclusive full-screen overlays; opening one closes the other. The chat
+  never executes anything itself — its action tools return the same
+  messages the keyboard routes (`activateMsg` / `chatBackupMsg` /
+  `launchRestoreMsg`), so the existing gates and the one-op guard apply.
+  While a turn streams, `esc` cancels it; the next `esc` closes the overlay.

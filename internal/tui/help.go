@@ -45,25 +45,12 @@ const helpDescIndent = 4
 //
 //nolint:gosec // false positive: help text keyed by command ID "password", not a credential
 var viewDescriptions = map[string]string{
-	"dashboard":    "Repo health, last snapshot, and size timeline",
-	"backup":       "Snapshot a folder into the repository",
-	"snapshots":    "Browse past snapshots and inspect their files",
-	"files":        "Latest snapshot's directory layout as a graph",
-	"diff":         "Compare two snapshots file by file",
-	"check":        "Verify repository integrity end to end",
-	"stats":        "Storage usage and deduplication efficiency",
-	"doctor":       "Diagnose config, AWS access, and repo health",
-	"recovery-kit": "Print a non-secret kit for disaster recovery",
-	"policies":     "Manage named backup policies and run them",
-	"schedule":     "Install or remove OS scheduler entries",
-	"agent":        "Scan for backup risks and get recommendations",
-	"restore":      "Restore a snapshot to a chosen destination",
-	"prune":        "Apply retention and reclaim unused storage",
-	"sync":         "Replicate this repository to a second bucket",
-	"password":     "Rotate the repository passphrase",
-	"settings":     "Configuration summary and app preferences",
-	"setup":        "Re-run the first-run configuration wizard",
-	"help":         "What each screen in the rail does",
+	"dashboard":   "Repo health, last snapshot, and size timeline",
+	"backup":      "Snapshot a folder into the repository",
+	"snapshots":   "Browse snapshots, inspect, diff, and restore",
+	"maintenance": "Check, prune, sync, and doctor in one place",
+	"settings":    "Configuration, scheduled backups, and recovery",
+	"help":        "What each screen in the rail does",
 }
 
 // helpHeaderRows is the header line plus the blank line under it. window()

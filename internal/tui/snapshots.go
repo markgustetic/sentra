@@ -152,6 +152,14 @@ func (Snapshots) Title() string { return "Snapshots" }
 // list showing, a second esc leaves the view — which is what an operator expects.
 func (s Snapshots) ConsumesEscape() bool { return s.detailOpen || s.filtering }
 
+// launchRestoreMsg and launchDiffMsg are the snapshot-first launch
+// hooks: Snapshots emits them with the highlighted snapshot, the shell
+// seeds the hidden target view and activates it. They exist because
+// restore/diff left the rail — the snapshot row is now their only door.
+type launchRestoreMsg struct{ snapID string }
+
+type launchDiffMsg struct{ snapID string }
+
 func (s Snapshots) ShortHelp() []key.Binding {
 	if s.filtering {
 		return []key.Binding{
@@ -166,6 +174,8 @@ func (s Snapshots) ShortHelp() []key.Binding {
 		key.NewBinding(key.WithKeys("/"), key.WithHelp("/", "filter")),
 		key.NewBinding(key.WithKeys("y"), key.WithHelp("y", "copy id")),
 		key.NewBinding(key.WithKeys("p"), key.WithHelp("p", "pin/unpin")),
+		key.NewBinding(key.WithKeys("r"), key.WithHelp("r", "restore")),
+		key.NewBinding(key.WithKeys("d"), key.WithHelp("d", "diff")),
 	}
 }
 
@@ -535,6 +545,20 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return s.copySelectedID(), nil
 		case "p":
 			return s.togglePinSelected()
+		case "r":
+			// Restore left the rail: restoring starts from WHICH snapshot,
+			// so the highlighted row is the entry point. The shell seeds
+			// and activates the hidden restore view.
+			if id, ok := s.selectedID(); ok {
+				return s, func() tea.Msg { return launchRestoreMsg{snapID: id} }
+			}
+			return s, nil
+		case "d":
+			// Same for diff: the highlighted row becomes side A.
+			if id, ok := s.selectedID(); ok {
+				return s, func() tea.Msg { return launchDiffMsg{snapID: id} }
+			}
+			return s, nil
 		}
 		if msg.Type == tea.KeyEnter {
 			id, ok := s.selectedID()

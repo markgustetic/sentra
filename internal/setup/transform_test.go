@@ -1,6 +1,7 @@
 package setup
 
 import (
+	"errors"
 	"fmt"
 	"testing"
 
@@ -281,5 +282,66 @@ func TestApplyBackendChoiceInvariant(t *testing.T) {
 				})
 			}
 		}
+	}
+}
+
+func TestValidateBackupUserProfile(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		wantErr bool
+		wantIs  error
+	}{
+		{"plain", "sentra", false, nil},
+		{"trimmed", "  sentra  ", false, nil},
+		{"empty", "", true, nil},
+		{"only spaces", "   ", true, nil},
+		{"default", "default", true, ErrBackupUserProfileDefault},
+		{"bracket open", "sen[tra", true, nil},
+		{"bracket close", "sentra]", true, nil},
+		{"inner space", "sen tra", true, nil},
+		{"newline", "sentra\nx", true, nil},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBackupUserProfile(tc.in)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("ValidateBackupUserProfile(%q) err = %v, wantErr %v", tc.in, err, tc.wantErr)
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
+			}
+		})
+	}
+}
+
+// The gate is the only thing standing between an existing-credentials setup
+// and an IAM mutation it never asked for, so every method is enumerated.
+func TestShouldProvisionBackupUser(t *testing.T) {
+	tests := []struct {
+		name    string
+		flag    bool
+		prepare bool
+		method  AWSAuthMethod
+		want    bool
+	}{
+		{"login on", true, true, AWSAuthLogin, true},
+		{"sso on", true, true, AWSAuthSSO, true},
+		{"existing on", true, true, AWSAuthExisting, false},
+		{"skip on", true, true, AWSAuthSkip, false},
+		{"login off", false, true, AWSAuthLogin, false},
+		{"login no prepare", true, false, AWSAuthLogin, false},
+		{"empty method resolves to existing", true, true, "", false},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := &Plan{ProvisionBackupUser: tc.flag, PrepareAWS: tc.prepare, AWSAuthMethod: tc.method}
+			if got := ShouldProvisionBackupUser(p); got != tc.want {
+				t.Fatalf("ShouldProvisionBackupUser = %v, want %v", got, tc.want)
+			}
+		})
+	}
+	if ShouldProvisionBackupUser(nil) {
+		t.Fatal("nil plan must never provision")
 	}
 }

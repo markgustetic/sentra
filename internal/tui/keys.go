@@ -10,6 +10,10 @@ type globalKeymap struct {
 	Focus   key.Binding
 	Help    key.Binding
 	Quit    key.Binding
+	// Chat opens the assistant overlay — the conversational command
+	// palette. Routed like the palette: a control chord no text field
+	// needs, blocked in startup gates.
+	Chat key.Binding
 
 	// Back is the shell's escape hatch. A view that means something by esc keeps
 	// it (see escapeConsumer); otherwise esc returns focus to the nav rail, so a
@@ -24,6 +28,7 @@ type globalKeymap struct {
 func newGlobalKeymap() globalKeymap {
 	return globalKeymap{
 		Palette:   key.NewBinding(key.WithKeys("ctrl+p"), key.WithHelp("ctrl+p", "palette")),
+		Chat:      key.NewBinding(key.WithKeys("ctrl+a"), key.WithHelp("ctrl+a", "assistant")),
 		Focus:     key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "focus")),
 		Help:      key.NewBinding(key.WithKeys("?"), key.WithHelp("?", "help")),
 		Quit:      key.NewBinding(key.WithKeys("q", "ctrl+c"), key.WithHelp("q", "quit")),
@@ -34,5 +39,5 @@ func newGlobalKeymap() globalKeymap {
 
 // shortHelp is the always-visible subset for the status bar.
 func (k globalKeymap) shortHelp() []key.Binding {
-	return []key.Binding{k.Palette, k.Focus, k.Help, k.Quit}
+	return []key.Binding{k.Palette, k.Chat, k.Focus, k.Help, k.Quit}
 }

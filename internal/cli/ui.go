@@ -11,7 +11,6 @@ import (
 	"github.com/charmbracelet/x/term"
 	"github.com/spf13/cobra"
 
-	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
@@ -27,13 +26,9 @@ import (
 type UIDeps struct {
 	RepoDeps
 
-	// Provider is the LLM provider for the agent view. May be nil
-	// when no API key is configured — the agent view shows a
-	// placeholder pointing at ANTHROPIC_API_KEY in that case.
-	Provider llm.Provider
-
-	// ProviderForConfig builds the LLM provider from the loaded
-	// command config. When set, it takes precedence over Provider.
+	// ProviderForConfig builds the LLM provider behind the TUI's chat
+	// overlay from the loaded config. May be nil — the overlay then
+	// renders a configure hint; nothing else needs it.
 	ProviderForConfig func(cfg *config.Config) llm.Provider
 
 	// Run is the actual TUI launcher. Production wires it to a
@@ -46,12 +41,6 @@ type UIDeps struct {
 	// goreleaser placeholder "none".
 	Version string
 	Commit  string
-
-	// Actions is the agent action registry the TUI's agent-apply flow
-	// executes confirmed recommendations through. Same registry the
-	// `agent` command builds. May be nil (agent-apply then reports no
-	// registry configured).
-	Actions *action.Registry
 
 	// SavePassphrase re-saves a rotated passphrase to the OS keyring
 	// after the TUI's password flow changes it. Same hook the `passwd`
@@ -110,7 +99,7 @@ func NewUI(deps UIDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "ui",
 		Short:         "Launch the full-screen TUI dashboard",
-		Long:          "Open the Bubbletea dashboard. Use 'd', 's', 'D', 'a' to switch views; 'q' or Ctrl+C to quit.",
+		Long:          "Open the full-screen TUI: a six-view rail (Dashboard, Backup, Snapshots, Maintenance, Settings, Help). Digits 1-6 jump to a view, ctrl+p opens the command palette, q quits.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -201,13 +190,12 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		}
 		repoName := launchCfg.Repo.S3.Bucket
 		app := tui.NewApp(tui.Deps{
-			Provider:                providerForLaunch(deps, launchCfg),
 			RepoName:                repoName,
+			Provider:                providerFor(deps, launchCfg),
 			Config:                  launchCfg,
 			Ctx:                     cmd.Context(),
 			ConfigPath:              absCfgPath,
 			NewStore:                deps.NewStore,
-			Actions:                 deps.Actions,
 			SaveKeyringPassphrase:   deps.SavePassphrase,
 			DeleteKeyringPassphrase: deps.DeletePassphrase,
 			SetupEffects:            setupEffectsForLaunch(deps),
@@ -247,15 +235,10 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		repoName = r.Config().ID
 	}
 
-	provider := deps.Provider
-	if deps.ProviderForConfig != nil {
-		provider = deps.ProviderForConfig(cfg)
-	}
-
 	app := tui.NewApp(tui.Deps{
 		Repo:     r,
-		Provider: provider,
 		RepoName: repoName,
+		Provider: providerFor(deps, cfg),
 		Config:   cfg,
 		// Pass the cobra command's context so:
 		//   1. Signals (Ctrl+C wired by cobra) cancel TUI work.
@@ -268,7 +251,6 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		// operation flows consume. None hold resolved secrets.
 		ConfigPath:              absCfgPath,
 		NewStore:                deps.NewStore,
-		Actions:                 deps.Actions,
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
@@ -286,6 +268,15 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 	return deps.Run(app)
 }
 
+// providerFor resolves the chat overlay's LLM provider for a launch
+// config; nil when unconfigured (the overlay shows its hint).
+func providerFor(deps UIDeps, cfg *config.Config) llm.Provider {
+	if deps.ProviderForConfig == nil {
+		return nil
+	}
+	return deps.ProviderForConfig(cfg)
+}
+
 // launchConnectGate builds the App for the connect gate: no repo, the
 // open failure for the gate to render, and a retry closure that re-runs
 // the launch open end-to-end. The closure re-resolves the passphrase
@@ -301,13 +292,12 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 // injection keeps the tui→cli import direction clean, same as Deps.NewStore.
 func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath string, st launchState, showSplash bool, passphraseFile string, openErr error) error {
 	app := tui.NewApp(tui.Deps{
-		Provider:                providerForLaunch(deps, st.Config),
 		RepoName:                st.Config.Repo.S3.Bucket,
+		Provider:                providerFor(deps, st.Config),
 		Config:                  st.Config,
 		Ctx:                     cmd.Context(),
 		ConfigPath:              absCfgPath,
 		NewStore:                deps.NewStore,
-		Actions:                 deps.Actions,
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
@@ -363,17 +353,6 @@ func setupEffectsForLaunch(deps UIDeps) setup.Effects {
 		return deps.SetupEffects
 	}
 	return setup.DefaultEffects()
-}
-
-// providerForLaunch builds the agent provider for the launch-path Apps (first
-// run / locked), where no repo is open yet. It mirrors the dashboard path's
-// provider selection: ProviderForConfig wins when set, else the static
-// Provider.
-func providerForLaunch(deps UIDeps, cfg *config.Config) llm.Provider {
-	if deps.ProviderForConfig != nil {
-		return deps.ProviderForConfig(cfg)
-	}
-	return deps.Provider
 }
 
 // DefaultUIRunner is the production launcher: wraps the App in a

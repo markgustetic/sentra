@@ -19,6 +19,10 @@ Sentra code, docs, CI, or release workflow changes.
   `sentra` falls through to `sentra ui`, fronted by a first-run setup wizard. It
   owes the CLI no flag-for-flag coverage — see the surface contract in Feature
   Notes below.
+- The MCP server lives in `internal/mcpserver` (official
+  `modelcontextprotocol/go-sdk`); `sentra mcp` (`internal/cli/mcp.go`) serves
+  it over stdio. See its Feature Note for the metadata-only / two-phase
+  mutation contract.
 - The headless setup engine — a pure state model plus an `Effects` seam for
   AWS/keyring and a stepwise `Engine` — lives in `internal/setup`; the TUI
   wizard drives it directly, and `sentra setup` is a thin CLI launcher for that
@@ -79,6 +83,34 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   passphrase field: the repo must initialize under the same secret every later
   command resolves, or the mismatch surfaces later as an undecryptable repo.
   The review screen names the SOURCE, never the secret.
+  After a browser-login or SSO sign-in it may create IAM user
+  `sentra-backup`, attach the canonical `BuildIAMPolicy` document as that
+  bucket's customer-managed policy (`sentra-s3-backup-<bucket>`), mint an
+  access key into a dedicated `~/.aws/credentials` profile (default
+  `sentra`), verify it, and switch `sentra.yaml` to that profile — the
+  session identity is used once and retired. The step is pre-checked for
+  browser login, offered unchecked for SSO, and absent for
+  existing-credentials/skip/S3-compatible (`setup.ShouldProvisionBackupUser`
+  is the single gate). It must never write the `default` credentials
+  profile, never modify `~/.aws/config`, never overwrite a credentials
+  section that already holds keys, and never let the secret reach the
+  report, plan, draft, review text, logs, or an error. The profile switch
+  happens only after the new identity verifies (bounded retry); any failure
+  degrades to `BackupUserReport.Warning` and setup continues on the session
+  credentials — provisioning never blocks setup. Buckets accumulate on the
+  user: each has its own managed policy, so a later wizard run in the same
+  account must never revoke an earlier bucket's grant. An existing policy is
+  reconciled by merging its stored resources into the canonical document (a
+  sibling prefix in the same bucket keeps its access) and rewritten as a new
+  default version only when that changes something, deleting the oldest
+  non-default version first at IAM's five-version cap. The inline policy
+  from before per-bucket policies (`sentra-s3-backup`) is deleted only after
+  the managed policy is attached and only when the managed one covers every
+  grant it made; that cleanup is best-effort and never fails setup. Every
+  IAM mutation that can fail precedes the key mint, so a policy failure
+  never strands a live secret. The ten-managed-policies-per-user quota is
+  its own warning (`PolicyLimit`); the two-keys quota (`KeyLimit`) is bound
+  to `CreateAccessKey` alone.
   AWS CLI **brew auto-install is currently absent**: it needed a confirm prompt,
   and `huh` cannot run inside a live `tea.Program`. `setup.DefaultEnsureAWSCLI`
   keeps the machinery behind a confirm no caller arms, so restoring it means a
@@ -102,11 +134,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   post-backup check/prune preferences, but must never include passphrases,
   key material, AWS credentials, or other secrets. `sentra policy run` should
   reuse existing repo snapshot/check/prune primitives instead of duplicating
-  storage logic.
+  storage logic. `policy remove` uninstalls the policy's OS timer files when
+  present (best-effort, warning on failure) — an installed timer for a
+  deleted policy can only fail.
 - `sentra schedule` installs user-level OS scheduler files for named policies.
   It should generate launchd/systemd files that invoke `sentra policy run`;
   do not introduce a resident Sentra daemon or write secrets into scheduler
-  files.
+  files. `schedule status` prints the computed next run for an installed
+  schedule (`policy.NextRun` — wall-clock, mirrors the renderers).
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
@@ -164,10 +199,18 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   backup, run a named policy, restore, browse snapshots, check, prune, and
   recovery kit must each be completable start to finish without leaving the
   TUI. A gap inside the floor is a bug; anything outside it is CLI-at-will,
-  needing no TUI affordance and no entry in any list. Per-run knobs
-  (`prune --keep-*`, `--concurrency`, `--stale-lock-after`, agent
-  `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come from config
-  in the TUI by design.
+  needing no TUI affordance and no entry in any list. Completable does not
+  mean rail-listed: the rail holds six destinations (Dashboard, Backup,
+  Snapshots, Maintenance, Settings, Help) and the rest of the floor lives
+  one launcher inside them — restore/diff from a snapshot row,
+  check/prune/sync/doctor from Maintenance, scheduled backups (jobs)/
+  recovery-kit/passphrase/setup from Settings. The jobs view (id `jobs`,
+  title "Scheduled backups") replaced the separate Policies and Schedule
+  views and is what satisfies the floor's run-a-named-policy item. Stats
+  and the agent are CLI-only (outside the floor by the sentence above).
+  Per-run knobs (`prune --keep-*`, `--concurrency`, `--stale-lock-after`,
+  agent `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come
+  from config in the TUI by design.
 - `repo.s3.storage_class` passes through to PutObject; GLACIER and
   DEEP_ARCHIVE must stay refused (synchronous chunk reads cannot retrieve
   them). `backup.max_upload_rate` paces uploads only — never throttle
@@ -188,10 +231,42 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   may remove current and legacy keyring entries and disable keyring lookup
   locally, but must not change the repo passphrase or delete S3 data.
 - `sentra prune` is dry-run by default. `--apply` mutates; `--explain` shows
-  retention reasons.
+  retention reasons. `--apply` runs GC even when retention drops nothing —
+  orphaned blobs (crashed backups, out-of-band deletes) never enter the drop
+  set, and prune is the only sanctioned way to reclaim them. The empty-drop
+  pass calls GC with nil keepIDs (bare-orphans mode), which refuses a
+  zero-snapshot store rather than treat "no manifests" as "everything is
+  garbage". The same rule binds `policy run`'s apply-mode prune step and the
+  TUI job runner; there the ErrEmptyRepo refusal is a calm no-op, never a
+  failed run.
 - `sentra agent scan --local-only` and `--no-llm` must not call the LLM provider.
 - `sentra agent advise-ignore` is read-only and must not edit `.sentraignore`.
 - `sentra recovery-kit` is non-secret documentation only.
+- `sentra mcp` serves the repository to MCP clients over stdio. stdin/stdout
+  ARE the protocol channel, so the passphrase must resolve non-interactively
+  (`--passphrase-file` / `SENTRA_PASSPHRASE` / OS keyring) — a missing source
+  is a startup error, never a prompt — and diagnostics go to stderr only.
+  The read tools (`list_snapshots`, `snapshot_files`, `find`,
+  `diff_snapshots`, `repo_stats`) return METADATA only — ids, tags, dates,
+  file names and sizes — never file contents and never secret values.
+  Mutations are two-phase because MCP has no interactive confirm:
+  `plan_backup` / `plan_restore` change nothing and return a human-readable
+  plan plus a single-use token (10-minute TTL, bound to its own kind — a
+  backup token cannot confirm a restore); only the matching `confirm_*`
+  call carrying that token executes. A token is consumed on use, success
+  or failure. Never add an MCP tool that mutates in one call or that can
+  return file contents.
+- The TUI assistant chat overlay (`ctrl+a`, `internal/tui/chat.go`) is a
+  conversational command palette, distinct from `sentra agent`. It requires a
+  configured LLM provider (`ANTHROPIC_API_KEY`); without one it opens with a
+  setup hint and stays inert. Its read tools answer from snapshot METADATA
+  only, and its action tools never execute anything — they compile into the
+  exact messages the keyboard already routes (`activateMsg`, `chatBackupMsg`,
+  `launchRestoreMsg`), so every existing confirmation gate applies by
+  construction. Do not add a chat tool that bypasses those messages or the
+  one-op guard. The overlay is unavailable inside the startup gates
+  (wizard / unlock / connect), and `esc` cancels an in-flight streaming turn
+  before a second `esc` closes the overlay.
 
 ## Config resolution
 
@@ -214,12 +289,19 @@ the unlock gate instead.
 
 Configured but unreachable — the config loads and a passphrase source
 answers, but the repository fails to open (expired AWS credentials,
-unreachable bucket) — lands on the **connect gate**: it shows the open
-error and offers `r` retry and, for AWS-proper backends only (no
-`endpoint_url`), `l` to run `aws sso login` (with `--profile` when the
-config names one) via a suspended terminal, auto-retrying on return. A
-successful open swaps the live repo in and lands on the dashboard.
-Config-load errors still exit to the CLI. The login never auto-runs.
+unreachable bucket) — lands on the **connect gate**: it explains the open
+error in plain words when the cause is known (`diag.Explain`; the raw
+chain renders only for unrecognized causes — the CLI stays verbatim for
+detail) and offers its actions as a glyph-selected menu
+(`↑`/`↓` + enter) with matching hotkeys: `r` retry and, for AWS-proper
+backends only (no `endpoint_url`), `l` to run the profile's reauth
+command via a suspended terminal — `aws sso login` when the AWS CLI
+config shows an SSO-configured profile, the browser `aws login` flow
+otherwise (`--region`/`--profile` from config; the child's stderr is
+captured and shown on failure, since the alt-screen restore erases the
+scrollback) — auto-retrying on return, plus `q` quit. A successful open swaps the live
+repo in and lands on the dashboard. Config-load errors still exit to the
+CLI. The login never auto-runs.
 
 Exceptions: `sentra init` writes `./sentra.yaml` only (scripting /
 recovery surface; never reaches outside cwd). `sentra local` always uses

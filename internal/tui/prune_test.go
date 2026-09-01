@@ -146,6 +146,157 @@ func TestPruneFlow_ContinuesPastAlreadyDeleted(t *testing.T) {
 	}
 }
 
+// pruneDepsKeepAll returns Deps whose retention keeps every seeded
+// snapshot, so the preview's drop set is empty.
+func pruneDepsKeepAll(r *repo.Repo) Deps {
+	cfg := config.Defaults()
+	cfg.Retention.KeepLast = 5
+	cfg.Retention.KeepDaily = 0
+	cfg.Retention.KeepWeekly = 0
+	cfg.Retention.KeepMonthly = 0
+	return Deps{Repo: r, Config: &cfg}
+}
+
+// confirmViaModal presses enter in the preview, walks through the modal
+// the view pushed, and returns the confirmedMsg the modal emits — the
+// exact message flow the App shell delivers in production.
+func confirmViaModal(t *testing.T, v PruneView) confirmedMsg {
+	t.Helper()
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if cmd == nil {
+		t.Fatal("enter should request the GC confirm modal")
+	}
+	push, ok := cmd().(pushModalMsg)
+	if !ok {
+		t.Fatalf("expected pushModalMsg, got %#v", cmd())
+	}
+	plain, ok := push.modal.(ConfirmModal)
+	if !ok {
+		t.Fatalf("GC-only gate must be a plain confirm (nothing is deleted), got %T", push.modal)
+	}
+	if !strings.Contains(plain.View(), "GC") {
+		t.Errorf("GC confirm must name GC, not snapshot deletion:\n%s", plain.View())
+	}
+	_, mcmd := plain.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if mcmd == nil {
+		t.Fatal("modal enter must emit a confirmation")
+	}
+	confirmed, ok := mcmd().(confirmedMsg)
+	if !ok {
+		t.Fatalf("expected confirmedMsg, got %#v", mcmd())
+	}
+	return confirmed
+}
+
+// TestPruneFlow_EmptyDropEnterOffersGCConfirm: when retention drops
+// nothing, enter must still offer a GC-only run — but only offer it;
+// nothing may be reclaimed before the confirm lands.
+func TestPruneFlow_EmptyDropEnterOffersGCConfirm(t *testing.T) {
+	r, store := gcFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	const orphanKey = "data/de/deadbeef6666666666666666666666666666666666666666666666666666beef"
+	if err := store.Put(context.Background(), orphanKey, strings.NewReader("orphan")); err != nil {
+		t.Fatalf("plant orphan: %v", err)
+	}
+	v := NewPruneView(pruneDepsKeepAll(r))
+	if len(v.drop) != 0 {
+		t.Fatalf("precondition: drop = %d, want 0", len(v.drop))
+	}
+	confirmViaModal(t, v) // asserts the modal shape; discard the confirmation
+	if _, err := store.Stat(context.Background(), orphanKey); err != nil {
+		t.Errorf("orphan reclaimed before the confirm was delivered: %v", err)
+	}
+}
+
+// TestPruneFlow_GCOnlyConfirmedReclaimsOrphans: the TUI mirror of the
+// CLI/jobs rule — an empty drop set must not make orphaned blobs
+// (crashed backups, out-of-band deletes) uncollectable from this
+// surface. Confirmed GC-only runs go through the same one-op guard.
+func TestPruneFlow_GCOnlyConfirmedReclaimsOrphans(t *testing.T) {
+	r, store := gcFlowRepo(t)
+	seedTwoSnapshots(t, r)
+	const orphanKey = "data/de/deadbeef7777777777777777777777777777777777777777777777777777beef"
+	if err := store.Put(context.Background(), orphanKey, strings.NewReader("orphan")); err != nil {
+		t.Fatalf("plant orphan: %v", err)
+	}
+	v := NewPruneView(pruneDepsKeepAll(r))
+
+	m, cmd := v.Update(confirmViaModal(t, v))
+	v = m.(PruneView)
+	if cmd == nil {
+		t.Fatal("confirmation must start the GC op")
+	}
+	start, ok := cmd().(startOpMsg)
+	if !ok || start.name != "prune" {
+		t.Fatalf("got %#v, want startOpMsg{prune} so the one-op guard applies", cmd())
+	}
+	res := start.run(context.Background())
+	done, ok := res.(pruneDoneMsg)
+	if !ok || done.err != nil {
+		t.Fatalf("gc result: %#v", res)
+	}
+	if _, err := store.Stat(context.Background(), orphanKey); err == nil {
+		t.Errorf("orphan blob survived a confirmed GC-only run")
+	}
+	snaps, _ := r.ListSnapshots(context.Background())
+	if len(snaps) != 2 {
+		t.Fatalf("snapshots after GC-only run = %d, want 2 untouched", len(snaps))
+	}
+	m, _ = v.Update(res)
+	v = m.(PruneView)
+	if v.stage != pruneDone {
+		t.Fatal("flow must land in done stage")
+	}
+	out := v.View()
+	if !strings.Contains(out, "reclaimed blobs") || !strings.Contains(out, "reclaimed bytes") {
+		t.Errorf("done stage must report reclaimed blobs/bytes:\n%s", out)
+	}
+	if strings.Contains(out, "deleted snapshots") {
+		t.Errorf("GC-only done stage must not claim snapshot deletions:\n%s", out)
+	}
+}
+
+// TestPruneFlow_GCOnlyEmptyRepoIsCalmNoOp: zero snapshots makes every
+// blob look orphaned — GC refuses (ErrEmptyRepo) and the view must
+// present that as a calm no-op, not a failure, and reclaim nothing.
+func TestPruneFlow_GCOnlyEmptyRepoIsCalmNoOp(t *testing.T) {
+	r, store := gcFlowRepo(t)
+	const blobKey = "data/de/deadbeef8888888888888888888888888888888888888888888888888888beef"
+	if err := store.Put(context.Background(), blobKey, strings.NewReader("not actually garbage")); err != nil {
+		t.Fatalf("plant blob: %v", err)
+	}
+	v := NewPruneView(pruneDepsKeepAll(r))
+
+	m, cmd := v.Update(confirmViaModal(t, v))
+	v = m.(PruneView)
+	if cmd == nil {
+		t.Fatal("confirmation must start the GC op")
+	}
+	start, ok := cmd().(startOpMsg)
+	if !ok {
+		t.Fatalf("expected startOpMsg, got %#v", cmd())
+	}
+	res := start.run(context.Background())
+	done, ok := res.(pruneDoneMsg)
+	if !ok {
+		t.Fatalf("expected pruneDoneMsg, got %#v", res)
+	}
+	if done.err != nil {
+		t.Fatalf("zero-snapshot store must be a calm no-op, got: %v", done.err)
+	}
+	if _, err := store.Stat(context.Background(), blobKey); err != nil {
+		t.Errorf("blob deleted from a zero-snapshot store: %v", err)
+	}
+	m, _ = v.Update(res)
+	out := m.(PruneView).View()
+	if strings.Contains(out, "failed") {
+		t.Errorf("empty-repo GC must not render as a failure:\n%s", out)
+	}
+	if !strings.Contains(out, "no snapshots") {
+		t.Errorf("empty-repo GC should say why nothing was reclaimed:\n%s", out)
+	}
+}
+
 // TestPruneFlow_AllDropRequiresWipeWord: a plan that would empty the
 // repo must gate on the word "wipe", not the routine "prune" — the TUI
 // mirror of the CLI's --all rail.

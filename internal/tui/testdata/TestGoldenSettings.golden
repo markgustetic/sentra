@@ -6,10 +6,14 @@ Settings
   keyring  off
   config   /repo/sentra.yaml
 
-▍ Re-run setup
-    reconfigure the backend and repository
+▍ Scheduled backups
+    jobs: cadence, next run, edit, and drill-in
+  Recovery kit
+    render the printable recovery document
   Change passphrase
     rotate the repository passphrase
+  Re-run setup
+    reconfigure the backend and repository
   Welcome splash   [on]
     show the logo screen at launch (applies next launch)
   Forget keyring passphrase

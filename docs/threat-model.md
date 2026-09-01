@@ -8,7 +8,7 @@ referenced from the design doc's "Threat-model note" sections.
 
 ## What's protected
 
-The repo key (a random 32-byte AES-256 key) is generated on `sentra init`
+The repo key (a random 32-byte repo key) is generated on `sentra init`
 and never leaves the client. It encrypts every chunk, manifest, and index
 before upload.
 
@@ -60,7 +60,7 @@ and the dedup story gets harder).
   `passphrase.use_keyring: true` to config if you trust your OS keyring more
   than re-typing.
 - **Keyring backend.** `zalando/go-keyring` proxies to the OS keychain
-  (macOS Keychain, libsecret on Linux, Credential Manager on Windows).
+  (macOS Keychain, libsecret on Linux; Windows is not a supported platform).
   The same trust assumptions about your OS keyring apply. `sentra password`
   updates the saved keyring passphrase after a successful rotation when
   keyring lookup is enabled, and `sentra password forget` removes the saved

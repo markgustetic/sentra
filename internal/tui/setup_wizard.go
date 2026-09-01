@@ -8,6 +8,7 @@ import (
 	"os/exec"
 	"strings"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/textinput"
 	"github.com/charmbracelet/bubbles/viewport"
@@ -142,6 +143,12 @@ type SetupWizardView struct {
 	defaultEnc   bool
 	initRepo     bool
 
+	// backupUser is the "create dedicated backup user" toggle; backupProfile
+	// the ~/.aws/credentials section it writes to. Both live only on the
+	// actions stage and are re-seeded when the auth method changes.
+	backupUser    bool
+	backupProfile textinput.Model
+
 	// passphrase-stage masked inputs (new + confirm), focus flag, keyring
 	// toggle, and last validation error.
 	newPass     textinput.Model
@@ -184,13 +191,18 @@ var setupAuthOrder = []setup.AWSAuthMethod{
 	setup.AWSAuthLogin, setup.AWSAuthSSO, setup.AWSAuthExisting, setup.AWSAuthSkip,
 }
 
-// action-stage cursor rows: the auth select, then the four toggles.
+// action-stage cursor rows: the auth select, the four toggles, then the
+// backup-user toggle and its profile input. The last two are visible only
+// for login/SSO (and the profile only while the toggle is on) — see
+// actionRowVisible; the cursor never lands on a hidden row.
 const (
 	actionRowAuth = iota
 	actionRowCreate
 	actionRowBlock
 	actionRowEncrypt
 	actionRowInit
+	actionRowBackupUser
+	actionRowProfile
 	actionRowCount
 )
 
@@ -262,7 +274,12 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	confirmPass.EchoMode = textinput.EchoPassword
 	confirmPass.EchoCharacter = '•'
 
-	return SetupWizardView{
+	backupProfile := textinput.New()
+	backupProfile.Prompt = ""
+	backupProfile.Width = 24
+	backupProfile.Placeholder = setup.DefaultBackupUserProfile
+
+	v := SetupWizardView{
 		deps:              deps,
 		engine:            eng,
 		plan:              plan,
@@ -275,10 +292,12 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 		blockPublic:       plan.BlockPublicAccess,
 		defaultEnc:        plan.DefaultEncryption,
 		initRepo:          plan.InitRepo,
+		backupProfile:     backupProfile,
 		newPass:           newPass,
 		confirmPass:       confirmPass,
 		savePass:          plan.SavePassphrase,
 	}
+	return v.seedBackupUserDefault()
 }
 
 // config0 returns deps.Config dereferenced, or a zero config when nil, so
@@ -311,11 +330,15 @@ func (v SetupWizardView) ConsumesArrows() bool {
 func (v SetupWizardView) Title() string { return "Setup" }
 
 // CapturesText reports the stages that focus a text input: the details stage
-// (the S3 bucket/prefix/region/… fields) and the passphrase stage (the masked
-// new/confirm fields). On those stages the shell must route every rune here so
-// a bucket name digit or a passphrase 'q' isn't stolen by a global binding.
-// The backend/actions/IAM/review/provision/done/error stages carry no input.
+// (the S3 bucket/prefix/region/… fields), the passphrase stage (the masked
+// new/confirm fields), and the actions stage while the backup-user profile
+// row is focused. On those the shell must route every rune here so a bucket
+// name digit, a passphrase 'q', or a profile name isn't stolen by a global
+// binding.
 func (v SetupWizardView) CapturesText() bool {
+	if v.stage == stageActions {
+		return v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile)
+	}
 	return v.stage == stageDetails || v.stage == stagePassphrase
 }
 
@@ -378,6 +401,29 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		return v, nil
+	case cursor.BlinkMsg:
+		// Forward the tick to whichever input currently holds focus so the
+		// blink keeps rescheduling itself. Only three stages have one, and
+		// each focuses at most one field at a time; every other stage has
+		// no cursor to blink.
+		var cmd tea.Cmd
+		switch v.stage {
+		case stageDetails:
+			if v.fieldCursor < v.detailFieldCount() {
+				v.fields[v.fieldCursor], cmd = v.fields[v.fieldCursor].Update(msg)
+			}
+		case stageActions:
+			if v.backupProfile.Focused() {
+				v.backupProfile, cmd = v.backupProfile.Update(msg)
+			}
+		case stagePassphrase:
+			if v.focusConf {
+				v.confirmPass, cmd = v.confirmPass.Update(msg)
+			} else {
+				v.newPass, cmd = v.newPass.Update(msg)
+			}
+		}
+		return v, cmd
 	case setupDoneMsg:
 		if msg.err != nil {
 			v.stage = stageError
@@ -390,7 +436,7 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so that guard means what it says on every route out of a failure.
 			crypto.Zeroize(v.pass)
 			v.pass = nil
-			return v, nil
+			return v.adoptBackupUserSwitch(msg), nil
 		}
 		v.stage = stageDone
 		v.steps = msg.steps
@@ -419,8 +465,10 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// let the confirm re-arm startProvision against an empty passphrase,
 			// and prompting someone whose passphrase came from the environment
 			// would invite them to type a different one.
-			v = v.enterPassphraseStage()
+			var cmd tea.Cmd
+			v, cmd = v.enterPassphraseStage()
 			v.notice = "another operation is in progress — try again when it finishes"
+			return v, cmd
 		}
 		return v, nil
 
@@ -447,10 +495,11 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.plan.InitRepo && len(v.pass) == 0 {
 			v.stage = stagePassphrase
 			v.focusConf = false
-			v.newPass.Focus()
 			v.confirmPass.Blur()
 			v.notice = "enter the repository passphrase to continue"
-			return v, nil
+			// Landing on the passphrase stage is newPass's first focus —
+			// start its blink from Focus()'s own cmd.
+			return v, v.newPass.Focus()
 		}
 		v.notice = ""
 		return v.startProvision()
@@ -481,7 +530,8 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// their own esc: the IAM-policy preview and the error screen restart (the
 	// error path also zeroizes the passphrase), and nothing sits behind backend.
 	if msg.Type == tea.KeyEsc && v.canGoBack() {
-		return v.goBack(), nil
+		back, cmd := v.goBack()
+		return back, cmd
 	}
 
 	switch v.stage {
@@ -534,26 +584,70 @@ func (v SetupWizardView) canGoBack() bool {
 // the target stage; returning to passphrase zeroizes any stashed secret so it is
 // re-entered, matching the flow's plaintext-residency discipline. With an empty
 // history (the backend stage) it is a no-op.
-func (v SetupWizardView) goBack() SetupWizardView {
+func (v SetupWizardView) goBack() (SetupWizardView, tea.Cmd) {
 	n := len(v.history)
 	if n == 0 {
-		return v
+		return v, nil
 	}
 	v.stage = v.history[n-1]
 	v.history = v.history[:n-1]
 	v.notice = ""
 	v.detailErr = ""
 	v.passErr = ""
+	// Re-establishing focus is a real focus transition, so it carries the
+	// blink cmd back to the caller the same way a forward step does.
+	var cmd tea.Cmd
 	switch v.stage {
 	case stageDetails:
-		v.focusOnlyField(v.fieldCursor)
+		cmd = v.focusOnlyField(v.fieldCursor)
 	case stagePassphrase:
 		crypto.Zeroize(v.pass)
 		v.pass = nil
 		v.focusConf = false
-		v.newPass.Focus()
 		v.confirmPass.Blur()
+		cmd = v.newPass.Focus()
 	}
+	return v, cmd
+}
+
+// adoptBackupUserSwitch folds a completed backup-user provision back into the
+// wizard's own plan on the way to the failure screen, so the "⏎ retry" path
+// cannot undo work that already succeeded.
+//
+// PrepareAWS switches Repo.S3.Profile on the plan it is HANDED, and buildSetupOp
+// hands it a copy — a failure after that point (WriteConfig, InitRepo) therefore
+// returns to a view whose plan still names the expiring session profile and
+// still asks to provision. Retrying from there re-runs provisioning against a
+// user that now exists with its key already written: the pre-check refuses with
+// ErrCredentialsProfileExists, the operator is told to "choose another profile
+// name", and WriteConfig rewrites sentra.yaml back to the session profile — over
+// a file the first attempt had already pointed at the verified durable one.
+//
+// Only a verified switch is adopted (ProfileSwitched, which the engine sets
+// after CheckAWSSDKIdentity passes as the new identity). A warning-only report
+// means the plan is still correct as the operator built it, so it is left alone
+// and the retry may try provisioning again.
+func (v SetupWizardView) adoptBackupUserSwitch(msg setupDoneMsg) SetupWizardView {
+	if msg.prep == nil || msg.prep.BackupUser == nil || !msg.prep.BackupUser.ProfileSwitched {
+		return v
+	}
+	profile := msg.prep.BackupUser.Profile
+	v.plan.Config.Repo.S3.Profile = profile
+	v.plan.ProvisionBackupUser = false
+	v.plan.ProvisionedBackupUserProfile = profile
+	// The plan is not the source of truth for the next forward step: every
+	// advance rebuilds it from the inputs (advanceFromActions re-reads the
+	// toggle, commitDetails re-reads the profile field). So the adoption has to
+	// land in the inputs too, or an esc back from the retry's passphrase stage
+	// and one ⏎ would rebuild the original plan and take the same route to the
+	// same refusal. With the toggle off the profile row disappears; park the
+	// cursor on a visible row as seedBackupUserDefault does.
+	v.backupUser = false
+	if !v.actionRowVisible(v.actionCursor) {
+		v.actionCursor = actionRowAuth
+	}
+	v, _ = v.syncProfileFocus()
+	v.fields[setupFieldProfile].SetValue(profile)
 	return v
 }
 
@@ -566,9 +660,9 @@ func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// repository under a run of zero bytes instead of the operator's
 		// passphrase. The masked fields keep what was typed, so re-confirming is
 		// one keypress once the credentials or bucket name are fixed.
-		v = v.enterPassphraseStage()
+		v, cmd := v.enterPassphraseStage()
 		v.notice = "confirm the repository passphrase to retry"
-		return v, nil
+		return v, cmd
 	case tea.KeyEsc:
 		// Abandon the wizard. Both the op's deferred zeroize and the failure
 		// handler have already wiped the stash by now — keep this explicit so a
@@ -661,14 +755,19 @@ func (v SetupWizardView) buildSetupOp() startOpMsg {
 				steps.publicBlocked = p.PublicAccessBlocked
 				steps.encryptionOn = p.DefaultEncryptionEnabled
 			}
+			// Every return past this point carries auth/prep, not just the error:
+			// PrepareAWS may have created the backup user and switched THIS COPY
+			// of the plan to its profile, and the reports are how that reaches the
+			// view — see adoptBackupUserSwitch, which folds a verified switch back
+			// into the wizard's plan so the retry does not re-provision.
 			if err := eng.WriteConfig(cfgPath, &plan); err != nil {
-				return setupDoneMsg{err: err}
+				return setupDoneMsg{err: err, auth: auth, prep: prep}
 			}
 			var initRes *setup.InitResult
 			if plan.InitRepo {
 				res, err := eng.InitRepo(ctx, &plan.Config, pass, plan.SavePassphrase)
 				if err != nil {
-					return setupDoneMsg{err: err}
+					return setupDoneMsg{err: err, auth: auth, prep: prep}
 				}
 				initRes = &res
 				steps.repoInited = true
@@ -707,14 +806,17 @@ func (v SetupWizardView) handlePassphraseKey(msg tea.KeyMsg) (tea.Model, tea.Cmd
 		// Cycle new → confirm → back to new; the keyring toggle uses its
 		// own key (space) so a lone space isn't typed into a masked field.
 		v.focusConf = !v.focusConf
+		// Every focus transition (re)starts the blink, from Focus()'s own
+		// tag-matched cmd.
+		var cmd tea.Cmd
 		if v.focusConf {
 			v.newPass.Blur()
-			v.confirmPass.Focus()
+			cmd = v.confirmPass.Focus()
 		} else {
 			v.confirmPass.Blur()
-			v.newPass.Focus()
+			cmd = v.newPass.Focus()
 		}
-		return v, nil
+		return v, cmd
 	case isSpace:
 		// space toggles keyring storage without typing into the fields
 		// (both fields mask; a lone space toggle mirrors sync.go's guard).
@@ -823,8 +925,10 @@ func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 
 	v.stage = stageDetails
 	v.fieldCursor = setupFieldBucket
-	v.focusOnlyField(setupFieldBucket)
-	return v, nil
+	// Entering details is the bucket field's first focus, so this
+	// transition — not the view's Init, which lands on the fieldless
+	// backend stage — is what starts the blink.
+	return v, v.focusOnlyField(setupFieldBucket)
 }
 
 // detailFieldCount is 5 for S3-compatible (endpoint shown) and 4 for AWS
@@ -837,14 +941,23 @@ func (v SetupWizardView) detailFieldCount() int {
 	return setupFieldCount // 5: adds endpoint
 }
 
-func (v SetupWizardView) focusOnlyField(idx int) {
+// focusOnlyField focuses exactly one details-stage input and returns the
+// cmd Focus() produced, so the caller can start that field's cursor
+// blinking. Focus()'s own return is the only source of a REAL, tag-matched
+// blink cmd: the textinput.Blink sentinel resolves to cursor's unexported
+// bootstrap message, which no Update switch can name, so it is a dead end.
+// The value receiver is fine because v.fields is a slice — the Focus/Blur
+// calls land in the backing array the caller shares.
+func (v SetupWizardView) focusOnlyField(idx int) tea.Cmd {
+	var cmd tea.Cmd
 	for i := range v.fields {
 		if i == idx {
-			v.fields[i].Focus()
+			cmd = v.fields[i].Focus()
 		} else {
 			v.fields[i].Blur()
 		}
 	}
+	return cmd
 }
 
 func (v SetupWizardView) handleDetailsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -862,11 +975,12 @@ func (v SetupWizardView) handleDetailsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		v.fieldCursor = (v.fieldCursor + 1) % limit
 		if v.fieldCursor < v.detailFieldCount() {
-			v.focusOnlyField(v.fieldCursor)
-		} else {
-			for i := range v.fields {
-				v.fields[i].Blur()
-			}
+			// Landing on a text field (re)starts its blink; landing on the
+			// IAM toggle pseudo-field focuses nothing, so there is none.
+			return v, v.focusOnlyField(v.fieldCursor)
+		}
+		for i := range v.fields {
+			v.fields[i].Blur()
 		}
 		return v, nil
 	case msg.Type == tea.KeyEnter:
@@ -934,7 +1048,7 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 		v.plan.CreateBucket = false
 		v.plan.BlockPublicAccess = false
 		v.plan.DefaultEncryption = false
-		return v.enterPassphraseStage(), nil
+		return v.enterPassphraseStage()
 	}
 	v.stage = stageActions
 	return v, nil
@@ -943,24 +1057,23 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 func (v SetupWizardView) handleActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	isSpace := msg.Type == tea.KeySpace ||
 		(msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ')
+	onProfile := v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile)
 	switch {
 	case msg.Type == tea.KeyTab || msg.Type == tea.KeyDown:
-		v.actionCursor = (v.actionCursor + 1) % actionRowCount
-		return v, nil
+		return v.moveActionCursor(+1)
 	case msg.Type == tea.KeyUp:
-		v.actionCursor = (v.actionCursor - 1 + actionRowCount) % actionRowCount
-		return v, nil
+		return v.moveActionCursor(-1)
 	case msg.Type == tea.KeyLeft && v.actionCursor == actionRowAuth:
 		if v.authCursor > 0 {
 			v.authCursor--
 		}
-		return v, nil
+		return v.seedBackupUserDefault(), nil
 	case msg.Type == tea.KeyRight && v.actionCursor == actionRowAuth:
 		if v.authCursor < len(setupAuthOrder)-1 {
 			v.authCursor++
 		}
-		return v, nil
-	case isSpace:
+		return v.seedBackupUserDefault(), nil
+	case isSpace && !onProfile:
 		switch v.actionCursor {
 		case actionRowCreate:
 			v.createBucket = !v.createBucket
@@ -970,10 +1083,18 @@ func (v SetupWizardView) handleActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.defaultEnc = !v.defaultEnc
 		case actionRowInit:
 			v.initRepo = !v.initRepo
+		case actionRowBackupUser:
+			v.backupUser = !v.backupUser
 		}
-		return v, nil
+		return v.syncProfileFocus()
 	case msg.Type == tea.KeyEnter:
 		return v.advanceFromActions()
+	}
+	if onProfile {
+		var cmd tea.Cmd
+		v.backupProfile, cmd = v.backupProfile.Update(msg)
+		v.notice = ""
+		return v, cmd
 	}
 	return v, nil
 }
@@ -989,6 +1110,22 @@ func (v SetupWizardView) advanceFromActions() (tea.Model, tea.Cmd) {
 	v.plan.DefaultEncryption = v.defaultEnc
 	v.plan.InitRepo = v.initRepo
 	v.plan.PrepareAWS = true
+	v.plan.ProvisionBackupUser = v.backupUserOffered() && v.backupUser
+	v.plan.BackupUserProfile = ""
+	if v.plan.ProvisionBackupUser {
+		profile := strings.TrimSpace(v.backupProfile.Value())
+		if profile == "" {
+			profile = setup.DefaultBackupUserProfile
+		}
+		if err := setup.ValidateBackupUserProfile(profile); err != nil {
+			// Stay here with the input focused: the profile is the only thing
+			// the operator can fix, so put the cursor on it.
+			v.notice = err.Error()
+			v.actionCursor = actionRowProfile
+			return v.syncProfileFocus()
+		}
+		v.plan.BackupUserProfile = profile
+	}
 	if method == setup.AWSAuthSkip {
 		setup.ApplyAWSConfigOnly(&v.plan)
 		setup.NormalizeConfig(&v.plan.Config)
@@ -1042,7 +1179,7 @@ func (v SetupWizardView) maybeStartInteractiveAuth(method setup.AWSAuthMethod) (
 // init-repo on → passphrase, off → review.
 func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 	if v.plan.InitRepo {
-		return v.enterPassphraseStage(), nil
+		return v.enterPassphraseStage()
 	}
 	v.plan.SavePassphrase = false
 	setup.ApplyPassphraseConfig(&v.plan)
@@ -1088,7 +1225,9 @@ func (v SetupWizardView) afterAuth() (tea.Model, tea.Cmd) {
 // and walking FORWARD to review, skipping the re-entry this just made
 // mandatory. It is a no-op on the forward path, where nothing at or past
 // stagePassphrase has been pushed yet.
-func (v SetupWizardView) enterPassphraseStage() SetupWizardView {
+// It returns the blink cmd for whichever field it lands focused (nil on the
+// non-interactive exit straight to review, which focuses nothing).
+func (v SetupWizardView) enterPassphraseStage() (SetupWizardView, tea.Cmd) {
 	// Any earlier stash is dead the moment we re-enter this stage (esc back to
 	// details, then forward again). Wipe before overwriting so an abandoned
 	// copy cannot outlive the step that made it.
@@ -1113,14 +1252,14 @@ func (v SetupWizardView) enterPassphraseStage() SetupWizardView {
 		setup.ApplyPassphraseConfig(&v.plan)
 		v.passErr = ""
 		v.stage = stageReview
-		return v
+		return v, nil
 	}
 
 	v.stage = stagePassphrase
 	v.focusConf = false
-	v.newPass.Focus()
 	v.confirmPass.Blur()
-	return v
+	// Landing on newPass is a focus transition — carry its blink cmd out.
+	return v, v.newPass.Focus()
 }
 
 // interactiveAWSAuthCommand builds the `aws` subprocess for browser login
@@ -1201,7 +1340,16 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.actionToggle(actionRowBlock, "block public access", v.blockPublic))
 		b.WriteString(v.actionToggle(actionRowEncrypt, "default encryption (AES-256)", v.defaultEnc))
 		b.WriteString(v.actionToggle(actionRowInit, "initialize repository", v.initRepo))
-		b.WriteString(v.actionLine("↑/↓ row · ←/→ method · space toggle"))
+		if v.actionRowVisible(actionRowBackupUser) {
+			b.WriteString(v.actionToggle(actionRowBackupUser,
+				"create dedicated backup user ("+setup.BackupUserName+")", v.backupUser))
+		}
+		if v.actionRowVisible(actionRowProfile) {
+			// Label styled as a row, input appended after it — never wrap the
+			// already-styled input inside the row style.
+			fmt.Fprintf(&b, "%s%s\n", ui.SelectRow(v.actionCursor == actionRowProfile, "    profile: "), v.backupProfile.View())
+		}
+		b.WriteString(v.actionLine("↑/↓ row · ←/→ method · space toggle · type profile"))
 	case stagePassphrase:
 		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
@@ -1249,6 +1397,21 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.checklistLine(v.steps.publicBlocked, "public access blocked"))
 		b.WriteString(v.checklistLine(v.steps.encryptionOn, "default encryption on"))
 		b.WriteString(v.checklistLine(v.steps.repoInited, "repository initialized"))
+		if bu := v.backupUserReport(); bu != nil {
+			if bu.ProfileSwitched {
+				b.WriteString(v.checklistLine(true,
+					fmt.Sprintf("backup user %s (profile %s)", bu.UserName, bu.Profile)))
+			} else {
+				method := setup.AWSAuthLogin
+				if v.result.auth != nil {
+					method = v.result.auth.Method
+				}
+				fmt.Fprintf(&b, "\n%s\n%s\n%s\n",
+					ui.Warn.Render("Backup user not set up"),
+					bu.Warning,
+					ui.Subtle.Render("Session credentials from "+setupAuthMethodLabel(method)+" expire; see docs/QUICKSTART.md"))
+			}
+		}
 		fmt.Fprintf(&b, "\n%s", ui.ActionLine("restart setup", ""))
 	case stageError:
 		fmt.Fprintf(&b, "%s\n\n", ui.Danger.Render("Setup failed"))
@@ -1278,6 +1441,78 @@ func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
 		box = "[x]"
 	}
 	return ui.SelectRow(v.actionCursor == row, box+" "+label) + "\n"
+}
+
+// backupUserReport is the provisioning outcome carried by the done message,
+// nil when the stage never ran (gate false) — which renders nothing, since a
+// "skipped" line would imply a choice the operator may never have been offered.
+func (v SetupWizardView) backupUserReport() *setup.BackupUserReport {
+	if v.result.prep == nil {
+		return nil
+	}
+	return v.result.prep.BackupUser
+}
+
+// backupUserOffered: the provisioning step exists only where a powerful
+// session was just obtained. Existing-credentials and skip already chose a
+// durable identity, and an IAM mutation they did not ask for is the worst
+// surprise a setup wizard can spring.
+func (v SetupWizardView) backupUserOffered() bool {
+	m := setupAuthOrder[v.authCursor]
+	return m == setup.AWSAuthLogin || m == setup.AWSAuthSSO
+}
+
+func (v SetupWizardView) actionRowVisible(row int) bool {
+	switch row {
+	case actionRowBackupUser:
+		return v.backupUserOffered()
+	case actionRowProfile:
+		return v.backupUserOffered() && v.backupUser
+	default:
+		return true
+	}
+}
+
+// moveActionCursor steps the cursor by delta, skipping hidden rows, and
+// keeps the profile input's focus in step with the cursor. It returns
+// syncProfileFocus's blink cmd so a move ONTO the profile row starts that
+// input's cursor blinking (a move off it blurs the input and returns nil).
+func (v SetupWizardView) moveActionCursor(delta int) (SetupWizardView, tea.Cmd) {
+	for i := 0; i < actionRowCount; i++ {
+		v.actionCursor = (v.actionCursor + delta + actionRowCount) % actionRowCount
+		if v.actionRowVisible(v.actionCursor) {
+			break
+		}
+	}
+	return v.syncProfileFocus()
+}
+
+// syncProfileFocus keeps the backup-user profile input's focus in step with
+// the action cursor, returning the blink cmd when the move focused it (nil
+// when it blurred it — there is nothing to blink).
+func (v SetupWizardView) syncProfileFocus() (SetupWizardView, tea.Cmd) {
+	if v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile) {
+		return v, v.backupProfile.Focus()
+	}
+	v.backupProfile.Blur()
+	return v, nil
+}
+
+// seedBackupUserDefault applies the per-method default — ON for browser
+// login (the expiry-trap path), OFF for SSO — and parks the cursor on a
+// visible row if the method change hid the one it was on. Once a previous
+// attempt has created the user (adoptBackupUserSwitch), the login default is
+// itself the trap: flipping through the methods on the way back would silently
+// re-arm provisioning against a section that already holds the key. The toggle
+// stays off; a space on it still asks on purpose.
+func (v SetupWizardView) seedBackupUserDefault() SetupWizardView {
+	v.backupUser = setupAuthOrder[v.authCursor] == setup.AWSAuthLogin &&
+		v.plan.ProvisionedBackupUserProfile == ""
+	if !v.actionRowVisible(v.actionCursor) {
+		v.actionCursor = actionRowAuth
+	}
+	v, _ = v.syncProfileFocus()
+	return v
 }
 
 // setupLabelCol is the column the details-stage values start in. Every label is

@@ -215,16 +215,6 @@ func TestGoldenBanner(t *testing.T) {
 	golden.RequireEqual(t, []byte(synthwaveBanner(goldenW, 0)))
 }
 
-// TestGoldenFileGraph locks the box-and-arrows directory topology: boxes,
-// bus connectors, arrowheads, and edge file counts. renderFileGraph is pure and
-// color-free, so this snapshots the exact art a human would eyeball.
-func TestGoldenFileGraph(t *testing.T) {
-	root := sampleFileTree()
-	root.name = "backups"
-	const w, h = 90, 28
-	golden.RequireEqual(t, []byte(renderFileGraph(layoutFileGraph(root, w, h), w, h)))
-}
-
 func TestGoldenSettings(t *testing.T) {
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "golden-bucket"

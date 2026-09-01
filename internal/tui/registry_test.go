@@ -49,16 +49,6 @@ func TestRegistry_FuzzyFilter(t *testing.T) {
 	}
 }
 
-func TestRegistry_SetBadge(t *testing.T) {
-	r := testRegistry()
-	r.SetBadge("snapshots", "142")
-	for _, c := range r.Commands() {
-		if c.ID == "snapshots" && c.Badge != "142" {
-			t.Fatalf("badge not set: %+v", c)
-		}
-	}
-}
-
 // TestRegistry_CarriesDescription: the Help view renders Command.Description,
 // so the field has to survive Add -> Commands like Title and Category do.
 func TestRegistry_CarriesDescription(t *testing.T) {

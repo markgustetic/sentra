@@ -28,5 +28,11 @@ import (
 func TestMain(m *testing.M) {
 	_ = os.Unsetenv("SENTRA_PASSPHRASE")
 	_ = os.Unsetenv("SENTRA_PASSPHRASE_FILE")
+	// Neutralize the dir picker's home lookup for the same reason as the
+	// env vars above: which well-known folders (~/Documents, ~/Downloads)
+	// exist varies by machine, so place rows derived from the REAL home
+	// would make picker row counts differ between laptops and CI. Tests
+	// that want places point this at a temp home (see fakeHome).
+	dirPickerHome = func() (string, error) { return "", os.ErrNotExist }
 	os.Exit(m.Run())
 }

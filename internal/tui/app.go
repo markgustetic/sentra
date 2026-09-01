@@ -25,7 +25,6 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
-	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -40,16 +39,15 @@ import (
 //
 // Repo, when nil, makes the dashboard / snapshots / diff views show
 // "no repo configured" placeholders rather than crashing on data
-// access. Provider can be nil too — the agent view renders a
-// "configure ANTHROPIC_API_KEY" hint instead of a streaming pane.
+// access.
 type Deps struct {
 	// Repo is the opened repository. Sub-models read snapshot lists,
 	// manifests, and diff results from it. May be nil for tests.
 	Repo *repo.Repo
 
-	// Provider is the LLM provider for the agent view. May be nil
-	// when the user hasn't configured an API key — the agent view
-	// renders a placeholder instead of a stream pane.
+	// Provider is the LLM behind the chat overlay (ctrl+a). May be nil
+	// — the overlay then renders a configure hint and stays inert;
+	// everything else in the TUI works without it.
 	Provider llm.Provider
 
 	// RepoName is the human-readable name shown in the top bar. We
@@ -85,13 +83,6 @@ type Deps struct {
 	// a live handle. It is a call-time function value — invoked only when
 	// a flow runs — and resolves no secrets itself. May be nil in tests.
 	NewStore func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-
-	// Actions is the agent action registry (prune_snapshot, add_to_ignore,
-	// flag_secret, none). The agent-apply flow looks up and runs a handler
-	// through it after the user confirms a recommendation. Read-only by
-	// default: nothing here executes without an explicit confirm. May be
-	// nil (agent-apply then reports "no action registry configured").
-	Actions *action.Registry
 
 	// SaveKeyringPassphrase re-saves a rotated passphrase to the OS
 	// keyring after the password flow changes it, so the user isn't
@@ -212,13 +203,21 @@ type App struct {
 	views  []viewEntry
 	active int
 	focus  focusArea
+	// hidden marks views absent from the registry (startup gates and
+	// demoted views). The number-key jump consults it so digits address
+	// rail entries, never the hidden tail of the views slice.
+	hidden map[string]bool
 
 	sidebar Sidebar
 	palette Palette
 	status  StatusBar
 
 	paletteOpen bool
-	modals      []Modal
+	// chat is the conversational command palette; chatOpen mirrors
+	// paletteOpen (the two overlays are mutually exclusive).
+	chat     ChatOverlay
+	chatOpen bool
+	modals   []Modal
 
 	// splashActive is true while the launch splash covers the frame. It is
 	// seeded from Deps.ShowSplash and cleared by the tick or any keystroke.
@@ -261,19 +260,21 @@ type App struct {
 	cancel context.CancelFunc
 }
 
-// NewApp constructs the shell with all 19 views — 18 navigable commands plus
-// the unlock startup gate: the original read-only views (dashboard, snapshots,
-// files, diff), the async-check views (check, doctor), the management views
-// (recovery-kit, policies, schedule), the agent view (which now also hosts
-// agent-apply in place, so it gets no separate id), the direct data operations
-// (backup, restore, prune, sync, password), the "Settings" category (setup,
-// settings), the Help directory of the other screens, and the unlock gate.
+// NewApp constructs the shell with all 18 views, only 6 of which are
+// navigable commands (the rail/palette registry: dashboard, backup,
+// snapshots, maintenance, settings, help) — the other 12 are reachable
+// only by routing, never by name from the rail: the async-check views
+// (check, doctor), the management views (recovery-kit, jobs — the
+// scheduled-backups manager that replaced the split Policies and Schedule
+// views), the remaining direct data operations (diff, restore, prune,
+// sync, password), and the three startup gates (setup, unlock, connect).
 //
-// unlock is a startup gate, not a navigable operation: it is present
-// in the views slice (so InitialView can land on it) but excluded from
-// the command registry, so it never appears in the sidebar or palette.
-// Deps semantics (nil-tolerant, cancellable ctx) are unchanged from
-// the previous implementation.
+// setup, unlock, and connect are startup gates, not navigable operations:
+// each is present in the views slice (so InitialView can land on one) but
+// excluded from the command registry, so none of them ever appears in the
+// sidebar or palette (see inStartupGate and hiddenFromRail below). Deps
+// semantics (nil-tolerant, cancellable ctx) are unchanged from the
+// previous implementation.
 func NewApp(deps Deps) App {
 	parent := deps.Ctx
 	if parent == nil {
@@ -286,7 +287,7 @@ func NewApp(deps Deps) App {
 	// construction (dashboard, snapshots, diff, restore, prune) — five separate
 	// ListSnapshots at launch collapse into one. Bounded so a slow store can't
 	// stall startup; each view still falls back gracefully on error.
-	if deps.Repo != nil {
+	if deps.Repo != nil && deps.preload == nil {
 		loadCtx, loadCancel := context.WithTimeout(ctx, 20*time.Second)
 		var pre snapshotPreload
 		pre.snaps, pre.err = deps.Repo.ListSnapshots(loadCtx)
@@ -295,54 +296,62 @@ func NewApp(deps Deps) App {
 	}
 
 	registry := NewRegistry()
+	// The slice orders the RAIL: the six visible destinations first, in the
+	// order the rail shows them (help last — it is the screen you reach for
+	// when you do not know which of the others you want), then every hidden
+	// view. Hidden views stay in the slice so activateMsg and InitialView
+	// can still route to them; only the registry (rail/palette/help) omits
+	// them. See docs/superpowers/specs/2026-08-27-tui-rail-simplification-design.md.
 	views := []viewEntry{
 		{id: "dashboard", model: NewDashboard(deps)},
-		// Backup sits directly under Dashboard, heading the rail: taking one is
-		// the thing an operator reaches for most, so it comes before the
-		// read-only views. The Category field still files it under "Operations"
-		// in the palette; the rail renders registration order, not category groups.
+		// Backup sits directly under Dashboard: taking one is the thing an
+		// operator reaches for most. The Category field still files it under
+		// "Operations" in the palette; the rail renders registration order.
 		{id: "backup", model: NewBackupView(deps)},
 		{id: "snapshots", model: NewSnapshots(deps)},
-		{id: "files", model: NewFilesView(deps)},
+		{id: "maintenance", model: NewMaintenanceView(deps)},
+		{id: "settings", model: NewSettingsView(deps)},
+		// -- hidden from the rail: routable, never listed --
 		{id: "diff", model: NewDiff(deps)},
 		{id: "check", model: NewCheckView(deps)},
-		{id: "stats", model: NewStatsView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
 		{id: "recovery-kit", model: NewRecoveryKitView(deps)},
-		{id: "policies", model: NewPoliciesView(deps)},
-		{id: "schedule", model: NewScheduleView(deps)},
-		{id: "agent", model: NewAgentView(deps)},
+		{id: "jobs", model: NewJobsView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
 		{id: "sync", model: NewSyncView(deps)},
 		{id: "password", model: NewPasswordView(deps)},
 		{id: "unlock", model: NewUnlockView(deps)},
 		{id: "connect", model: NewConnectView(deps)},
-		{id: "settings", model: NewSettingsView(deps)},
 		{id: "setup", model: NewSetupWizardView(deps)},
-		// Help sits last so it renders at the BOTTOM of the rail: it is the
-		// screen you reach for when you do not know which of the others you
-		// want, not one you visit in the course of a backup.
+		// Help sits last in the slice AND the registry so it renders at the
+		// BOTTOM of the rail: it is the screen you reach for when you do not
+		// know which of the others you want.
 		{id: "help", model: NewHelpView(registry)},
 	}
-	// The direct data operations form the "Operations" category in the
-	// rail and palette; every read-only/management view defaults to
-	// "Views". Policies carries destructive add/remove/run actions and
-	// was registered under Operations back in Part 2 — kept here for
-	// consistency with that earlier decision.
+	// Rail categories for the palette's grouping.
 	categories := map[string]string{
-		"backup": "Operations", "restore": "Operations", "prune": "Operations",
-		"sync": "Operations", "password": "Operations", "policies": "Operations",
-		"settings": "Settings", "setup": "Settings",
+		"backup": "Operations", "maintenance": "Operations",
+		"settings": "Settings",
 	}
-	// hiddenFromRail lists view ids that are reachable only via InitialView
-	// routing (startup gates), never from the sidebar/palette. unlock and
-	// connect are login/repair screens, not navigable operations, so they must
-	// not clutter the rail or the command palette.
-	hiddenFromRail := map[string]bool{"unlock": true, "connect": true}
+	// hiddenFromRail lists view ids that are reachable only via routing
+	// (InitialView for the startup gates, activateMsg from a launcher for
+	// the demoted views), never from the sidebar/palette. unlock and
+	// connect are login/repair screens; the rest left the rail in the
+	// six-view simplification — each keeps exactly one launcher (diff and
+	// restore in Snapshots, check/prune/sync/doctor in Maintenance,
+	// jobs/recovery-kit/password/setup in Settings), because hidden must
+	// never mean unreachable.
+	hiddenFromRail := map[string]bool{
+		"unlock": true, "connect": true,
+		"diff": true, "restore": true,
+		"check": true, "prune": true, "sync": true, "doctor": true,
+		"jobs": true, "recovery-kit": true,
+		"password": true, "setup": true,
+	}
 	for _, v := range views {
 		if hiddenFromRail[v.id] {
-			continue // startup gate — renderable via InitialView, not navigable
+			continue // hidden: routable via InitialView/activateMsg, not on the rail
 		}
 		title := v.id
 		if t, ok := v.model.(interface{ Title() string }); ok {
@@ -389,8 +398,10 @@ func NewApp(deps Deps) App {
 		views:        views,
 		active:       active,
 		focus:        focus,
+		hidden:       hiddenFromRail,
 		sidebar:      sidebar,
 		palette:      NewPalette(registry, minWidth, minHeight),
+		chat:         NewChatOverlay(deps),
 		status:       NewStatusBar(keys, minWidth),
 		ctx:          ctx,
 		cancel:       cancel,
@@ -590,13 +601,47 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m, nil
 
-	case badgeMsg:
-		m.registry.SetBadge(msg.id, msg.badge)
-		m.sidebar.Refresh()
-		return m, nil
+	case chatEventMsg:
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+
+	case chatBackupMsg:
+		// A chat intent lands in the Backup view's normal confirm path;
+		// the overlay closes so the operator sees the gate it raised.
+		m.chatOpen = false
+		var cmd tea.Cmd
+		for i := range m.views {
+			if m.views[i].id == "backup" {
+				m.views[i].model, cmd = m.views[i].model.Update(msg)
+			}
+		}
+		m2, cmd2 := m.Update(activateMsg{id: "backup"})
+		return m2, tea.Batch(cmd, cmd2)
+
+	case launchRestoreMsg:
+		m.chatOpen = false
+		// Snapshot-first launch: seed the hidden restore view with the
+		// chosen snapshot, then activate it — one keypress in Snapshots
+		// lands inside the flow, picker already answered.
+		for i := range m.views {
+			if m.views[i].id == "restore" {
+				m.views[i].model, _ = m.views[i].model.Update(msg)
+			}
+		}
+		return m.Update(activateMsg{id: "restore"})
+
+	case launchDiffMsg:
+		for i := range m.views {
+			if m.views[i].id == "diff" {
+				m.views[i].model, _ = m.views[i].model.Update(msg)
+			}
+		}
+		return m.Update(activateMsg{id: "diff"})
 
 	case activateMsg:
 		m.paletteOpen = false
+		m.chatOpen = false
 		for i, v := range m.views {
 			if v.id != msg.id {
 				continue
@@ -709,6 +754,11 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if m.paletteOpen {
 			var cmd tea.Cmd
 			m.palette, cmd = m.palette.Update(msg)
+			cmds = append(cmds, cmd)
+		}
+		if m.chatOpen {
+			var cmd tea.Cmd
+			m.chat, cmd = m.chat.Update(msg)
 			cmds = append(cmds, cmd)
 		}
 		_, viewCmd := m.broadcast(msg)
@@ -930,6 +980,30 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return m, cmd
 	}
 
+	// The chat overlay mirrors the palette: while open it owns the keyboard
+	// ahead of any view. esc cancels a streaming turn first, then closes.
+	if m.chatOpen {
+		if msg.Type == tea.KeyEsc {
+			if m.chat.busy {
+				m.chat = m.chat.Cancel()
+				return m, nil
+			}
+			m.chatOpen = false
+			return m, nil
+		}
+		var cmd tea.Cmd
+		m.chat, cmd = m.chat.Update(msg)
+		return m, cmd
+	}
+	if !m.inStartupGate() && msg.Type == tea.KeyCtrlA {
+		m.chatOpen = true
+		m.paletteOpen = false
+		// Bootstrap the ask field's cursor blink the moment the overlay
+		// becomes visible — ChatOverlay isn't in m.views, so App.Init's
+		// batching never reaches its Init (same shape as the palette).
+		return m, m.chat.Init()
+	}
+
 	// The palette is an overlay: while open it owns the keyboard ahead of any
 	// view, including one capturing text. It therefore sits ABOVE the
 	// text-capture branch — below it, a palette opened over a text field could
@@ -1022,13 +1096,25 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			quitConfirmID), nil
 	}
 
-	// Number keys jump straight to the nth view.
+	// Number keys jump straight to the nth RAIL view. The views slice also
+	// holds hidden views (startup gates, demoted views), so the digit walks
+	// visible entries rather than indexing the slice — 7 with a six-view
+	// rail is a no-op, not a teleport to whatever hides at index 6.
 	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
-		if n := int(msg.Runes[0] - '1'); n >= 0 && n < len(m.views) {
-			m.active = n
-			m.sidebar.Select(m.views[n].id)
-			m.focus = focusContent
-			return m, nil
+		if n := int(msg.Runes[0] - '1'); n >= 0 && n <= 8 {
+			seen := 0
+			for i, v := range m.views {
+				if m.hidden[v.id] {
+					continue
+				}
+				if seen == n {
+					m.active = i
+					m.sidebar.Select(v.id)
+					m.focus = focusContent
+					return m, nil
+				}
+				seen++
+			}
 		}
 	}
 
@@ -1098,10 +1184,11 @@ func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// viewShownMsg tells the now-active view it is on screen. A view that defers
-// heavy loading (e.g. Files, which fetches a whole manifest) hydrates lazily on
-// first display instead of eagerly at startup; views that load in their
-// constructor or Init simply ignore it.
+// viewShownMsg tells the now-active view it is on screen. A view that
+// defers heavy loading can hydrate lazily on first display instead of
+// eagerly at startup; views that load in their constructor or Init simply
+// ignore it. (No current view defers, but the seam is the shell's to
+// offer, not the views'.)
 type viewShownMsg struct{}
 
 // showActive notifies the active view it is displayed, returning any load
@@ -1160,6 +1247,7 @@ func (m App) resize(msg tea.WindowSizeMsg) App {
 	m.contentW, m.contentH = contentW, contentH
 	m.sidebar.SetSize(sidebarWidth, contentH)
 	m.palette.SetSize(msg.Width, msg.Height)
+	m.chat = m.chat.SetSize(msg.Width, msg.Height)
 	m.status.SetWidth(msg.Width)
 	for i := range m.modals {
 		m.modals[i] = m.modals[i].SetSize(msg.Width, msg.Height)
@@ -1226,6 +1314,9 @@ func (m App) viewFrame() string {
 	if m.paletteOpen {
 		return m.palette.View()
 	}
+	if m.chatOpen {
+		return m.chat.View()
+	}
 
 	title := m.headerView()
 
@@ -1277,17 +1368,12 @@ func (m App) viewFrame() string {
 	return lipgloss.JoinVertical(lipgloss.Left, title, row, bottom)
 }
 
-// cleanup cancels the app-scoped context and releases sub-view
-// resources (unchanged semantics from the previous shell).
+// cleanup cancels the app-scoped context. (A per-view Cleanup hook used
+// to live here for the agent view's stream goroutine; it left with that
+// view — the context cancel is what every remaining flow keys off.)
 func (m App) cleanup() {
 	if m.cancel != nil {
 		m.cancel()
-	}
-	type cleaner interface{ Cleanup() }
-	for _, v := range m.views {
-		if c, ok := v.model.(cleaner); ok {
-			c.Cleanup()
-		}
 	}
 }
 

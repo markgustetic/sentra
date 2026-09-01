@@ -13,8 +13,6 @@ import (
 
 	tea "github.com/charmbracelet/bubbletea"
 
-	"github.com/markgustetic/sentra/internal/agent/action"
-	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -43,7 +41,6 @@ func uiFixture(t *testing.T, passphrase string) (UIDeps, *tui.App) {
 			},
 			Passphrase: func() ([]byte, error) { return []byte(passphrase), nil },
 		},
-		Provider: nil, // agent view will show the placeholder
 		Run: func(app tui.App) error {
 			captured = app
 			return nil
@@ -98,35 +95,6 @@ func TestUI_PropagatesRunError(t *testing.T) {
 	}
 	if !strings.Contains(err.Error(), "tea boom") {
 		t.Errorf("expected tea boom in error, got %v", err)
-	}
-}
-
-// TestUI_PassesProviderToApp verifies the Provider deps reach the
-// constructed App via tui.Deps. We pass a non-nil llm.Provider and
-// assert the captured App's agent view does NOT show the placeholder
-// (since a provider is configured).
-func TestUI_PassesProviderToApp(t *testing.T) {
-	chDir(t, t.TempDir())
-	writeBackupConfigFile(t, ".")
-	// A non-interactive passphrase source so launch routing lands on the
-	// dashboard (not the unlock gate); otherwise the agent-tab assertion
-	// below would render the unlock view and vacuously pass.
-	t.Setenv("SENTRA_PASSPHRASE", "hunter2")
-	deps, captured := uiFixture(t, "hunter2")
-	deps.Provider = &llm.FakeProvider{}
-	cmd := NewUI(deps)
-	cmd.SetOut(io.Discard)
-	cmd.SetErr(io.Discard)
-	cmd.SetArgs([]string{})
-	if err := cmd.Execute(); err != nil {
-		t.Fatalf("execute: %v", err)
-	}
-	// Switch to the agent tab — when a provider is configured the
-	// agent placeholder ("ANTHROPIC_API_KEY") should be absent.
-	updated, _ := captured.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
-	view := updated.(tui.App).View()
-	if strings.Contains(view, "ANTHROPIC_API_KEY") {
-		t.Errorf("agent view showed configure hint despite provider being wired: %s", view)
 	}
 }
 
@@ -187,10 +155,10 @@ func TestRoot_BareSentraErrorDoesNotDumpUsage(t *testing.T) {
 	}
 }
 
-// TestRunUI_ThreadsNewDepsFields proves runUI populates the four Unit-1
-// Deps fields from UIDeps: the store factory, the action registry, the
-// keyring saver, and an absolute ConfigPath. No secret is threaded — the
-// func values are call-time hooks and ConfigPath is plain data.
+// TestRunUI_ThreadsNewDepsFields proves runUI populates the Unit-1 Deps
+// fields from UIDeps: the store factory, the keyring saver, and an
+// absolute ConfigPath. No secret is threaded — the func values are
+// call-time hooks and ConfigPath is plain data.
 func TestRunUI_ThreadsNewDepsFields(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
@@ -198,7 +166,6 @@ func TestRunUI_ThreadsNewDepsFields(t *testing.T) {
 
 	deps, captured := uiFixture(t, "hunter2")
 	var saveKeyringCalled bool
-	deps.Actions = action.NewDefaultRegistry()
 	deps.SavePassphrase = func(_ *config.Config, _ []byte) error {
 		saveKeyringCalled = true
 		return nil
@@ -223,9 +190,6 @@ func TestRunUI_ThreadsNewDepsFields(t *testing.T) {
 	}
 	if d.NewStore == nil {
 		t.Error("Deps.NewStore not threaded")
-	}
-	if d.Actions == nil {
-		t.Error("Deps.Actions not threaded")
 	}
 	if d.SaveKeyringPassphrase == nil {
 		t.Fatal("Deps.SaveKeyringPassphrase not threaded")

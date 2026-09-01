@@ -1,0 +1,5 @@
+# goreleaser prepares its own per-platform context; this guards a stray
+# `docker build .` from shipping the whole repo.
+*
+!sentra
+!linux/

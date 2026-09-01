@@ -389,7 +389,7 @@ func (d Dashboard) renderHero(panelW, block int) string {
 		area := make([]string, graphRows)
 		area[graphRows/2] = ui.Muted.Render(
 			truncateToWidth("run a backup to see activity here", textW))
-		body := ui.Subtle.Render("activity") + "\n" +
+		body := ui.SectionTitle("activity") + "\n" +
 			strings.Join(area, "\n") + "\n" +
 			ui.Muted.Render("no backups yet")
 		return dashPanel(panelW, body)
@@ -406,7 +406,7 @@ func (d Dashboard) renderHero(panelW, block int) string {
 	}
 
 	title := spread(textW,
-		ui.Subtle.Render("activity"),
+		ui.SectionTitle("activity"),
 		ui.Muted.Render("peak "+ui.FormatBytes(peak)))
 
 	cadence := "1 backup"
@@ -436,9 +436,17 @@ func (d Dashboard) renderStoragePanel(colW int) string {
 	textW := colW - contentPanelHPad
 	saved := savingsFrac(d.data.TotalBytes, d.data.UploadedBytes)
 
+	// The bucket name gets a label when the column affords both; when space
+	// is tight the NAME wins — confirming which repo you're looking at
+	// outranks captioning it (see TestDashboard_RendersRepoName).
 	head := spread(textW,
 		ui.Primary.Render(truncateToWidth(name, textW-9)),
 		ui.Muted.Render(fmt.Sprintf("%d snaps", d.data.SnapshotCount)))
+	if textW >= 30 {
+		head = spread(textW,
+			ui.SectionTitle("bucket")+" "+ui.Primary.Render(truncateToWidth(name, textW-16)),
+			ui.Muted.Render(fmt.Sprintf("%d snaps", d.data.SnapshotCount)))
+	}
 	shrink := ui.Subtle.Render(truncateToWidth(fmt.Sprintf("%s → %s",
 		ui.FormatBytes(d.data.TotalBytes), ui.FormatBytes(d.data.UploadedBytes)), textW))
 	meter := styledGauge(saved, 10) + ui.Muted.Render(fmt.Sprintf(" %d%% saved", int(saved*100+0.5)))
@@ -484,7 +492,7 @@ func (d Dashboard) storageDetail() string {
 // Five content lines: a title and up to four tag rows.
 func (d Dashboard) renderTagsPanel(colW int) string {
 	textW := colW - contentPanelHPad
-	title := ui.Subtle.Render("tags")
+	title := ui.SectionTitle("tags")
 	tags := tagBreakdown(d.data.Snaps)
 
 	rows := make([]string, 4)
@@ -542,7 +550,7 @@ func (d Dashboard) renderRetentionPanel(colW int) string {
 	// to fit the ~24-cell interior at the 80-col minimum.
 	line := func(s string) string { return ui.Subtle.Render(truncateToWidth(s, textW)) }
 	body := strings.Join([]string{
-		spread(textW, ui.Subtle.Render("retention"), ui.Muted.Render(cadence)),
+		spread(textW, ui.SectionTitle("retention"), ui.Muted.Render(cadence)),
 		line(fmt.Sprintf("keep last %d · daily %d", ret.KeepLast, ret.KeepDaily)),
 		line(fmt.Sprintf("weekly %d · monthly %d", ret.KeepWeekly, ret.KeepMonthly)),
 		line(since),
@@ -556,7 +564,7 @@ func (d Dashboard) renderRetentionPanel(colW int) string {
 // panel's lipgloss Width; block is its total height including the border.
 func (d Dashboard) renderSnapTable(panelW, block int) string {
 	textW := panelW - contentPanelHPad
-	dataRows := max(block-3, 1) // -border(2) -header(1)
+	dataRows := max(block-4, 1) // -border(2) -title(1) -header(1)
 
 	const createdW, filesW, sizeW, newW = 12, 7, 8, 8
 	tagW := max(textW-createdW-filesW-sizeW-newW-4, 4) // 4 single-space gaps
@@ -591,7 +599,8 @@ func (d Dashboard) renderSnapTable(panelW, block int) string {
 			rows[i] = ui.Muted.Render("no snapshots yet")
 		}
 	}
-	return dashPanel(panelW, header+"\n"+strings.Join(rows, "\n"))
+	title := ui.SectionTitle("recent snapshots")
+	return dashPanel(panelW, title+"\n"+header+"\n"+strings.Join(rows, "\n"))
 }
 
 // snapTableRow lays five cells at fixed widths (date and tag left-aligned, the
@@ -630,7 +639,7 @@ func savingsFrac(total, uploaded int64) float64 {
 // what tag, file count, and how much data that snapshot actually pushed (its
 // NewBytes delta) — or an empty-state line when the repo has no snapshots.
 func (d Dashboard) renderLastPanel(colW int) string {
-	title := ui.Subtle.Render("last snapshot")
+	title := ui.SectionTitle("last snapshot")
 	if d.data.LastSnap == nil {
 		body := title + "\n" + ui.Muted.Render("no snapshots yet") + "\n\n\n"
 		return dashPanel(colW, body)

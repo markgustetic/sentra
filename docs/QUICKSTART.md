@@ -15,6 +15,12 @@ account needed.
 
 ## 1. Start MinIO
 
+> **Shortcut:** from a clone of this repo, `just local` (or `sentra local`)
+> does this whole page automatically — it starts MinIO, exports throwaway
+> credentials, and opens the TUI on a pre-filled first-run wizard against a
+> `.sentra-local.yaml` that never touches your real config. The steps below
+> are the manual, CLI-first version of the same walk.
+
 Save as `docker-compose.yaml` in a working directory:
 
 ```yaml
@@ -59,7 +65,8 @@ export AWS_SECRET_ACCESS_KEY=minioadmin
 
 When setup initializes the repo, Sentra prompts you to set the repository
 passphrase unless `--passphrase-file` or `SENTRA_PASSPHRASE` supplies it.
-For normal local use, choose `Save in keychain` when setup asks; Sentra saves
+For normal local use, leave the wizard's
+`[x] save passphrase in OS keyring` checkbox ticked; Sentra saves
 the passphrase in your OS keyring and writes only
 `passphrase.use_keyring: true` to `sentra.yaml`. For throwaway local demos,
 you can still set `SENTRA_PASSPHRASE='change-me-to-something-good'` in your
@@ -75,9 +82,32 @@ For real AWS S3, choose `AWS S3`. The wizard can create or verify the
 bucket before initializing Sentra. The default AWS sign-in method is
 browser login with the AWS CLI, which stores temporary local credentials.
 You can also choose IAM Identity Center / SSO, use an existing
-profile/environment/role, or write config only. Setup shows a final
-review screen before applying changes. If you need an AWS administrator
-to grant permissions first, the wizard can print the non-secret
+profile/environment/role, or write config only.
+
+Browser-login and SSO sessions are temporary — hours, not days — so on those
+paths the wizard offers **create dedicated backup user** (pre-checked for
+browser login). It creates IAM user `sentra-backup` with the least-privilege
+policy, stores its access key under the `sentra` profile in
+`~/.aws/credentials`, and points `sentra.yaml` at that profile once the key
+verifies. Leave it on if you plan to schedule backups. If it cannot run (the
+signed-in identity lacks IAM permissions, say), setup still completes on the
+session credentials and tells you so; you can create the user later with the
+policy from `sentra setup iam-policy`.
+
+**More than one bucket.** Each bucket gets its own customer-managed policy,
+`sentra-s3-backup-<bucket>`, attached to `sentra-backup` — so running setup
+for a second bucket in the same account adds a grant instead of replacing the
+first one, and two machines backing up into one bucket under different
+prefixes both keep access (the second run merges its prefix into that
+bucket's policy). IAM attaches at most ten managed policies to one user; past
+that, setup warns and continues on the session credentials until you detach
+one. Installs from before per-bucket policies carried a single inline policy
+named `sentra-s3-backup`; the wizard deletes it once the managed policy that
+covers the same grant is attached, and otherwise leaves it in place, since it
+may still be a bucket's only grant.
+
+Setup shows a final review screen before applying changes. If you need an
+AWS administrator to grant permissions first, the wizard can print the non-secret
 least-privilege IAM policy and stop before writing config or touching AWS.
 If AWS auth fails, setup lets you retry, switch sign-in methods, edit
 profile/region, or continue with config only. For a normal AWS CLI
@@ -95,14 +125,14 @@ sentra setup iam-policy --bucket sentra-test --prefix sentra/
 
 Enter these values when prompted:
 
-- Storage target: `S3-compatible or existing bucket`
+- Storage backend: `S3-compatible or existing bucket`
 - S3 bucket: `sentra-test`
 - S3 key prefix: leave blank
 - AWS region: `us-east-1`
 - AWS profile: leave blank
 - S3 endpoint URL: `http://localhost:9000`
-- Initialize repo: `Initialize`
-- Save repository passphrase: `Save in keychain`
+- `[x] initialize repository` — leave ticked (space toggles)
+- `[x] save passphrase in OS keyring` — leave ticked
 
 The generated file will include these settings:
 
@@ -115,6 +145,7 @@ repo:
 backup:
   ignore_file: .sentraignore
   exclude_caches: true
+  concurrency: 0
 retention:
   keep_last: 10
   keep_daily: 7
@@ -300,9 +331,16 @@ dispatching the action.
 sentra ui   # or just `sentra` with no args
 ```
 
-Tabs across the top: `[d]ashboard`, `[s]napshots`, `[D]iff`, `[a]gent`,
-`[o]perations`, `[?]help`, `[q]uit`. The operations view shows repository
-health from the same checks used by `sentra check`.
+A left rail lists six views — **Dashboard, Backup, Snapshots, Maintenance,
+Settings, Help** — with a live preview as you scroll; digits `1`-`6` jump
+straight to one, and `ctrl+p` opens a command palette. The occasional jobs
+live one keypress inside: on a snapshot row `r` restores it and `d` diffs it
+against another; Maintenance holds check / prune / sync / doctor; Settings
+holds policies, the backup schedule, the recovery kit, passphrase rotation,
+and re-running setup. In the Backup view, `ctrl+e` arms a repeating schedule
+(daily/weekly/monthly — it installs a named policy plus a launchd/systemd
+timer when you confirm). `q` quits, and the status bar always shows which
+keys are live.
 
 ## 10. Prune
 

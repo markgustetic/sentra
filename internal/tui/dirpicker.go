@@ -7,6 +7,7 @@ import (
 	"sort"
 	"strings"
 
+	"github.com/charmbracelet/lipgloss"
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
@@ -32,6 +33,9 @@ import (
 // folder rows at cursor 1..len(rows). Modelling it as a sentinel rather than a
 // list entry keeps it pinned above the scrolling folder window so it never
 // scrolls out of reach, and keeps rows holding only real filesystem entries.
+//
+// The preview pane (rendered by the backup view beside the picker) shows
+// what is inside previewTarget() — metadata only, never file contents.
 type dirPicker struct {
 	cwd    string
 	rows   []dirRow
@@ -40,6 +44,18 @@ type dirPicker struct {
 
 	// height is how many rows fit; the view scrolls a window around the cursor.
 	height int
+
+	// width bounds every rendered line when > 0; 0 leaves lines unbounded
+	// (today's behavior — set only by the backup view's two-column layout,
+	// where an overlong line would wrap inside the fixed picker column and
+	// break the row model).
+	width int
+
+	// preview is the pane's data for previewTarget(), cached by path and
+	// refreshed by every transform that can move the target (see
+	// refreshPreview). It lives on the model for the same reason the rows
+	// do: a pure, synchronously readable picker is drivable from tests.
+	preview dirPreview
 }
 
 type rowKind int
@@ -47,7 +63,14 @@ type rowKind int
 const (
 	rowParent rowKind = iota
 	rowChild
+	rowPlace // a jump-to bookmark (~, ~/Documents, …), not an entry of cwd
 )
+
+// dirPickerHome is the picker's home-directory lookup, a seam so tests can
+// point the place rows at a hermetic temp home (TestMain neutralizes it —
+// real machines differ in which well-known folders exist, and rows that
+// vary by machine would make every picker test flaky).
+var dirPickerHome = os.UserHomeDir
 
 type dirRow struct {
 	kind  rowKind
@@ -57,6 +80,30 @@ type dirRow struct {
 
 // dirPickerHeight is the default window size; the view scrolls within it.
 const dirPickerHeight = 10
+
+// Two-column layout for the backup view: the picker column is fixed and
+// the preview pane takes the rest of the interior — but never squeezed,
+// and never stretched. Below previewMinWidth usable columns the pane
+// hides and the picker returns to the full interior (the single-column
+// layout); above previewMaxWidth it stops growing — a size right-aligned
+// across 160 columns no longer reads as belonging to its name. 32 fits
+// the Start button's label exactly; 20 fits a real file name plus a size.
+const (
+	pickerColWidth  = 32
+	previewGapWidth = 2
+	previewMinWidth = 20
+	previewMaxWidth = 48
+)
+
+// previewPaneWidth converts the view's interior text width into the
+// pane's width, or 0 when the pane must hide.
+func previewPaneWidth(interior int) int {
+	w := interior - pickerColWidth - previewGapWidth
+	if w < previewMinWidth {
+		return 0
+	}
+	return min(w, previewMaxWidth)
+}
 
 // newDirPicker opens start. An unreadable directory is not fatal: the picker
 // still renders its parent row and Start button so the operator can climb back
@@ -86,11 +133,13 @@ func (p dirPicker) reload() dirPicker {
 		p.rows = append(p.rows, dirRow{kind: rowParent, label: "..", path: parent})
 	}
 
+	p.rows = append(p.rows, p.placeRows()...)
+
 	entries, err := os.ReadDir(p.cwd)
 	if err != nil {
 		p.err = "cannot read " + p.cwd + ": " + errReason(err)
 		p.clampCursor()
-		return p
+		return p.refreshPreview()
 	}
 
 	names := make([]string, 0, len(entries))
@@ -115,7 +164,34 @@ func (p dirPicker) reload() dirPicker {
 		p.rows = append(p.rows, dirRow{kind: rowChild, label: n, path: filepath.Join(p.cwd, n)})
 	}
 	p.clampCursor()
-	return p
+	return p.refreshPreview()
+}
+
+// placeRows builds the jump-to bookmarks: the home directory and its
+// well-known folders, listed right after ".." so a backup of Documents or
+// Downloads is one enter away from anywhere. Only directories that exist
+// are offered (a bookmark to nowhere would just render an error), and the
+// one matching the directory being browsed is dropped — jumping to where
+// you already stand is noise.
+func (p dirPicker) placeRows() []dirRow {
+	home, err := dirPickerHome()
+	if err != nil || strings.TrimSpace(home) == "" {
+		return nil
+	}
+	rows := []dirRow{{kind: rowPlace, label: "~", path: home}}
+	for _, name := range []string{"Documents", "Downloads", "Desktop", "Pictures"} {
+		path := filepath.Join(home, name)
+		if info, err := os.Stat(path); err == nil && info.IsDir() {
+			rows = append(rows, dirRow{kind: rowPlace, label: "~/" + name, path: path})
+		}
+	}
+	kept := rows[:0]
+	for _, r := range rows {
+		if r.path != p.cwd {
+			kept = append(kept, r)
+		}
+	}
+	return kept
 }
 
 // onStart reports whether the cursor rests on the Start button — cursor 0, the
@@ -146,7 +222,7 @@ func (p dirPicker) moveUp() dirPicker {
 	if p.cursor > 0 {
 		p.cursor--
 	}
-	return p
+	return p.refreshPreview()
 }
 
 func (p dirPicker) moveDown() dirPicker {
@@ -155,7 +231,7 @@ func (p dirPicker) moveDown() dirPicker {
 	if p.cursor < len(p.rows) {
 		p.cursor++
 	}
-	return p
+	return p.refreshPreview()
 }
 
 // activate applies enter to the current cursor position. On the Start button it
@@ -168,7 +244,7 @@ func (p dirPicker) activate() (dirPicker, string) {
 		return p, p.cwd
 	}
 	switch row := p.rows[p.cursor-1]; row.kind {
-	case rowParent, rowChild:
+	case rowParent, rowChild, rowPlace:
 		p.cwd = row.path
 		p.cursor = 0
 		return p.reload(), ""
@@ -230,9 +306,34 @@ func (p dirPicker) enterVerb() string {
 	switch r := p.rows[p.cursor-1]; r.kind {
 	case rowParent:
 		return "go up to " + filepath.Base(r.path)
+	case rowPlace:
+		return "jump to " + r.label
 	default:
 		return "open " + r.label
 	}
+}
+
+// clip helpers bound a line to the picker's column width. clipRow reserves
+// SelectRow's 2-cell prefix; clipLeft keeps the TAIL for the path line.
+func (p dirPicker) clip(s string) string {
+	if p.width <= 0 {
+		return s
+	}
+	return truncateToWidth(s, p.width)
+}
+
+func (p dirPicker) clipRow(s string) string {
+	if p.width <= 0 {
+		return s
+	}
+	return truncateToWidth(s, p.width-2)
+}
+
+func (p dirPicker) clipLeft(s string) string {
+	if p.width <= 0 {
+		return s
+	}
+	return truncateToWidthLeft(s, p.width)
 }
 
 // View renders the picker. focused controls whether the highlighted row carries
@@ -245,21 +346,145 @@ func (p dirPicker) enterVerb() string {
 // the cursor is one past it (cursor == start+i+1).
 func (p dirPicker) View(focused bool) string {
 	var b strings.Builder
-	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(p.cwd))
+	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(p.clipLeft(p.cwd)))
 	if p.err != "" {
-		fmt.Fprintf(&b, "%s\n", ui.Danger.Render(p.err))
+		fmt.Fprintf(&b, "%s\n", ui.Danger.Render(p.clip(p.err)))
 	}
-	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), "▸ backup the current directory"))
+	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), p.clipRow("▸ backup the current directory")))
 	rows, start := p.window()
 	for i, r := range rows {
 		label := r.label
 		if r.kind == rowChild {
 			label += string(filepath.Separator)
 		}
-		fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && start+i == p.cursor-1, label))
+		fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && start+i == p.cursor-1, p.clipRow(label)))
 	}
 	if len(p.rows) > len(rows) {
-		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render("  …"))
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(p.clip("  …")))
+	}
+	return b.String()
+}
+
+// dirPreview is the pane's data for one target directory: the first
+// window of entries plus how many exist in total, so the tail row can say
+// what was elided. target doubles as the cache key (see refreshPreview).
+type dirPreview struct {
+	target  string
+	entries []previewEntry
+	total   int
+	err     string
+}
+
+// previewEntry is one name in the pane. Metadata only — the preview must
+// never read file contents, only what ReadDir and lstat already hold.
+type previewEntry struct {
+	name  string
+	size  int64
+	isDir bool
+}
+
+// previewMaxEntries caps the pane at the picker's own window height so
+// the two columns stay visually matched.
+const previewMaxEntries = dirPickerHeight
+
+// readPreview reads what is inside dir for the pane: directories first,
+// then files, each case-insensitive — the picker's own sort — capped at
+// maxShown but counting everything. Info is lstat on the dirent, so sizes
+// come without following symlinks (a link to a directory reads as a plain
+// entry, deliberately: the preview reports the directory as it is, not as
+// it resolves), and only the shown rows pay for it.
+func readPreview(dir string, maxShown int) dirPreview {
+	pv := dirPreview{target: dir}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		pv.err = "cannot read: " + errReason(err)
+		return pv
+	}
+	pv.total = len(entries)
+	sort.SliceStable(entries, func(i, j int) bool {
+		di, dj := entries[i].IsDir(), entries[j].IsDir()
+		if di != dj {
+			return di
+		}
+		return strings.ToLower(entries[i].Name()) < strings.ToLower(entries[j].Name())
+	})
+	for _, e := range entries {
+		if len(pv.entries) == maxShown {
+			break
+		}
+		pe := previewEntry{name: e.Name(), isDir: e.IsDir()}
+		if !e.IsDir() {
+			if info, err := e.Info(); err == nil {
+				pe.size = info.Size()
+			}
+		}
+		pv.entries = append(pv.entries, pe)
+	}
+	return pv
+}
+
+// previewTarget is the directory whose contents the pane shows: whatever
+// enter would act on — the highlighted row's path, or the current
+// directory on the Start button (exactly what the backup would include).
+func (p dirPicker) previewTarget() string {
+	if p.onStart() {
+		return p.cwd
+	}
+	return p.rows[p.cursor-1].path
+}
+
+// refreshPreview rebuilds the pane data when the target changed. Cached
+// by path so repaints and same-row refreshes cost nothing; the cache is
+// deliberately not time-based — navigation is the only signal the picker
+// reacts to anywhere else, and the pane follows the same rule.
+func (p dirPicker) refreshPreview() dirPicker {
+	if target := p.previewTarget(); p.preview.target != target {
+		p.preview = readPreview(target, previewMaxEntries)
+	}
+	return p
+}
+
+// previewView renders the pane beside the picker: what is inside the
+// directory the cursor points at. The header names the target so the pane
+// reads as "inside X" even while the cursor moves; directories lead with
+// a trailing separator; files carry right-aligned sizes. Every line is
+// bounded to width, and styled fragments are appended to plain text,
+// never wrapped around it (the ANSI-reset trap).
+func (p dirPicker) previewView(width int) string {
+	var b strings.Builder
+	// filepath.Base of the filesystem root is already the separator;
+	// appending another would render "in //".
+	head := "in " + filepath.Base(p.preview.target)
+	if !strings.HasSuffix(head, string(filepath.Separator)) {
+		head += string(filepath.Separator)
+	}
+	fmt.Fprintf(&b, "%s\n", ui.Muted.Render(truncateToWidth(head, width)))
+	if p.preview.err != "" {
+		fmt.Fprintf(&b, "%s\n", ui.Muted.Render(truncateToWidth(p.preview.err, width)))
+		return b.String()
+	}
+	if p.preview.total == 0 {
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(truncateToWidth("(empty)", width)))
+		return b.String()
+	}
+	for _, e := range p.preview.entries {
+		if e.isDir {
+			fmt.Fprintf(&b, "%s\n", truncateToWidth(e.name+string(filepath.Separator), width))
+			continue
+		}
+		size := shortBytes(e.size)
+		// When the size column cannot fit (size + 2 for gap and margin), drop
+		// the size and render just the name: it's better to show a truncated
+		// file name than to overflow the pane.
+		if lipgloss.Width(size)+2 > width {
+			fmt.Fprintf(&b, "%s\n", truncateToWidth(e.name, width))
+			continue
+		}
+		name := truncateToWidth(e.name, max(width-lipgloss.Width(size)-1, 1))
+		fmt.Fprintf(&b, "%s\n", spread(width, name, ui.Subtle.Render(size)))
+	}
+	if more := p.preview.total - len(p.preview.entries); more > 0 {
+		fmt.Fprintf(&b, "%s\n", ui.Subtle.Render(truncateToWidth(fmt.Sprintf("… +%d more", more), width)))
 	}
 	return b.String()
 }

@@ -14,15 +14,16 @@ import (
 // func fields default to permissive no-ops so each test overrides only what
 // it exercises.
 type fakeEffects struct {
-	ensureAWSCLI  func(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error)
-	awsLogin      func(ctx context.Context, profile, region string) error
-	ssoConfigured func(ctx context.Context, profile string) (bool, error)
-	configureSSO  func(ctx context.Context, profile string) error
-	ssoLogin      func(ctx context.Context, profile string) error
-	checkIdentity func(ctx context.Context, cfg *config.Config) error
-	prepareAWS    func(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error)
-	newStore      func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
-	savePass      func(cfg *config.Config, passphrase []byte) error
+	ensureAWSCLI        func(ctx context.Context, confirm AWSCLIInstallConfirm) (AWSCLIInstallReport, error)
+	awsLogin            func(ctx context.Context, profile, region string) error
+	ssoConfigured       func(ctx context.Context, profile string) (bool, error)
+	configureSSO        func(ctx context.Context, profile string) error
+	ssoLogin            func(ctx context.Context, profile string) error
+	checkIdentity       func(ctx context.Context, cfg *config.Config) error
+	prepareAWS          func(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error)
+	provisionBackupUser func(ctx context.Context, cfg *config.Config, opts BackupUserOptions) (BackupUserReport, error)
+	newStore            func(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
+	savePass            func(cfg *config.Config, passphrase []byte) error
 }
 
 func (f fakeEffects) EnsureAWSCLI(ctx context.Context, c AWSCLIInstallConfirm) (AWSCLIInstallReport, error) {
@@ -66,6 +67,12 @@ func (f fakeEffects) PrepareAWS(ctx context.Context, cfg *config.Config, o AWSPr
 		return f.prepareAWS(ctx, cfg, o)
 	}
 	return AWSPrepareReport{BucketExisted: true}, nil
+}
+func (f fakeEffects) ProvisionBackupUser(ctx context.Context, cfg *config.Config, o BackupUserOptions) (BackupUserReport, error) {
+	if f.provisionBackupUser != nil {
+		return f.provisionBackupUser(ctx, cfg, o)
+	}
+	return BackupUserReport{}, nil
 }
 func (f fakeEffects) NewStore(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {
 	if f.newStore != nil {

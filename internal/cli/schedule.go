@@ -4,6 +4,7 @@ import (
 	"fmt"
 	"io"
 	"path/filepath"
+	"time"
 
 	"github.com/spf13/cobra"
 
@@ -19,6 +20,10 @@ type ScheduleDeps struct {
 	HomeDir    func() (string, error)
 	Executable func() (string, error)
 	Stdout     io.Writer
+
+	// Now feeds the next-run computation; nil means time.Now. A seam so
+	// status output is testable against a pinned clock.
+	Now func() time.Time
 }
 
 // NewSchedule returns the command group for installing policy schedules.
@@ -120,7 +125,8 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 
 func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
 	cfgPath = resolveConfigPath(cmd, cfgPath)
-	if _, _, err := loadScheduledPolicy(cfgPath, name); err != nil {
+	p, _, err := loadScheduledPolicy(cfgPath, name)
+	if err != nil {
 		return err
 	}
 	home, err := scheduleHome(deps)
@@ -144,6 +150,15 @@ func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name stri
 	fmt.Fprintf(out, "  policy: %s\n", name)
 	for _, path := range paths.Files {
 		fmt.Fprintf(out, "  file:   %s\n", path)
+	}
+	if installed {
+		nowFn := deps.Now
+		if nowFn == nil {
+			nowFn = time.Now
+		}
+		if next, ok := policycfg.NextRun(p.Schedule, nowFn()); ok {
+			fmt.Fprintf(out, "  next run: %s\n", next.Format("2006-01-02 15:04"))
+		}
 	}
 	return nil
 }

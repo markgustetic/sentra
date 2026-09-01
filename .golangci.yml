@@ -39,6 +39,13 @@ linters:
         linters:
           - staticcheck
         text: SA5011
+      # gosec G101 false positive: test fixtures use AWS's documented example
+      # key material (AKIAEXAMPLE…, wJalrXUtnFEMI/K7MDENG/…) to exercise the
+      # credentials writer and provisioner. Nothing real lives in _test.go.
+      - path: _test\.go
+        linters:
+          - gosec
+        text: G101
 formatters:
   enable:
     - gofmt

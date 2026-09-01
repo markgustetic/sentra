@@ -213,21 +213,24 @@ func (v UnlockView) View() string {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}
 		if v.openErr != nil {
-			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(unlockErrMessage(v.openErr)))
+			fmt.Fprintf(&b, "\n\n%s", unlockErrMessage(v.openErr))
 		}
 		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("unlock the repository", ""))
 	}
 	return b.String()
 }
 
-// unlockErrMessage maps repo.Open sentinels to operator-readable text. Distinct
-// sentinels (not string matching) so an upstream reword never silently breaks
-// the mapping.
+// unlockErrMessage maps repo.Open failures to operator-readable, styled
+// text. Wrong passphrase is matched by sentinel (not string matching) so an
+// upstream reword never silently breaks the mapping; everything else goes
+// through humanizeErr, which explains known credential/network causes and
+// falls back to the raw chain. The result contains styled fragments — the
+// caller must not wrap it in another style.
 func unlockErrMessage(err error) string {
 	switch {
 	case errors.Is(err, repo.ErrWrongPassphrase):
-		return "wrong passphrase — try again"
+		return ui.Danger.Render("wrong passphrase — try again")
 	default:
-		return err.Error()
+		return humanizeErr(err)
 	}
 }

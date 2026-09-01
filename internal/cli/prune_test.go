@@ -514,3 +514,111 @@ func TestPrune_JSONKeepIsNeverNull(t *testing.T) {
 		t.Errorf("keep must encode as [], got:\n%s", out.String())
 	}
 }
+
+// TestPrune_ApplyReclaimsOrphansWhenRetentionDropsNothing: the rule
+// under test is that --apply always offers storage reclamation, not
+// only when retention drops a snapshot. Orphaned blobs (a backup
+// killed mid-run, an out-of-band snapshot delete) accumulate with no
+// snapshot ever entering the drop set — if the empty-drop path
+// returns before GC, those blobs are unreachable garbage forever.
+func TestPrune_ApplyReclaimsOrphansWhenRetentionDropsNothing(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, store, _, out := pruneFixture(t, "hunter2", 2)
+	const orphanKey = "data/de/deadbeef0000000000000000000000000000000000000000000000000000beef"
+	if err := store.Put(context.Background(), orphanKey, strings.NewReader("orphan")); err != nil {
+		t.Fatalf("plant orphan: %v", err)
+	}
+
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "5", "--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if _, err := store.Stat(context.Background(), orphanKey); err == nil {
+		t.Errorf("orphan blob survived apply-mode prune; GC must run even when retention drops nothing")
+	}
+	if !strings.Contains(strings.ToLower(out.String()), "reclaimed") {
+		t.Errorf("expected GC reclamation report in output, got %q", out.String())
+	}
+
+	// Snapshots are untouched — reclamation must not widen into drops.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("open: %v", err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatalf("list: %v", err)
+	}
+	if len(snaps) != 2 {
+		t.Errorf("snapshot count changed: got %d, want 2", len(snaps))
+	}
+}
+
+// TestPrune_ApplyWithNoSnapshotsRefusesGC: the dangerous condition
+// behind GC's bare-orphans guard. A store that lists zero snapshots
+// makes EVERY data blob look orphaned; if the empty-drop apply path
+// ran a full reclaim there, a misconfigured prefix could wipe real
+// data. The nil-keepIDs GC pass must refuse (ErrEmptyRepo) and prune
+// must surface that as a calm no-op, not an error exit.
+func TestPrune_ApplyWithNoSnapshotsRefusesGC(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, store, _, out := pruneFixture(t, "hunter2", 0)
+	const orphanKey = "data/de/deadbeef1111111111111111111111111111111111111111111111111111beef"
+	if err := store.Put(context.Background(), orphanKey, strings.NewReader("not actually garbage")); err != nil {
+		t.Fatalf("plant blob: %v", err)
+	}
+
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--apply", "--yes"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if _, err := store.Stat(context.Background(), orphanKey); err != nil {
+		t.Errorf("blob deleted from a zero-snapshot store: %v", err)
+	}
+}
+
+// TestPrune_ApplyWithNoDropsConfirmPromptNamesGC: with nothing to
+// drop, the confirm prompt must ask about GC — "Delete 0 snapshots
+// and run GC?" misstates what the operator is approving.
+func TestPrune_ApplyWithNoDropsConfirmPromptNamesGC(t *testing.T) {
+	chDir(t, t.TempDir())
+	writeBackupConfigFile(t, ".")
+
+	deps, _, _, out := pruneFixture(t, "hunter2", 2)
+	var prompt string
+	deps.Confirm = func(q string) (bool, error) {
+		prompt = q
+		return false, nil
+	}
+
+	cmd := NewPrune(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"--keep-last", "5", "--apply"})
+	if err := cmd.Execute(); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+
+	if strings.Contains(prompt, "0 snapshots") {
+		t.Errorf("confirm prompt claims a snapshot deletion that will not happen: %q", prompt)
+	}
+	if !strings.Contains(prompt, "GC") {
+		t.Errorf("confirm prompt should name GC as the action: %q", prompt)
+	}
+	if !strings.Contains(strings.ToLower(out.String()), "aborted") {
+		t.Errorf("declined confirm should abort, got %q", out.String())
+	}
+}
