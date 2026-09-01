@@ -640,11 +640,12 @@ Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
 
 **Files:**
 - Modify: `go.mod` / `go.sum` (new module)
+- Modify: `internal/diag/aws.go:80` (export the AWS config loader)
 - Create: `internal/setup/backupuser.go`
 - Test: `internal/setup/backupuser_test.go`
 
 **Interfaces:**
-- Consumes: Task 1 types/constants, Task 2 `CheckAWSCredentialsProfileFree`/`WriteAWSCredentialsProfile`/`AWSCredentialsPath`, existing `BuildIAMPolicy(bucket, prefix)`.
+- Consumes: Task 1 types/constants, Task 2 `CheckAWSCredentialsProfileFree`/`WriteAWSCredentialsProfile`/`AWSCredentialsPath`, existing `BuildIAMPolicy(bucket, prefix)`, and `diag.LoadAWSConfig(ctx, cfg) (aws.Config, error)` (exported in this task from the existing unexported `loadAWSConfig`).
 - Produces: `type iamAPI interface{ CreateUser; PutUserPolicy; CreateAccessKey; DeleteAccessKey }` (aws-sdk-go-v2 signatures); `type credentialsWriter func(path, profile, accessKeyID, secret string) error`; `type BackupUserError struct{ Step string; AccessDenied, KeyLimit bool; KeyOrphaned string; Err error }` with `Error()`/`Unwrap()`; `func DefaultProvisionBackupUser(ctx, cfg *config.Config, opts BackupUserOptions) (BackupUserReport, error)`; `func provisionBackupUser(ctx, client iamAPI, cfg *config.Config, opts BackupUserOptions, credsPath string, write credentialsWriter) (BackupUserReport, error)`.
 
 - [ ] **Step 1: Add the IAM module**
@@ -926,7 +927,21 @@ Add `"os"` to that file's import block (used by `writeFile`).
 Run: `go test ./internal/setup/ -run 'TestProvisionBackupUser' -count=1`
 Expected: FAIL to compile — `undefined: provisionBackupUser`, `undefined: BackupUserError`.
 
-- [ ] **Step 4: Write the implementation**
+- [ ] **Step 4: Export diag's AWS config loader**
+
+In `internal/diag/aws.go`, rename `loadAWSConfig` to `LoadAWSConfig` (its two callers in that file, `CheckSDKIdentity` and `Inspect`, follow) and give it this doc comment:
+
+```go
+// LoadAWSConfig resolves the SDK config Sentra's probes and setup use:
+// the default chain overlaid with cfg's region and profile. Exported so
+// setup's provisioner authenticates with exactly the chain the identity
+// check verified — a second copy of this overlay is how "which
+// credentials" would drift between the check and the mutation.
+```
+
+Run `go build ./... && go test ./internal/diag/ -count=1` — Expected: clean, PASS.
+
+- [ ] **Step 5: Write the implementation**
 
 Create `internal/setup/backupuser.go`:
 
@@ -941,12 +956,12 @@ import (
 	"strings"
 
 	"github.com/aws/aws-sdk-go-v2/aws"
-	awsconfig "github.com/aws/aws-sdk-go-v2/config"
 	"github.com/aws/aws-sdk-go-v2/service/iam"
 	iamtypes "github.com/aws/aws-sdk-go-v2/service/iam/types"
 	"github.com/aws/smithy-go"
 
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/diag"
 )
 
 // iamAPI is the slice of the IAM client the provisioner uses. *iam.Client
@@ -980,9 +995,9 @@ func (e *BackupUserError) Unwrap() error { return e.Err }
 
 // DefaultProvisionBackupUser is the production Effects driver: it authenticates
 // with the credential chain cfg currently names (the session that just signed
-// in), then creates the scoped user and stores its key. Region/profile follow
-// the same overlay as diag's identity check so "which credentials" can never
-// differ between the check and the mutation.
+// in) via diag.LoadAWSConfig — the same loader the identity check used, so
+// "which credentials" can never differ between the check and the mutation —
+// then creates the scoped user and stores its key.
 func DefaultProvisionBackupUser(ctx context.Context, cfg *config.Config, opts BackupUserOptions) (BackupUserReport, error) {
 	if cfg == nil {
 		return BackupUserReport{}, errors.New("provision backup user: nil config")
@@ -991,16 +1006,9 @@ func DefaultProvisionBackupUser(ctx context.Context, cfg *config.Config, opts Ba
 	if err != nil {
 		return BackupUserReport{}, err
 	}
-	loadOpts := []func(*awsconfig.LoadOptions) error{}
-	if cfg.Repo.S3.Region != "" {
-		loadOpts = append(loadOpts, awsconfig.WithRegion(cfg.Repo.S3.Region))
-	}
-	if cfg.Repo.S3.Profile != "" {
-		loadOpts = append(loadOpts, awsconfig.WithSharedConfigProfile(cfg.Repo.S3.Profile))
-	}
-	awsCfg, err := awsconfig.LoadDefaultConfig(ctx, loadOpts...)
+	awsCfg, err := diag.LoadAWSConfig(ctx, cfg)
 	if err != nil {
-		return BackupUserReport{}, fmt.Errorf("load AWS config: %w", err)
+		return BackupUserReport{}, err
 	}
 	return provisionBackupUser(ctx, iam.NewFromConfig(awsCfg), cfg, opts, path, WriteAWSCredentialsProfile)
 }
@@ -1096,15 +1104,15 @@ func classifyIAMError(step string, err error) *BackupUserError {
 }
 ```
 
-- [ ] **Step 5: Run the tests to verify they pass**
+- [ ] **Step 6: Run the tests to verify they pass**
 
 Run: `go test ./internal/setup/ -run 'TestProvisionBackupUser' -count=1 -v`
-Expected: PASS for all nine. Then `go vet ./internal/setup/` — Expected: clean.
+Expected: PASS for all nine. Then `go vet ./internal/setup/ ./internal/diag/` — Expected: clean.
 
-- [ ] **Step 6: Commit**
+- [ ] **Step 7: Commit**
 
 ```bash
-git add go.mod go.sum internal/setup/backupuser.go internal/setup/backupuser_test.go
+git add go.mod go.sum internal/diag/aws.go internal/setup/backupuser.go internal/setup/backupuser_test.go
 git commit -m "feat(setup): IAM backup-user provisioner behind a fake-able iamAPI
 
 Co-Authored-By: Claude Fable 5.1 <noreply@anthropic.com>"
