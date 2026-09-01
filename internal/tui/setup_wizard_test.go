@@ -651,8 +651,10 @@ func setupAtReview(t *testing.T) SetupWizardView {
 // stubEffects is a fully in-memory setup.Effects: no AWS, no keyring, an
 // in-memory store, so the provisioning op can run end-to-end in a test.
 type stubEffects struct {
-	prepareErr error
-	prepared   setup.AWSPrepareReport
+	prepareErr    error
+	prepared      setup.AWSPrepareReport
+	backupUser    setup.BackupUserReport
+	backupUserErr error
 }
 
 func (s stubEffects) EnsureAWSCLI(ctx context.Context, confirm setup.AWSCLIInstallConfirm) (setup.AWSCLIInstallReport, error) {
@@ -669,6 +671,9 @@ func (s stubEffects) CheckAWSSDKIdentity(ctx context.Context, cfg *config.Config
 }
 func (s stubEffects) PrepareAWS(ctx context.Context, cfg *config.Config, opts setup.AWSPrepareOptions) (setup.AWSPrepareReport, error) {
 	return s.prepared, s.prepareErr
+}
+func (s stubEffects) ProvisionBackupUser(ctx context.Context, cfg *config.Config, opts setup.BackupUserOptions) (setup.BackupUserReport, error) {
+	return s.backupUser, s.backupUserErr
 }
 func (s stubEffects) NewStore(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {
 	return blobstore.NewMemory(), nil

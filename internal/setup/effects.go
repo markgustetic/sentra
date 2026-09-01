@@ -26,6 +26,11 @@ type Effects interface {
 	CheckAWSSDKIdentity(ctx context.Context, cfg *config.Config) error
 	// PrepareAWS performs the deterministic bucket-side setup work.
 	PrepareAWS(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error)
+	// ProvisionBackupUser creates the scoped IAM user, attaches the canonical
+	// policy, mints a key, and writes it to ~/.aws/credentials — all inside
+	// this one call, so the secret never crosses the seam. Returns a
+	// non-secret report; any error is a *BackupUserError when classifiable.
+	ProvisionBackupUser(ctx context.Context, cfg *config.Config, opts BackupUserOptions) (BackupUserReport, error)
 	NewStore(ctx context.Context, cfg *config.Config) (blobstore.Store, error)
 	// SavePassphrase persists the passphrase to the OS keyring. The engine
 	// only ever calls this AFTER repo init or a verified repo.Open.
@@ -66,6 +71,10 @@ func (defaultEffects) CheckAWSSDKIdentity(ctx context.Context, cfg *config.Confi
 
 func (defaultEffects) PrepareAWS(ctx context.Context, cfg *config.Config, opts AWSPrepareOptions) (AWSPrepareReport, error) {
 	return DefaultAWSPrepare(ctx, cfg, opts)
+}
+
+func (defaultEffects) ProvisionBackupUser(ctx context.Context, cfg *config.Config, opts BackupUserOptions) (BackupUserReport, error) {
+	return DefaultProvisionBackupUser(ctx, cfg, opts)
 }
 
 func (defaultEffects) NewStore(ctx context.Context, cfg *config.Config) (blobstore.Store, error) {

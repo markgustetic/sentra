@@ -2,6 +2,7 @@ package setup
 
 import (
 	"context"
+	"strings"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -57,5 +58,16 @@ func TestDefaultEffectsNewStore(t *testing.T) {
 	}
 	if store == nil {
 		t.Fatal("NewStore returned a nil Store")
+	}
+}
+
+// The seam must expose provisioning, and the production seam must route it
+// to DefaultProvisionBackupUser (a nil config is the cheapest observable
+// path through that driver).
+func TestDefaultEffectsProvisionBackupUserDelegates(t *testing.T) {
+	var eff Effects = DefaultEffects()
+	_, err := eff.ProvisionBackupUser(context.Background(), nil, BackupUserOptions{})
+	if err == nil || !strings.Contains(err.Error(), "nil config") {
+		t.Fatalf("expected the default driver's nil-config error, got %v", err)
 	}
 }
