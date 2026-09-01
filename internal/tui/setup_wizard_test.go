@@ -2078,8 +2078,14 @@ func TestSetupWizard_BackupUserProfileRowCapturesTextAndValidates(t *testing.T) 
 	if v.stage != stageActions {
 		t.Fatalf("profile \"default\" must be refused on the actions stage, got %v", v.stage)
 	}
-	if v.notice == "" || !strings.Contains(v.View(), "default") {
-		t.Fatalf("refusal must be shown, notice=%q view:\n%s", v.notice, v.View())
+	// Assert the NOTICE, not the rendered stage: the actions stage always draws
+	// the "default encryption (AES-256)" toggle, so a Contains(v.View(),
+	// "default") here matched no matter what the wizard did with the input.
+	if !strings.Contains(v.notice, "default") {
+		t.Fatalf("refusal must name the rejected profile, notice=%q", v.notice)
+	}
+	if got := v.backupProfile.Value(); got != "default" {
+		t.Fatalf("the refused value must stay in the input for the operator to edit, got %q", got)
 	}
 }
 
