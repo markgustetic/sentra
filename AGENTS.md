@@ -96,7 +96,10 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   report, plan, draft, review text, logs, or an error. The profile switch
   happens only after the new identity verifies (bounded retry); any failure
   degrades to `BackupUserReport.Warning` and setup continues on the session
-  credentials — provisioning never blocks setup.
+  credentials — provisioning never blocks setup. The provisioner puts a
+  single inline policy (`sentra-s3-backup`) on `sentra-backup`, replacing any
+  prior one, so the wizard supports one bucket per account until per-bucket
+  managed policies land; documented in QUICKSTART.
   AWS CLI **brew auto-install is currently absent**: it needed a confirm prompt,
   and `huh` cannot run inside a live `tea.Program`. `setup.DefaultEnsureAWSCLI`
   keeps the machinery behind a confirm no caller arms, so restoring it means a

@@ -267,3 +267,8 @@ Key rotation, MFA setup, bucket versioning, a headless CLI command for
 provisioning, editing `~/.aws/config`, and a connect-gate affordance for
 converting an existing browser-login setup after the fact. Each is a
 separate decision.
+
+Multi-bucket accounts (per-bucket managed policies) are out of scope too:
+`PutUserPolicy` writes the one inline policy `sentra-s3-backup`, so a
+second wizard run in the same account replaces the first bucket's grant.
+Documented as a known limitation in `docs/QUICKSTART.md`.
