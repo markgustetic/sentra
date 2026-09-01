@@ -142,6 +142,12 @@ type SetupWizardView struct {
 	defaultEnc   bool
 	initRepo     bool
 
+	// backupUser is the "create dedicated backup user" toggle; backupProfile
+	// the ~/.aws/credentials section it writes to. Both live only on the
+	// actions stage and are re-seeded when the auth method changes.
+	backupUser    bool
+	backupProfile textinput.Model
+
 	// passphrase-stage masked inputs (new + confirm), focus flag, keyring
 	// toggle, and last validation error.
 	newPass     textinput.Model
@@ -184,13 +190,18 @@ var setupAuthOrder = []setup.AWSAuthMethod{
 	setup.AWSAuthLogin, setup.AWSAuthSSO, setup.AWSAuthExisting, setup.AWSAuthSkip,
 }
 
-// action-stage cursor rows: the auth select, then the four toggles.
+// action-stage cursor rows: the auth select, the four toggles, then the
+// backup-user toggle and its profile input. The last two are visible only
+// for login/SSO (and the profile only while the toggle is on) — see
+// actionRowVisible; the cursor never lands on a hidden row.
 const (
 	actionRowAuth = iota
 	actionRowCreate
 	actionRowBlock
 	actionRowEncrypt
 	actionRowInit
+	actionRowBackupUser
+	actionRowProfile
 	actionRowCount
 )
 
@@ -262,7 +273,12 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	confirmPass.EchoMode = textinput.EchoPassword
 	confirmPass.EchoCharacter = '•'
 
-	return SetupWizardView{
+	backupProfile := textinput.New()
+	backupProfile.Prompt = ""
+	backupProfile.Width = 24
+	backupProfile.Placeholder = setup.DefaultBackupUserProfile
+
+	v := SetupWizardView{
 		deps:              deps,
 		engine:            eng,
 		plan:              plan,
@@ -275,10 +291,12 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 		blockPublic:       plan.BlockPublicAccess,
 		defaultEnc:        plan.DefaultEncryption,
 		initRepo:          plan.InitRepo,
+		backupProfile:     backupProfile,
 		newPass:           newPass,
 		confirmPass:       confirmPass,
 		savePass:          plan.SavePassphrase,
 	}
+	return v.seedBackupUserDefault()
 }
 
 // config0 returns deps.Config dereferenced, or a zero config when nil, so
@@ -311,11 +329,15 @@ func (v SetupWizardView) ConsumesArrows() bool {
 func (v SetupWizardView) Title() string { return "Setup" }
 
 // CapturesText reports the stages that focus a text input: the details stage
-// (the S3 bucket/prefix/region/… fields) and the passphrase stage (the masked
-// new/confirm fields). On those stages the shell must route every rune here so
-// a bucket name digit or a passphrase 'q' isn't stolen by a global binding.
-// The backend/actions/IAM/review/provision/done/error stages carry no input.
+// (the S3 bucket/prefix/region/… fields), the passphrase stage (the masked
+// new/confirm fields), and the actions stage while the backup-user profile
+// row is focused. On those the shell must route every rune here so a bucket
+// name digit, a passphrase 'q', or a profile name isn't stolen by a global
+// binding.
 func (v SetupWizardView) CapturesText() bool {
+	if v.stage == stageActions {
+		return v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile)
+	}
 	return v.stage == stageDetails || v.stage == stagePassphrase
 }
 
@@ -943,24 +965,23 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 func (v SetupWizardView) handleActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	isSpace := msg.Type == tea.KeySpace ||
 		(msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == ' ')
+	onProfile := v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile)
 	switch {
 	case msg.Type == tea.KeyTab || msg.Type == tea.KeyDown:
-		v.actionCursor = (v.actionCursor + 1) % actionRowCount
-		return v, nil
+		return v.moveActionCursor(+1), nil
 	case msg.Type == tea.KeyUp:
-		v.actionCursor = (v.actionCursor - 1 + actionRowCount) % actionRowCount
-		return v, nil
+		return v.moveActionCursor(-1), nil
 	case msg.Type == tea.KeyLeft && v.actionCursor == actionRowAuth:
 		if v.authCursor > 0 {
 			v.authCursor--
 		}
-		return v, nil
+		return v.seedBackupUserDefault(), nil
 	case msg.Type == tea.KeyRight && v.actionCursor == actionRowAuth:
 		if v.authCursor < len(setupAuthOrder)-1 {
 			v.authCursor++
 		}
-		return v, nil
-	case isSpace:
+		return v.seedBackupUserDefault(), nil
+	case isSpace && !onProfile:
 		switch v.actionCursor {
 		case actionRowCreate:
 			v.createBucket = !v.createBucket
@@ -970,10 +991,18 @@ func (v SetupWizardView) handleActionsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.defaultEnc = !v.defaultEnc
 		case actionRowInit:
 			v.initRepo = !v.initRepo
+		case actionRowBackupUser:
+			v.backupUser = !v.backupUser
 		}
-		return v, nil
+		return v.syncProfileFocus(), nil
 	case msg.Type == tea.KeyEnter:
 		return v.advanceFromActions()
+	}
+	if onProfile {
+		var cmd tea.Cmd
+		v.backupProfile, cmd = v.backupProfile.Update(msg)
+		v.notice = ""
+		return v, cmd
 	}
 	return v, nil
 }
@@ -989,6 +1018,22 @@ func (v SetupWizardView) advanceFromActions() (tea.Model, tea.Cmd) {
 	v.plan.DefaultEncryption = v.defaultEnc
 	v.plan.InitRepo = v.initRepo
 	v.plan.PrepareAWS = true
+	v.plan.ProvisionBackupUser = v.backupUserOffered() && v.backupUser
+	v.plan.BackupUserProfile = ""
+	if v.plan.ProvisionBackupUser {
+		profile := strings.TrimSpace(v.backupProfile.Value())
+		if profile == "" {
+			profile = setup.DefaultBackupUserProfile
+		}
+		if err := setup.ValidateBackupUserProfile(profile); err != nil {
+			// Stay here with the input focused: the profile is the only thing
+			// the operator can fix, so put the cursor on it.
+			v.notice = err.Error()
+			v.actionCursor = actionRowProfile
+			return v.syncProfileFocus(), nil
+		}
+		v.plan.BackupUserProfile = profile
+	}
 	if method == setup.AWSAuthSkip {
 		setup.ApplyAWSConfigOnly(&v.plan)
 		setup.NormalizeConfig(&v.plan.Config)
@@ -1201,7 +1246,16 @@ func (v SetupWizardView) View() string {
 		b.WriteString(v.actionToggle(actionRowBlock, "block public access", v.blockPublic))
 		b.WriteString(v.actionToggle(actionRowEncrypt, "default encryption (AES-256)", v.defaultEnc))
 		b.WriteString(v.actionToggle(actionRowInit, "initialize repository", v.initRepo))
-		b.WriteString(v.actionLine("↑/↓ row · ←/→ method · space toggle"))
+		if v.actionRowVisible(actionRowBackupUser) {
+			b.WriteString(v.actionToggle(actionRowBackupUser,
+				"create dedicated backup user ("+setup.BackupUserName+")", v.backupUser))
+		}
+		if v.actionRowVisible(actionRowProfile) {
+			// Label styled as a row, input appended after it — never wrap the
+			// already-styled input inside the row style.
+			fmt.Fprintf(&b, "%s%s\n", ui.SelectRow(v.actionCursor == actionRowProfile, "    profile: "), v.backupProfile.View())
+		}
+		b.WriteString(v.actionLine("↑/↓ row · ←/→ method · space toggle · type profile"))
 	case stagePassphrase:
 		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
@@ -1278,6 +1332,58 @@ func (v SetupWizardView) actionToggle(row int, label string, on bool) string {
 		box = "[x]"
 	}
 	return ui.SelectRow(v.actionCursor == row, box+" "+label) + "\n"
+}
+
+// backupUserOffered: the provisioning step exists only where a powerful
+// session was just obtained. Existing-credentials and skip already chose a
+// durable identity, and an IAM mutation they did not ask for is the worst
+// surprise a setup wizard can spring.
+func (v SetupWizardView) backupUserOffered() bool {
+	m := setupAuthOrder[v.authCursor]
+	return m == setup.AWSAuthLogin || m == setup.AWSAuthSSO
+}
+
+func (v SetupWizardView) actionRowVisible(row int) bool {
+	switch row {
+	case actionRowBackupUser:
+		return v.backupUserOffered()
+	case actionRowProfile:
+		return v.backupUserOffered() && v.backupUser
+	default:
+		return true
+	}
+}
+
+// moveActionCursor steps the cursor by delta, skipping hidden rows, and
+// keeps the profile input's focus in step with the cursor.
+func (v SetupWizardView) moveActionCursor(delta int) SetupWizardView {
+	for i := 0; i < actionRowCount; i++ {
+		v.actionCursor = (v.actionCursor + delta + actionRowCount) % actionRowCount
+		if v.actionRowVisible(v.actionCursor) {
+			break
+		}
+	}
+	return v.syncProfileFocus()
+}
+
+func (v SetupWizardView) syncProfileFocus() SetupWizardView {
+	if v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile) {
+		v.backupProfile.Focus()
+	} else {
+		v.backupProfile.Blur()
+	}
+	return v
+}
+
+// seedBackupUserDefault applies the per-method default — ON for browser
+// login (the expiry-trap path), OFF for SSO — and parks the cursor on a
+// visible row if the method change hid the one it was on.
+func (v SetupWizardView) seedBackupUserDefault() SetupWizardView {
+	v.backupUser = setupAuthOrder[v.authCursor] == setup.AWSAuthLogin
+	if !v.actionRowVisible(v.actionCursor) {
+		v.actionCursor = actionRowAuth
+	}
+	return v.syncProfileFocus()
 }
 
 // setupLabelCol is the column the details-stage values start in. Every label is

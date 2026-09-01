@@ -1805,3 +1805,103 @@ func TestSetupWizard_ReviewWarnsOnReconfigure(t *testing.T) {
 		})
 	}
 }
+
+// The toggle's default is the product decision: browser login is the
+// expiry-trap path, so it is pre-checked there; SSO is offered unchecked;
+// existing-credentials and skip never see it.
+func TestSetupWizard_BackupUserToggleDefaultsPerMethod(t *testing.T) {
+	v := setupAtActions(t) // authCursor 0 = login
+	if line := wizardLine(t, v.View(), "create dedicated backup user"); !strings.Contains(line, "[x]") {
+		t.Fatalf("login must default the backup-user toggle ON, got %q", line)
+	}
+	if !strings.Contains(v.View(), "profile:") {
+		t.Fatalf("an ON toggle must reveal the profile row:\n%s", v.View())
+	}
+
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRight}) // → sso
+	v = m.(SetupWizardView)
+	if line := wizardLine(t, v.View(), "create dedicated backup user"); !strings.Contains(line, "[ ]") {
+		t.Fatalf("sso must default the toggle OFF, got %q", line)
+	}
+	if strings.Contains(v.View(), "profile:") {
+		t.Fatalf("an OFF toggle must hide the profile row:\n%s", v.View())
+	}
+
+	for _, method := range []string{"existing", "skip"} {
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyRight})
+		v = m.(SetupWizardView)
+		if strings.Contains(v.View(), "backup user") {
+			t.Fatalf("%s must not offer the backup-user step:\n%s", method, v.View())
+		}
+	}
+}
+
+func TestSetupWizard_BackupUserWiresPlanWithDefaultProfile(t *testing.T) {
+	v := setupAtActions(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if !v.plan.ProvisionBackupUser {
+		t.Fatal("login + default toggle must set plan.ProvisionBackupUser")
+	}
+	if v.plan.BackupUserProfile != setup.DefaultBackupUserProfile {
+		t.Fatalf("plan.BackupUserProfile = %q, want %q", v.plan.BackupUserProfile, setup.DefaultBackupUserProfile)
+	}
+}
+
+func TestSetupWizard_BackupUserToggleOffClearsPlan(t *testing.T) {
+	v := setupAtActions(t)
+	for v.actionCursor != actionRowBackupUser {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SetupWizardView)
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeySpace})
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.plan.ProvisionBackupUser || v.plan.BackupUserProfile != "" {
+		t.Fatalf("toggle off must clear the plan, got on=%v profile=%q", v.plan.ProvisionBackupUser, v.plan.BackupUserProfile)
+	}
+}
+
+func TestSetupWizard_BackupUserProfileRowCapturesTextAndValidates(t *testing.T) {
+	v := setupAtActions(t)
+	for v.actionCursor != actionRowProfile {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SetupWizardView)
+	}
+	if !v.CapturesText() {
+		t.Fatal("the focused profile row must capture text so digits and 'q' reach the input")
+	}
+	for _, r := range "default" {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(SetupWizardView)
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageActions {
+		t.Fatalf("profile \"default\" must be refused on the actions stage, got %v", v.stage)
+	}
+	if v.notice == "" || !strings.Contains(v.View(), "default") {
+		t.Fatalf("refusal must be shown, notice=%q view:\n%s", v.notice, v.View())
+	}
+}
+
+// Hidden rows must be unreachable: cycling down from the last visible row
+// wraps to the auth row instead of landing on an invisible one.
+func TestSetupWizard_ActionCursorSkipsHiddenRows(t *testing.T) {
+	v := setupAtActions(t)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRight}) // sso: toggle visible, off → profile hidden
+	v = m.(SetupWizardView)
+	seen := map[int]bool{}
+	for i := 0; i < actionRowCount+1; i++ {
+		seen[v.actionCursor] = true
+		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SetupWizardView)
+	}
+	if seen[actionRowProfile] {
+		t.Fatal("cursor landed on the hidden profile row")
+	}
+	if !seen[actionRowBackupUser] {
+		t.Fatal("cursor never reached the visible backup-user row")
+	}
+}

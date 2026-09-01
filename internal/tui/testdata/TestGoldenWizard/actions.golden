@@ -8,6 +8,8 @@ Setup actions
   [x] block public access
   [x] default encryption (AES-256)
   [x] initialize repository
+  [x] create dedicated backup user (sentra-backup)
+      profile: sentra                  
 
 ⏎  Press enter to continue to Repository passphrase
-   ↑/↓ row · ←/→ method · space toggle
+   ↑/↓ row · ←/→ method · space toggle · type profile
