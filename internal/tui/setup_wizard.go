@@ -412,7 +412,7 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// so that guard means what it says on every route out of a failure.
 			crypto.Zeroize(v.pass)
 			v.pass = nil
-			return v, nil
+			return v.adoptBackupUserSwitch(msg), nil
 		}
 		v.stage = stageDone
 		v.steps = msg.steps
@@ -579,6 +579,32 @@ func (v SetupWizardView) goBack() SetupWizardView {
 	return v
 }
 
+// adoptBackupUserSwitch folds a completed backup-user provision back into the
+// wizard's own plan on the way to the failure screen, so the "⏎ retry" path
+// cannot undo work that already succeeded.
+//
+// PrepareAWS switches Repo.S3.Profile on the plan it is HANDED, and buildSetupOp
+// hands it a copy — a failure after that point (WriteConfig, InitRepo) therefore
+// returns to a view whose plan still names the expiring session profile and
+// still asks to provision. Retrying from there re-runs provisioning against a
+// user that now exists with its key already written: the pre-check refuses with
+// ErrCredentialsProfileExists, the operator is told to "choose another profile
+// name", and WriteConfig rewrites sentra.yaml back to the session profile — over
+// a file the first attempt had already pointed at the verified durable one.
+//
+// Only a verified switch is adopted (ProfileSwitched, which the engine sets
+// after CheckAWSSDKIdentity passes as the new identity). A warning-only report
+// means the plan is still correct as the operator built it, so it is left alone
+// and the retry may try provisioning again.
+func (v SetupWizardView) adoptBackupUserSwitch(msg setupDoneMsg) SetupWizardView {
+	if msg.prep == nil || msg.prep.BackupUser == nil || !msg.prep.BackupUser.ProfileSwitched {
+		return v
+	}
+	v.plan.Config.Repo.S3.Profile = msg.prep.BackupUser.Profile
+	v.plan.ProvisionBackupUser = false
+	return v
+}
+
 func (v SetupWizardView) handleErrorKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	switch msg.Type {
 	case tea.KeyEnter:
@@ -683,14 +709,19 @@ func (v SetupWizardView) buildSetupOp() startOpMsg {
 				steps.publicBlocked = p.PublicAccessBlocked
 				steps.encryptionOn = p.DefaultEncryptionEnabled
 			}
+			// Every return past this point carries auth/prep, not just the error:
+			// PrepareAWS may have created the backup user and switched THIS COPY
+			// of the plan to its profile, and the reports are how that reaches the
+			// view — see adoptBackupUserSwitch, which folds a verified switch back
+			// into the wizard's plan so the retry does not re-provision.
 			if err := eng.WriteConfig(cfgPath, &plan); err != nil {
-				return setupDoneMsg{err: err}
+				return setupDoneMsg{err: err, auth: auth, prep: prep}
 			}
 			var initRes *setup.InitResult
 			if plan.InitRepo {
 				res, err := eng.InitRepo(ctx, &plan.Config, pass, plan.SavePassphrase)
 				if err != nil {
-					return setupDoneMsg{err: err}
+					return setupDoneMsg{err: err, auth: auth, prep: prep}
 				}
 				initRes = &res
 				steps.repoInited = true

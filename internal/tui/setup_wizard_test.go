@@ -1361,6 +1361,203 @@ func TestSetupWizard_FailedOpClearsPassphraseStash(t *testing.T) {
 	}
 }
 
+// backupUserRetryEffects provisions the backup user successfully — the engine
+// then switches the plan's profile to it — and fails the FIRST InitRepo, which
+// on a switched plan is the first call made AS the new identity. That is the
+// realistic late failure: bucket prep already ran on the session identity, so
+// nothing before InitRepo can notice a shortfall in the scoped policy. It hands
+// out one shared in-memory store so the retry's init has somewhere to land, and
+// counts ProvisionBackupUser calls so a retry that re-provisions is visible.
+type backupUserRetryEffects struct {
+	stubEffects
+	store          blobstore.Store
+	storeCalls     int
+	provisionCalls int
+}
+
+func (b *backupUserRetryEffects) NewStore(context.Context, *config.Config) (blobstore.Store, error) {
+	b.storeCalls++
+	if b.storeCalls == 1 {
+		return nil, errors.New("AccessDenied: s3:ListBucket")
+	}
+	return b.store, nil
+}
+
+func (b *backupUserRetryEffects) ProvisionBackupUser(ctx context.Context, cfg *config.Config, opts setup.BackupUserOptions) (setup.BackupUserReport, error) {
+	b.provisionCalls++
+	return b.stubEffects.ProvisionBackupUser(ctx, cfg, opts)
+}
+
+// TestSetupWizard_RetryAfterLateFailureKeepsBackupUserProfile pins the in-wizard
+// retry against the one thing the backup-user step must never do: undo itself.
+//
+// PrepareAWS switches the profile on the plan the OP holds — a copy — so a
+// failure after it (WriteConfig, InitRepo) returns to a view whose plan still
+// names the session profile and still says "provision the backup user". The
+// retry therefore re-runs provisioning against a user that now exists with a
+// key already saved: the pre-check refuses (ErrCredentialsProfileExists), the
+// wizard blames the profile NAME, and WriteConfig rewrites sentra.yaml back to
+// the expiring session profile — over a file the first attempt had already
+// pointed at the verified durable one.
+//
+// The rule: once the engine has verified the new identity and switched to it,
+// that switch survives the failure. The retry runs as the backup user and does
+// not touch IAM again.
+func TestSetupWizard_RetryAfterLateFailureKeepsBackupUserProfile(t *testing.T) {
+	const passphrase = "correcthorse"
+	eff := &backupUserRetryEffects{
+		stubEffects: stubEffects{backupUser: setup.BackupUserReport{
+			UserName:        setup.BackupUserName,
+			UserCreated:     true,
+			PolicyAttached:  true,
+			AccessKeyID:     "AKIAEXAMPLE",
+			Profile:         setup.DefaultBackupUserProfile,
+			CredentialsPath: "/home/op/.aws/credentials",
+		}},
+		store: blobstore.NewMemory(),
+	}
+	cfgPath := filepath.Join(t.TempDir(), "sentra.yaml")
+	// Name the session profile explicitly. An empty one would be filled in from
+	// the developer's own ~/.aws (DefaultPlan → DefaultProfileFromConfig), and a
+	// machine that happens to have a profile called "sentra" would make the
+	// "switched to the backup user" assertion vacuously true.
+	var seed config.Config
+	seed.Repo.S3.Profile = "session-sso"
+	deps := Deps{Config: &seed, ConfigPath: cfgPath, SetupEffects: eff}
+
+	v := NewSetupWizardView(deps)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 80, Height: 24})
+	v = m.(SetupWizardView)
+	v.backendCursor = 0                             // AWS
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // details
+	v = m.(SetupWizardView)
+	v = setupTypeField(v, "my-sentra-bucket")
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // actions
+	v = m.(SetupWizardView)
+	if !v.backupUser {
+		t.Fatal("precondition: browser login seeds the backup-user toggle on")
+	}
+	if v.plan.Config.Repo.S3.Profile != "session-sso" {
+		t.Fatalf("precondition: the plan must start on the session profile, got %q", v.plan.Config.Repo.S3.Profile)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // passphrase (initRepo on)
+	v = m.(SetupWizardView)
+	v = setupTypePass(v, passphrase, passphrase)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // review
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push confirm modal
+	v = m.(SetupWizardView)
+	m, cmd := v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+
+	// Attempt 1: provisioning succeeds and switches the profile; InitRepo fails.
+	done, ok := findSetupOp(t, cmd).run(context.Background()).(setupDoneMsg)
+	if !ok {
+		t.Fatal("precondition: the setup op must return a setupDoneMsg")
+	}
+	if done.err == nil {
+		t.Fatal("precondition: the first attempt must fail in InitRepo")
+	}
+	if eff.provisionCalls != 1 {
+		t.Fatalf("precondition: the first attempt must provision the backup user once, got %d", eff.provisionCalls)
+	}
+	// The failure has to CARRY what already succeeded, or the wizard cannot know
+	// the switch happened.
+	if done.prep == nil || done.prep.BackupUser == nil {
+		t.Fatalf("a failure after PrepareAWS must still report the prepare results, got prep=%+v", done.prep)
+	}
+	if !done.prep.BackupUser.ProfileSwitched {
+		t.Fatalf("precondition: the engine must have switched to the verified profile, got %+v", done.prep.BackupUser)
+	}
+
+	m, _ = v.Update(done)
+	v = m.(SetupWizardView)
+	if v.stage != stageError {
+		t.Fatalf("precondition: a failed op must land on stageError, got %v", v.stage)
+	}
+	if got := v.plan.Config.Repo.S3.Profile; got != setup.DefaultBackupUserProfile {
+		t.Fatalf("the wizard's plan must keep the verified backup-user profile after a late failure, got %q", got)
+	}
+	if v.plan.ProvisionBackupUser {
+		t.Fatal("the wizard's plan must stop asking to provision a backup user it already created and verified")
+	}
+
+	// Attempt 2, driven exactly as the operator would: enter (retry) →
+	// re-commit the passphrase → enter (push the confirm) → confirm.
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // retry → passphrase
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // re-commit → review
+	v = m.(SetupWizardView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // push confirm modal
+	v = m.(SetupWizardView)
+	m, cmd = v.Update(confirmedMsg{id: setupReviewConfirmID})
+	v = m.(SetupWizardView)
+
+	done2, ok := findSetupOp(t, cmd).run(context.Background()).(setupDoneMsg)
+	if !ok {
+		t.Fatal("the retry must return a setupDoneMsg")
+	}
+	if done2.err != nil {
+		t.Fatalf("the retry must succeed as the backup user: %v", done2.err)
+	}
+	if eff.provisionCalls != 1 {
+		t.Fatalf("the retry re-provisioned the backup user (%d calls); the key it already saved makes that a guaranteed refusal", eff.provisionCalls)
+	}
+
+	// And the file the retry left behind names the durable profile, not the
+	// session one — this is the state a scheduled backup runs under.
+	data, err := os.ReadFile(cfgPath)
+	if err != nil {
+		t.Fatalf("read written config: %v", err)
+	}
+	if !strings.Contains(string(data), `profile: "`+setup.DefaultBackupUserProfile+`"`) {
+		t.Fatalf("the retry rewrote sentra.yaml without the verified backup-user profile:\n%s", data)
+	}
+}
+
+// TestSetupWizard_FailureWithoutProfileSwitchLeavesPlanAlone is the other half
+// of the rule: the error branch may only adopt a switch the engine actually
+// made. A failure that carries no prepare report (WriteDraft, or PrepareAWS
+// itself) and one whose backup-user step only warned must both leave the plan
+// exactly as the operator built it — including its standing request to try
+// provisioning again.
+func TestSetupWizard_FailureWithoutProfileSwitchLeavesPlanAlone(t *testing.T) {
+	tests := []struct {
+		name string
+		msg  setupDoneMsg
+	}{
+		{"no prepare report", setupDoneMsg{err: errors.New("write draft: disk full")}},
+		{"no backup user", setupDoneMsg{err: errors.New("init repo: boom"), prep: &setup.AWSPrepareReport{}}},
+		{"switch never happened", setupDoneMsg{
+			err: errors.New("init repo: boom"),
+			prep: &setup.AWSPrepareReport{BackupUser: &setup.BackupUserReport{
+				UserName: setup.BackupUserName,
+				Profile:  setup.DefaultBackupUserProfile,
+				Warning:  "backup user key not saved",
+			}},
+		}},
+	}
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			v := setupAtReview(t)
+			v.plan.Config.Repo.S3.Profile = "session"
+			v.plan.ProvisionBackupUser = true
+
+			m, _ := v.Update(tt.msg)
+			v = m.(SetupWizardView)
+			if v.stage != stageError {
+				t.Fatalf("a failed op must land on stageError, got %v", v.stage)
+			}
+			if got := v.plan.Config.Repo.S3.Profile; got != "session" {
+				t.Fatalf("profile must be untouched without a verified switch, got %q", got)
+			}
+			if !v.plan.ProvisionBackupUser {
+				t.Fatal("a retry must still try to provision when the first attempt never got a working backup user")
+			}
+		})
+	}
+}
+
 // findSetupOp extracts the single startOpMsg{name:"setup"} from a command.
 func findSetupOp(t *testing.T, cmd tea.Cmd) startOpMsg {
 	t.Helper()
