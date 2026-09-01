@@ -65,7 +65,7 @@ func TestDefaultEffectsNewStore(t *testing.T) {
 // to DefaultProvisionBackupUser (a nil config is the cheapest observable
 // path through that driver).
 func TestDefaultEffectsProvisionBackupUserDelegates(t *testing.T) {
-	var eff Effects = DefaultEffects()
+	eff := DefaultEffects()
 	_, err := eff.ProvisionBackupUser(context.Background(), nil, BackupUserOptions{})
 	if err == nil || !strings.Contains(err.Error(), "nil config") {
 		t.Fatalf("expected the default driver's nil-config error, got %v", err)
