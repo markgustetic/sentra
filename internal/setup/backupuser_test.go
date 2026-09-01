@@ -26,6 +26,8 @@ type fakeIAM struct {
 	deleteKeyErr    error
 	createUserCalls int
 	putPolicyDoc    string
+	putPolicyUser   string
+	putPolicyName   string
 	createKeyCalls  int
 	deletedKeyID    string
 }
@@ -43,6 +45,8 @@ func (f *fakeIAM) PutUserPolicy(_ context.Context, in *iam.PutUserPolicyInput, _
 		return nil, f.putPolicyErr
 	}
 	f.putPolicyDoc = aws.ToString(in.PolicyDocument)
+	f.putPolicyUser = aws.ToString(in.UserName)
+	f.putPolicyName = aws.ToString(in.PolicyName)
 	return &iam.PutUserPolicyOutput{}, nil
 }
 
@@ -107,13 +111,19 @@ func TestProvisionBackupUser_HappyPath(t *testing.T) {
 	if got.secret != fakeSecret || got.profile != "sentra" || got.path != "/tmp/creds" {
 		t.Fatalf("writer got %+v", got)
 	}
-	// The policy is the canonical document for this bucket+prefix.
-	var doc IAMPolicyDocument
-	if err := json.Unmarshal([]byte(f.putPolicyDoc), &doc); err != nil {
-		t.Fatalf("policy is not JSON: %v", err)
+	// The policy must be the exact canonical document for this bucket+prefix
+	// — not merely parseable JSON with the right statement count, which
+	// can't tell a right bucket from a wrong one or swapped arguments.
+	wantDoc, err := json.Marshal(BuildIAMPolicy("example-bucket", "sentra/"))
+	if err != nil {
+		t.Fatalf("marshal want policy: %v", err)
 	}
-	if want := BuildIAMPolicy("example-bucket", "sentra/"); len(doc.Statement) != len(want.Statement) {
-		t.Fatalf("policy statements = %d, want %d", len(doc.Statement), len(want.Statement))
+	if f.putPolicyDoc != string(wantDoc) {
+		t.Fatalf("putPolicyDoc =\n%s\nwant\n%s", f.putPolicyDoc, wantDoc)
+	}
+	// The policy must be attached to the right user under the right name.
+	if f.putPolicyUser != BackupUserName || f.putPolicyName != BackupUserPolicyName {
+		t.Fatalf("PutUserPolicy user/name = %q/%q, want %q/%q", f.putPolicyUser, f.putPolicyName, BackupUserName, BackupUserPolicyName)
 	}
 }
 
