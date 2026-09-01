@@ -125,7 +125,7 @@ func getBucketDefaultEncryption(ctx context.Context, client *s3.Client, bucket s
 		if isAWSAPIErrCode(err, "ServerSideEncryptionConfigurationNotFoundError") {
 			return true, false, nil
 		}
-		return false, false, fmt.Errorf("inspect default encryption for bucket %q (requires s3:GetBucketEncryption on %s): %w", bucket, bucketARN(bucket), err)
+		return false, false, fmt.Errorf("inspect default encryption for bucket %q (requires s3:GetEncryptionConfiguration on %s): %w", bucket, bucketARN(bucket), err)
 	}
 	cfg := out.ServerSideEncryptionConfiguration
 	return true, cfg != nil && len(cfg.Rules) > 0, nil

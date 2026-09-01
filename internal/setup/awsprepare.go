@@ -142,7 +142,7 @@ func enableBucketDefaultEncryption(ctx context.Context, client *s3.Client, bucke
 		},
 	})
 	if err != nil {
-		return fmt.Errorf("enable default encryption for bucket %q (requires s3:PutBucketEncryption on %s): %w", bucket, BucketARN(bucket), err)
+		return fmt.Errorf("enable default encryption for bucket %q (requires s3:PutEncryptionConfiguration on %s): %w", bucket, BucketARN(bucket), err)
 	}
 	return nil
 }

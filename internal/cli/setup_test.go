@@ -173,13 +173,19 @@ func TestSetupIAMPolicy_PrintsLeastPrivilegePolicy(t *testing.T) {
 	for _, want := range []string{
 		"arn:aws:s3:::sentra-prod",
 		"arn:aws:s3:::sentra-prod/backups/*",
-		"s3:PutBucketEncryption",
+		"s3:PutEncryptionConfiguration",
 		"s3:GetObject",
-		`"backups/*"`,
+		"s3:ListBucket",
 	} {
 		if !strings.Contains(got, want) {
 			t.Fatalf("policy missing %q:\n%s", want, got)
 		}
+	}
+	// A prefix condition on the ListBucket statement denies Sentra's own
+	// HeadBucket probes (no s3:prefix in that request context), so the emitted
+	// JSON must never carry one.
+	if strings.Contains(got, "Condition") {
+		t.Fatalf("policy must not contain a Condition:\n%s", got)
 	}
 }
 
