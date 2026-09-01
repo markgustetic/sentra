@@ -26,10 +26,21 @@ const (
 // pruneConfirmID ties the typed-confirm modal back to this flow.
 const pruneConfirmID = "prune-apply"
 
+// pruneGCConfirmID ties the GC-only confirm (empty drop set) back to
+// this flow. Distinct from pruneConfirmID so a stale confirmation from
+// one gate can never trigger the other path.
+const pruneGCConfirmID = "prune-gc-only"
+
 type pruneDoneMsg struct {
 	deleted int
 	stats   repo.GCStats
 	err     error
+	// gcOnly marks a run that deleted no snapshots by design (empty
+	// drop set); the done stage renders GC stats without a snapshot
+	// count. emptyRepo marks GC's zero-snapshot refusal (ErrEmptyRepo),
+	// which is a calm no-op here, not a failure.
+	gcOnly    bool
+	emptyRepo bool
 }
 
 func (pruneDoneMsg) opResult() {}
@@ -39,7 +50,9 @@ func (pruneDoneMsg) opResult() {}
 // prune --apply sequence: DeleteSnapshot per drop (skipping already-gone
 // snapshots, as the CLI does), then GC with the keep-set (GC's live set is
 // derived from the store under its lock; keepIDs only marks the
-// deliberate-prune path).
+// deliberate-prune path). An empty drop set still offers a GC-only run
+// behind a plain confirm — the CLI's runPruneGCOnly rule, in TUI form —
+// so orphaned blobs stay collectable from this surface too.
 type PruneView struct {
 	deps      Deps
 	stage     pruneStage
@@ -95,10 +108,13 @@ func (PruneView) Init() tea.Cmd { return nil }
 func (v PruneView) Title() string { return "Prune" }
 
 func (v PruneView) ShortHelp() []key.Binding {
-	if v.stage == prunePreview && len(v.drop) > 0 {
+	if v.stage != prunePreview || v.loadErr != "" {
+		return nil
+	}
+	if len(v.drop) > 0 {
 		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "prune…"))}
 	}
-	return nil
+	return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "run GC…"))}
 }
 
 func (v PruneView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -122,11 +138,18 @@ func (v PruneView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case confirmedMsg:
-		if msg.id != pruneConfirmID || v.stage != prunePreview {
+		if v.stage != prunePreview {
 			return v, nil
 		}
-		v.notice = ""
-		return v.startPrune()
+		switch msg.id {
+		case pruneConfirmID:
+			v.notice = ""
+			return v.startPrune()
+		case pruneGCConfirmID:
+			v.notice = ""
+			return v.startGCOnly()
+		}
+		return v, nil
 
 	case tea.KeyMsg:
 		if v.stage == prunePreview && msg.Type == tea.KeyEnter && len(v.drop) > 0 {
@@ -141,6 +164,19 @@ func (v PruneView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 				word = "wipe"
 			}
 			modal := NewTypedConfirmModal("Confirm prune", body, word, pruneConfirmID, 80, 24)
+			return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+		}
+		if v.stage == prunePreview && msg.Type == tea.KeyEnter && v.loadErr == "" {
+			// Empty drop set: retention keeps everything, but the surface
+			// still owes the operator a GC pass — orphaned blobs (crashed
+			// backups, out-of-band deletes) never enter the drop set, and
+			// prune is the only sanctioned way to reclaim them. A plain
+			// confirm suffices: GC deletes only unreferenced blobs, never
+			// a snapshot, so the typed gate would overstate the stakes.
+			v.notice = ""
+			modal := NewConfirmModal("Run GC",
+				"No snapshots to delete — retention keeps everything.\nGC reclaims blobs no snapshot references (crashed backups,\nout-of-band deletes). Snapshots are never touched.",
+				pruneGCConfirmID, 80, 24)
 			return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 		}
 		if v.stage == pruneDone && msg.Type == tea.KeyEnter {
@@ -185,6 +221,27 @@ func (v PruneView) startPrune() (tea.Model, tea.Cmd) {
 	return v, func() tea.Msg { return start }
 }
 
+// startGCOnly runs GC with nil keepIDs — the bare-orphans mode — under
+// the same one-op guard (and op name) as a full prune. nil keepIDs
+// makes GC refuse a zero-snapshot store (ErrEmptyRepo) instead of
+// treating "no manifests" as "every blob is garbage"; that refusal is
+// reported as a calm no-op, not an error.
+func (v PruneView) startGCOnly() (tea.Model, tea.Cmd) {
+	v.stage = pruneRunning
+	r := v.deps.Repo
+	start := startOpMsg{
+		name: "prune",
+		run: func(ctx context.Context) tea.Msg {
+			stats, err := r.GC(ctx, nil)
+			if errors.Is(err, repo.ErrEmptyRepo) {
+				return pruneDoneMsg{gcOnly: true, emptyRepo: true}
+			}
+			return pruneDoneMsg{gcOnly: true, stats: stats, err: err}
+		},
+	}
+	return v, func() tea.Msg { return start }
+}
+
 func (v PruneView) View() string {
 	if v.loadErr != "" {
 		return ui.Danger.Render(v.loadErr)
@@ -194,10 +251,23 @@ func (v PruneView) View() string {
 	case pruneRunning:
 		b.WriteString(ui.Primary.Render("Pruning…"))
 	case pruneDone:
-		if v.result.err != nil {
-			b.WriteString(ui.Danger.Render("Prune failed"))
+		switch {
+		case v.result.err != nil:
+			header := "Prune failed"
+			if v.result.gcOnly {
+				header = "GC failed"
+			}
+			b.WriteString(ui.Danger.Render(header))
 			fmt.Fprintf(&b, "\n\n%s", humanizeErr(v.result.err))
-		} else {
+		case v.result.emptyRepo:
+			b.WriteString(ui.Success.Render("GC skipped"))
+			fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("The repository has no snapshots, so every blob would look\nunreferenced; GC refuses to reclaim from an empty repository."))
+		case v.result.gcOnly:
+			b.WriteString(ui.Success.Render("GC complete"))
+			fmt.Fprintf(&b, "\n\n  reclaimed blobs    %d\n  reclaimed bytes    %s\n  live blobs         %d",
+				v.result.stats.DeletedBlobs,
+				ui.FormatBytes(v.result.stats.DeletedBytes), v.result.stats.LiveBlobs)
+		default:
 			b.WriteString(ui.Success.Render("Prune complete"))
 			fmt.Fprintf(&b, "\n\n  deleted snapshots  %d\n  reclaimed blobs    %d\n  reclaimed bytes    %s\n  live blobs         %d",
 				v.result.deleted, v.result.stats.DeletedBlobs,
@@ -244,7 +314,7 @@ func (v PruneView) View() string {
 		if len(v.drop) > 0 {
 			fmt.Fprintf(&b, "\n%s", ui.ActionLine("prune the flagged snapshots", "typed confirmation required"))
 		} else {
-			fmt.Fprintf(&b, "\n%s", ui.Muted.Render("nothing to prune"))
+			fmt.Fprintf(&b, "\n%s", ui.ActionLine("run GC and reclaim unreferenced storage", "no snapshots to delete"))
 		}
 	}
 	return b.String()
