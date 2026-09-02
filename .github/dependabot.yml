@@ -38,6 +38,15 @@ updates:
     commit-message:
       prefix: "deps"
       include: "scope"
+    ignore:
+      # charmbracelet/x/exp/golden and /exp/teatest are UNTAGGED nested
+      # modules (pseudo-versions in go.mod). Dependabot resolves them as
+      # packages of the root github.com/charmbracelet/x@v0.1.0 — which does
+      # not contain them — and every weekly run ends in
+      # "dependency_file_not_resolvable" (see the failed Dependabot job of
+      # 2026-08-31). Bump these two by hand with `go get ...@latest`.
+      - dependency-name: "github.com/charmbracelet/x/exp/golden"
+      - dependency-name: "github.com/charmbracelet/x/exp/teatest"
     groups:
       # Patch-only group keeps PRs small and easy to merge. Major
       # bumps surface as their own PRs so they get a proper review.
