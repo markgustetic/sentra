@@ -46,7 +46,10 @@ func NewRecoveryKit(deps RecoveryKitDeps) *cobra.Command {
 
 func runRecoveryKit(cmd *cobra.Command, deps RecoveryKitDeps, cfgPath, outPath string, asJSON bool) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

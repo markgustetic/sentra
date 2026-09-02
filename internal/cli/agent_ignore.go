@@ -57,7 +57,10 @@ func runAgentAdviseIgnore(
 	largeFileBytes int64,
 ) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	cfg, err := config.Load(cfgPath)
 	if err != nil {

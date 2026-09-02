@@ -272,7 +272,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 
 Every repo-facing command resolves its config path the same way:
 
-1. An explicit `--config <path>` is used verbatim — no discovery.
+1. An explicit `--config <path>` is used verbatim — no discovery — and must
+   already exist. A missing explicit path fails before any load with an
+   error naming it (`--config <path>: file does not exist …`), never a
+   defaults-only run: `config.Load` tolerates absence on purpose, and
+   letting that reach an explicit path made `policy list` report "No
+   policies configured" for a typo and let `config.Update` author a new
+   file there. Only `ui` and `setup`, which host the wizard that creates
+   the file, accept an explicit path that does not exist yet.
 2. Otherwise `./sentra.yaml`, when it exists as a regular file.
 3. Otherwise `$XDG_CONFIG_HOME/sentra/sentra.yaml`, with unset/empty
    `XDG_CONFIG_HOME` defaulting to `~/.config` (the gh-CLI convention,
@@ -306,13 +313,18 @@ CLI. The login never auto-runs.
 Exceptions: `sentra init` writes `./sentra.yaml` only (scripting /
 recovery surface; never reaches outside cwd). `sentra local` always uses
 `.sentra-local.yaml`. `sentra sync` resolves its *source* config through
-discovery; its destination comes only from `--dst-config`.
+discovery; its destination comes only from `--dst-config`, which must
+also name an existing file.
 
 Implementation: `config.DiscoverPath()` (internal/config/discover.go),
 applied by `resolveConfigPath` (internal/cli/config_path.go) as the first
 statement of every run body — at RunE time, because `Flags().Changed` is
-only meaningful after argv parsing. `sentra doctor` prints the resolved
-path.
+only meaningful after argv parsing. It returns the missing-file error;
+`resolveConfigPathForLaunch` is the unchecked variant only `runUI` takes.
+`TestExplicitMissingConfig_FailsEveryCommand` (cmd/sentra) walks the
+production tree and fails for any `--config`-bearing command it has no
+row for, so a new command either inherits the rule or is exempted by
+name. `sentra doctor` prints the resolved path.
 
 ## CI
 

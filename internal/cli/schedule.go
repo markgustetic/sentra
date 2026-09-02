@@ -85,7 +85,10 @@ func newScheduleUninstall(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 }
 
 func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	p, absConfig, err := loadScheduledPolicy(cfgPath, name)
 	if err != nil {
 		return err
@@ -124,7 +127,10 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 }
 
 func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	p, _, err := loadScheduledPolicy(cfgPath, name)
 	if err != nil {
 		return err
@@ -164,7 +170,10 @@ func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name stri
 }
 
 func runScheduleUninstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	if _, _, err := loadScheduledPolicy(cfgPath, name); err != nil {
 		return err
 	}

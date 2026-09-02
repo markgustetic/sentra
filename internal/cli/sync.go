@@ -5,6 +5,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"os"
 
 	"github.com/spf13/cobra"
 
@@ -106,6 +107,12 @@ func runSync(cmd *cobra.Command, deps SyncDeps, flags *syncFlags) error {
 
 	if flags.dstConfig == "" {
 		return fmt.Errorf("sentra sync: --dst-config is required")
+	}
+	// --dst-config is always explicit, so an absent file is an operator error,
+	// never an empty destination: config.Load would hand back Defaults() and
+	// the failure would surface later as a blank bucket.
+	if configFileMissing(flags.dstConfig) {
+		return fmt.Errorf("--dst-config %s: %w", flags.dstConfig, os.ErrNotExist)
 	}
 
 	// 1. Load source's sentra.yaml via config discovery (cwd, else

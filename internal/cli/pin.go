@@ -51,7 +51,10 @@ func newPinCommand(deps PinDeps, pin bool) *cobra.Command {
 
 func runPin(cmd *cobra.Command, deps PinDeps, ref, cfgPath string, pin bool) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

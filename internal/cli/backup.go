@@ -132,7 +132,10 @@ func newBackupApply(deps BackupDeps) *cobra.Command {
 // independently testable and easy to grep.
 func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, rescan, asJSON bool) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, cfg, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {
@@ -203,7 +206,10 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 
 func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outPath string) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	if outPath == "" {
 		return errors.New("backup plan: --out must not be empty")
 	}
@@ -246,7 +252,10 @@ func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outP
 
 func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath string, yes bool) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	raw, err := os.ReadFile(planPath) //nolint:gosec // user-provided plan path is the command argument.
 	if err != nil {

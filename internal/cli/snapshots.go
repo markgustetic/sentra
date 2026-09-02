@@ -68,7 +68,10 @@ type snapshotJSONRow struct {
 // runSnapshots is the body of `sentra snapshots`.
 func runSnapshots(cmd *cobra.Command, deps SnapshotsDeps, asJSON bool, cfgPath string) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

@@ -44,7 +44,10 @@ func NewStats(deps StatsDeps) *cobra.Command {
 
 func runStats(cmd *cobra.Command, deps StatsDeps, asJSON bool, cfgPath string) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

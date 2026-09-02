@@ -49,7 +49,10 @@ func NewMCP(deps MCPDeps) *cobra.Command {
 
 func runMCP(cmd *cobra.Command, deps MCPDeps, cfgPath string) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	passFile := ""
 	if deps.PassphraseFile != nil {

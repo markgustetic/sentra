@@ -57,7 +57,10 @@ func NewDoctor(deps DoctorDeps) *cobra.Command {
 }
 
 func runDoctor(cmd *cobra.Command, deps DoctorDeps, cfgPath string, skipRepo, asJSON bool) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	stdout := cmdStdout(cmd, deps.Stdout)
 	out := stdout
 	if asJSON {

@@ -148,7 +148,11 @@ func NewAgentScan(deps AgentDeps) *cobra.Command {
 // grep-ability and to keep cobra closures shallow.
 func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 	cmd.SilenceUsage = true
-	flags.cfgPath = resolveConfigPath(cmd, flags.cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, flags.cfgPath)
+	if err != nil {
+		return err
+	}
+	flags.cfgPath = cfgPath
 
 	r, pass, cfg, err := openRepoForConfig(cmd, flags.cfgPath, deps.RepoDeps)
 	if err != nil {

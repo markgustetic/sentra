@@ -78,7 +78,10 @@ func runRestore(
 	concurrency int,
 ) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	if dryRun && verify {
 		return fmt.Errorf("restore: --dry-run and --verify cannot be combined")
 	}

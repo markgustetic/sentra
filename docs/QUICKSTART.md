@@ -166,7 +166,7 @@ Sentra looks for `sentra.yaml` in the current directory first, then falls
 back to `~/.config/sentra/sentra.yaml` (honoring `XDG_CONFIG_HOME`).
 First-run setup writes the home location, so after setting up once you
 can run `sentra` from any directory. Pass `--config` to use a specific
-file.
+file; it must already exist (`sentra setup --config <path>` creates one).
 
 To verify setup without changing anything:
 

@@ -30,7 +30,11 @@ Config discovery: with no `--config`, commands use `./sentra.yaml` when
 present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default
 `~/.config`); first-run setup writes the home path, so bare `sentra`
 works from any directory. `init` (cwd-only) and `local`
-(`.sentra-local.yaml`) are the exceptions.
+(`.sentra-local.yaml`) are the exceptions. An explicit `--config` must
+name an existing file: `resolveConfigPath` fails fast with the path, so a
+typo can neither read as an empty config nor get a new file authored at
+it. Only `ui`/`setup`, whose wizard creates the file, take the unchecked
+`resolveConfigPathForLaunch`.
 
 `sentra local` is the dev flow: it starts MinIO, exports the `minioadmin`
 credentials **only if you have not set AWS credentials yourself**, and opens the

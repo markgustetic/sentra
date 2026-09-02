@@ -60,7 +60,10 @@ func NewLs(deps LsDeps) *cobra.Command {
 
 func runLs(cmd *cobra.Command, deps LsDeps, ref string, asJSON bool, cfgPath string) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

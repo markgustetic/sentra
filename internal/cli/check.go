@@ -77,7 +77,10 @@ func runCheck(
 	readDataSubset float64,
 ) error {
 	cmd.SilenceUsage = true
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 
 	r, pass, _, err := openRepoForConfig(cmd, cfgPath, deps.RepoDeps)
 	if err != nil {

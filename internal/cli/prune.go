@@ -131,7 +131,11 @@ func NewPrune(deps PruneDeps) *cobra.Command {
 // for grep-ability and unit-testability.
 func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	cmd.SilenceUsage = true
-	flags.cfgPath = resolveConfigPath(cmd, flags.cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, flags.cfgPath)
+	if err != nil {
+		return err
+	}
+	flags.cfgPath = cfgPath
 
 	r, pass, cfg, err := openRepoForConfig(cmd, flags.cfgPath, deps.RepoDeps)
 	if err != nil {

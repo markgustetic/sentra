@@ -143,7 +143,11 @@ func newPolicyRun(deps PolicyDeps, cfgPath *string) *cobra.Command {
 }
 
 func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *policyAddFlags) error {
-	*flags.configPath = resolveConfigPath(cmd, *flags.configPath)
+	cfgPath, err := resolveConfigPath(cmd, *flags.configPath)
+	if err != nil {
+		return err
+	}
+	*flags.configPath = cfgPath
 	schedule, err := policycfg.ParseScheduleSpec(flags.schedule)
 	if err != nil {
 		return fmt.Errorf("parse schedule: %w", err)
@@ -194,7 +198,10 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 }
 
 func runPolicyList(cmd *cobra.Command, deps PolicyDeps, cfgPath string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -220,7 +227,10 @@ func runPolicyList(cmd *cobra.Command, deps PolicyDeps, cfgPath string) error {
 }
 
 func runPolicyShow(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
@@ -247,10 +257,13 @@ func runPolicyShow(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) er
 }
 
 func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	// On-disk base, as in runPolicyAdd: dropping a policy must not rewrite
 	// repo.s3 with whatever SENTRA_* said for this invocation.
-	err := config.Update(cfgPath, func(cfg *config.Config) error {
+	err = config.Update(cfgPath, func(cfg *config.Config) error {
 		if _, ok := cfg.Policies[name]; !ok {
 			return fmt.Errorf("policy %q not found", name)
 		}
@@ -285,7 +298,10 @@ func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) 
 }
 
 func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error {
-	cfgPath = resolveConfigPath(cmd, cfgPath)
+	cfgPath, err := resolveConfigPath(cmd, cfgPath)
+	if err != nil {
+		return err
+	}
 	cfg, err := config.Load(cfgPath)
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
