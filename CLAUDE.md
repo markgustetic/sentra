@@ -190,13 +190,31 @@ below both.
   **`Focus()`'s own cmd**, never `textinput.Blink`: that package var resolves
   to bubbles/cursor's *unexported* bootstrap message, which no `Update` switch
   can name, so it is silently dropped and the blink never starts. Views route
-  `cursor.BlinkMsg` to the focused field so the schedule keeps itself alive; a
-  model focused at construction captures the cmd in an `initBlink` field for
-  its `Init` (a value-receiver `Init` calling `Focus()` would mutate a
-  throwaway copy). Two exceptions take blink only, no box: inputs already
-  inside dedicated chrome (palette, typed-confirm modal, chat overlay), and
-  the setup wizard, whose rows already carry `ui.SelectRow`'s `▍`. Sizing an
-  input from the pane interior? Subtract `ui.FieldBoxOverhead`.
+  `cursor.BlinkMsg` to the focused field so the schedule keeps itself alive,
+  and **leaving a stage blurs its field** — a focused field nobody renders
+  blinks forever and comes back spuriously framed. Two exceptions take blink
+  only, no box: inputs already inside dedicated chrome (palette, typed-confirm
+  modal, chat overlay), and the setup wizard, whose rows already carry
+  `ui.SelectRow`'s `▍`. Sizing an input from the pane interior? Subtract
+  `ui.FieldBoxOverhead`. Assign `Focus()`'s cmd to a local before returning —
+  `return v, v.f.Focus()` leaves the copy-vs-evaluate order unspecified.
+- **A `cursor.BlinkCmd` is SINGLE-USE — never cache one on a reopenable
+  overlay.** `BlinkCmd` bakes `BlinkMsg{id, tag}` into its closure behind a
+  one-shot context deadline, so replaying it delivers a tick tagged for a
+  `blinkTag` the field has already advanced past, and `cursor.Update` drops
+  it: the cursor sits solid until the first keystroke, and a non-nil check on
+  the cmd cannot see it. Anything built once and reopened many times
+  (`Palette`, `ChatOverlay`) must **re-`Focus()` in `Init`, with a pointer
+  receiver**; only a model constructed fresh per use (`TypedConfirmModal`) may
+  cache. Cover reopen, not just first open.
+- **Blink ticks are delivered to every focus owner at once, not by
+  precedence** (`App.Update`'s `cursor.BlinkMsg` case). Not because a tick
+  addresses one field — `cursor.Model.id` is never assigned in bubbles v1.0.0,
+  so tags alone discriminate and unrelated fields do accept each other's
+  ticks — but because accepting one advances the accepting field's tag,
+  invalidating every in-flight duplicate. Precedence routing instead *killed*
+  chains: an overlay does not blur the field beneath it, so handing that
+  field's tick to the overlay alone stopped a chain nothing re-arms.
 - **Never wrap an already-styled string.** `outer.Render(s)` where `s` contains
   `ui.Muted.Render(help)` embeds an ANSI reset that terminates the outer style
   mid-line. Style the plain text and append styled fragments after it.
