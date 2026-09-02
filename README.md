@@ -56,7 +56,7 @@ built-in agent that audits your repository and surfaces recommendations.
     </td>
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/backup.png" alt="Backup wizard, step 1: folder picker with jump-to places and the live preview pane.">
-      <br><sub><b>Backup</b> — pick a folder (with jump-to places), tag it, and arm a daily/weekly/monthly schedule.</sub>
+      <br><sub><b>Backup</b> — a three-step wizard: pick a folder (with jump-to places), choose a schedule, confirm with a tag.</sub>
     </td>
   </tr>
   <tr>
@@ -67,6 +67,12 @@ built-in agent that audits your repository and surfaces recommendations.
     <td width="50%" valign="top" align="center">
       <img src="docs/screenshots/settings.png" alt="Settings view: bucket, prefix, region and keyring readouts plus scheduled backups, recovery kit, passphrase rotation, and re-run setup.">
       <br><sub><b>Settings</b> — config summary plus scheduled backups, recovery kit, passphrase, and setup.</sub>
+    </td>
+  </tr>
+  <tr>
+    <td colspan="2" valign="top" align="center">
+      <img src="docs/screenshots/backup-schedule.png" width="50%" alt="Backup wizard, step 2: a cadence list (one-shot, hourly, daily, weekly, monthly) with daily selected, and prefilled policy name and time fields.">
+      <br><sub><b>Backup, step 2</b> — one-shot, or a cadence that installs a named policy and an OS timer; it then shows up under Scheduled backups.</sub>
     </td>
   </tr>
 </table>
