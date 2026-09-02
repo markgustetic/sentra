@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 	"github.com/charmbracelet/x/exp/teatest"
@@ -97,32 +98,29 @@ func TestSmoke_EveryViewFitsTheFrame(t *testing.T) {
 }
 
 // TestSmoke_BackupThenBrowse drives a realistic flow through the real App:
-// take a backup (confirmation gate), then inspect it in the snapshots and files
-// views — exercising key routing, the modal broadcast, the op guard, sort/filter,
-// together, the way a per-view test cannot.
+// walk the backup wizard's three steps, then inspect the snapshot in the
+// snapshots and files views — exercising key routing, the wizard's stage
+// machine, the op guard, sort/filter, together, the way a per-view test cannot.
 func TestSmoke_BackupThenBrowse(t *testing.T) {
 	const w, h = 100, 40
 	app, _ := smokeApp(t, w, h)
 
-	// --- Backup with confirmation ---
+	// --- Backup: Location → Schedule → Confirm → run ---
 	app = activate(t, app, "backup")
-	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // choose current dir → confirm modal
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) {
-		m, _ = app.Update(msg)
+	for i, want := range []backupStage{backupSchedule, backupConfirm, backupDone} {
+		m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
 		app = m.(App)
-	}
-	if len(app.modals) != 1 || !strings.Contains(app.modals[0].View(), "Confirm backup") {
-		t.Fatalf("enter must raise the backup confirmation, modals=%d", len(app.modals))
-	}
-	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirm → confirmedMsg
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) { // run the confirm: pop modal + broadcast + start op
-		m, _ = app.Update(msg)
-		app = m.(App)
+		app = drainApp(t, app, cmd)
+		bv := app.views[indexOf(app, "backup")].model.(BackupView)
+		if bv.stage != want {
+			t.Fatalf("enter %d: stage = %v, want %v (pathErr=%q)", i+1, bv.stage, want, bv.pathErr)
+		}
 	}
 	if len(app.modals) != 0 {
-		t.Errorf("confirming must clear the modal, modals=%d", len(app.modals))
+		t.Errorf("the wizard is the gate — no modal may be up, modals=%d", len(app.modals))
+	}
+	if app.opRunning != "" {
+		t.Errorf("the finished backup must release the op guard, held by %q", app.opRunning)
 	}
 
 	// --- Snapshots: sort, filter, open detail ---
@@ -138,10 +136,10 @@ func TestSmoke_BackupThenBrowse(t *testing.T) {
 		{Type: tea.KeyRunes, Runes: []rune("nightly")},
 		{Type: tea.KeyEsc}, // clear filter
 	} {
-		m, _ = app.Update(k)
+		m, _ := app.Update(k)
 		app = m.(App)
 	}
-	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open detail
+	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // open detail
 	app = m.(App)
 	for _, msg := range execCmds(t, cmd) { // run the async manifest load, as the runtime would
 		m, _ = app.Update(msg)
@@ -157,6 +155,43 @@ func TestSmoke_BackupThenBrowse(t *testing.T) {
 	if lines := strings.Split(app.View(), "\n"); len(lines) != h {
 		t.Errorf("frame drifted to %d lines, want %d", len(lines), h)
 	}
+}
+
+// drainApp feeds cmd's messages back into the App the way the bubbletea
+// runtime would, following each result's own cmd so an operation started
+// through the one-op guard actually RUNS and clears the guard — a held
+// guard swallows the esc the rest of the flow needs.
+//
+// Two self-perpetuating messages are dropped rather than routed: the
+// progress tick (the running view re-arms it on every tick) and the cursor
+// blink (every field that lands on screen starts a chain). Neither ever
+// settles, and pumping either would spin this loop until its step cap.
+func drainApp(t *testing.T, app App, cmd tea.Cmd) App {
+	t.Helper()
+	queue := []tea.Cmd{cmd}
+	for steps := 0; len(queue) > 0 && steps < 200; steps++ {
+		next := queue[0]
+		queue = queue[1:]
+		if next == nil {
+			continue
+		}
+		msg := next()
+		if msg == nil {
+			continue
+		}
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			queue = append(queue, batch...)
+			continue
+		}
+		switch msg.(type) {
+		case opTickMsg, cursor.BlinkMsg:
+			continue
+		}
+		m, follow := app.Update(msg)
+		app = m.(App)
+		queue = append(queue, follow)
+	}
+	return app
 }
 
 // indexOf returns the view slot for id, or -1.

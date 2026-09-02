@@ -6,24 +6,27 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
-	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
+	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 	"github.com/markgustetic/sentra/internal/walker"
 )
 
-// backupStage is the backup flow's state machine position.
+// backupStage is the wizard's position: three configure steps, then the run.
 type backupStage int
 
 const (
-	backupConfigure backupStage = iota
+	backupLocation backupStage = iota
+	backupSchedule
+	backupConfirm
 	backupRunning
 	backupDone
 )
@@ -37,65 +40,40 @@ type backupDoneMsg struct {
 
 func (backupDoneMsg) opResult() {}
 
-// backupConfirmID tags the backup confirmation modal so the App's confirmedMsg
-// broadcast routes back to this flow (mirrors pruneConfirmID). Backup is not
-// destructive, so a plain yes/no ConfirmModal — not the typed gate prune uses —
-// is the right weight: it exists to stop an accidental enter from kicking off a
-// snapshot, not to force deliberate intent.
-const backupConfirmID = "backup"
-
-// BackupView drives configure → running → done for a new snapshot.
-// The repo call runs in the App-managed op goroutine; this view only
-// renders progress (polled via opTick) and the result.
-// backupFocus names which control owns the keyboard on the configure stage. The
-// two halves have opposite shell contracts: the picker wants the arrow keys and
-// captures no text; the tag field captures text and wants no arrows.
-type backupFocus int
-
-const (
-	focusPicker backupFocus = iota
-	focusTagField
-)
-
+// BackupView is the three-step backup wizard: Location (folder picker) →
+// Schedule (one-shot or a cadence that becomes a named policy + OS timer) →
+// Confirm (summary, tag, rescan; the gate) → running → done. Each
+// configure step owns its widgets through a small struct so focus follows
+// the stage: entering a stage focuses its default field, leaving it blurs.
 type BackupView struct {
 	deps    Deps
 	stage   backupStage
 	picker  dirPicker
-	tag     textinput.Model
-	focus   backupFocus
+	sched   scheduleForm
+	confirm confirmControls
+	pending string // the directory chosen on Location
 	pathErr string
+	notice  string // transient banner, e.g. after an op rejection
 
-	// rescan arms ForceRescan for the next snapshot: every file is
-	// re-read even when size+mtime match the parent. ctrl+r toggles it
-	// — a chord, because both the picker and the tag field own plain
-	// runes on this stage.
-	rescan bool
+	// installedName/Next record the schedule Confirm installed, for the
+	// done screen's "next run" line.
+	installedName   string
+	installedNext   time.Time
+	installedNextOK bool
 
-	// repeat arms a standing schedule for the chosen directory: "" is a
-	// one-shot backup, otherwise a policy cadence (daily/weekly/monthly).
-	// ctrl+e cycles it — a chord for the same reason as rescan. On
-	// confirm, the flow writes a named policy into sentra.yaml and
-	// installs the OS scheduler entry BEFORE starting the backup.
-	repeat string
-
-	// schedGOOS/schedHome/schedExe are test seams for the scheduler
-	// install; empty means the production defaults (runtime.GOOS, the
-	// real home, os.Executable).
+	// now pins the clock for next-run rendering; schedGOOS/schedHome/
+	// schedExe are the scheduler seams (empty = production defaults).
+	now                            func() time.Time
 	schedGOOS, schedHome, schedExe string
 
 	reporter *opReporter
 	bar      progress.Model
 	result   backupDoneMsg
-	notice   string // transient banner, e.g. after an op rejection
-	pending  string // the directory awaiting the confirmation gate
 	width    int
 	height   int
 }
 
 func NewBackupView(deps Deps) BackupView {
-	tag := textinput.New()
-	tag.Prompt = "tag>  "
-	tag.Placeholder = "optional label"
 	// Start where the operator started sentra. An unreadable cwd is not fatal —
 	// the picker renders its error and still offers the parent row.
 	start, err := os.Getwd()
@@ -103,58 +81,87 @@ func NewBackupView(deps Deps) BackupView {
 		start = ""
 	}
 	return BackupView{
-		deps:   deps,
-		picker: newDirPicker(start),
-		tag:    tag,
-		bar:    progress.New(progress.WithDefaultGradient()),
+		deps:    deps,
+		picker:  newDirPicker(start),
+		confirm: newConfirmControls(),
+		now:     time.Now,
+		bar:     progress.New(progress.WithDefaultGradient()),
 	}
 }
 
-// CapturesText only while the tag field holds focus. The picker is a list, not a
-// field, so the shell keeps its globals there ('q' quits, ctrl+p opens the
-// palette, digits jump views).
-func (v BackupView) CapturesText() bool {
-	return v.stage == backupConfigure && v.focus == focusTagField
+// clock reads the view's time seam. A BackupView built as a struct literal
+// (tests do) has no seam, and a nil call would panic inside a render.
+func (v BackupView) clock() time.Time {
+	if v.now == nil {
+		return time.Now()
+	}
+	return v.now()
 }
 
-// ConsumesArrows only while the picker holds focus; otherwise ↑/↓ belong to the
-// nav rail (see App.routeKey).
+// CapturesText on whichever configure step owns a text field right now. The
+// picker is a list, not a field, so the shell keeps its globals on Location
+// ('q' quits, ctrl+p opens the palette, digits jump views).
+func (v BackupView) CapturesText() bool {
+	switch v.stage {
+	case backupSchedule:
+		return v.sched.capturesText()
+	case backupConfirm:
+		return v.confirm.capturesText()
+	}
+	return false
+}
+
+// ConsumesArrows where a list owns them: the folder picker, and the
+// Schedule step's cadence list. Everywhere else ↑/↓ belong to the nav rail
+// (see App.routeKey).
 func (v BackupView) ConsumesArrows() bool {
-	return v.stage == backupConfigure && v.focus == focusPicker
+	switch v.stage {
+	case backupLocation:
+		return true
+	case backupSchedule:
+		return v.sched.consumesArrows()
+	}
+	return false
 }
 
 func (BackupView) Init() tea.Cmd { return nil }
 
 func (v BackupView) Title() string { return "Backup" }
 
-// ConsumesTab: on the configure stage tab moves between the folder picker and
-// the tag field, so the shell must not steal it for its own focus toggle. esc is
-// how the operator leaves the view.
-func (v BackupView) ConsumesTab() bool { return v.stage == backupConfigure }
+// ConsumesTab on the two steps that have more than one control, so the
+// shell must not steal it for its own focus toggle.
+func (v BackupView) ConsumesTab() bool { return v.stage == backupSchedule || v.stage == backupConfirm }
 
-// ConsumesEscape: only while an op is running, where esc cancels it. On the
-// configure stage esc belongs to the shell — that is the escape hatch out of the
-// tag field.
-func (v BackupView) ConsumesEscape() bool { return v.stage == backupRunning }
+// ConsumesEscape on Schedule/Confirm (step back) and while running (cancel).
+// On Location esc belongs to the shell — it is how the operator leaves.
+func (v BackupView) ConsumesEscape() bool {
+	return v.stage == backupSchedule || v.stage == backupConfirm || v.stage == backupRunning
+}
 
 func (v BackupView) ShortHelp() []key.Binding {
 	switch v.stage {
+	case backupSchedule:
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "cadence")),
+			key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "next field")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "next")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		}
+	case backupConfirm:
+		return []key.Binding{
+			key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "tag/rescan")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "start")),
+			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
+		}
 	case backupRunning:
 		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel"))}
 	case backupDone:
 		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "again"))}
-	default: // backupConfigure — the keys depend on which control has focus
-		if v.focus == focusPicker {
-			return []key.Binding{
-				key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "move")),
-				key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "open/start")),
-				key.NewBinding(key.WithKeys("backspace"), key.WithHelp("bksp", "up a level")),
-				key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "tag")),
-			}
-		}
+	default: // backupLocation
 		return []key.Binding{
-			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "start")),
-			key.NewBinding(key.WithKeys("tab"), key.WithHelp("tab", "folders")),
+			key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "move")),
+			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "open/choose")),
+			key.NewBinding(key.WithKeys("backspace"), key.WithHelp("bksp", "up a level")),
 		}
 	}
 }
@@ -174,15 +181,10 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		} else {
 			v.picker.width = interior
 		}
-		// The panel must never wrap the tag line: give textinput its own
-		// Width so it scrolls horizontally instead of the render growing
-		// past the interior. Budget is the interior minus the "tag>  "
-		// prompt (6 cells), one cell for the cursor, and the 4 cells
-		// ui.FieldBox costs while the field is focused (2 border + 2
-		// padding) — subtracted unconditionally so tabbing onto the field
-		// frames it without resizing it. Floored so a very narrow terminal
-		// still leaves a usable field.
-		v.tag.Width = max(pickerContentWidth(msg.Width)-6-1-ui.FieldBoxOverhead, 10)
+		// The steps' fields size themselves from the interior, reserving
+		// the box's cells so focusing one never resizes it.
+		v.sched.setWidth(pickerContentWidth(msg.Width))
+		v.confirm.setWidth(pickerContentWidth(msg.Width))
 		return v, nil
 
 	case backupDoneMsg:
@@ -191,18 +193,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case opRejectedMsg:
-		// Our start was refused; leave the running stage we optimistically
-		// entered so the flow doesn't hang forever.
+		// Our start was refused; return to Confirm (not Location — the
+		// operator's choices stand) with the tag re-focused for the retry.
 		if v.stage == backupRunning && msg.name == "backup" {
-			v.stage = backupConfigure
+			v.stage = backupConfirm
 			v.notice = "another operation is in progress — try again when it finishes"
-			// Back on configure with the keyboard still on the tag control:
-			// re-focus the field and restart its blink — startBackup blurred
-			// it on the way out, which ended the previous chain.
-			if v.focus == focusTagField {
-				cmd := v.tag.Focus()
-				return v, cmd
-			}
+			cmd := v.confirm.refocus()
+			return v, cmd
 		}
 		return v, nil
 
@@ -213,55 +210,58 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case chatBackupMsg:
-		// The chat overlay's start_backup intent: seed the tag and raise
-		// the SAME confirm modal a hand-driven backup gets. Ignored
-		// mid-flow — a running backup is not interrupted by chat.
-		if v.stage != backupConfigure {
+		// The chat's start_backup intent lands on Confirm — the same human
+		// gate a hand-driven backup reaches — with the directory and tag
+		// seeded and one-shot chosen. Ignored mid-flow.
+		if v.stage == backupRunning || v.stage == backupDone {
 			return v, nil
 		}
+		dir := strings.TrimSpace(msg.dir)
+		if !v.checkDir(dir) {
+			v.stage = backupLocation
+			return v, nil
+		}
+		v.picker = newDirPicker(dir)
+		m, _ := v.enterSchedule(dir)
+		v = m.(BackupView)
+		v.confirm = newConfirmControls()
+		v.confirm.setWidth(pickerContentWidth(v.width))
 		if msg.tag != "" {
-			v.tag.SetValue(msg.tag)
+			v.confirm.tag.SetValue(msg.tag)
 		}
-		return v.requestBackup(msg.dir)
-
-	case confirmedMsg:
-		// The confirmation gate was accepted (the App pops the modal and
-		// broadcasts this). Ignore a foreign id, or one that arrives when we
-		// are no longer waiting to start, then launch the pending backup.
-		if msg.id != backupConfirmID || v.stage != backupConfigure {
-			return v, nil
-		}
-		if v.repeat != "" {
-			// Install first, run second: a failed install must block the
-			// backup — the operator confirmed a REPEATING backup, and
-			// silently degrading to a one-shot would betray that.
-			if err := v.installRepeat(v.pending); err != nil {
-				v.pathErr = "could not install the schedule: " + err.Error()
-				return v, nil
-			}
-		}
-		return v.startBackup(v.pending)
+		return v.enterConfirm()
 
 	case viewShownMsg:
-		// On screen: the tag field owns the keyboard only on configure with
-		// focus on the tag control; re-focus it there and start its blink.
-		if v.stage != backupConfigure || v.focus != focusTagField {
-			return v, nil
-		}
-		cmd := v.tag.Focus()
-		return v, cmd
-
-	case viewHiddenMsg:
-		v.tag.Blur()
-		return v, nil
-
-	case cursor.BlinkMsg:
-		if v.tag.Focused() {
-			var cmd tea.Cmd
-			v.tag, cmd = v.tag.Update(msg)
+		// On screen: re-focus whatever field the current stage owns. The
+		// picker and the cadence list own none, so they schedule nothing.
+		switch v.stage {
+		case backupSchedule:
+			cmd := v.sched.refocus()
+			return v, cmd
+		case backupConfirm:
+			cmd := v.confirm.refocus()
 			return v, cmd
 		}
 		return v, nil
+
+	case viewHiddenMsg:
+		v.sched.blur()
+		v.confirm.blur()
+		return v, nil
+
+	case cursor.BlinkMsg:
+		// Route the tick to the one field that can still be focused, so the
+		// chain keeps rescheduling itself.
+		var cmd tea.Cmd
+		switch {
+		case v.sched.name.Focused():
+			v.sched.name, cmd = v.sched.name.Update(msg)
+		case v.sched.at.Focused():
+			v.sched.at, cmd = v.sched.at.Update(msg)
+		case v.confirm.tag.Focused():
+			v.confirm.tag, cmd = v.confirm.tag.Update(msg)
+		}
+		return v, cmd
 
 	case tea.KeyMsg:
 		return v.handleKey(msg)
@@ -276,8 +276,65 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 // today — a fresh view lands on the picker — but the seam is the same one
 // every field-owning stage uses).
 func (v BackupView) resetTo() (tea.Model, tea.Cmd) {
-	m, _ := NewBackupView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	fresh := NewBackupView(v.deps)
+	fresh.schedGOOS, fresh.schedHome, fresh.schedExe = v.schedGOOS, v.schedHome, v.schedExe
+	fresh.now = v.now
+	m, _ := fresh.Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
 	return m.Update(viewShownMsg{})
+}
+
+// enterSchedule leaves Location for Schedule: the picker's directory becomes
+// pending and a fresh scheduleForm is built for it against the known
+// policies. Nothing is focused — the list has the keyboard.
+func (v BackupView) enterSchedule(dir string) (tea.Model, tea.Cmd) {
+	v.pending = dir
+	var policies map[string]config.PolicyConfig
+	if v.deps.Config != nil {
+		policies = v.deps.Config.Policies
+	}
+	v.sched = newScheduleForm(dir, policies)
+	v.sched.setWidth(pickerContentWidth(v.width))
+	v.stage = backupSchedule
+	return v, nil
+}
+
+// enterConfirm leaves Schedule for Confirm with the tag field focused.
+func (v BackupView) enterConfirm() (tea.Model, tea.Cmd) {
+	v.sched.blur()
+	v.stage = backupConfirm
+	v.pathErr = ""
+	v.confirm.focus = confirmTag
+	cmd := v.confirm.refocus()
+	return v, cmd
+}
+
+// backTo steps the wizard back one stage, blurring what it leaves.
+func (v BackupView) backTo(stage backupStage) (tea.Model, tea.Cmd) {
+	v.sched.blur()
+	v.confirm.blur()
+	v.pathErr = ""
+	v.stage = stage
+	if stage == backupSchedule {
+		v.sched.err = ""
+		v.sched.focus = schedCadence
+	}
+	return v, nil
+}
+
+// checkDir is the cheap validation both the Location step and Confirm run:
+// stat says directory, and a repo is configured. The walker surfaces
+// everything else.
+func (v *BackupView) checkDir(root string) bool {
+	if info, err := os.Stat(root); err != nil || !info.IsDir() {
+		v.pathErr = fmt.Sprintf("directory not found: %s", root)
+		return false
+	}
+	if v.deps.Repo == nil {
+		v.pathErr = "no repository configured"
+		return false
+	}
+	v.pathErr = ""
+	return true
 }
 
 func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
@@ -294,132 +351,89 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
-	default: // backupConfigure
-		v.notice = "" // any interaction dismisses the rejection banner
-
-		if msg.Type == tea.KeyCtrlR {
-			v.rescan = !v.rescan
-			return v, nil
-		}
-		if msg.Type == tea.KeyCtrlE {
-			v.repeat = nextRepeat(v.repeat)
-			return v, nil
-		}
-		if msg.Type == tea.KeyTab {
-			if v.focus == focusPicker {
-				v.focus = focusTagField
-				// Focus()'s own return is the real, tag-matched blink cmd;
-				// the dead-end textinput.Blink sentinel is never used.
-				// Sequenced rather than inlined into the return: Focus()
-				// mutates v.tag, and the order in which a return copies v
-				// versus evaluates the call is unspecified.
-				cmd := v.tag.Focus()
-				return v, cmd
+	case backupSchedule:
+		v.notice = ""
+		switch msg.Type {
+		case tea.KeyEsc:
+			return v.backTo(backupLocation)
+		case tea.KeyEnter:
+			// Validate here, not on Confirm: a bad time or a name owned by
+			// another directory is the Schedule step's problem to show.
+			if _, _, _, err := v.sched.build(); err != nil {
+				v.sched.err = err.Error()
+				return v, nil
 			}
-			v.focus = focusPicker
-			v.tag.Blur()
-			return v, nil
-		}
-
-		if v.focus == focusPicker {
-			switch msg.Type {
-			case tea.KeyUp:
-				v.picker = v.picker.moveUp()
-			case tea.KeyDown:
-				v.picker = v.picker.moveDown()
-			case tea.KeyBackspace, tea.KeyLeft:
-				v.picker = v.picker.up()
-			case tea.KeyRight:
-				// Right descends without ever committing. activate navigates a
-				// folder or ".." and changes nothing on the Start button, so
-				// dropping the returned path makes right a pure navigation key —
-				// only enter on the Start button starts a backup.
-				v.picker, _ = v.picker.activate()
-			case tea.KeyEnter:
-				// enter navigates the folder rows; only the Start button, which
-				// activate signals by returning the current directory, asks to
-				// back up — raising the confirmation gate.
-				var chosen string
-				v.picker, chosen = v.picker.activate()
-				if chosen != "" {
-					return v.requestBackup(chosen)
-				}
-			}
-			return v, nil
-		}
-
-		// focusTagField: enter confirms the backup of whatever the picker is
-		// browsing, so a tag can be set first without hunting for a submit.
-		if msg.Type == tea.KeyEnter {
-			return v.requestBackup(v.picker.cwd)
+			return v.enterConfirm()
 		}
 		var cmd tea.Cmd
-		v.tag, cmd = v.tag.Update(msg)
+		v.sched, cmd = v.sched.update(msg)
 		return v, cmd
-	}
-}
 
-// requestBackup validates root and raises the confirmation gate before any
-// snapshot is taken. Validation is deliberately cheap (stat only) and happens
-// BEFORE the modal, so the operator never confirms a path that can't be backed
-// up; the walker surfaces everything else. On confirm the App broadcasts a
-// confirmedMsg{backupConfirmID} that Update turns into startBackup(v.pending).
-func (v BackupView) requestBackup(root string) (tea.Model, tea.Cmd) {
-	root = strings.TrimSpace(root)
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		v.pathErr = fmt.Sprintf("directory not found: %s", root)
+	case backupConfirm:
+		v.notice = ""
+		switch msg.Type {
+		case tea.KeyEsc:
+			return v.backTo(backupSchedule)
+		case tea.KeyEnter:
+			return v.confirmRun()
+		}
+		var cmd tea.Cmd
+		v.confirm, cmd = v.confirm.update(msg)
+		return v, cmd
+
+	default: // backupLocation
+		v.notice = "" // any interaction dismisses the rejection banner
+		switch msg.Type {
+		case tea.KeyUp:
+			v.picker = v.picker.moveUp()
+		case tea.KeyDown:
+			v.picker = v.picker.moveDown()
+		case tea.KeyBackspace, tea.KeyLeft:
+			v.picker = v.picker.up()
+		case tea.KeyRight:
+			// Right descends without ever choosing. activate navigates a
+			// folder or ".." and changes nothing on the button, so dropping
+			// the returned path makes right a pure navigation key.
+			v.picker, _ = v.picker.activate()
+		case tea.KeyEnter:
+			// enter navigates the folder rows; only the button, which
+			// activate signals by returning the current directory, chooses
+			// it and moves the wizard on.
+			var chosen string
+			v.picker, chosen = v.picker.activate()
+			if chosen == "" {
+				return v, nil
+			}
+			chosen = strings.TrimSpace(chosen)
+			if !v.checkDir(chosen) {
+				return v, nil
+			}
+			return v.enterSchedule(chosen)
+		}
 		return v, nil
 	}
-	if v.deps.Repo == nil {
-		v.pathErr = "no repository configured"
-		return v, nil
-	}
-	v.pathErr = ""
-	v.notice = ""
-	v.pending = root
-
-	// Plain body text — the modal frames it. (Embedding styled fragments would
-	// hit the "never wrap an already-styled string" trap, since ModalBox renders
-	// the whole body.)
-	body := "Back up this directory?\n\n" + root
-	if tag := strings.TrimSpace(v.tag.Value()); tag != "" {
-		body += "\n\ntag: " + tag
-	} else {
-		body += "\n\nno tag"
-	}
-	if v.repeat != "" {
-		body += fmt.Sprintf("\n\nrepeats %s — installs policy %q and an OS schedule",
-			v.repeat, repeatPolicyName(filepath.Base(root)))
-	}
-	modal := NewConfirmModal("Confirm backup", body, backupConfirmID, v.width, v.height)
-	return v, func() tea.Msg { return pushModalMsg{modal: modal} }
 }
 
 // startBackup validates root and emits startOpMsg. Validation is deliberately
-// cheap (stat only) — the walker surfaces everything else. The stat is kept even
-// though requestBackup already checked: the folder can be removed between the
-// confirmation and the confirm.
+// cheap (stat only) — the walker surfaces everything else. The stat is kept
+// even though Confirm already checked: the folder can be removed between the
+// steps.
 func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	root = strings.TrimSpace(root)
-	if info, err := os.Stat(root); err != nil || !info.IsDir() {
-		v.pathErr = fmt.Sprintf("directory not found: %s", root)
-		return v, nil
-	}
-	if v.deps.Repo == nil {
-		v.pathErr = "no repository configured"
+	if !v.checkDir(root) {
 		return v, nil
 	}
 
 	v.reporter = newOpReporter()
 	v.stage = backupRunning
-	// Leaving configure blurs the tag field: the running screen never
-	// renders it, and a focused field nobody renders keeps its blink chain
-	// rescheduling while Focused() lies to every guard that reads it.
-	v.tag.Blur()
+	// Leaving Confirm blurs its field: the running screen never renders it,
+	// and a focused field nobody renders keeps its blink chain rescheduling
+	// while Focused() lies to every guard that reads it.
+	tag := strings.TrimSpace(v.confirm.tag.Value())
+	rescan := v.confirm.rescan
+	v.confirm.blur()
 	r := v.deps.Repo
 	reporter := v.reporter
-	tag := strings.TrimSpace(v.tag.Value())
-	rescan := v.rescan
 	var wopts walker.Options
 	if v.deps.Config != nil {
 		wopts = walker.Options{
@@ -471,6 +485,15 @@ func (v BackupView) actionLine(primary, secondary string) string {
 	return ui.ActionLine(primary, secondary)
 }
 
+// header mirrors the setup wizard's: what this is on the left, where you
+// are on the right, then the step's title.
+func (v BackupView) header(step int, title string) string {
+	left := ui.Muted.Render("New backup")
+	right := ui.Muted.Render(fmt.Sprintf("Step %d of 3", step))
+	gap := max(pickerContentWidth(v.width)-lipgloss.Width(left)-lipgloss.Width(right), 1)
+	return left + strings.Repeat(" ", gap) + right + "\n\n" + ui.Primary.Render(title) + "\n"
+}
+
 func (v BackupView) View() string {
 	var b strings.Builder
 	switch v.stage {
@@ -500,12 +523,32 @@ func (v BackupView) View() string {
 		}
 		fmt.Fprintf(&b, "\n\n%s", v.actionLine("run another backup", ""))
 
-	default:
-		b.WriteString(ui.Primary.Render("New backup"))
+	case backupSchedule:
+		b.WriteString(v.header(2, "Schedule"))
+		fmt.Fprintf(&b, "\n%s", v.sched.view())
+		fmt.Fprintf(&b, "\n\n%s", v.actionLine("continue to the summary", "tab next field · esc back"))
+
+	case backupConfirm:
+		b.WriteString(v.header(3, "Confirm"))
 		if v.notice != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(v.notice)))
 		}
-		pickerCol := v.picker.View(v.focus == focusPicker)
+		fmt.Fprintf(&b, "\n%s\n%s", v.confirmSummary(), v.confirm.view())
+		if v.pathErr != "" {
+			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.fit(v.pathErr)))
+		}
+		verb := "start the backup of " + filepath.Base(v.pending)
+		if !v.sched.oneShot() {
+			verb = "install the schedule and " + verb
+		}
+		fmt.Fprintf(&b, "\n\n%s", v.actionLine(verb, "tab tag/rescan · esc back"))
+
+	case backupLocation:
+		b.WriteString(v.header(1, "Location"))
+		if v.notice != "" {
+			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(v.notice)))
+		}
+		pickerCol := v.picker.View(true)
 		if paneW := previewPaneWidth(pickerContentWidth(v.width)); paneW > 0 {
 			// A Width-only style pads the picker block to its fixed column
 			// without adding color codes, so the styled rows inside survive
@@ -515,33 +558,11 @@ func (v BackupView) View() string {
 			pickerCol = lipgloss.JoinHorizontal(lipgloss.Top,
 				left, strings.Repeat(" ", previewGapWidth), v.picker.previewView(paneW))
 		}
-		fmt.Fprintf(&b, "\n\n%s", pickerCol)
-		// tag.Width already reserves the box's cells (see WindowSizeMsg),
-		// so the framed line still fits the interior once tab focuses it.
-		fmt.Fprintf(&b, "\n%s", boxedField(v.tag))
-		if v.rescan {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit("  rescan armed — every file re-read (ctrl+r disarms)")))
-		} else {
-			fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.fit("  incremental scan on (ctrl+r to force a full rescan)")))
-		}
-		if v.repeat != "" {
-			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit(fmt.Sprintf("  repeats %s — installs a schedule (ctrl+e cycles)", v.repeat))))
-		} else {
-			fmt.Fprintf(&b, "\n%s", ui.Muted.Render(v.fit("  one-shot backup (ctrl+e to repeat daily/weekly/monthly)")))
-		}
+		fmt.Fprintf(&b, "\n%s", pickerCol)
 		if v.pathErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.fit(v.pathErr)))
 		}
-
-		// The action line names what enter does to the FOCUSED control right now.
-		// In the picker that is one of three things depending on the cursor
-		// (open a folder / go up / start on the Start button), so it is read from
-		// the picker.
-		if v.focus == focusPicker {
-			fmt.Fprintf(&b, "\n\n%s", v.actionLine(v.picker.enterVerb(), "↑↓ move · ↓ browses folders · bksp up · tab to tag"))
-		} else {
-			fmt.Fprintf(&b, "\n\n%s", v.actionLine("start the backup of "+filepath.Base(v.picker.cwd), "tab back to the folder picker"))
-		}
+		fmt.Fprintf(&b, "\n\n%s", v.actionLine(v.picker.enterVerb(), "↑↓ move · → opens · bksp up · esc leaves"))
 	}
 	return b.String()
 }

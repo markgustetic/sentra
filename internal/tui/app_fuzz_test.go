@@ -61,11 +61,12 @@ func FuzzAppKeyRouting(f *testing.F) {
 	// fires.
 	f.Add([]byte{fkDown, fkEnter, fkDown})
 	f.Add([]byte{fkDown, fkDown, fkEnter, fkDown, fkDown})
-	// The keyboard-trap bug: walk to Backup (rail row 2), activate it, then tab
-	// into the tag field, where the view captures text. Invariant 6 must find esc
-	// still works there. Without this seed the corpus never reaches a
-	// text-capturing view at all, and the trap goes unnoticed.
-	f.Add([]byte{fkDown, fkDown, fkEnter, fkTab})
+	// The keyboard-trap bug: walk to Backup (rail row 1), activate it, then
+	// enter twice more to reach the wizard's Confirm step, where the tag field
+	// captures text. Invariant 6 must find esc still works there. Without this
+	// seed the corpus never reaches a text-capturing view at all, and the trap
+	// goes unnoticed.
+	f.Add([]byte{fkDown, fkEnter, fkEnter, fkEnter})
 
 	f.Fuzz(func(t *testing.T, seq []byte) {
 		if len(seq) > 64 {

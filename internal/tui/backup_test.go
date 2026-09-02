@@ -26,8 +26,8 @@ func newFlowRepo(t *testing.T) *repo.Repo {
 	return r
 }
 
-// backupAtRepo returns a configure-stage BackupView on repo r, its folder picker
-// browsing dir so the Start button commits dir.
+// backupAtRepo returns a Location-stage BackupView on repo r, its folder picker
+// browsing dir so the button chooses dir.
 func backupAtRepo(t *testing.T, r *repo.Repo, dir string) BackupView {
 	t.Helper()
 	v := NewBackupView(Deps{Repo: r})
@@ -36,247 +36,273 @@ func backupAtRepo(t *testing.T, r *repo.Repo, dir string) BackupView {
 	return m.(BackupView)
 }
 
-// onStartButton puts the picker's cursor on the Start button — the top, default
-// position (cursor 0) from which enter raises the confirmation gate. A fresh
-// picker already opens here; this is explicit for tests that navigate first.
+// backupAt returns a Location-stage BackupView rooted at a temp tree.
+func backupAt(t *testing.T, root string) BackupView {
+	t.Helper()
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	v.picker = newDirPicker(root)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return m.(BackupView)
+}
+
+// onStartButton puts the picker's cursor on the choose button — the top,
+// default position (cursor 0) from which enter leaves the Location step. A
+// fresh picker already opens here; this is explicit for tests that navigate
+// first.
 func onStartButton(v BackupView) BackupView {
 	v.picker.cursor = 0
 	return v
 }
 
-// confirmModalFrom runs cmd and returns the ConfirmModal it pushes via a
-// pushModalMsg, failing if there isn't exactly one.
-func confirmModalFrom(t *testing.T, cmd tea.Cmd) ConfirmModal {
+// toSchedule walks a Location-stage view to the Schedule step by pressing
+// enter on the button.
+func toSchedule(t *testing.T, v BackupView) BackupView {
 	t.Helper()
-	var found *ConfirmModal
-	for _, msg := range execCmds(t, cmd) {
-		pm, ok := msg.(pushModalMsg)
-		if !ok {
-			continue
-		}
-		cm, ok := pm.modal.(ConfirmModal)
-		if !ok {
-			t.Fatalf("pushed modal is %T, want ConfirmModal", pm.modal)
-		}
-		found = &cm
+	m, _ := onStartButton(v).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(BackupView)
+	if got.stage != backupSchedule {
+		t.Fatalf("enter on the button: stage = %v, want backupSchedule (pathErr=%q)", got.stage, got.pathErr)
 	}
-	if found == nil {
-		t.Fatal("expected a pushModalMsg carrying a ConfirmModal")
-	}
-	return *found
+	return got
 }
 
-// TestBackupFlow_EnterOnStartButtonStarts: enter on the pinned Start button must
-// raise the confirmation gate — naming the directory — and only a confirm
-// actually starts the backup. Enter on the folder rows only navigates.
-func TestBackupFlow_EnterOnStartButtonStarts(t *testing.T) {
-	r := newFlowRepo(t)
-	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hello"), 0o600); err != nil {
-		t.Fatal(err)
+// toConfirm walks on to the Confirm step (one-shot unless the caller moved
+// the cadence first).
+func toConfirm(t *testing.T, v BackupView) (BackupView, tea.Cmd) {
+	t.Helper()
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(BackupView)
+	if got.stage != backupConfirm {
+		t.Fatalf("enter on the schedule step: stage = %v, want backupConfirm (err=%q)", got.stage, got.sched.err)
 	}
+	return got, cmd
+}
 
-	// Cursor on the Start button = choose src. Enter asks for confirmation; it
-	// must NOT start the backup yet.
-	v := onStartButton(backupAtRepo(t, r, src))
+// TestBackupWizard_StepsForwardAndBack: enter advances Location → Schedule →
+// Confirm; esc steps back; Location's esc belongs to the shell.
+func TestBackupWizard_StepsForwardAndBack(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	if v.stage != backupLocation || v.ConsumesEscape() {
+		t.Fatal("a fresh view is on Location and leaves esc to the shell")
+	}
+	v = toSchedule(t, v)
+	if !v.ConsumesEscape() || !v.ConsumesTab() || !v.ConsumesArrows() || v.CapturesText() {
+		t.Fatal("Schedule with the list focused: esc/tab/arrows are ours, text is not captured")
+	}
+	if v.pending == "" {
+		t.Fatal("leaving Location must record the chosen directory")
+	}
+	v, _ = toConfirm(t, v)
+	if !v.ConsumesEscape() || !v.ConsumesTab() || v.ConsumesArrows() || !v.CapturesText() {
+		t.Fatal("Confirm with the tag focused: esc/tab ours, text captured, arrows to the shell")
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	v = m.(BackupView)
+	if v.stage != backupSchedule || v.confirm.tag.Focused() {
+		t.Fatalf("esc on Confirm → Schedule with the tag blurred; stage=%v", v.stage)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	v = m.(BackupView)
+	if v.stage != backupLocation || v.sched.name.Focused() || v.sched.at.Focused() {
+		t.Fatalf("esc on Schedule → Location with its fields blurred; stage=%v", v.stage)
+	}
+}
+
+// Enter on a folder row navigates; only the button advances.
+func TestBackupWizard_EnterOnFolderRowDoesNotAdvance(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // onto ".."
+	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyDown})
+	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.(BackupView); got.stage != backupLocation {
+		t.Fatalf("enter on a folder row must navigate, not advance; stage=%v", got.stage)
+	}
+}
+
+// The header names the step so the operator always knows where they are.
+func TestBackupWizard_HeaderNamesTheStep(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	for _, want := range []string{"New backup", "Step 1 of 3", "Location"} {
+		if !strings.Contains(v.View(), want) {
+			t.Errorf("Location view lacks %q:\n%s", want, v.View())
+		}
+	}
+	v = toSchedule(t, v)
+	if !strings.Contains(v.View(), "Step 2 of 3") || !strings.Contains(v.View(), "Schedule") {
+		t.Errorf("Schedule view lacks its header:\n%s", v.View())
+	}
+	v, _ = toConfirm(t, v)
+	if !strings.Contains(v.View(), "Step 3 of 3") || !strings.Contains(v.View(), "Confirm") {
+		t.Errorf("Confirm view lacks its header:\n%s", v.View())
+	}
+}
+
+// Confirm's summary names the directory and the schedule; one-shot installs
+// nothing and enter starts the op through the one-op guard with the seeded
+// first tick.
+func TestBackupWizard_OneShotConfirmStartsTheBackup(t *testing.T) {
+	root := tempTree(t)
+	// A wide terminal: the summary clips a path that does not fit its row
+	// (TestBackupWizard_ConfirmFitsTheMinWidthPanel covers that), and a
+	// temp path is long enough to hit the clip at the default 100.
+	m0, _ := backupAt(t, root).Update(tea.WindowSizeMsg{Width: 200, Height: 30})
+	v, _ := toConfirm(t, toSchedule(t, m0.(BackupView)))
+	if !strings.Contains(v.View(), root) || !strings.Contains(v.View(), "one-shot") {
+		t.Fatalf("confirm summary must name the directory and one-shot:\n%s", v.View())
+	}
+	v.confirm.tag.SetValue("nightly")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
-	if v.stage != backupConfigure {
-		t.Fatalf("enter must not start the backup before confirmation; stage = %v", v.stage)
+	if v.stage != backupRunning {
+		t.Fatalf("stage = %v, want backupRunning (pathErr=%q)", v.stage, v.pathErr)
 	}
-	if cmd == nil {
-		t.Fatal("enter on the Start button must raise the confirmation modal")
+	if v.confirm.tag.Focused() {
+		t.Error("starting must blur the tag field")
 	}
-	// It pushes a backup ConfirmModal whose body names the directory.
-	cm := confirmModalFrom(t, cmd)
-	if cm.id != backupConfirmID {
-		t.Fatalf("confirmation modal id = %q, want %q", cm.id, backupConfirmID)
-	}
-	if !strings.Contains(cm.body, src) {
-		t.Errorf("confirmation must name the directory %q:\n%s", src, cm.body)
-	}
-
-	// Confirming (the App broadcasts confirmedMsg to every view) starts it.
-	m, cmd = v.Update(confirmedMsg{id: backupConfirmID})
-	v = m.(BackupView)
-	if cmd == nil {
-		t.Fatal("confirming must start the backup")
-	}
-	// The command batches the startOpMsg with the seeded first opTickMsg.
-	// Both must be present: the startOpMsg launches the op, and the
-	// opTickMsg seeds the progress-repaint self-loop. A missing tick is
-	// the regression this asserts against — without it the progress bar
-	// never repaints during a real run.
-	msgs := execCmds(t, cmd)
-	var start startOpMsg
 	var foundStart, foundTick bool
-	for _, msg := range msgs {
+	for _, msg := range execCmds(t, cmd) {
 		switch mm := msg.(type) {
 		case startOpMsg:
-			start, foundStart = mm, true
+			foundStart = true
+			if mm.name != "backup" {
+				t.Errorf("op name = %q, want backup", mm.name)
+			}
 		case opTickMsg:
 			foundTick = true
 		}
 	}
-	if !foundStart {
-		t.Fatalf("expected a startOpMsg in the batch, got %#v", msgs)
+	if !foundStart || !foundTick {
+		t.Errorf("start=%v tick=%v; both must be batched", foundStart, foundTick)
 	}
-	if !foundTick {
-		t.Fatalf("expected a seeded opTickMsg in the batch (progress repaint seed), got %#v", msgs)
-	}
-	if start.name != "backup" {
-		t.Fatalf("op name = %q", start.name)
-	}
-	if v.stage != backupRunning {
-		t.Fatalf("stage = %v, want backupRunning", v.stage)
-	}
+}
 
-	// Execute the op synchronously (the App would run it as a tea.Cmd).
-	res := start.run(context.Background())
-	done, ok := res.(backupDoneMsg)
-	if !ok {
-		t.Fatalf("expected backupDoneMsg, got %#v", res)
+// The rescan toggle and the tag reach SnapshotOptions: prove it end to end by
+// running the op and reading the snapshot back. Delivering the result moves
+// the wizard to its done screen, which names the snapshot.
+func TestBackupWizard_TagReachesTheSnapshot(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
 	}
-	if done.err != nil {
-		t.Fatalf("backup failed: %v", done.err)
-	}
-	if done.info.Stats.Files != 1 {
-		t.Fatalf("files = %d, want 1", done.info.Stats.Files)
-	}
-
-	// Delivering the result moves the flow to the done stage and renders stats.
-	m, _ = v.Update(res)
+	v, _ := toConfirm(t, toSchedule(t, backupAtRepo(t, r, src)))
+	v.confirm.tag.SetValue("nightly")
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(BackupView)
-	if v.stage != backupDone {
-		t.Fatalf("stage after result = %v, want backupDone", v.stage)
-	}
-	if out := v.View(); !strings.Contains(out, done.info.ID) {
-		t.Errorf("result panel should show the snapshot ID:\n%s", out)
-	}
-
-	// The snapshot really exists in the store.
-	snaps, err := r.ListSnapshots(context.Background())
-	if err != nil || len(snaps) != 1 {
-		t.Fatalf("ListSnapshots after flow = %v, %v", snaps, err)
-	}
-}
-
-// TestApp_BackupConfirmationFlowEndToEnd drives the whole gate through the real
-// App: enter raises the confirmation modal, and a second enter (routed to the
-// modal, whose confirmedMsg the App pops and broadcasts) starts the backup and
-// clears the overlay. This is the integration the view-level tests can't reach —
-// the App's modal-first key routing and the confirmedMsg broadcast.
-func TestApp_BackupConfirmationFlowEndToEnd(t *testing.T) {
-	r := newFlowRepo(t)
-	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	app := NewApp(Deps{Repo: r, RepoName: "x"})
-	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	app = m.(App)
-
-	bi := -1
-	for i, v := range app.views {
-		if v.id == "backup" {
-			bi = i
+	for _, msg := range execCmds(t, cmd) {
+		if start, ok := msg.(startOpMsg); ok {
+			res := start.run(context.Background())
+			done := res.(backupDoneMsg)
+			if done.err != nil {
+				t.Fatalf("backup failed: %v", done.err)
+			}
+			if done.info.Tag != "nightly" {
+				t.Fatalf("snapshot tag = %q, want nightly", done.info.Tag)
+			}
+			m, _ = v.Update(res)
+			v = m.(BackupView)
+			if v.stage != backupDone {
+				t.Fatalf("stage after result = %v, want backupDone", v.stage)
+			}
+			if out := v.View(); !strings.Contains(out, done.info.ID) {
+				t.Errorf("done screen should show the snapshot ID:\n%s", out)
+			}
+			return
 		}
 	}
-	if bi < 0 {
-		t.Fatal("backup view not registered in App")
-	}
-	app.active = bi
-	app.focus = focusContent
-	bv := app.views[bi].model.(BackupView)
-	bv.picker = newDirPicker(src) // point the picker at src, cursor on Start
-	app.views[bi].model = bv
+	t.Fatal("no startOpMsg emitted")
+}
 
-	// First enter → the confirmation modal is raised.
-	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) {
-		m, _ = app.Update(msg)
-		app = m.(App)
+func TestBackupWizard_RescanToggleReachesOptions(t *testing.T) {
+	v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // rescan row
+	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
+	v = m.(BackupView)
+	if !v.confirm.rescan || !strings.Contains(v.View(), "[x]") {
+		t.Fatalf("space on the rescan row must arm it:\n%s", v.View())
 	}
-	if len(app.modals) != 1 {
-		t.Fatalf("enter must raise a confirmation modal, got %d", len(app.modals))
-	}
-	if !strings.Contains(app.modals[0].View(), "Confirm backup") {
-		t.Errorf("the overlay must be the backup confirmation:\n%s", app.modals[0].View())
-	}
-	if got := app.views[bi].model.(BackupView).stage; got != backupConfigure {
-		t.Fatalf("the backup must not start until confirmed; stage = %v", got)
-	}
-
-	// Second enter is routed to the modal → confirmedMsg → pop + broadcast →
-	// the backup starts and the overlay clears.
-	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) {
-		m, _ = app.Update(msg)
-		app = m.(App)
-	}
-	if len(app.modals) != 0 {
-		t.Errorf("confirming must clear the overlay, got %d modals", len(app.modals))
-	}
-	if got := app.views[bi].model.(BackupView).stage; got != backupRunning {
-		t.Errorf("confirming must start the backup; stage = %v", got)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter from the rescan row confirms too
+	if got := m.(BackupView); got.stage != backupRunning {
+		t.Fatalf("enter on the rescan row must confirm; stage=%v", got.stage)
 	}
 }
 
-// Esc on the confirmation modal must cancel it — no backup starts and the shell
-// returns to the picker.
-func TestApp_BackupConfirmationEscCancels(t *testing.T) {
-	r := newFlowRepo(t)
-	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
-		t.Fatal(err)
+// Focus seams on Schedule: tab onto the name field captures text, blinks,
+// boxes; viewHiddenMsg blurs; viewShownMsg re-focuses the stage's field.
+func TestBackupWizard_ScheduleFieldFocusSeams(t *testing.T) {
+	v := toSchedule(t, backupAt(t, tempTree(t)))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // hourly: name appears
+	v = m.(BackupView)
+	v.sched.name.Cursor.BlinkSpeed = time.Millisecond
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+	assertBlinkCmd(t, cmd)
+	if !v.CapturesText() || v.ConsumesArrows() || boxCount(v.View()) != 1 {
+		t.Fatalf("name focused: captures=%v arrows=%v boxes=%d", v.CapturesText(), v.ConsumesArrows(), boxCount(v.View()))
 	}
-	app := NewApp(Deps{Repo: r, RepoName: "x"})
-	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	app = m.(App)
+	m, _ = v.Update(viewHiddenMsg{})
+	if got := m.(BackupView); got.sched.name.Focused() {
+		t.Fatal("viewHiddenMsg must blur the schedule field")
+	}
+	m, showCmd := m.(BackupView).Update(viewShownMsg{})
+	if got := m.(BackupView); !got.sched.name.Focused() {
+		t.Fatal("viewShownMsg must re-focus the field the stage owns")
+	}
+	assertBlinkCmd(t, showCmd)
+}
 
-	bi := -1
-	for i, v := range app.views {
-		if v.id == "backup" {
-			bi = i
-		}
+// Blink ticks must reach whichever field the current stage focuses, or the
+// chain stops the moment it starts. A bare cursor.BlinkMsg{} won't do:
+// bubbles/cursor rejects a tick whose tag doesn't match the field's own
+// counter, so the tick is minted from the field's cursor.
+func TestBackupWizard_RoutesBlinkTicksToTheFocusedField(t *testing.T) {
+	v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+	if !v.confirm.tag.Focused() {
+		t.Fatal("precondition: Confirm focuses the tag")
 	}
-	app.active, app.focus = bi, focusContent
-	bv := app.views[bi].model.(BackupView)
-	bv.picker = newDirPicker(src)
-	app.views[bi].model = bv
-
-	m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEnter}) // raise the modal
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) {
-		m, _ = app.Update(msg)
-		app = m.(App)
-	}
-	if len(app.modals) != 1 {
-		t.Fatalf("precondition: expected the confirmation modal, got %d", len(app.modals))
-	}
-
-	m, cmd = app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // cancel it
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) {
-		m, _ = app.Update(msg)
-		app = m.(App)
-	}
-	if len(app.modals) != 0 {
-		t.Errorf("esc must dismiss the confirmation, got %d modals", len(app.modals))
-	}
-	if got := app.views[bi].model.(BackupView).stage; got != backupConfigure {
-		t.Errorf("cancelling must leave the backup unstarted; stage = %v", got)
-	}
-	snaps, _ := r.ListSnapshots(context.Background())
-	if len(snaps) != 0 {
-		t.Errorf("cancelling must take no snapshot, found %d", len(snaps))
+	v.confirm.tag.Cursor.BlinkSpeed = time.Millisecond
+	tick := v.confirm.tag.Cursor.BlinkCmd()
+	if _, cmd := v.Update(tick()); cmd == nil {
+		t.Fatal("blink tick was not routed to the focused tag field")
 	}
 }
 
-// The picker only ever offers real directories, so startBackup's stat guard
+// A chat intent lands on Confirm with the directory and tag seeded, one-shot,
+// and the tag focused — the confirm screen is the human gate the chat needs.
+func TestBackupWizard_ChatIntentLandsOnConfirm(t *testing.T) {
+	src := tempTree(t)
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	m, cmd := m.(BackupView).Update(chatBackupMsg{dir: src, tag: "from-chat"})
+	v = m.(BackupView)
+	if v.stage != backupConfirm || v.pending != src || v.confirm.tag.Value() != "from-chat" || !v.sched.oneShot() {
+		t.Fatalf("chat seed: stage=%v pending=%q tag=%q oneShot=%v", v.stage, v.pending, v.confirm.tag.Value(), v.sched.oneShot())
+	}
+	if !v.confirm.tag.Focused() {
+		t.Fatal("landing on Confirm focuses the tag")
+	}
+	assertBlinkCmd(t, cmd)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	if got := m.(BackupView); got.stage != backupRunning {
+		t.Fatalf("enter on the seeded Confirm starts; stage=%v", got.stage)
+	}
+}
+
+// A refused start (another op running) returns to Confirm with the tag
+// re-focused, so the operator can retry without re-walking the wizard.
+func TestBackupWizard_RejectedStartReturnsToConfirm(t *testing.T) {
+	v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+	v.confirm.tag.Cursor.BlinkSpeed = time.Millisecond
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := m.(BackupView).Update(opRejectedMsg{name: "backup"})
+	v = m.(BackupView)
+	if v.stage != backupConfirm || !v.confirm.tag.Focused() || v.notice == "" {
+		t.Fatalf("rejection: stage=%v tagFocused=%v notice=%q", v.stage, v.confirm.tag.Focused(), v.notice)
+	}
+	assertBlinkCmd(t, cmd)
+}
+
+// The picker only ever offers real directories, so the wizard's stat guard
 // exists for one case: the browsed folder disappears before enter. Pin it.
 func TestBackupFlow_VanishedFolderRefusesToStart(t *testing.T) {
 	dir := t.TempDir()
@@ -284,13 +310,13 @@ func TestBackupFlow_VanishedFolderRefusesToStart(t *testing.T) {
 	if err := os.RemoveAll(dir); err != nil {
 		t.Fatal(err)
 	}
-	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on the Start button
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter on the choose button
 	v = m.(BackupView)
 	if cmd != nil {
-		t.Fatal("a folder that no longer exists must not start an op")
+		t.Fatal("a folder that no longer exists must not advance the wizard")
 	}
-	if v.stage != backupConfigure {
-		t.Fatal("flow must stay in configure when the folder is gone")
+	if v.stage != backupLocation {
+		t.Fatal("the wizard must stay on Location when the folder is gone")
 	}
 	if !strings.Contains(v.View(), "not found") {
 		t.Errorf("view should surface the error:\n%s", v.View())
@@ -303,10 +329,8 @@ func TestBackupFlow_EscDuringRunEmitsCancel(t *testing.T) {
 	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
-	v := onStartButton(backupAtRepo(t, r, src))
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // raise the confirmation
-	v = m.(BackupView)
-	m, _ = v.Update(confirmedMsg{id: backupConfirmID}) // confirm → running
+	v, _ := toConfirm(t, toSchedule(t, backupAtRepo(t, r, src)))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // confirm → running
 	v = m.(BackupView)
 	if v.stage != backupRunning {
 		t.Fatalf("confirming must start the backup; stage = %v", v.stage)
@@ -336,74 +360,14 @@ func TestBackupFlow_RunAnotherKeepsSizing(t *testing.T) {
 	}
 }
 
-// backupAt returns a configure-stage BackupView rooted at a temp tree.
-func backupAt(t *testing.T, root string) BackupView {
-	t.Helper()
-	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
-	v.picker = newDirPicker(root)
-	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	return m.(BackupView)
-}
-
-// While the picker has focus the arrows belong to it and NOT to the shell, and
-// no text field is capturing — so 'q' still quits and ctrl+p still opens the
-// palette. Once tab moves to the tag field, that inverts.
-func TestBackupFocusSeamsFollowTheFocusedControl(t *testing.T) {
-	v := backupAt(t, tempTree(t))
-
-	if !v.ConsumesArrows() {
-		t.Error("with the picker focused, the view must consume arrows")
-	}
-	if v.CapturesText() {
-		t.Error("the picker is not a text field; it must not capture text")
-	}
-
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
-	v = m.(BackupView)
-	if v.ConsumesArrows() {
-		t.Error("with the tag field focused, arrows belong to the shell")
-	}
-	if !v.CapturesText() {
-		t.Error("the tag field must capture text")
-	}
-}
-
-// The picker opens on the "backup the current directory" option, so a fresh
-// Backup view reaches the confirmation gate on the very first enter — no
-// navigating down to a button — and only a confirm starts the snapshot.
-func TestBackupFirstEnterRaisesConfirmation(t *testing.T) {
-	r := newFlowRepo(t)
-	src := t.TempDir()
-	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	v := backupAtRepo(t, r, src) // fresh picker, no navigation
-	if !v.picker.onStart() {
-		t.Fatal("a fresh backup picker must rest on the Start button (the top option)")
-	}
-
-	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	v = m.(BackupView)
-	if v.stage != backupConfigure {
-		t.Errorf("the first enter must confirm, not start; stage = %v", v.stage)
-	}
-	if cmd == nil {
-		t.Fatal("the first enter must raise the confirmation gate")
-	}
-	if cm := confirmModalFrom(t, cmd); cm.id != backupConfirmID {
-		t.Fatalf("confirmation modal id = %q, want %q", cm.id, backupConfirmID)
-	}
-}
-
-// Down moves the highlight; enter on a folder row descends (does not start).
+// Down moves the highlight; enter on a folder row descends (does not advance).
 func TestBackupPickerNavigatesWithoutStarting(t *testing.T) {
 	root := tempTree(t)
 	v := backupAt(t, root)
 
-	// The picker opens on the top Start button; step down past ".." onto the
+	// The picker opens on the top choose button; step down past ".." onto the
 	// first folder (alpha).
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // Start button -> ".."
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // button -> ".."
 	v = m.(BackupView)
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown}) // ".." -> alpha
 	v = m.(BackupView)
@@ -414,13 +378,13 @@ func TestBackupPickerNavigatesWithoutStarting(t *testing.T) {
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // descend into alpha
 	v = m.(BackupView)
 	if cmd != nil {
-		t.Error("enter on a folder row must navigate, not start a backup")
+		t.Error("enter on a folder row must navigate, not advance the wizard")
 	}
 	if filepath.Base(v.picker.cwd) != "alpha" {
 		t.Fatalf("enter on a child must descend, cwd = %q", v.picker.cwd)
 	}
-	if v.stage != backupConfigure {
-		t.Error("navigating must not leave the configure stage")
+	if v.stage != backupLocation {
+		t.Error("navigating must not leave the Location step")
 	}
 }
 
@@ -435,131 +399,17 @@ func TestBackupPickerBackspaceGoesUp(t *testing.T) {
 	}
 }
 
-// Enter in the tag field also reaches the confirmation gate (for the browsed
-// folder), so a tag can be set first without hunting for a separate submit;
-// confirming then starts the op through the one-op guard.
-func TestBackupTagFieldEnterRaisesConfirmation(t *testing.T) {
-	root := tempTree(t)
-	v := backupAt(t, root)
-
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // focus the tag field
-	v = m.(BackupView)
-	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	v = m.(BackupView)
-	if cmd == nil {
-		t.Fatal("enter in the tag field must raise the confirmation gate")
-	}
-	if cm := confirmModalFrom(t, cmd); cm.id != backupConfirmID {
-		t.Fatalf("confirmation modal id = %q, want %q", cm.id, backupConfirmID)
-	}
-
-	// Confirming batches the startOpMsg with the seeded first opTickMsg. Both
-	// must be present, or the progress bar never repaints during a real run.
-	_, cmd = v.Update(confirmedMsg{id: backupConfirmID})
-	var foundStart, foundTick bool
-	for _, msg := range execCmds(t, cmd) {
-		switch mm := msg.(type) {
-		case startOpMsg:
-			foundStart = true
-			if mm.name != "backup" {
-				t.Errorf("op name = %q, want backup", mm.name)
-			}
-		case opTickMsg:
-			foundTick = true
-		}
-	}
-	if !foundStart {
-		t.Error("backup must start through the App's one-op guard")
-	}
-	if !foundTick {
-		t.Error("the first opTickMsg must still be seeded, or progress never repaints")
-	}
-}
-
-// On the Start button the footer must promise choosing the browsed folder —
+// On the choose button the footer must promise choosing the browsed folder —
 // a footer that says "open" while the cursor rests on the button would be lying.
 func TestBackupStartButtonFooterSaysChoose(t *testing.T) {
 	root := tempTree(t)
 	v := onStartButton(backupAt(t, root))
 	want := "choose " + filepath.Base(root)
 	if v.picker.enterVerb() != want {
-		t.Errorf("Start-button verb = %q, want %q", v.picker.enterVerb(), want)
+		t.Errorf("button verb = %q, want %q", v.picker.enterVerb(), want)
 	}
 	if !strings.Contains(v.View(), "Press enter to "+want) {
 		t.Errorf("footer must say %q:\n%s", "Press enter to "+want, v.View())
-	}
-}
-
-// TestBackupFlow_RescanToggle: ctrl+r on the configure stage arms a
-// full re-read (incremental reuse off), visible in the view and
-// carried into the snapshot options.
-func TestBackupFlow_RescanToggle(t *testing.T) {
-	r := newFlowRepo(t)
-	v := backupAtRepo(t, r, t.TempDir())
-	if v.rescan {
-		t.Fatal("rescan must default off — incremental is the point")
-	}
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
-	v = m.(BackupView)
-	if !v.rescan {
-		t.Fatal("ctrl+r should arm rescan")
-	}
-	if !strings.Contains(strings.ToLower(v.View()), "rescan") {
-		t.Errorf("configure view should surface the rescan state:\n%s", v.View())
-	}
-	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
-	v = m.(BackupView)
-	if v.rescan {
-		t.Error("second ctrl+r should disarm rescan")
-	}
-}
-
-// TestBackup_TagFieldIsBoxedOnlyWhenFocused: the box appears only once tab
-// moves focus onto the tag field — a delta assertion since the picker above
-// it renders its own chrome.
-func TestBackup_TagFieldIsBoxedOnlyWhenFocused(t *testing.T) {
-	v := backupAt(t, tempTree(t))
-	before := boxCount(v.View())
-
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
-	v = m.(BackupView)
-	after := boxCount(v.View())
-
-	if after-before != 1 {
-		t.Fatalf("boxCount delta on tag focus = %d, want 1 (before=%d after=%d)", after-before, before, after)
-	}
-}
-
-// TestBackup_TabToTagFieldSchedulesBlink: tabbing onto the tag field must
-// start the cursor blinking. v.tag already exists before tab is sent, so
-// BlinkSpeed can be dropped first — the returned cmd is the REAL one
-// Focus() produced, and executing it (assertBlinkCmd does) would otherwise
-// block for the default ~530ms.
-func TestBackup_TabToTagFieldSchedulesBlink(t *testing.T) {
-	v := backupAt(t, tempTree(t))
-	v.tag.Cursor.BlinkSpeed = time.Millisecond
-	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyTab})
-	assertBlinkCmd(t, cmd)
-}
-
-// TestBackup_RoutesBlinkTicksWhileTagFocused: blink ticks must reach the tag
-// field while it holds focus. A bare cursor.BlinkMsg{} won't do:
-// bubbles/cursor tags each scheduled tick and rejects one whose tag doesn't
-// match its current count (stale-tick guard), and Focus() already advanced
-// that counter past zero — so the test captures a genuinely tag-matched
-// tick from the field's own cursor instead of a zero-value literal.
-// BlinkSpeed is dropped to make capturing one instant rather than a real
-// ~530ms wait.
-func TestBackup_RoutesBlinkTicksWhileTagFocused(t *testing.T) {
-	v := backupAt(t, tempTree(t))
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
-	v = m.(BackupView)
-
-	v.tag.Cursor.BlinkSpeed = time.Millisecond
-	tick := v.tag.Cursor.BlinkCmd()
-	_, cmd := v.Update(tick())
-	if cmd == nil {
-		t.Fatal("blink tick was not routed to the focused tag field")
 	}
 }
 
@@ -588,21 +438,10 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 	m, _ := v.Update(tea.WindowSizeMsg{Width: forwarded, Height: 16})
 	v = pickerAt(m.(BackupView), root)
 
-	// Strengthen the test by arming the long variants before rendering,
-	// so both "rescan armed — every file re-read (ctrl+r disarms)" and
-	// "repeats daily — installs a schedule (ctrl+e cycles)" are rendered,
-	// guaranteeing the worst-case line widths.
-	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlR})
-	v = m.(BackupView)
-	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
-	v = m.(BackupView)
-
-	// Also arm the notice banner and an unbounded tag value — both must
-	// clip to the panel just like the rescan/repeat hints do (review
-	// findings 1 and 2: the notice line and the tag field could each
-	// overflow the interior on their own before the fit/Width fixes).
+	// Arm the notice banner: it must clip to the panel just like the
+	// picker's own rows do (a review finding — the banner could overflow
+	// the interior on its own before the fit fix).
 	v.notice = "another operation is in progress — try again when it finishes"
-	v.tag.SetValue(strings.Repeat("tag-", 30))
 
 	out := v.View()
 	if want := "in " + filepath.Base(root) + string(filepath.Separator); !strings.Contains(out, want) {
@@ -617,44 +456,44 @@ func TestBackupView_PreviewPaneAtMinSize(t *testing.T) {
 			t.Errorf("line %d exceeds content region (%d > %d): %q", i, w, region, line)
 		}
 	}
-	// Assert the armed variants stay actionable at min size: keybinds and
-	// hints must remain present so the operator knows what the keys do.
-	if !strings.Contains(out, "ctrl+r") {
-		t.Errorf("rescan armed hint must contain keybind 'ctrl+r':\n%s", out)
+	// The footer must stay actionable at min size.
+	if !strings.Contains(out, "esc leaves") {
+		t.Errorf("footer must keep its hints at min size:\n%s", out)
 	}
-	if !strings.Contains(out, "ctrl+e") {
-		t.Errorf("repeat armed hint must contain keybind 'ctrl+e':\n%s", out)
-	}
-	if !strings.Contains(out, "tab to tag") {
-		t.Errorf("footer must contain action hint 'tab to tag':\n%s", out)
-	}
+}
 
-	// Cheap focus-independence check: switch focus to the tag field and
-	// confirm the preview pane's header survives — pane rendering does not
-	// key off which control owns the keyboard.
-	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab})
-	v = m.(BackupView)
-	focused := v.View()
-	if !strings.Contains(focused, "in "+filepath.Base(root)+string(filepath.Separator)) {
-		t.Errorf("pane header must render regardless of focus:\n%s", focused)
+// The Confirm step must respect the same panel bound, with the worst case
+// armed: a deep directory path, a long tag, and the tag FOCUSED — focus
+// wraps it in ui.FieldBox, which costs 4 cells the interior has to have
+// room for. The unfocused pass cannot catch that; the frame only exists
+// while the field owns the keyboard, i.e. exactly when someone is typing.
+func TestBackupWizard_ConfirmFitsTheMinWidthPanel(t *testing.T) {
+	root := filepath.Join(t.TempDir(), "a-fairly-deeply-nested", "documents-and-settings", "archive")
+	if err := os.MkdirAll(root, 0o755); err != nil {
+		t.Fatal(err)
 	}
-	// Re-run the width bound with the tag field FOCUSED: focus wraps it in
-	// ui.FieldBox, which costs 4 cells the interior has to have room for.
-	// The unfocused pass above cannot catch that — the frame only exists
-	// while the field owns the keyboard, so a tag Width derived from the
-	// full interior overflows the panel exactly when someone is typing.
-	if !strings.Contains(focused, "╭") {
-		t.Fatalf("precondition: tab should have framed the tag field:\n%s", focused)
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	const forwarded = 59
+	m, _ := v.Update(tea.WindowSizeMsg{Width: forwarded, Height: 16})
+	v = pickerAt(m.(BackupView), root)
+	v, _ = toConfirm(t, toSchedule(t, v))
+	v.confirm.tag.SetValue(strings.Repeat("tag-", 30))
+	v.notice = "another operation is in progress — try again when it finishes"
+
+	out := v.View()
+	if !strings.Contains(out, "╭") {
+		t.Fatalf("precondition: Confirm frames the focused tag field:\n%s", out)
 	}
-	for i, line := range strings.Split(focused, "\n") {
+	region := pickerContentWidth(forwarded)
+	for i, line := range strings.Split(out, "\n") {
 		if w := lipgloss.Width(line); w > region {
-			t.Errorf("focused: line %d exceeds content region (%d > %d): %q", i, w, region, line)
+			t.Errorf("line %d exceeds content region (%d > %d): %q", i, w, region, line)
 		}
 	}
 }
 
 // The pane follows the picker cursor through real key routing, not just
-// the model: two ↓ from the Start button rest on the first child dir.
+// the model: two ↓ from the choose button rest on the first child dir.
 func TestBackupView_PreviewFollowsCursorThroughKeys(t *testing.T) {
 	root := t.TempDir()
 	sub := filepath.Join(root, "docs")
@@ -668,7 +507,7 @@ func TestBackupView_PreviewFollowsCursorThroughKeys(t *testing.T) {
 	m, _ := v.Update(tea.WindowSizeMsg{Width: 59, Height: 16})
 	v = pickerAt(m.(BackupView), root)
 
-	for range 2 { // Start button → ".." → docs
+	for range 2 { // choose button → ".." → docs
 		m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})
 		v = m.(BackupView)
 	}
@@ -713,56 +552,4 @@ func TestPreviewPaneWidth(t *testing.T) {
 			t.Errorf("previewPaneWidth(%d) = %d, want %d", c.interior, got, c.want)
 		}
 	}
-}
-
-// backupRunningFromTagField drives a configure-stage view to running with
-// the keyboard on the TAG field: tab focuses it, enter raises the gate from
-// there, and the confirm enters running. It is the entry point for the two
-// stage-exit tests below, which care about what happens to that field's
-// focus on the way out and back.
-func backupRunningFromTagField(t *testing.T) BackupView {
-	t.Helper()
-	v := backupAt(t, tempTree(t))
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
-	v = m.(BackupView)
-	if !v.tag.Focused() {
-		t.Fatal("precondition: tab focuses the tag field")
-	}
-	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // gate, raised from the tag field
-	v = m.(BackupView)
-	m, _ = v.Update(confirmedMsg{id: backupConfirmID})
-	v = m.(BackupView)
-	if v.stage != backupRunning {
-		t.Fatalf("precondition: confirming must start the backup; stage = %v (pathErr=%q)", v.stage, v.pathErr)
-	}
-	return v
-}
-
-// TestBackup_StartingTheBackupBlursTheTagField: leaving the configure stage
-// must blur the tag field. The running screen never renders it, so a field
-// left focused there keeps its blink chain rescheduling for nothing — and
-// Focused() stops meaning "the keyboard is on this field".
-func TestBackup_StartingTheBackupBlursTheTagField(t *testing.T) {
-	v := backupRunningFromTagField(t)
-	if v.tag.Focused() {
-		t.Error("entering the running stage must blur the tag field")
-	}
-}
-
-// TestBackup_RejectedStartRefocusesTheTagField: the one-op guard can bounce
-// the start back to configure. focus still names the tag control there, so
-// the field must be re-focused — with a fresh blink cmd, because the blur on
-// the way out ended the old chain and nothing else restarts it.
-func TestBackup_RejectedStartRefocusesTheTagField(t *testing.T) {
-	v := backupRunningFromTagField(t)
-	v.tag.Cursor.BlinkSpeed = time.Millisecond
-	m, cmd := v.Update(opRejectedMsg{name: "backup"})
-	v = m.(BackupView)
-	if v.stage != backupConfigure || v.focus != focusTagField {
-		t.Fatalf("stage/focus after rejection = %v/%v, want configure on the tag field", v.stage, v.focus)
-	}
-	if !v.tag.Focused() {
-		t.Fatal("returning to the configure stage on the tag control must re-focus the tag field")
-	}
-	assertBlinkCmd(t, cmd)
 }

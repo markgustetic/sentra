@@ -2,29 +2,12 @@ package tui
 
 import (
 	"fmt"
-	"path/filepath"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/scheduler"
 )
-
-// nextRepeat cycles the backup flow's repeat cadence: off → daily →
-// weekly → monthly → off. The simple periods only, deliberately — the
-// policies view owns the full schedule vocabulary (hourly, weekday, at).
-func nextRepeat(cur string) string {
-	switch cur {
-	case "":
-		return policycfg.CadenceDaily
-	case policycfg.CadenceDaily:
-		return policycfg.CadenceWeekly
-	case policycfg.CadenceWeekly:
-		return policycfg.CadenceMonthly
-	default:
-		return ""
-	}
-}
 
 // repeatPolicyName derives a policy name from a directory basename that is
 // safe for config keys, scheduler labels, and generated filenames (see
@@ -48,62 +31,43 @@ func repeatPolicyName(base string) string {
 	return name
 }
 
-// installRepeat persists a named policy for root (paths + tag + the armed
-// cadence) into sentra.yaml and installs the OS scheduler entry that runs
-// it. It is the backup flow's bridge to the policy/scheduler machinery the
-// Settings-side views manage — one confirm arms the standing schedule the
-// operator asked for.
-//
-// Naming: the policy is the directory's basename, sanitized. A clash with
-// an existing policy pointing somewhere ELSE is uniquified (name-2,
-// name-3, …), never clobbered; the SAME directory reuses its policy —
-// cadence and tag refresh, config-authored hooks survive, mirroring
-// `policy add --replace`. The collision check runs inside config.Update's
-// closure, against the on-disk map, so a concurrent edit can't be lost.
-func (v BackupView) installRepeat(root string) error {
+// installRepeat persists policy `name` for root (path + tag + schedule)
+// into sentra.yaml and installs the OS scheduler entry that runs it. The
+// wizard's Schedule step resolved the name and cadence; this only writes
+// them. The collision check inside config.Update's closure runs against the
+// on-disk map (a concurrent edit can't be lost) and REFUSES a name owned by
+// another directory rather than uniquifying: the operator just confirmed
+// this name, and silently renaming it would lie to them. The same
+// directory reuses its policy — cadence and tag refresh, config-authored
+// hooks survive, mirroring `policy add --replace`.
+func (v BackupView) installRepeat(root, name string, schedule config.PolicySchedule, tag string) error {
 	if strings.TrimSpace(v.deps.ConfigPath) == "" {
 		return fmt.Errorf("no config file to hold the policy — run setup first")
 	}
-	// The simple cadences run off-hours by default: 02:00, Sundays for
-	// weekly, the 1st for monthly (the scheduler fixes the day). An
-	// operator who wants a different clock edits the policy afterwards —
-	// that vocabulary belongs to the policies view, not this flow.
-	schedule := config.PolicySchedule{Cadence: v.repeat, At: "02:00"}
-	if v.repeat == policycfg.CadenceWeekly {
-		schedule.Weekday = "sun"
-	}
 	schedule = policycfg.NormalizeSchedule(schedule)
-	tag := strings.TrimSpace(v.tag.Value())
-
-	name := repeatPolicyName(filepath.Base(root))
-	var chosen string
+	var tags []string
+	if tag = strings.TrimSpace(tag); tag != "" {
+		tags = []string{tag}
+	}
 	err := config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
 		}
-		chosen = name
-		for i := 2; ; i++ {
-			existing, exists := cfg.Policies[chosen]
-			if !exists || (len(existing.Paths) == 1 && existing.Paths[0] == root) {
-				break
-			}
-			chosen = fmt.Sprintf("%s-%d", name, i)
+		if existing, exists := cfg.Policies[name]; exists &&
+			(len(existing.Paths) != 1 || existing.Paths[0] != root) {
+			return fmt.Errorf("policy %q already backs up %s", name, strings.Join(existing.Paths, ", "))
 		}
-		p := cfg.Policies[chosen] // zero value when new; hooks survive when reused
+		p := cfg.Policies[name] // zero value when new; hooks survive when reused
 		p.Paths = []string{root}
-		p.Tags = nil
-		if tag != "" {
-			p.Tags = []string{tag}
-		}
+		p.Tags = tags
 		p.Schedule = schedule
-		cfg.Policies[chosen] = p
+		cfg.Policies[name] = p
 		return nil
 	})
 	if err != nil {
 		return err
 	}
-
-	paths, err := scheduler.PathsFor(v.schedGOOS, v.schedHome, chosen)
+	paths, err := scheduler.PathsFor(v.schedGOOS, v.schedHome, name)
 	if err != nil {
 		return err
 	}
@@ -111,29 +75,24 @@ func (v BackupView) installRepeat(root string) error {
 	if err != nil {
 		return err
 	}
-	files, err := scheduler.Render(paths, exe, v.deps.ConfigPath, chosen, schedule)
+	files, err := scheduler.Render(paths, exe, v.deps.ConfigPath, name, schedule)
 	if err != nil {
 		return err
 	}
 	if err := scheduler.Install(files); err != nil {
 		return err
 	}
-
-	// Keep the shared resolved config coherent so the Policies/Schedule
-	// views list the new policy without a relaunch. Disk is already the
-	// source of truth (config.Update above); this mirrors it in memory.
+	// Mirror disk in the shared resolved config so the Scheduled backups
+	// tab lists the policy without a relaunch.
 	if v.deps.Config != nil {
 		if v.deps.Config.Policies == nil {
 			v.deps.Config.Policies = map[string]config.PolicyConfig{}
 		}
-		p := v.deps.Config.Policies[chosen]
+		p := v.deps.Config.Policies[name]
 		p.Paths = []string{root}
-		p.Tags = nil
-		if tag != "" {
-			p.Tags = []string{tag}
-		}
+		p.Tags = tags
 		p.Schedule = schedule
-		v.deps.Config.Policies[chosen] = p
+		v.deps.Config.Policies[name] = p
 	}
 	return nil
 }

@@ -12,7 +12,7 @@ import (
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 )
 
-// repeatFixture returns a configure-stage BackupView wired for a
+// repeatFixture returns a Location-stage BackupView wired for a
 // deterministic schedule install: a real repo, a real sentra.yaml, a temp
 // home, and linux scheduler paths (fixed file names, no launchd).
 func repeatFixture(t *testing.T) (BackupView, string, string) {
@@ -35,65 +35,33 @@ func repeatFixture(t *testing.T) (BackupView, string, string) {
 	return v, cfgPath, home
 }
 
-// ctrl+e cycles the repeat cadence through the simple periods and back to
-// off — a chord, like rescan's ctrl+r, because both configure-stage
-// controls own plain runes.
-func TestBackup_CtrlECyclesRepeat(t *testing.T) {
-	v := NewBackupView(Deps{})
-	want := []string{policycfg.CadenceDaily, policycfg.CadenceWeekly, policycfg.CadenceMonthly, ""}
-	for _, w := range want {
-		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
-		v = m.(BackupView)
-		if v.repeat != w {
-			t.Fatalf("repeat = %q, want %q", v.repeat, w)
-		}
-	}
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyCtrlE})
-	if out := m.(BackupView).View(); !strings.Contains(out, "daily") {
-		t.Fatalf("configure frame does not show the armed cadence:\n%s", out)
-	}
+// atDailyConfirm walks the fixture to Confirm with daily@02:00 chosen for dir.
+func atDailyConfirm(t *testing.T, v BackupView, dir string) BackupView {
+	t.Helper()
+	v.picker = newDirPicker(dir)
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = toSchedule(t, m.(BackupView))
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyDown})              // hourly
+	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyDown}) // daily
+	v, _ = toConfirm(t, m.(BackupView))
+	return v
 }
 
-// The confirmation gate must name what confirming installs — an operator
-// never agrees to a standing schedule that was not spelled out.
-func TestBackup_ConfirmBodyNamesRepeat(t *testing.T) {
-	v, _, _ := repeatFixture(t)
-	v.repeat = policycfg.CadenceWeekly
-	dir := filepath.Join(t.TempDir(), "Projects")
-	if err := os.Mkdir(dir, 0o755); err != nil {
-		t.Fatal(err)
-	}
-	_, cmd := v.requestBackup(dir)
-	if cmd == nil {
-		t.Fatal("requestBackup produced no modal command")
-	}
-	push, ok := cmd().(pushModalMsg)
-	if !ok {
-		t.Fatalf("got %T, want pushModalMsg", cmd())
-	}
-	body := push.modal.View()
-	for _, wantSub := range []string{"weekly", "Projects"} {
-		if !strings.Contains(body, wantSub) {
-			t.Errorf("confirm modal missing %q:\n%s", wantSub, body)
-		}
-	}
-}
-
-// Confirming with a cadence armed writes the policy into sentra.yaml,
-// installs the OS scheduler files, and then starts the backup — in that
-// order, so a failed install never leaves an unscheduled "repeating"
-// backup that quietly ran once.
-func TestBackup_ConfirmInstallsPolicyScheduleThenRuns(t *testing.T) {
+// Confirming a scheduled backup installs the policy + timer FIRST, then
+// starts the run — a failed install never leaves an unscheduled
+// "repeating" backup that quietly ran once.
+func TestBackupWizard_ConfirmInstallsPolicyScheduleThenRuns(t *testing.T) {
 	v, cfgPath, home := repeatFixture(t)
-	v.repeat = policycfg.CadenceDaily
 	dir := filepath.Join(t.TempDir(), "docs")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	v.tag.SetValue("nightly")
-	v.pending = dir
-
-	m, cmd := v.Update(confirmedMsg{id: backupConfirmID})
+	v = atDailyConfirm(t, v, dir)
+	if !strings.Contains(v.View(), `daily at 02:00 as policy "docs"`) || !strings.Contains(v.View(), "next run") {
+		t.Fatalf("confirm summary must describe the schedule and next run:\n%s", v.View())
+	}
+	v.confirm.tag.SetValue("nightly")
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	got := m.(BackupView)
 	if got.stage != backupRunning {
 		t.Fatalf("stage = %v, want backupRunning (pathErr=%q)", got.stage, got.pathErr)
@@ -101,7 +69,6 @@ func TestBackup_ConfirmInstallsPolicyScheduleThenRuns(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("no backup op started")
 	}
-
 	onDisk, err := config.Load(cfgPath)
 	if err != nil {
 		t.Fatal(err)
@@ -110,86 +77,59 @@ func TestBackup_ConfirmInstallsPolicyScheduleThenRuns(t *testing.T) {
 	if !ok {
 		t.Fatalf("policy 'docs' not written; policies = %v", onDisk.Policies)
 	}
-	if len(p.Paths) != 1 || p.Paths[0] != dir {
-		t.Fatalf("policy paths = %v, want [%s]", p.Paths, dir)
+	if len(p.Paths) != 1 || p.Paths[0] != dir || len(p.Tags) != 1 || p.Tags[0] != "nightly" {
+		t.Fatalf("policy = %+v", p)
 	}
-	if len(p.Tags) != 1 || p.Tags[0] != "nightly" {
-		t.Fatalf("policy tags = %v, want [nightly]", p.Tags)
-	}
-	if p.Schedule.Cadence != policycfg.CadenceDaily {
-		t.Fatalf("policy cadence = %q, want daily", p.Schedule.Cadence)
+	if p.Schedule.Cadence != policycfg.CadenceDaily || p.Schedule.At != "02:00" {
+		t.Fatalf("schedule = %+v", p.Schedule)
 	}
 	for _, f := range []string{"sentra-docs.service", "sentra-docs.timer"} {
 		if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", f)); err != nil {
 			t.Errorf("scheduler file %s not installed: %v", f, err)
 		}
 	}
-	// In-memory coherence: the shared resolved config sees the policy too,
-	// so the Schedule/Policies views list it without a relaunch.
 	if _, ok := v.deps.Config.Policies["docs"]; !ok {
 		t.Error("in-memory config missing the new policy")
 	}
-}
-
-// A failed install blocks the backup: the operator asked for a REPEATING
-// backup, and silently degrading to a one-shot would betray that.
-func TestBackup_ScheduleFailureBlocksBackup(t *testing.T) {
-	v := NewBackupView(Deps{Repo: newFlowRepo(t)}) // no ConfigPath
-	v.repeat = policycfg.CadenceDaily
-	dir := t.TempDir()
-	v.pending = dir
-	m, cmd := v.Update(confirmedMsg{id: backupConfirmID})
-	got := m.(BackupView)
-	if got.stage != backupConfigure {
-		t.Fatalf("stage = %v, want backupConfigure after a failed install", got.stage)
-	}
-	if cmd != nil {
-		t.Fatal("backup must not start when the schedule install failed")
-	}
-	if got.pathErr == "" {
-		t.Fatal("failed install must surface an error")
+	if got.installedName != "docs" || !got.installedNextOK {
+		t.Errorf("done-screen record: name=%q nextOK=%v", got.installedName, got.installedNextOK)
 	}
 }
 
-// A policy name is derived from the directory basename; a clash with an
-// existing policy pointing somewhere ELSE is uniquified, never clobbered.
-// The same directory reuses its policy (cadence/tag refresh), keeping any
-// config-authored hooks.
-func TestBackup_PolicyNameCollisionUniquified(t *testing.T) {
-	v, cfgPath, _ := repeatFixture(t)
-	otherDir := t.TempDir()
-	if err := config.Update(cfgPath, func(cfg *config.Config) error {
-		cfg.Policies = map[string]config.PolicyConfig{
-			"docs": {Paths: []string{otherDir}},
-		}
-		return nil
-	}); err != nil {
-		t.Fatal(err)
-	}
-	v.repeat = policycfg.CadenceMonthly
+func TestBackupWizard_ScheduleFailureBlocksBackup(t *testing.T) {
+	v, _, _ := repeatFixture(t)
+	v.schedGOOS = "plan9" // scheduler.PathsFor refuses an unsupported platform
 	dir := filepath.Join(t.TempDir(), "docs")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	v.pending = dir
-	m, _ := v.Update(confirmedMsg{id: backupConfirmID})
-	if got := m.(BackupView); got.stage != backupRunning {
-		t.Fatalf("stage = %v, want backupRunning (pathErr=%q)", got.stage, got.pathErr)
+	v = atDailyConfirm(t, v, dir)
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(BackupView)
+	if got.stage != backupConfirm {
+		t.Fatalf("stage = %v, want to stay on Confirm", got.stage)
 	}
+	if cmd != nil {
+		t.Fatal("a failed install must not start the backup")
+	}
+	if !strings.Contains(got.View(), "could not install the schedule") {
+		t.Errorf("view must surface the install error:\n%s", got.View())
+	}
+}
 
-	onDisk, err := config.Load(cfgPath)
-	if err != nil {
+// installRepeat refuses a name the wizard did not resolve: an on-disk
+// policy of that name pointing elsewhere is an error, never uniquified.
+func TestInstallRepeat_RefusesForeignName(t *testing.T) {
+	v, cfgPath, _ := repeatFixture(t)
+	if err := config.Update(cfgPath, func(cfg *config.Config) error {
+		cfg.Policies = map[string]config.PolicyConfig{"docs": {Paths: []string{"/elsewhere"}}}
+		return nil
+	}); err != nil {
 		t.Fatal(err)
 	}
-	if p := onDisk.Policies["docs"]; len(p.Paths) != 1 || p.Paths[0] != otherDir {
-		t.Fatalf("existing policy clobbered: %v", p.Paths)
-	}
-	p2, ok := onDisk.Policies["docs-2"]
-	if !ok {
-		t.Fatalf("uniquified policy missing; policies = %v", onDisk.Policies)
-	}
-	if len(p2.Paths) != 1 || p2.Paths[0] != dir {
-		t.Fatalf("docs-2 paths = %v, want [%s]", p2.Paths, dir)
+	err := v.installRepeat("/tmp/docs", "docs", config.PolicySchedule{Cadence: policycfg.CadenceDaily, At: "02:00"}, "")
+	if err == nil || !strings.Contains(err.Error(), "/elsewhere") {
+		t.Fatalf("want a collision error naming /elsewhere, got %v", err)
 	}
 }
 

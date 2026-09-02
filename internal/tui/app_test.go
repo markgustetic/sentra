@@ -1821,15 +1821,25 @@ func TestApp_EscapeLeavesATextField(t *testing.T) {
 
 	t.Run("backup tag field", func(t *testing.T) {
 		app := focusView(t, sizedApp(t, r), "backup")
-		m, _ := app.Update(tea.KeyMsg{Type: tea.KeyTab}) // into the tag field
-		app = m.(App)
+		for range 2 { // Location → Schedule → Confirm, where the tag field lives
+			m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			app = m.(App)
+		}
 		if !app.contentCapturesText() {
 			t.Fatal("precondition: the tag field must capture text")
 		}
-		m, _ = app.Update(tea.KeyMsg{Type: tea.KeyEsc}) // esc leaves straight to the rail
-		app = m.(App)
-		if len(app.modals) != 0 {
-			t.Errorf("esc must not pop a confirm, modals=%d", len(app.modals))
+		// Every esc makes progress: the wizard steps back out of the field,
+		// and Location leaves esc to the shell, which returns to the rail.
+		// No confirm is popped at any point.
+		for range 3 {
+			m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			app = m.(App)
+			if len(app.modals) != 0 {
+				t.Fatalf("esc must not pop a confirm, modals=%d", len(app.modals))
+			}
+		}
+		if app.contentCapturesText() {
+			t.Error("esc must leave the text field behind")
 		}
 		if app.focus != focusSidebar {
 			t.Error("esc must return focus to the rail")
@@ -1963,7 +1973,7 @@ func sizedApp(t *testing.T, r *repo.Repo) App {
 // Escaping a data-entry screen returns straight to the rail — no confirm. The
 // only guarded action left in the shell is quit.
 func TestApp_EscFromDataEntryScreenReturnsToRail(t *testing.T) {
-	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup") // backupConfigure = data entry
+	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup") // backupLocation = data entry
 	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
 	app = m.(App)
 	if len(app.modals) != 0 {
@@ -2319,14 +2329,15 @@ func TestApp_PaletteOverlayKeepsViewFieldBlinking(t *testing.T) {
 	}
 }
 
-// TestApp_ConfirmModalOverlayKeepsTagFieldBlinking: backup's tag field is
-// focused, then enter raises the (plain, no-text-field) confirmation modal
-// without blurring the tag field underneath it — exactly the scenario named
-// in the regression: "backup tag → Enter (pushes ConfirmModal without
-// blurring) → Esc → frozen". A tag-matched tick for the tag field must still
-// route through App.Update and return non-nil, even though ConfirmModal
-// itself drops every non-key message outright.
-func TestApp_ConfirmModalOverlayKeepsTagFieldBlinking(t *testing.T) {
+// TestApp_ConfirmModalOverlayKeepsFieldBlinking: a view's text field stays
+// focused underneath a plain (no-text-field) ConfirmModal — the Jobs form
+// raises one from its focused name field, and backup's Confirm step is
+// reached the same way with its tag focused. This is the scenario named in
+// the regression: "focused field → a modal is pushed without blurring it →
+// Esc → frozen". A tag-matched tick for that field must still route through
+// App.Update and return non-nil, even though ConfirmModal itself drops every
+// non-key message outright.
+func TestApp_ConfirmModalOverlayKeepsFieldBlinking(t *testing.T) {
 	r := newFlowRepo(t)
 	app := NewApp(Deps{RepoName: "x", Repo: r})
 	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
@@ -2338,50 +2349,38 @@ func TestApp_ConfirmModalOverlayKeepsTagFieldBlinking(t *testing.T) {
 		t.Fatalf("active view = %s, want backup", a.views[a.active].id)
 	}
 
-	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyTab})
-	a = m.(App)
+	// Walk the wizard to Confirm, where the tag field owns the keyboard.
+	for range 2 {
+		m, _ = a.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		a = m.(App)
+	}
 	bv, ok := a.views[a.active].model.(BackupView)
 	if !ok {
 		t.Fatalf("active view model is %T, want BackupView", a.views[a.active].model)
 	}
-	if !bv.tag.Focused() {
-		t.Fatal("tab should focus the tag field")
+	if bv.stage != backupConfirm || !bv.confirm.tag.Focused() {
+		t.Fatalf("precondition: the Confirm step focuses the tag (stage=%v)", bv.stage)
 	}
 
-	// Enter on the focused tag field raises the confirmation modal.
-	m, cmd := a.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	a = m.(App)
-	if cmd == nil {
-		t.Fatal("enter on the tag field should request the confirm modal")
-	}
-	push, ok := cmd().(pushModalMsg)
-	if !ok {
-		t.Fatalf("expected pushModalMsg, got %#v", cmd())
-	}
-	m, _ = a.Update(push)
+	// A modal goes up over it without blurring anything underneath.
+	m, _ = a.Update(pushModalMsg{modal: NewConfirmModal("Confirm", "body", "x", 80, 24)})
 	a = m.(App)
 	if len(a.modals) != 1 {
 		t.Fatalf("modal stack = %d, want 1 after pushModalMsg", len(a.modals))
 	}
-	if _, ok := a.modals[0].(ConfirmModal); !ok {
-		t.Fatalf("expected a ConfirmModal on the stack, got %T", a.modals[0])
-	}
-
-	// The tag field must still be focused underneath — pushing a plain
-	// ConfirmModal never blurs it.
 	bv, ok = a.views[a.active].model.(BackupView)
 	if !ok {
 		t.Fatalf("active view model is %T, want BackupView", a.views[a.active].model)
 	}
-	if !bv.tag.Focused() {
-		t.Fatal("pushing the confirm modal must not blur the tag field underneath it")
+	if !bv.confirm.tag.Focused() {
+		t.Fatal("pushing a confirm modal must not blur the field underneath it")
 	}
 
-	bv.tag.Cursor.BlinkSpeed = time.Millisecond
-	tick := bv.tag.Cursor.BlinkCmd()
+	bv.confirm.tag.Cursor.BlinkSpeed = time.Millisecond
+	tick := bv.confirm.tag.Cursor.BlinkCmd()
 	installView(t, &a, "backup", bv)
 
-	_, cmd = a.Update(tick())
+	_, cmd := a.Update(tick())
 	if cmd == nil {
 		t.Fatal("the tag field's blink chain died while the confirm modal was open")
 	}
@@ -2589,7 +2588,7 @@ func TestApp_UnopenedViewsOwnNoFocusedField(t *testing.T) {
 	for _, fo := range fieldOwners() {
 		var found bool
 		for _, v := range app.views {
-			if v.id == fo.name {
+			if v.id == fo.regID() {
 				found = true
 				if n := fo.focusedCount(v.model); n != 0 {
 					t.Errorf("%s: %d focused field(s) before the view was ever shown, want 0", fo.name, n)
@@ -2597,7 +2596,7 @@ func TestApp_UnopenedViewsOwnNoFocusedField(t *testing.T) {
 			}
 		}
 		if !found {
-			t.Errorf("no view registered under %q", fo.name)
+			t.Errorf("no view registered under %q", fo.regID())
 		}
 	}
 }

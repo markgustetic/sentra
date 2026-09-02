@@ -116,6 +116,10 @@ func TestAssertBlinkCmd_AcceptsOnlyTheRealBlink(t *testing.T) {
 // rule, not the case" in the repo's memory notes).
 type fieldOwner struct {
 	name string
+	// id is the shell's registry id for this view, when the row's name is
+	// not it — two rows cover backup, one per wizard step. Empty means the
+	// name is the id.
+	id string
 	// focused builds the view driven to the stage that owns its field, with
 	// that field focused.
 	focused func(t *testing.T) tea.Model
@@ -157,14 +161,34 @@ func fieldOwners() []fieldOwner {
 			},
 		},
 		{
-			name: "backup",
+			name: "backup, schedule step on the name field",
+			id:   "backup",
 			focused: func(t *testing.T) tea.Model {
-				m, _ := backupAt(t, tempTree(t)).Update(tea.KeyMsg{Type: tea.KeyTab})
+				v := toSchedule(t, backupAt(t, tempTree(t)))
+				m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown}) // hourly: name appears
+				m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyTab})
 				return m
 			},
 			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(BackupView)
-				do(&v.tag)
+				do(&v.sched.name)
+				do(&v.sched.at)
+				do(&v.confirm.tag)
+				return v
+			},
+		},
+		{
+			name: "backup, confirm step on the tag field",
+			id:   "backup",
+			focused: func(t *testing.T) tea.Model {
+				v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+				return v
+			},
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
+				v := m.(BackupView)
+				do(&v.sched.name)
+				do(&v.sched.at)
+				do(&v.confirm.tag)
 				return v
 			},
 		},
@@ -225,6 +249,14 @@ func fieldOwners() []fieldOwner {
 			},
 		},
 	}
+}
+
+// regID is the id the shell registers this row's view under.
+func (fo fieldOwner) regID() string {
+	if fo.id != "" {
+		return fo.id
+	}
+	return fo.name
 }
 
 // blurAll force-blurs every field of m without touching its stage.
@@ -324,6 +356,9 @@ func TestFieldFocus_ShownFocusesNothingOutsideAFieldStage(t *testing.T) {
 		}},
 		{"backup, keyboard on the picker", func(t *testing.T) tea.Model {
 			return backupAt(t, tempTree(t))
+		}},
+		{"backup, schedule step on the cadence list", func(t *testing.T) tea.Model {
+			return toSchedule(t, backupAt(t, tempTree(t)))
 		}},
 		{"restore, on the picker", func(t *testing.T) tea.Model {
 			r := newFlowRepo(t)

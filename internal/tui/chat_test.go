@@ -162,7 +162,8 @@ func TestChat_ListSnapshotsToolAnswers(t *testing.T) {
 }
 
 // start_backup compiles into the Backup view's EXISTING confirm gate: the
-// modal is up, the tag is set, and no operation is running.
+// wizard lands on its Confirm step, the tag is set, and no operation is
+// running.
 func TestChat_StartBackupRaisesConfirmGate(t *testing.T) {
 	dir := t.TempDir()
 	p := &llm.FakeProvider{Steps: []llm.FakeStep{
@@ -180,9 +181,6 @@ func TestChat_StartBackupRaisesConfirmGate(t *testing.T) {
 	if got := app.views[app.active].id; got != "backup" {
 		t.Fatalf("active = %q, want backup", got)
 	}
-	if len(app.modals) == 0 {
-		t.Fatal("the backup confirm modal must be up — chat must not skip the gate")
-	}
 	if app.opRunning != "" {
 		t.Fatal("nothing may run before the human confirms")
 	}
@@ -192,8 +190,11 @@ func TestChat_StartBackupRaisesConfirmGate(t *testing.T) {
 			bv = v.model.(BackupView)
 		}
 	}
-	if bv.pending == "" || strings.TrimSpace(bv.tag.Value()) != "pre-move" {
-		t.Fatalf("backup view not seeded: pending=%q tag=%q", bv.pending, bv.tag.Value())
+	if bv.stage != backupConfirm {
+		t.Fatalf("the wizard must stop on its Confirm step — chat must not skip the gate; stage=%v", bv.stage)
+	}
+	if bv.pending == "" || strings.TrimSpace(bv.confirm.tag.Value()) != "pre-move" {
+		t.Fatalf("backup view not seeded: pending=%q tag=%q", bv.pending, bv.confirm.tag.Value())
 	}
 }
 
