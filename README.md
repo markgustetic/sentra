@@ -252,8 +252,9 @@ Backup, Scheduled backups, Snapshots, Maintenance, Settings, Help — and the
 occasional jobs live one keypress inside them: restore and diff launch from a
 snapshot row, check/prune/sync/doctor from Maintenance, recovery-kit/
 passphrase/setup from Settings. Backup is a three-step wizard: pick the
-folder, pick a schedule (one-shot, or hourly/daily/weekly/monthly — that
-installs a named policy plus a launchd/systemd timer), confirm.
+folder, pick a schedule (one-shot, or hourly/daily/weekly/monthly with a
+time, weekday and editable policy name; a chosen cadence installs a named
+policy plus a launchd/systemd timer), confirm.
 
 Handy keys (the status bar always shows what's live):
 

@@ -338,9 +338,10 @@ occasional jobs live one keypress inside: on a snapshot row `r` restores it
 and `d` diffs it against another; Maintenance holds check / prune / sync /
 doctor; Settings holds the recovery kit, passphrase rotation, and re-running
 setup. Backup is a three-step wizard: pick the folder, pick a schedule
-(one-shot, or hourly/daily/weekly/monthly — that installs a named policy plus
-a launchd/systemd timer), confirm. `q` quits, and the status bar always shows
-which keys are live.
+(one-shot, or hourly/daily/weekly/monthly with a time, weekday and editable
+policy name; a chosen cadence installs a named policy plus a launchd/systemd
+timer), confirm. `q` quits, and the status bar always shows which keys are
+live.
 
 ## 10. Prune
 
