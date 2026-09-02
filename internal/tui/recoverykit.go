@@ -168,6 +168,11 @@ func (v RecoveryKitView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEsc:
 			v.stage = rkDone
 			v.saveErr = ""
+			// Leaving the stage must blur the field. A focused field that
+			// is no longer rendered keeps rescheduling its blink forever,
+			// and — since the box is drawn from Focused() — it would come
+			// back framed but unreachable if the stage were re-entered.
+			v.savePath.Blur()
 			return v, nil
 		case tea.KeyEnter:
 			return v.writeKit()
@@ -184,8 +189,12 @@ func (v RecoveryKitView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.saveErr = ""
 			v.savePath.SetValue("")
 			// Focus()'s own return is the real, tag-matched blink cmd; the
-			// dead-end textinput.Blink sentinel is never used.
-			return v, v.savePath.Focus()
+			// dead-end textinput.Blink sentinel is never used. Sequenced
+			// rather than inlined into the return: Focus() mutates
+			// v.savePath, and the order in which a return copies v versus
+			// evaluates the call is unspecified.
+			cmd := v.savePath.Focus()
+			return v, cmd
 		case msg.Type == tea.KeyEnter:
 			return v.startBuild()
 		}
@@ -251,6 +260,9 @@ func (v RecoveryKitView) writeKit() (tea.Model, tea.Cmd) {
 	v.saved = path
 	v.saveErr = ""
 	v.stage = rkDone
+	// Same reason as the esc exit: this is the other way out of rkSaving,
+	// so it owes the same blur.
+	v.savePath.Blur()
 	return v, nil
 }
 

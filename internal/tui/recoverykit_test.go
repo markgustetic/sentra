@@ -259,3 +259,51 @@ func TestRecoveryKitFlow_NilRepoPlaceholder(t *testing.T) {
 // view-slice registration in one place to avoid conflicting concurrent
 // edits to app.go across Phase 2c's per-flow tasks. A registration test
 // belongs with that task, not here.
+
+// TestRecoveryKit_LeavingSaveStageBlursTheField covers BOTH exits from the
+// save prompt, because the rule is "leaving rkSaving blurs savePath", not
+// "esc blurs savePath" — fixing only the exit that was reported would leave
+// the identical defect on the other one.
+//
+// A field left focused after its stage is gone is not cosmetic. Its blink
+// chain keeps rescheduling for something nobody renders, and because the
+// box is drawn from Focused(), re-entering the stage would show a frame
+// around a field the operator never focused.
+func TestRecoveryKit_LeavingSaveStageBlursTheField(t *testing.T) {
+	openPrompt := func(t *testing.T) RecoveryKitView {
+		t.Helper()
+		v := recoveryKitAtDone(t)
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+		v = m.(RecoveryKitView)
+		if v.stage != rkSaving || !v.savePath.Focused() {
+			t.Fatalf("precondition: want a focused savePath on rkSaving, got stage=%v focused=%v",
+				v.stage, v.savePath.Focused())
+		}
+		return v
+	}
+
+	t.Run("esc", func(t *testing.T) {
+		v := openPrompt(t)
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		v = m.(RecoveryKitView)
+		if v.stage != rkDone {
+			t.Fatalf("stage = %v, want rkDone", v.stage)
+		}
+		if v.savePath.Focused() {
+			t.Error("esc out of the save prompt must blur savePath")
+		}
+	})
+
+	t.Run("successful write", func(t *testing.T) {
+		v := openPrompt(t)
+		v.savePath.SetValue(filepath.Join(t.TempDir(), "kit.md"))
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		v = m.(RecoveryKitView)
+		if v.stage != rkDone {
+			t.Fatalf("stage = %v, want rkDone (saveErr=%q)", v.stage, v.saveErr)
+		}
+		if v.savePath.Focused() {
+			t.Error("a successful write leaves the save prompt too — it must blur savePath")
+		}
+	})
+}
