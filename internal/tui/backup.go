@@ -488,15 +488,9 @@ func (v BackupView) View() string {
 				left, strings.Repeat(" ", previewGapWidth), v.picker.previewView(paneW))
 		}
 		fmt.Fprintf(&b, "\n\n%s", pickerCol)
-		tagField := v.tag.View()
-		if v.tag.Focused() {
-			// The box IS the focus affordance: only while tab has moved
-			// focus onto the tag field does it carry the frame. tag.Width
-			// already reserves the box's 4 cells (see WindowSizeMsg), so
-			// the framed line still fits the interior.
-			tagField = ui.FieldBox.Render(tagField)
-		}
-		fmt.Fprintf(&b, "\n%s", tagField)
+		// tag.Width already reserves the box's cells (see WindowSizeMsg),
+		// so the framed line still fits the interior once tab focuses it.
+		fmt.Fprintf(&b, "\n%s", boxedField(v.tag))
 		if v.rescan {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.fit("  rescan armed — every file re-read (ctrl+r disarms)")))
 		} else {

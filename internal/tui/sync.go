@@ -417,18 +417,8 @@ func (v SyncView) View() string {
 		if v.notice != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		// The box IS the focus affordance: only the field tab currently
-		// owns carries the frame.
-		pathField := v.dstPath.View()
-		if v.dstPath.Focused() {
-			pathField = ui.FieldBox.Render(pathField)
-		}
-		refsField := v.snapRefs.View()
-		if v.snapRefs.Focused() {
-			refsField = ui.FieldBox.Render(refsField)
-		}
-		fmt.Fprintf(&b, "\n\n%s", pathField)
-		fmt.Fprintf(&b, "\n%s", refsField)
+		fmt.Fprintf(&b, "\n\n%s", boxedField(v.dstPath))
+		fmt.Fprintf(&b, "\n%s", boxedField(v.snapRefs))
 		fmt.Fprintf(&b, "\n\n%s", v.toggleLine(syncFieldInitDest, "init-dest", v.initDest,
 			"bootstrap an empty destination"))
 		fmt.Fprintf(&b, "\n%s", v.toggleLine(syncFieldDryRun, "dry-run", v.dryRun,

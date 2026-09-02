@@ -11,11 +11,14 @@ import (
 // it survives NO_COLOR and the Ascii profile tests run under, unlike a
 // color-only signal (the house "selection is a glyph, not a color" rule).
 //
-// Views with several fields side by side call this per field so exactly
-// one box can ever appear; single-field views inline the same two lines
-// with a site-specific comment. A caller that sizes its input from the
-// pane's interior must also subtract ui.FieldBoxOverhead from that Width,
-// or the framed line overflows the panel the moment it takes focus.
+// Every view renders every text field through this — one field or four —
+// so the frame can only ever come from Focused(), never from a stage flag
+// that merely decides the field is on screen. The two used to be allowed to
+// drift (snapshots boxed on `filtering`, the recovery kit on `rkSaving`),
+// which let a stage that forgot to blur on exit come back framed around a
+// field nobody focused. A caller that sizes its input from the pane's
+// interior must also subtract ui.FieldBoxOverhead from that Width, or the
+// framed line overflows the panel the moment it takes focus.
 func boxedField(f textinput.Model) string {
 	s := f.View()
 	if f.Focused() {

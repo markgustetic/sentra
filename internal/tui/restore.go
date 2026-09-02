@@ -363,17 +363,7 @@ func (v RestoreView) View() string {
 		fmt.Fprintf(&b, "\n\n%s", v.tbl.View())
 	case restoreDest:
 		b.WriteString(ui.Primary.Render("Restore " + v.snapID))
-		// The box IS the focus affordance: only the field tab currently
-		// owns carries the frame.
-		destField := v.dest.View()
-		if v.dest.Focused() {
-			destField = ui.FieldBox.Render(destField)
-		}
-		scopeField := v.scope.View()
-		if v.scope.Focused() {
-			scopeField = ui.FieldBox.Render(scopeField)
-		}
-		fmt.Fprintf(&b, "\n\n%s\n%s", destField, scopeField)
+		fmt.Fprintf(&b, "\n\n%s\n%s", boxedField(v.dest), boxedField(v.scope))
 		b.WriteString("\n")
 		b.WriteString(ui.Muted.Render("  tab switches fields; scope narrows the restore to those paths"))
 		if v.destErr != "" {

@@ -205,14 +205,7 @@ func (v UnlockView) View() string {
 	case unlockOpening:
 		fmt.Fprintf(&b, "\n\n%s", ui.Muted.Render("opening the repository…"))
 	default:
-		field := v.input.View()
-		if v.input.Focused() {
-			// The box IS the focus affordance (see FieldBox's doc comment):
-			// there is exactly one field on this view and it starts and stays
-			// focused, so the frame is always present here.
-			field = ui.FieldBox.Render(field)
-		}
-		fmt.Fprintf(&b, "\n\n%s", field)
+		fmt.Fprintf(&b, "\n\n%s", boxedField(v.input))
 		if v.inputErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}

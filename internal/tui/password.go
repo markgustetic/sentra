@@ -309,18 +309,8 @@ func (v PasswordView) View() string {
 		if v.notice != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Warn.Render(v.notice))
 		}
-		// The box IS the focus affordance: only the field tab currently
-		// owns carries the frame.
-		newField := v.newPass.View()
-		if v.newPass.Focused() {
-			newField = ui.FieldBox.Render(newField)
-		}
-		confirmField := v.confirmPass.View()
-		if v.confirmPass.Focused() {
-			confirmField = ui.FieldBox.Render(confirmField)
-		}
-		fmt.Fprintf(&b, "\n\n%s", newField)
-		fmt.Fprintf(&b, "\n%s", confirmField)
+		fmt.Fprintf(&b, "\n\n%s", boxedField(v.newPass))
+		fmt.Fprintf(&b, "\n%s", boxedField(v.confirmPass))
 		if v.inputErr != "" {
 			fmt.Fprintf(&b, "\n\n%s", ui.Danger.Render(v.inputErr))
 		}

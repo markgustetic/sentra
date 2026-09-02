@@ -621,9 +621,9 @@ func (s Snapshots) View() string {
 	status := ui.Muted.Render("sort: " + s.sortMode.label())
 	switch {
 	case s.filtering:
-		// The box IS the focus affordance: only the filter field, and only
-		// while it holds focus, renders the frame.
-		status = ui.FieldBox.Render(s.filter.View())
+		// filtering decides that the field is on the status line at all;
+		// the field's own focus decides whether it is framed.
+		status = boxedField(s.filter)
 	case s.notice != "":
 		status = ui.Success.Render(s.notice)
 	case strings.TrimSpace(s.filter.Value()) != "":

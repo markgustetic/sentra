@@ -102,3 +102,147 @@ func TestAssertBlinkCmd_AcceptsOnlyTheRealBlink(t *testing.T) {
 		t.Error("a batched textinput.Blink must be REJECTED for the same reason")
 	}
 }
+
+// fieldOwners enumerates every view that renders a boxed text field, each
+// driven to the stage that owns its field so the field is focused, together
+// with a blurAll that force-blurs every field the view has while leaving the
+// stage exactly where it is.
+//
+// The pair is what lets a test separate the two things a box could be drawn
+// from — the stage flag and the field's own Focused() — because a view that
+// boxes on its stage keeps the frame after blurAll, and one that boxes on
+// Focused() drops it. Tests below iterate this table so the rule is asserted
+// for the CLASS of views, not re-derived per view (see "test the rule, not
+// the case" in the repo's memory notes).
+type fieldOwner struct {
+	name    string
+	focused func(t *testing.T) tea.Model
+	blurAll func(m tea.Model) tea.Model
+}
+
+func fieldOwners() []fieldOwner {
+	return []fieldOwner{
+		{
+			name:    "unlock",
+			focused: func(t *testing.T) tea.Model { return NewUnlockView(unlockDeps(t, "hunter2")) },
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(UnlockView)
+				v.input.Blur()
+				return v
+			},
+		},
+		{
+			name:    "password",
+			focused: func(t *testing.T) tea.Model { return NewPasswordView(Deps{Repo: newFlowRepo(t)}) },
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(PasswordView)
+				v.newPass.Blur()
+				v.confirmPass.Blur()
+				return v
+			},
+		},
+		{
+			name:    "sync",
+			focused: func(t *testing.T) tea.Model { return NewSyncView(Deps{Repo: newFlowRepo(t)}) },
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(SyncView)
+				v.dstPath.Blur()
+				v.snapRefs.Blur()
+				return v
+			},
+		},
+		{
+			name: "backup",
+			focused: func(t *testing.T) tea.Model {
+				m, _ := backupAt(t, tempTree(t)).Update(tea.KeyMsg{Type: tea.KeyTab})
+				return m
+			},
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(BackupView)
+				v.tag.Blur()
+				return v
+			},
+		},
+		{
+			name: "snapshots",
+			focused: func(t *testing.T) tea.Model {
+				m, _ := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps()).
+					Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+				return m
+			},
+			blurAll: func(m tea.Model) tea.Model {
+				s := m.(Snapshots)
+				s.filter.Blur()
+				return s
+			},
+		},
+		{
+			name: "recovery-kit",
+			focused: func(t *testing.T) tea.Model {
+				m, _ := recoveryKitAtDone(t).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+				return m
+			},
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(RecoveryKitView)
+				v.savePath.Blur()
+				return v
+			},
+		},
+		{
+			name: "restore",
+			focused: func(t *testing.T) tea.Model {
+				r := newFlowRepo(t)
+				seedSnapshotReal(t, r)
+				m, _ := NewRestoreView(Deps{Repo: r}).Update(tea.KeyMsg{Type: tea.KeyEnter})
+				return m
+			},
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(RestoreView)
+				v.dest.Blur()
+				v.scope.Blur()
+				return v
+			},
+		},
+		{
+			name: "jobs",
+			focused: func(t *testing.T) tea.Model {
+				deps, _ := jobsDeps(t)
+				m, _ := newJobsForTest(t, deps).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
+				return m
+			},
+			blurAll: func(m tea.Model) tea.Model {
+				v := m.(JobsView)
+				v.form.name.Blur()
+				v.form.path.Blur()
+				v.form.tags.Blur()
+				v.form.schedule.Blur()
+				return v
+			},
+		},
+	}
+}
+
+// TestFieldBox_FollowsFocusedNotStage pins the one rule behind every box in
+// the TUI: the frame is drawn from the field's Focused(), never from the
+// stage flag that happens to show the field. With the field focused the
+// view renders exactly one frame; force-blur every field without touching
+// the stage and the frame must be gone.
+//
+// Boxing on the stage instead lets the two drift: a stage that forgot to
+// blur on exit comes back framed around a field nobody focused, and a stage
+// that blurred correctly still frames a dead field. Deriving the box from
+// Focused() makes it impossible to draw a frame the keyboard doesn't back.
+func TestFieldBox_FollowsFocusedNotStage(t *testing.T) {
+	for _, fo := range fieldOwners() {
+		t.Run(fo.name, func(t *testing.T) {
+			focused := fo.focused(t)
+			if got := boxCount(focused.View()); got != 1 {
+				t.Fatalf("focused field: boxCount = %d, want exactly 1:\n%s", got, focused.View())
+			}
+			blurred := fo.blurAll(focused)
+			if got := boxCount(blurred.View()); got != 0 {
+				t.Fatalf("every field blurred, stage unchanged: boxCount = %d, want 0 — the box is being drawn from the stage, not from Focused():\n%s", got, blurred.View())
+			}
+		})
+	}
+}

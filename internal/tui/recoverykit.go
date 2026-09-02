@@ -290,9 +290,9 @@ func (v RecoveryKitView) renderKit() string {
 	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Recovery kit"))
 	b.WriteString(v.vp.View())
 	if v.stage == rkSaving {
-		// The box IS the focus affordance: the save-path field renders it
-		// only while this stage — the only stage where it's focused — holds.
-		fmt.Fprintf(&b, "\n\n%s", ui.FieldBox.Render(v.savePath.View()))
+		// The stage decides whether the prompt is on screen at all; the
+		// field's own focus decides whether it is framed.
+		fmt.Fprintf(&b, "\n\n%s", boxedField(v.savePath))
 		if v.saveErr != "" {
 			fmt.Fprintf(&b, "\n%s", ui.Danger.Render(v.saveErr))
 		}
