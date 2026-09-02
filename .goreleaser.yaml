@@ -113,18 +113,20 @@ release:
 # automatically using the HOMEBREW_TAP_TOKEN PAT.
 homebrew_casks:
   - name: sentra
-    # Publish to the tap only when the token secret is configured; an
+    # Publish to the tap only when the token secret is configured. An
     # empty HOMEBREW_TAP_TOKEN (release.yml always sets the env var) means
     # skip, so a release without the secret still succeeds — the cask file
     # lands in dist/ and publishes on the next tagged release after the
-    # secret exists.
-    skip_upload: '{{ if .Env.HOMEBREW_TAP_TOKEN }}false{{ else }}true{{ end }}'
+    # secret exists. `index` rather than `.Env.HOMEBREW_TAP_TOKEN` because
+    # a plain dereference is a template *error* when the variable is not
+    # set at all, which is the state of every local `just release-local`.
+    skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}'
     ids:
       - sentra
     repository:
       owner: markgustetic
       name: homebrew-tap
-      token: "{{ .Env.HOMEBREW_TAP_TOKEN }}"
+      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
     directory: Casks
     homepage: "https://github.com/markgustetic/sentra"
     description: "Encrypted, deduplicated, agent-aware backups for S3"
