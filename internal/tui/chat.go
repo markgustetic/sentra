@@ -36,15 +36,6 @@ type ChatOverlay struct {
 	cancel  context.CancelFunc
 	width   int
 	height  int
-
-	// initBlink is the cmd in.Focus() returned at construction, captured
-	// so Init can return it. Focus() (not textinput.Blink) is the only
-	// source of a REAL, tag-matched blink cmd — see unlock.go's initBlink
-	// doc comment for why the bootstrap sentinel is a dead end. As with
-	// Palette, Init() has a value receiver and is called fresh on every
-	// ctrl+a open, long after construction, so it can only ever return
-	// what was captured once, back when Focus() actually ran.
-	initBlink tea.Cmd
 }
 
 // chatEventMsg is the turn goroutine's channel into the update loop:
@@ -75,21 +66,27 @@ func NewChatOverlay(deps Deps) ChatOverlay {
 	in := textinput.New()
 	in.Prompt = "you> "
 	in.Placeholder = "ask, or say what to do — actions still confirm"
-	cmd := in.Focus()
-	return ChatOverlay{deps: deps, input: in, initBlink: cmd}
+	in.Focus()
+	return ChatOverlay{deps: deps, input: in}
 }
 
-// Init starts the ask field's cursor blinking. The field is constructed
-// already focused (NewChatOverlay) and never blurred for as long as the
-// overlay exists, so — mirroring Palette.Init, the same "focused from
-// birth" shape — Init is where the blink schedule starts rather than a
-// later Focus() transition. Not a tea.Model method: the App holds the
-// overlay directly and calls this when ctrl+a makes it visible.
+// Init starts the ask field's cursor blinking. The field is focused from
+// birth (NewChatOverlay) and never blurred while the overlay exists, so
+// there is no later Focus() transition to hang the blink on. Not a
+// tea.Model method: the App holds the overlay directly and calls this when
+// ctrl+a makes it visible.
+//
+// Re-focuses rather than replaying a construction-time cmd, with a POINTER
+// receiver so it can — see Palette.Init for why a cached cursor.BlinkCmd is
+// single-use. This overlay is built once in NewApp and reopened many times,
+// and the symptom bites hardest here: the ask field is where the operator
+// waits while a reply streams, so a solid cursor reads as "the overlay is
+// dead" (TestApp_ChatReopenReArmsBlink).
 //
 // No ui.FieldBox here: the ask field already sits inside dedicated chrome
 // (ui.ModalBox in View), the same exception the palette and the modal
 // prompts take — a second frame would be noise, not an affordance.
-func (c ChatOverlay) Init() tea.Cmd { return c.initBlink }
+func (c *ChatOverlay) Init() tea.Cmd { return c.input.Focus() }
 
 // chatSystemPrompt states the ground rules the tools enforce anyway —
 // stating them steers the model before it tries something the registry

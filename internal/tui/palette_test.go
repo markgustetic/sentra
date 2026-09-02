@@ -113,19 +113,15 @@ func TestPalette_CursorStaysVisibleAndActivates(t *testing.T) {
 // TestPalette_InitSchedulesBlink: the search field is constructed already
 // focused (NewPalette) and never blurred, so there is no later Focus()
 // transition to hang the blink cmd on — Init is where it starts, mirroring
-// UnlockView.Init for the same "focused from birth" shape. Init's cmd is
-// the REAL one Focus() produced at construction (see Palette.initBlink);
-// executing it for real would block for the field's Cursor.BlinkSpeed
-// (~530ms), and there is no field handle to preset that BEFORE
-// construction runs Focus() internally, so this only checks the cmd
-// exists. TestBlinkChain_ClosesEndToEnd (snapshots_test.go) proves the
-// real round-trip once, on a key-triggered site where BlinkSpeed can be
-// dropped first.
+// UnlockView.Init for the same "focused from birth" shape.
+//
+// Init calls Focus() at CALL time (not at construction), so BlinkSpeed can
+// be dropped first and the cmd genuinely executed — this asserts the cmd
+// yields a blink, not merely that it is non-nil.
 func TestPalette_InitSchedulesBlink(t *testing.T) {
 	p := NewPalette(testRegistry(), 60, 20)
-	if p.Init() == nil {
-		t.Fatal("expected a blink command, got nil")
-	}
+	p.input.Cursor.BlinkSpeed = time.Millisecond
+	assertBlinkCmd(t, p.Init())
 }
 
 // TestPalette_RoutesBlinkTicks: blink ticks must reach the search field so
@@ -143,5 +139,51 @@ func TestPalette_RoutesBlinkTicks(t *testing.T) {
 	_, cmd := p.Update(tick())
 	if cmd == nil {
 		t.Fatal("blink tick was not routed to the palette's search field")
+	}
+}
+
+// TestApp_PaletteReopenReArmsBlink is the regression guard for a
+// SINGLE-USE cached cmd. Palette is constructed once in NewApp and
+// reopened on every ctrl+p, so Init must produce a cmd that works EVERY
+// time — not replay one captured at construction.
+//
+// cursor.BlinkCmd (bubbles v1.0.0, cursor.go:176) bakes
+// BlinkMsg{id, tag} into its closure at call time and guards on a
+// one-shot context deadline. Replaying that closure yields the SAME
+// message, but the live field's blinkTag has advanced past that tag by
+// then, so cursor.Update's stale-tick guard (cursor.go:122) drops it and
+// returns nil: the chain never restarts, and the cursor sits solid from
+// open until the first keystroke. A nil check on Init's cmd cannot see
+// this — the cached cmd is non-nil and yields a real cursor.BlinkMsg; it
+// is simply addressed to a tag nobody is waiting for any more.
+//
+// So this drives the REAL App through a full open → tick → close →
+// reopen cycle and asserts the second open's tick is still ACCEPTED.
+func TestApp_PaletteReopenReArmsBlink(t *testing.T) {
+	app := newTestApp(t)
+	app.palette.input.Cursor.BlinkSpeed = time.Millisecond
+
+	// First open: consume one tick so the field's blinkTag advances past
+	// whatever a construction-time cmd would have captured.
+	m, first := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	app = m.(App)
+	if first == nil {
+		t.Fatal("first open must schedule a blink")
+	}
+	m, cont := app.Update(first())
+	app = m.(App)
+	if cont == nil {
+		t.Fatal("the first open's tick must be accepted and reschedule")
+	}
+
+	// Close, then reopen — the same construction-time Palette value.
+	app.paletteOpen = false
+	m, second := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
+	app = m.(App)
+	if second == nil {
+		t.Fatal("reopen must schedule a blink")
+	}
+	if _, cmd := app.Update(second()); cmd == nil {
+		t.Fatal("the palette's blink chain did not re-arm on reopen — Init replayed a stale, single-use cmd")
 	}
 }

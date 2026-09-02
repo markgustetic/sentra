@@ -173,10 +173,21 @@ type TypedConfirmModal struct {
 	height int
 
 	// initBlink is the cmd ti.Focus() returned at construction, captured so
-	// Init can return it. Focus() (not textinput.Blink) is the only source
-	// of a REAL, tag-matched blink cmd — see unlock.go's initBlink doc
-	// comment for why the bootstrap sentinel is a dead end and why a
-	// value-receiver Init can't recompute it itself.
+	// Init can return it.
+	//
+	// Caching is safe HERE, and only here, because a cursor.BlinkCmd is
+	// SINGLE-USE: it bakes BlinkMsg{id, tag} into its closure behind a
+	// one-shot context deadline, so replaying it yields a tick tagged for a
+	// blinkTag the field has since moved past, which cursor.Update drops. A
+	// TypedConfirmModal is constructed fresh for every push and thrown away
+	// on dismiss, so its cached cmd is used exactly once — one construction,
+	// one Init. Palette and ChatOverlay are the opposite shape (built once
+	// in NewApp, reopened many times) and must re-Focus() at open instead;
+	// see Palette.Init.
+	//
+	// It is cached rather than re-derived because Init is reached through
+	// the Modal interface, where a pointer receiver would exclude the
+	// value-typed modals from that interface.
 	initBlink tea.Cmd
 }
 
@@ -192,11 +203,13 @@ func NewTypedConfirmModal(title, body, word, id string, width, height int) Typed
 // already focused (NewTypedConfirmModal) and never blurred while the modal
 // is up — esc dismisses the whole modal rather than blurring the field — so
 // there is no later Focus() transition to hang the blink cmd on; it returns
-// the cmd Focus() produced back at construction (see initBlink's doc
-// comment). Not part of the Modal interface: the App pushes modals via
-// pushModalMsg without an Init hook, so this is a plain method the
-// constructor's caller (or a test) invokes directly, mirroring
-// UnlockView.Init for the same "focused from birth" shape.
+// the cmd Focus() produced back at construction, which is safe precisely
+// because this modal is built fresh per push and dismissed rather than
+// reopened (see initBlink's doc comment for the single-use rule). Not part
+// of the Modal interface: the App pushes modals via pushModalMsg without an
+// Init hook, so this is a plain method the constructor's caller (or a test)
+// invokes directly, mirroring UnlockView.Init for the same "focused from
+// birth" shape.
 func (m TypedConfirmModal) Init() tea.Cmd { return m.initBlink }
 
 func (m TypedConfirmModal) Update(msg tea.Msg) (Modal, tea.Cmd) {

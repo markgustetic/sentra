@@ -248,20 +248,16 @@ func TestChat_SystemPromptStatesMetadataRule(t *testing.T) {
 // there is no later Focus() transition to hang the blink on — Init is where
 // it starts, mirroring Palette.Init for the same "focused from birth" shape.
 //
-// Init's cmd is the REAL one Focus() produced at construction (see
-// ChatOverlay.initBlink); executing it would block for the field's
-// Cursor.BlinkSpeed (~530ms), and there is no handle to preset that before
-// the constructor's internal Focus() runs, so this only checks the cmd
-// exists. TestBlinkChain_ClosesEndToEnd (snapshots_test.go) proves the real
-// round-trip once, on a key-triggered site where BlinkSpeed can be dropped.
+// Init calls Focus() at CALL time (not at construction), so BlinkSpeed can
+// be dropped first and the cmd genuinely executed — this asserts the cmd
+// yields a blink, not merely that it is non-nil.
 //
 // No ui.FieldBox is asserted: the ask field already sits inside ui.ModalBox,
 // the same "existing chrome" exception the palette and modal prompts take.
 func TestChatOverlay_InitSchedulesBlink(t *testing.T) {
 	c := NewChatOverlay(Deps{})
-	if c.Init() == nil {
-		t.Fatal("expected a blink command, got nil")
-	}
+	c.input.Cursor.BlinkSpeed = time.Millisecond
+	assertBlinkCmd(t, c.Init())
 }
 
 // TestChatOverlay_RoutesBlinkTicks: ticks must reach the ask field so the
@@ -305,5 +301,37 @@ func TestApp_ChatOverlayRoutesBlinkTicks(t *testing.T) {
 	tick := app.chat.input.Cursor.BlinkCmd()
 	if _, cmd := app.Update(tick()); cmd == nil {
 		t.Fatal("the chat's blink chain died while the overlay was open")
+	}
+}
+
+// TestApp_ChatReopenReArmsBlink: the chat overlay has the same
+// construct-once / reopen-many shape as the palette, so it has the same
+// single-use-cached-cmd hazard. See TestApp_PaletteReopenReArmsBlink for
+// why a nil check on Init cannot catch it. The symptom bites hardest
+// here: the ask field is where the operator waits while a reply streams,
+// so a solid cursor reads as "the overlay is dead".
+func TestApp_ChatReopenReArmsBlink(t *testing.T) {
+	app := newTestApp(t)
+	app.chat.input.Cursor.BlinkSpeed = time.Millisecond
+
+	m, first := app.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	app = m.(App)
+	if first == nil {
+		t.Fatal("first open must schedule a blink")
+	}
+	m, cont := app.Update(first())
+	app = m.(App)
+	if cont == nil {
+		t.Fatal("the first open's tick must be accepted and reschedule")
+	}
+
+	app.chatOpen = false
+	m, second := app.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	app = m.(App)
+	if second == nil {
+		t.Fatal("reopen must schedule a blink")
+	}
+	if _, cmd := app.Update(second()); cmd == nil {
+		t.Fatal("the chat's blink chain did not re-arm on reopen — Init replayed a stale, single-use cmd")
 	}
 }

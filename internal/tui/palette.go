@@ -32,34 +32,34 @@ type Palette struct {
 	top    int
 	width  int
 	height int
-
-	// initBlink is the cmd ti.Focus() returned at construction, captured
-	// so Init can return it. Focus() (not textinput.Blink) is the only
-	// source of a REAL, tag-matched blink cmd — see unlock.go's initBlink
-	// doc comment for why the bootstrap sentinel is a dead end. This
-	// matters even more here: Init() has a value receiver and is called
-	// fresh on every ctrl+p open, long after construction, so it can only
-	// ever return what was captured once, back when Focus() actually ran.
-	initBlink tea.Cmd
 }
 
 func NewPalette(registry *Registry, width, height int) Palette {
 	ti := textinput.New()
 	ti.Placeholder = "type a command…"
 	ti.Prompt = "> "
-	cmd := ti.Focus()
-	p := Palette{registry: registry, input: ti, width: width, height: height, initBlink: cmd}
+	ti.Focus()
+	p := Palette{registry: registry, input: ti, width: width, height: height}
 	p.refilter()
 	return p
 }
 
-// Init starts the search field's cursor blinking. The field is constructed
-// already focused (NewPalette) and never blurred for as long as the palette
-// exists, so — mirroring UnlockView.Init, the same "focused from birth"
-// shape — Init is where the blink schedule starts rather than a later
-// Focus() transition; it returns the cmd Focus() produced back at
-// construction (see initBlink's doc comment).
-func (p Palette) Init() tea.Cmd { return p.initBlink }
+// Init starts the search field's cursor blinking. The field is focused from
+// birth (NewPalette) and never blurred while the palette exists, so there is
+// no later Focus() transition to hang the blink on — Init is the hook, called
+// by the App each time ctrl+p makes the palette visible.
+//
+// It calls Focus() AFRESH rather than replaying a cmd cached at
+// construction, and the receiver is a POINTER for exactly that reason.
+// cursor.BlinkCmd (bubbles v1.0.0, cursor/cursor.go:176) bakes
+// BlinkMsg{id, tag} into its closure and guards on a one-shot context
+// deadline: a cached cmd is SINGLE-USE. Palette is built once in NewApp and
+// reopened many times, so replaying it would hand the field a tick tagged
+// for a blinkTag it has long since advanced past — cursor.Update's
+// stale-tick guard drops it, and the cursor sits solid from open until the
+// first keystroke. Re-focusing mints a tick tagged for the field's CURRENT
+// state, so every open re-arms the chain (TestApp_PaletteReopenReArmsBlink).
+func (p *Palette) Init() tea.Cmd { return p.input.Focus() }
 
 // Reset clears the query for the next open.
 func (p *Palette) Reset() {
