@@ -444,17 +444,20 @@ func TestJobs_AddFormStillWorks(t *testing.T) {
 	_ = m2
 }
 
-func TestJobs_RegisteredHiddenAndRoutable(t *testing.T) {
+// Scheduled backups is a rail destination now — directly under Backup, so
+// the thing you just scheduled is one row away.
+func TestJobs_OnTheRailUnderBackup(t *testing.T) {
 	app := NewApp(Deps{RepoName: "x"})
-	for _, c := range app.registry.Commands() {
-		if c.ID == "jobs" {
-			t.Fatal("jobs must be hidden from the rail")
+	cmds := app.registry.Commands()
+	if len(cmds) < 3 || cmds[1].ID != "backup" || cmds[2].ID != "jobs" {
+		ids := make([]string, len(cmds))
+		for i, c := range cmds {
+			ids[i] = c.ID
 		}
+		t.Fatalf("rail = %v, want jobs at index 2 under backup", ids)
 	}
-	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m, _ := sized.(App).Update(activateMsg{id: "jobs"})
-	if got := m.(App).views[m.(App).active].id; got != "jobs" {
-		t.Fatalf("activateMsg must route to jobs, got %q", got)
+	if cmds[2].Title != "Scheduled backups" {
+		t.Errorf("rail title = %q, want Scheduled backups", cmds[2].Title)
 	}
 }
 

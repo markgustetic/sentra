@@ -130,7 +130,7 @@ func TestApp_SetupAndSettingsRegistered(t *testing.T) {
 		}
 	}
 	if got := len(app.views); got != 18 {
-		t.Fatalf("views = %d, want 18 (six rail views + twelve hidden)", got)
+		t.Fatalf("views = %d, want 18 (seven rail views + eleven hidden)", got)
 	}
 }
 
@@ -384,10 +384,12 @@ func TestSettings_ForgetKeyringEntry(t *testing.T) {
 	}
 }
 
-// The management views that left the rail — jobs, recovery kit — must each
-// keep a launcher here, alongside the setup and password entries that
+// The management views that left the rail — recovery kit among them — must
+// each keep a launcher here, alongside the setup and password entries that
 // always lived in Settings. This pins the fold: a view hidden from the
-// rail with no launcher would be unreachable.
+// rail with no launcher would be unreachable. Scheduled backups (jobs) is
+// no longer one of these: it moved onto the rail itself, so Settings no
+// longer carries a launcher for it (see TestSettings_NoJobsLauncher).
 func TestSettings_NavigateEntriesCoverDemotedViews(t *testing.T) {
 	v := NewSettingsView(Deps{})
 	got := map[string]bool{}
@@ -396,28 +398,21 @@ func TestSettings_NavigateEntriesCoverDemotedViews(t *testing.T) {
 			got[e.targetID] = true
 		}
 	}
-	for _, want := range []string{"setup", "password", "jobs", "recovery-kit"} {
+	for _, want := range []string{"setup", "password", "recovery-kit"} {
 		if !got[want] {
 			t.Errorf("settings has no navigate entry for %q", want)
 		}
 	}
 }
 
-// TestSettings_JobsRowRoutes: the jobs view replaces the deleted
-// Policies/Schedule launchers — settings must carry a navigate entry for
-// "jobs" and must not carry either old id.
-func TestSettings_JobsRowRoutes(t *testing.T) {
+// Scheduled backups moved onto the rail; Settings must not keep a second
+// route to it (two launchers for one visible view is clutter), nor either
+// of the older Policies/Schedule ids.
+func TestSettings_NoJobsLauncher(t *testing.T) {
 	v := NewSettingsView(Deps{})
-	found := false
 	for _, e := range v.entries {
-		if e.kind == entryNavigate && e.targetID == "jobs" {
-			found = true
+		if e.kind == entryNavigate && (e.targetID == "jobs" || e.targetID == "policies" || e.targetID == "schedule") {
+			t.Fatalf("settings must not carry a launcher for %q", e.targetID)
 		}
-		if e.targetID == "policies" || e.targetID == "schedule" {
-			t.Fatalf("old launcher %q must be gone", e.targetID)
-		}
-	}
-	if !found {
-		t.Fatal("settings must carry the jobs launcher")
 	}
 }

@@ -6,14 +6,12 @@ import (
 	tea "github.com/charmbracelet/bubbletea"
 )
 
-// The simplified rail contract (see
-// docs/superpowers/specs/2026-08-27-tui-rail-simplification-design.md):
-// exactly six destinations, in this order — the daily loop plus the three
-// hubs. Everything else is hidden from the rail/palette and launched from
-// a parent (Snapshots, Maintenance, Settings).
-func TestApp_RailShowsExactlySixViews(t *testing.T) {
+// The rail contract: exactly seven destinations, in this order — the daily
+// loop (backup, its schedules, snapshots) plus the three hubs. Everything
+// else is hidden from the rail/palette and launched from a parent.
+func TestApp_RailShowsExactlySevenViews(t *testing.T) {
 	app := NewApp(Deps{RepoName: "x"})
-	want := []string{"dashboard", "backup", "snapshots", "maintenance", "settings", "help"}
+	want := []string{"dashboard", "backup", "jobs", "snapshots", "maintenance", "settings", "help"}
 	got := app.registry.Commands()
 	if len(got) != len(want) {
 		ids := make([]string, len(got))
@@ -35,7 +33,7 @@ func TestApp_RailShowsExactlySixViews(t *testing.T) {
 func TestApp_DemotedViewsStayRoutable(t *testing.T) {
 	for _, id := range []string{
 		"diff", "restore", "check", "prune", "sync", "doctor",
-		"jobs", "recovery-kit", "password", "setup",
+		"recovery-kit", "password", "setup",
 	} {
 		t.Run(id, func(t *testing.T) {
 			app := NewApp(Deps{RepoName: "x"})
@@ -51,18 +49,22 @@ func TestApp_DemotedViewsStayRoutable(t *testing.T) {
 
 // Number keys jump between RAIL views only. The views slice also holds
 // the hidden views (demoted ones and startup gates), so a raw index jump
-// would land on screens the rail never shows — 7 must be a no-op with six
-// rail entries, not a teleport to whatever sits at slice index 6.
+// would land on screens the rail never shows — 8 must be a no-op with
+// seven rail entries, not a teleport to whatever sits at slice index 7.
 func TestApp_NumberKeysSkipHiddenViews(t *testing.T) {
 	r := newFlowRepo(t)
 	app := NewApp(Deps{RepoName: "x", Repo: r})
 	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-	m, _ := sized.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'7'}})
+	m, _ := sized.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'8'}})
 	if got := m.(App); got.views[got.active].id != app.views[app.active].id {
-		t.Fatalf("number key 7 jumped to hidden view %q", got.views[got.active].id)
+		t.Fatalf("number key 8 jumped to hidden view %q", got.views[got.active].id)
 	}
-	m, _ = sized.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	m, _ = sized.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	if got := m.(App); got.views[got.active].id != "jobs" {
+		t.Fatalf("number key 3 = %q, want jobs", got.views[got.active].id)
+	}
+	m, _ = sized.(App).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
 	if got := m.(App); got.views[got.active].id != "maintenance" {
-		t.Fatalf("number key 4 = %q, want maintenance", got.views[got.active].id)
+		t.Fatalf("number key 5 = %q, want maintenance", got.views[got.active].id)
 	}
 }

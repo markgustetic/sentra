@@ -62,8 +62,9 @@ func NewSettingsView(deps Deps) SettingsView {
 			// rail: they are configured rarely, and each rail slot they held
 			// taxed the daily backup/snapshot/restore loop. Every demoted
 			// view keeps a navigate entry here — hidden from the rail must
-			// never mean unreachable.
-			{kind: entryNavigate, label: "Scheduled backups", desc: "jobs: cadence, next run, edit, and drill-in", targetID: "jobs"},
+			// never mean unreachable. Scheduled backups (jobs) is the
+			// exception: it moved onto the rail directly under Backup, so it
+			// no longer needs a Settings launcher.
 			{kind: entryNavigate, label: "Recovery kit", desc: "render the printable recovery document", targetID: "recovery-kit"},
 			{kind: entryNavigate, label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
 			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},

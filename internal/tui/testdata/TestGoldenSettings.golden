@@ -6,9 +6,7 @@ Settings
   keyring  off
   config   /repo/sentra.yaml
 
-▍ Scheduled backups
-    jobs: cadence, next run, edit, and drill-in
-  Recovery kit
+▍ Recovery kit
     render the printable recovery document
   Change passphrase
     rotate the repository passphrase

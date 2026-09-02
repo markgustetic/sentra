@@ -296,7 +296,7 @@ func NewApp(deps Deps) App {
 	}
 
 	registry := NewRegistry()
-	// The slice orders the RAIL: the six visible destinations first, in the
+	// The slice orders the RAIL: the seven visible destinations first, in the
 	// order the rail shows them (help last — it is the screen you reach for
 	// when you do not know which of the others you want), then every hidden
 	// view. Hidden views stay in the slice so activateMsg and InitialView
@@ -308,6 +308,9 @@ func NewApp(deps Deps) App {
 		// operator reaches for most. The Category field still files it under
 		// "Operations" in the palette; the rail renders registration order.
 		{id: "backup", model: NewBackupView(deps)},
+		// Scheduled backups sits directly under Backup: the wizard's schedule
+		// step lands here, so what you just scheduled is one row away.
+		{id: "jobs", model: NewJobsView(deps)},
 		{id: "snapshots", model: NewSnapshots(deps)},
 		{id: "maintenance", model: NewMaintenanceView(deps)},
 		{id: "settings", model: NewSettingsView(deps)},
@@ -316,7 +319,6 @@ func NewApp(deps Deps) App {
 		{id: "check", model: NewCheckView(deps)},
 		{id: "doctor", model: NewDoctorView(deps)},
 		{id: "recovery-kit", model: NewRecoveryKitView(deps)},
-		{id: "jobs", model: NewJobsView(deps)},
 		{id: "restore", model: NewRestoreView(deps)},
 		{id: "prune", model: NewPruneView(deps)},
 		{id: "sync", model: NewSyncView(deps)},
@@ -331,7 +333,7 @@ func NewApp(deps Deps) App {
 	}
 	// Rail categories for the palette's grouping.
 	categories := map[string]string{
-		"backup": "Operations", "maintenance": "Operations",
+		"backup": "Operations", "jobs": "Operations", "maintenance": "Operations",
 		"settings": "Settings",
 	}
 	// hiddenFromRail lists view ids that are reachable only via routing
@@ -340,14 +342,14 @@ func NewApp(deps Deps) App {
 	// connect are login/repair screens; the rest left the rail in the
 	// six-view simplification — each keeps exactly one launcher (diff and
 	// restore in Snapshots, check/prune/sync/doctor in Maintenance,
-	// jobs/recovery-kit/password/setup in Settings), because hidden must
+	// recovery-kit/password/setup in Settings), because hidden must
 	// never mean unreachable.
 	hiddenFromRail := map[string]bool{
 		"unlock": true, "connect": true,
 		"diff": true, "restore": true,
 		"check": true, "prune": true, "sync": true, "doctor": true,
-		"jobs": true, "recovery-kit": true,
-		"password": true, "setup": true,
+		"recovery-kit": true,
+		"password":     true, "setup": true,
 	}
 	for _, v := range views {
 		if hiddenFromRail[v.id] {
@@ -1135,8 +1137,8 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	// Number keys jump straight to the nth RAIL view. The views slice also
 	// holds hidden views (startup gates, demoted views), so the digit walks
-	// visible entries rather than indexing the slice — 7 with a six-view
-	// rail is a no-op, not a teleport to whatever hides at index 6.
+	// visible entries rather than indexing the slice — 8 with a seven-view
+	// rail is a no-op, not a teleport to whatever hides at index 7.
 	if msg.Type == tea.KeyRunes && len(msg.Runes) == 1 {
 		if n := int(msg.Runes[0] - '1'); n >= 0 && n <= 8 {
 			seen := 0

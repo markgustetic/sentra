@@ -47,9 +47,10 @@ const helpDescIndent = 4
 var viewDescriptions = map[string]string{
 	"dashboard":   "Repo health, last snapshot, and size timeline",
 	"backup":      "Snapshot a folder into the repository",
+	"jobs":        "Scheduled backups: cadence, next run, edit, run now",
 	"snapshots":   "Browse snapshots, inspect, diff, and restore",
 	"maintenance": "Check, prune, sync, and doctor in one place",
-	"settings":    "Configuration, scheduled backups, and recovery",
+	"settings":    "Configuration and recovery",
 	"help":        "What each screen in the rail does",
 }
 

@@ -190,9 +190,9 @@ func TestApp_SidebarScrollSwitchesViewLive(t *testing.T) {
 
 func TestApp_NumberKeyJumpsToView(t *testing.T) {
 	app := newTestApp(t)
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
-	if got := m.(App).active; got != 3 {
-		t.Fatalf("active = %d, want 3 (maintenance)", got)
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
+	if got := m.(App).active; got != 4 {
+		t.Fatalf("active = %d, want 4 (maintenance)", got)
 	}
 }
 
@@ -533,22 +533,22 @@ func TestApp_KeysRouteToFocusedContent(t *testing.T) {
 	snaps := NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
 	installView(t, &app, "snapshots", snaps)
 
-	// Press '3' to jump to Snapshots (now the third rail item, after Dashboard
-	// and Backup); focus must move to content.
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'3'}})
+	// Press '4' to jump to Snapshots (now the fourth rail item, after
+	// Dashboard, Backup, and Scheduled backups); focus must move to content.
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
 	a := m.(App)
-	if a.active != 2 {
-		t.Fatalf("active = %d, want 2 (snapshots)", a.active)
+	if a.active != 3 {
+		t.Fatalf("active = %d, want 3 (snapshots)", a.active)
 	}
 	if a.focus != focusContent {
 		t.Fatalf("focus = %v, want focusContent", a.focus)
 	}
-	beforeCursor := a.views[2].model.(Snapshots).cursor()
+	beforeCursor := a.views[3].model.(Snapshots).cursor()
 
 	// A Down key must reach the table and advance its cursor.
 	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
 	a = m.(App)
-	if got := a.views[2].model.(Snapshots).cursor(); got == beforeCursor {
+	if got := a.views[3].model.(Snapshots).cursor(); got == beforeCursor {
 		t.Fatalf("content Down did not advance table cursor (stayed %d)", got)
 	}
 
@@ -560,14 +560,14 @@ func TestApp_KeysRouteToFocusedContent(t *testing.T) {
 	}
 
 	// Now a Down key must move the sidebar highlight, not the table.
-	tableBefore := a.views[2].model.(Snapshots).cursor()
+	tableBefore := a.views[3].model.(Snapshots).cursor()
 	sidebarBefore := a.sidebar.list.Index()
 	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyDown})
 	a = m.(App)
 	if got := a.sidebar.list.Index(); got == sidebarBefore {
 		t.Errorf("sidebar-focused Down did not move rail highlight (stayed %d)", got)
 	}
-	if got := a.views[2].model.(Snapshots).cursor(); got != tableBefore {
+	if got := a.views[3].model.(Snapshots).cursor(); got != tableBefore {
 		t.Errorf("sidebar-focused Down leaked into the table cursor (%d -> %d)", tableBefore, got)
 	}
 }
@@ -668,7 +668,7 @@ func TestApp_ResizeForwardsInnerSize(t *testing.T) {
 	m, _ := app.Update(tea.WindowSizeMsg{Width: termW, Height: termH})
 	a := m.(App)
 
-	got := a.views[2].model.(Snapshots).tbl.Height() // snapshots is the 3rd view (dashboard, backup, snapshots)
+	got := a.views[3].model.(Snapshots).tbl.Height() // snapshots is the 4th view (dashboard, backup, jobs, snapshots)
 	if got == rawH {
 		t.Fatalf("table height %d matches the RAW terminal size — resize() stopped forwarding inner size", got)
 	}
@@ -682,11 +682,11 @@ func TestApp_ResizeForwardsInnerSize(t *testing.T) {
 func TestApp_SidebarHighlightTracksActive(t *testing.T) {
 	app := newTestApp(t)
 
-	// '4' jumps to the 4th rail view (maintenance, index 3) — rail selects index 3.
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'4'}})
+	// '5' jumps to the 5th rail view (maintenance, index 4) — rail selects index 4.
+	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'5'}})
 	a := m.(App)
-	if got := a.sidebar.list.Index(); got != 3 {
-		t.Fatalf("after '4', sidebar index = %d, want 3", got)
+	if got := a.sidebar.list.Index(); got != 4 {
+		t.Fatalf("after '5', sidebar index = %d, want 4", got)
 	}
 
 	// Open the palette and activate "settings" — rail follows.
@@ -981,16 +981,16 @@ func TestApp_DepsCarryNewFields(t *testing.T) {
 	}
 }
 
-// TestApp_AllViewsRegistered pins the views slice after the six-view rail
+// TestApp_AllViewsRegistered pins the views slice after the seven-view rail
 // simplification: every view — rail and hidden alike — is present exactly
 // once. Rail/palette membership itself is pinned by
-// TestApp_RailShowsExactlySixViews; this guards the routable set.
+// TestApp_RailShowsExactlySevenViews; this guards the routable set.
 func TestApp_AllViewsRegistered(t *testing.T) {
 	app := newTestApp(t)
 
 	want := []string{
-		"dashboard", "backup", "snapshots", "maintenance", "settings", "help",
-		"diff", "check", "doctor", "recovery-kit", "jobs",
+		"dashboard", "backup", "jobs", "snapshots", "maintenance", "settings", "help",
+		"diff", "check", "doctor", "recovery-kit",
 		"restore", "prune", "sync", "password", "unlock", "connect", "setup",
 	}
 	got := make(map[string]bool, len(app.views))
@@ -1759,10 +1759,11 @@ func TestApp_ArrowsFallBackWhenAViewHasNoRows(t *testing.T) {
 
 // Backup sits directly under Dashboard in the rail, ahead of the read-only
 // views: taking a backup is the thing an operator reaches for most, and
-// registration order IS rail order.
+// registration order IS rail order. Scheduled backups (jobs) sits directly
+// under Backup in turn — the wizard's schedule step lands there.
 func TestApp_BackupSitsUnderDashboard(t *testing.T) {
 	app := newTestApp(t)
-	want := []string{"dashboard", "backup", "snapshots"}
+	want := []string{"dashboard", "backup", "jobs", "snapshots"}
 	for i, id := range want {
 		if app.views[i].id != id {
 			t.Fatalf("rail position %d = %q, want %q", i, app.views[i].id, id)
