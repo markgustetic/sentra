@@ -242,12 +242,26 @@ func (f *scheduleForm) setWidth(interior int) {
 	f.at.Width = w
 }
 
+// radioMark is the chosen-row glyph for a one-of-N list: ● chosen, ○ not.
+// It is the setup wizard's checklist pair, kept distinct from ui.SelectRow's
+// ▍ so "chosen" and "focused" can be read apart once tab moves focus.
+func radioMark(chosen bool) string {
+	if chosen {
+		return ui.Success.Render("●")
+	}
+	return ui.Muted.Render("○")
+}
+
 func (f scheduleForm) view() string {
 	var b strings.Builder
 	b.WriteString(ui.Muted.Render("How often should this directory be backed up?"))
 	b.WriteString("\n\n")
 	for i, c := range scheduleCadences {
-		fmt.Fprintf(&b, "%s\n", ui.SelectRow(f.focus == schedCadence && i == f.cadenceIdx, "  "+c))
+		// ▍ says where the keyboard is and leaves with tab; the radio mark
+		// says which cadence is chosen and stays. Two glyphs, because the
+		// Ascii profile (and NO_COLOR) render no color at all.
+		fmt.Fprintf(&b, "%s\n", ui.SelectRow(f.focus == schedCadence && i == f.cadenceIdx,
+			radioMark(i == f.cadenceIdx)+" "+c))
 	}
 	for _, c := range f.controls() {
 		switch c {

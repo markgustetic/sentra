@@ -196,3 +196,39 @@ func TestScheduleForm_ViewBoxesOnlyTheFocusedField(t *testing.T) {
 		t.Fatalf("name focused: boxCount = %d, want 1", n)
 	}
 }
+
+// TestScheduleForm_ChosenCadenceMarkedAfterTabbingOff pins the radio mark:
+// ▍ means "the keyboard is here" and leaves the list with tab, so the chosen
+// cadence needs its own glyph — ● on the chosen row, ○ on the rest — that
+// stays put while focus sits on the name, time, or weekday row. A glyph, not
+// a color: the Ascii profile emits no ANSI, so this is what NO_COLOR sees.
+func TestScheduleForm_ChosenCadenceMarkedAfterTabbingOff(t *testing.T) {
+	assertChosen := func(t *testing.T, view, cadence string) {
+		t.Helper()
+		if !strings.Contains(view, "● "+cadence) {
+			t.Fatalf("chosen row %q not marked ●:\n%s", cadence, view)
+		}
+		if n := strings.Count(view, "●"); n != 1 {
+			t.Fatalf("● count = %d, want exactly one:\n%s", n, view)
+		}
+		if n := strings.Count(view, "○"); n != len(scheduleCadences)-1 {
+			t.Fatalf("○ count = %d, want %d:\n%s", n, len(scheduleCadences)-1, view)
+		}
+	}
+	f := pressDown(newScheduleForm("/tmp/docs", nil), 3) // weekly: name, time, weekday
+	assertChosen(t, f.view(), policycfg.CadenceWeekly)
+
+	// Tab walks name → time → weekday; the ▍ leaves the list on the first
+	// tab and lands on the weekday row on the third. The ● never moves.
+	for i := 1; i <= 3; i++ {
+		f, _ = f.update(keyTab())
+		view := f.view()
+		assertChosen(t, view, policycfg.CadenceWeekly)
+		if strings.Contains(view, "▍ ● ") || strings.Contains(view, "▍ ○ ") {
+			t.Fatalf("tab %d: focus glyph still on a cadence row:\n%s", i, view)
+		}
+	}
+	if !strings.Contains(f.view(), "▍") {
+		t.Fatal("third tab should put the focus glyph on the weekday row")
+	}
+}
