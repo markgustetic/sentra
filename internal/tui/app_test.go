@@ -116,7 +116,7 @@ func TestApp_OperationsRegisteredAndRunningIndicatorEndToEnd(t *testing.T) {
 		}
 	}
 	if got := len(app.views); got != 18 {
-		t.Fatalf("views = %d, want 18 (6 rail views + 12 hidden: diff, check, doctor, recovery-kit, jobs, restore, prune, sync, password, unlock, connect, setup)", got)
+		t.Fatalf("views = %d, want 18 (7 rail views + 11 hidden: diff, check, doctor, recovery-kit, restore, prune, sync, password, unlock, connect, setup)", got)
 	}
 }
 

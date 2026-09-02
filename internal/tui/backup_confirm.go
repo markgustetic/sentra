@@ -153,7 +153,7 @@ func (v BackupView) confirmSummary() string {
 	}
 	verb := "installs an OS timer"
 	if reuses {
-		verb = fmt.Sprintf("updates policy %q", name)
+		verb = "updates the existing policy"
 	}
 	fmt.Fprintf(&b, "schedule    %s\n",
 		v.fitValue(fmt.Sprintf("%s as policy %q — %s", v.sched.describe(), name, verb)))

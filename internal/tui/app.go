@@ -340,7 +340,8 @@ func NewApp(deps Deps) App {
 	// (InitialView for the startup gates, activateMsg from a launcher for
 	// the demoted views), never from the sidebar/palette. unlock and
 	// connect are login/repair screens; the rest left the rail in the
-	// six-view simplification — each keeps exactly one launcher (diff and
+	// 2026-08-27 six-view simplification (jobs came back in the
+	// backup-wizard change) — each keeps exactly one launcher (diff and
 	// restore in Snapshots, check/prune/sync/doctor in Maintenance,
 	// recovery-kit/password/setup in Settings), because hidden must
 	// never mean unreachable.

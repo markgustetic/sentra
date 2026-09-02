@@ -51,7 +51,7 @@ type chatEventMsg struct {
 }
 
 // chatBackupMsg is the start_backup intent: the App routes it to the
-// Backup view, which raises its EXISTING confirmation modal — the chat
+// Backup view, which lands on the wizard's Confirm step — the chat
 // cannot skip the gate because it never had another path.
 type chatBackupMsg struct {
 	dir string
@@ -108,9 +108,9 @@ func chatTools() []llm.Tool {
 			Schema: obj(map[string]any{})},
 		{Name: "repo_stats", Description: "Repository totals: snapshot count, logical vs stored bytes.",
 			Schema: obj(map[string]any{})},
-		{Name: "open_view", Description: "Open a view in the TUI (dashboard, backup, snapshots, maintenance, settings, help, or a flow like restore/diff/check/prune/sync/doctor/jobs).",
+		{Name: "open_view", Description: "Open a view in the TUI (dashboard, backup, snapshots, maintenance, settings, help, jobs, or a flow like restore/diff/check/prune/sync/doctor).",
 			Schema: obj(map[string]any{"id": map[string]any{"type": "string"}}, "id")},
-		{Name: "start_backup", Description: "Hand a backup intent to the UI: the operator sees the directory and tag in a confirm dialog and decides there.",
+		{Name: "start_backup", Description: "Hand a backup intent to the UI: the operator sees the directory and tag on the confirm step and decides there.",
 			Schema: obj(map[string]any{
 				"path": map[string]any{"type": "string", "description": "local directory to back up"},
 				"tag":  map[string]any{"type": "string", "description": "optional snapshot tag"},

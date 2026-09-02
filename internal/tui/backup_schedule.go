@@ -134,9 +134,12 @@ func (f *scheduleForm) blur() {
 }
 
 // update handles every key but enter and esc, which belong to the wizard's
-// stage machine. Tab cycles the visible controls; ↑↓ move the list (and
-// re-clamp focus, since the visible set may shrink); ←/→ cycle the weekday;
-// everything else types into the focused field.
+// stage machine. Tab cycles the visible controls, falling back to the first
+// one when the current focus fell out of the (possibly now-shrunk) visible
+// set — the only re-clamp this form needs, since focus can only land on the
+// cadence list itself, never fall off it, when the cadence changes; ↑↓ move
+// the cadence list when focus is on it; ←/→ cycle the weekday; everything
+// else types into the focused field.
 func (f scheduleForm) update(msg tea.KeyMsg) (scheduleForm, tea.Cmd) {
 	f.err = ""
 	switch {
@@ -192,7 +195,7 @@ func (f scheduleForm) schedule() config.PolicySchedule {
 // the name and schedule go through policy.Validate (name rules, HH:MM,
 // weekday), then the wizard's own rule: a name that exists for a DIFFERENT
 // directory is refused naming that directory; the same directory is reused
-// (reuses=true) so the confirm step can say "updates policy".
+// (reuses=true) so the confirm step can say "updates the existing policy".
 func (f scheduleForm) build() (name string, sched config.PolicySchedule, reuses bool, err error) {
 	if f.oneShot() {
 		return "", config.PolicySchedule{}, false, nil

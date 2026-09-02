@@ -51,8 +51,8 @@ func hasPolicyTag(tag, name string) bool {
 // newestJobSnapshot is the drill-in resolver: the newest snapshot rooted
 // at pathAbs, preferring ones tagged policy:<name> — an ad-hoc backup of
 // the same directory must not shadow the job's own snapshots, but with
-// no tagged snapshot yet (the ctrl+e repeat flow's first backup runs
-// under the user's tag) any snapshot of the path is the honest answer.
+// no tagged snapshot yet (the backup wizard's first run, which runs under
+// the user's tag) any snapshot of the path is the honest answer.
 func newestJobSnapshot(name, pathAbs string, snaps []repo.SnapshotInfo) (repo.SnapshotInfo, bool) {
 	var best repo.SnapshotInfo
 	var found, tagged bool
@@ -780,7 +780,7 @@ func (v JobsView) View() string {
 		return b.String()
 	}
 	if len(v.rows) == 0 {
-		return ui.Muted.Render("no scheduled backups — press a to add one, or ctrl+e in Backup")
+		return ui.Muted.Render("no scheduled backups — press a to add one, or pick a cadence on Backup's schedule step")
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Scheduled backups"))
