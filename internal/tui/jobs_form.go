@@ -50,6 +50,36 @@ type policyForm struct {
 // check toggle and the prune-mode cycle.
 const policyFormFields = 6
 
+// refocus blurs all four text inputs, focuses the one f.focus names, and
+// returns Focus()'s blink cmd — nil on the check/prune steps (4/5), which
+// have no cursor to blink. Tab and every other path that puts the keyboard
+// on the form go through here so f.focus and the inputs' Focused() cannot
+// disagree.
+func (f *policyForm) refocus() tea.Cmd {
+	f.blurAll()
+	switch f.focus {
+	case 0:
+		return f.name.Focus()
+	case 1:
+		return f.path.Focus()
+	case 2:
+		return f.tags.Focus()
+	case 3:
+		return f.schedule.Focus()
+	}
+	return nil
+}
+
+// blurAll blurs every text input. Leaving the form stage — esc, or a
+// confirmed save — renders none of them, and a focused field nobody renders
+// keeps its blink chain alive while Focused() lies to every guard.
+func (f *policyForm) blurAll() {
+	f.name.Blur()
+	f.path.Blur()
+	f.tags.Blur()
+	f.schedule.Blur()
+}
+
 // newPolicyForm builds the ADD form with name focused, and also returns
 // the cmd Focus() produced — the caller (the 'a' key handler) needs it to
 // start the cursor blinking. There is no struct to hang an initBlink field
@@ -127,9 +157,8 @@ var errPolicyExists = errors.New("policy exists")
 // renaming would orphan the timer files and the policy:<name> snapshot
 // tags, so edit keeps it read-only (rename = delete + re-add).
 func prefilledPolicyForm(name string, p config.PolicyConfig) (policyForm, tea.Cmd) {
-	f, _ := newPolicyForm() // name's blink cmd is discarded: it is blurred below
+	f, _ := newPolicyForm() // name's blink cmd is discarded: refocus blurs it below
 	f.name.SetValue(name)
-	f.name.Blur()
 	f.path.SetValue(strings.Join(p.Paths, ", "))
 	f.tags.SetValue(strings.Join(p.Tags, ", "))
 	f.schedule.SetValue(policycfg.FormatScheduleSpec(p.Schedule))
@@ -138,7 +167,7 @@ func prefilledPolicyForm(name string, p config.PolicyConfig) (policyForm, tea.Cm
 	f.focus = 1
 	// path is the field edit lands on, so its Focus() cmd is the one the
 	// 'e' handler must return to start the blink.
-	cmd := f.path.Focus()
+	cmd := f.refocus()
 	return f, cmd
 }
 
@@ -152,37 +181,15 @@ func (v JobsView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case tea.KeyEsc:
 		v.stage = jobsList
 		v.editName = ""
+		v.form.blurAll()
 		return v, nil
 	case tea.KeyTab:
 		v.form.focus = (v.form.focus + 1) % policyFormFields
 		if v.editName != "" && v.form.focus == 0 {
 			v.form.focus = 1
 		}
-		v.form.name.Blur()
-		v.form.path.Blur()
-		v.form.tags.Blur()
-		v.form.schedule.Blur()
-		// Focus()'s own return is the real, tag-matched blink cmd; a tab
-		// landing on the check/prune toggle steps (focus 4/5) focuses no
-		// text field, so there is no blink to (re)start.
-		// Sequenced rather than inlined into each return: Focus() mutates
-		// the field, and the order in which a return copies v versus
-		// evaluates the call is unspecified.
-		switch v.form.focus {
-		case 0:
-			cmd := v.form.name.Focus()
-			return v, cmd
-		case 1:
-			cmd := v.form.path.Focus()
-			return v, cmd
-		case 2:
-			cmd := v.form.tags.Focus()
-			return v, cmd
-		case 3:
-			cmd := v.form.schedule.Focus()
-			return v, cmd
-		}
-		return v, nil
+		cmd := v.form.refocus()
+		return v, cmd
 	case tea.KeyEnter:
 		name, _, err := v.form.build()
 		if err != nil {
@@ -286,10 +293,12 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 		v.notice = "save failed: " + err.Error()
 		v.stage = jobsList
 		v.editName = ""
+		v.form.blurAll()
 		return v, nil
 	}
 	v.stage = jobsList
 	v.editName = ""
+	v.form.blurAll()
 	notice := fmt.Sprintf("added %q", name)
 	switch {
 	case editing:

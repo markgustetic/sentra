@@ -1343,3 +1343,52 @@ func TestJobs_IgnoresBlinkTicksOutsideTheForm(t *testing.T) {
 		t.Fatal("a blink tick on the list stage must be a no-op")
 	}
 }
+
+// jobsFormAnyFocused reports whether any of the form's four text fields is
+// focused — the predicate every form exit must leave false.
+func jobsFormAnyFocused(v JobsView) bool {
+	return v.form.name.Focused() || v.form.path.Focused() ||
+		v.form.tags.Focused() || v.form.schedule.Focused()
+}
+
+// TestJobs_LeavingTheFormBlursItsFields covers both ways out of the add
+// form — esc and a confirmed save — because the rule is "leaving the stage
+// blurs its fields", not "esc does".
+func TestJobs_LeavingTheFormBlursItsFields(t *testing.T) {
+	open := func(t *testing.T) JobsView {
+		t.Helper()
+		deps, _ := jobsDeps(t)
+		v, _ := pressJobsKey(newJobsForTest(t, deps), 'a')
+		if v.stage != jobsForm || !v.form.name.Focused() {
+			t.Fatalf("precondition: 'a' opens the form on name (stage=%v name=%v)", v.stage, v.form.name.Focused())
+		}
+		return v
+	}
+	t.Run("esc", func(t *testing.T) {
+		v := open(t)
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		v = m.(JobsView)
+		if v.stage != jobsList {
+			t.Fatalf("stage = %v, want jobsList", v.stage)
+		}
+		if jobsFormAnyFocused(v) {
+			t.Error("esc out of the form must blur its fields")
+		}
+	})
+	t.Run("saved", func(t *testing.T) {
+		v := open(t)
+		v.form.name.SetValue("gamma")
+		v.form.path.SetValue("/data/gamma")
+		v.form.schedule.SetValue("daily@09:00")
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pushes the add confirm
+		v = m.(JobsView)
+		m, _ = v.Update(confirmedMsg{id: jobAddConfirmID})
+		v = m.(JobsView)
+		if v.stage != jobsList {
+			t.Fatalf("stage = %v, want jobsList after a confirmed save (notice=%q err=%q)", v.stage, v.notice, v.form.err)
+		}
+		if jobsFormAnyFocused(v) {
+			t.Error("a confirmed save leaves the form — it must blur its fields")
+		}
+	})
+}

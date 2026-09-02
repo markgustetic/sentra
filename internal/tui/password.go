@@ -106,6 +106,27 @@ func (v PasswordView) Init() tea.Cmd { return v.initBlink }
 
 func (v PasswordView) Title() string { return "Password" }
 
+// focusField focuses the one input focusConfirm names, blurs the other, and
+// returns Focus()'s blink cmd. Every path that puts the keyboard on the
+// input stage goes through here — tab, and the one-op guard bouncing a
+// start back — so the flag and the fields' Focused() cannot disagree.
+func (v *PasswordView) focusField() tea.Cmd {
+	v.newPass.Blur()
+	v.confirmPass.Blur()
+	if v.focusConfirm {
+		return v.confirmPass.Focus()
+	}
+	return v.newPass.Focus()
+}
+
+// blurFields blurs both inputs. The running and done stages render neither,
+// and a focused field nobody renders keeps its blink chain alive while
+// Focused() lies to every guard that reads it.
+func (v *PasswordView) blurFields() {
+	v.newPass.Blur()
+	v.confirmPass.Blur()
+}
+
 // CapturesText is true only on the input stage, where the masked new/confirm
 // passphrase fields are focused — a rotated passphrase may contain 'q', digits,
 // or 'A', so those runes must reach the field, not the shell's globals. The
@@ -143,6 +164,10 @@ func (v PasswordView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == passwordRunning && msg.name == "password" {
 			v.stage = passwordInput
 			v.notice = "another operation is in progress — try again when it finishes"
+			// startRotate blurred both fields on the way out; landing back
+			// on input re-focuses the one tab had left focus on.
+			cmd := v.focusField()
+			return v, cmd
 		}
 		return v, nil
 
@@ -188,16 +213,7 @@ func (v PasswordView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyTab:
 			v.focusConfirm = !v.focusConfirm
-			// Every focus transition (re)starts the blink; Focus()'s own
-			// return is the real cmd, not the dead-end textinput.Blink.
-			var cmd tea.Cmd
-			if v.focusConfirm {
-				v.newPass.Blur()
-				cmd = v.confirmPass.Focus()
-			} else {
-				v.confirmPass.Blur()
-				cmd = v.newPass.Focus()
-			}
+			cmd := v.focusField()
 			return v, cmd
 		case tea.KeyEnter:
 			return v.requestConfirm()
@@ -249,6 +265,7 @@ func (v PasswordView) requestConfirm() (tea.Model, tea.Cmd) {
 // rotation itself serializes on the repo meta/lock inside repo.Passwd.
 func (v PasswordView) startRotate() (tea.Model, tea.Cmd) {
 	v.stage = passwordRunning
+	v.blurFields()
 	r := v.deps.Repo
 	cfg := v.deps.Config
 	saveKeyring := v.deps.SaveKeyringPassphrase

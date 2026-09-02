@@ -308,3 +308,54 @@ func TestPassword_RoutesBlinkTicksToNewPassField(t *testing.T) {
 		t.Fatal("blink tick not routed to the focused newPass field")
 	}
 }
+
+// passwordAtRunning drives a fresh view to the running stage with tab having
+// moved focus onto confirmPass — the entry point for the stage-exit tests,
+// which care about what happens to that focus on the way out and back.
+func passwordAtRunning(t *testing.T) PasswordView {
+	t.Helper()
+	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v = typeIntoPassword(v, "brand-new-pass")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(PasswordView)
+	v = typeIntoPassword(v, "brand-new-pass")
+	if !v.confirmPass.Focused() {
+		t.Fatal("precondition: tab leaves confirmPass focused")
+	}
+	m, _ = v.Update(confirmedMsg{id: passwordConfirmID})
+	v = m.(PasswordView)
+	if v.stage != passwordRunning {
+		t.Fatalf("precondition: confirmation must start the op; stage = %v", v.stage)
+	}
+	return v
+}
+
+// TestPassword_StartingRotationBlursBothFields: the running stage renders no
+// field, so leaving input must blur both — a focused field nobody renders
+// keeps its blink chain alive and lies to every Focused() guard.
+func TestPassword_StartingRotationBlursBothFields(t *testing.T) {
+	v := passwordAtRunning(t)
+	if v.newPass.Focused() || v.confirmPass.Focused() {
+		t.Errorf("entering the running stage must blur both fields (new=%v confirm=%v)",
+			v.newPass.Focused(), v.confirmPass.Focused())
+	}
+}
+
+// TestPassword_RejectedStartRefocusesTheField: bounced back to input by the
+// one-op guard, the flow must re-focus the field tab had left focus on
+// (confirmPass here) and restart its blink — the blur on the way out ended
+// the previous chain.
+func TestPassword_RejectedStartRefocusesTheField(t *testing.T) {
+	v := passwordAtRunning(t)
+	v.confirmPass.Cursor.BlinkSpeed = time.Millisecond
+	m, cmd := v.Update(opRejectedMsg{name: "password"})
+	v = m.(PasswordView)
+	if v.stage != passwordInput {
+		t.Fatalf("stage after rejection = %v, want passwordInput", v.stage)
+	}
+	if !v.confirmPass.Focused() || v.newPass.Focused() {
+		t.Fatalf("rejection must re-focus confirmPass alone (new=%v confirm=%v)",
+			v.newPass.Focused(), v.confirmPass.Focused())
+	}
+	assertBlinkCmd(t, cmd)
+}

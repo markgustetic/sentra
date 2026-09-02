@@ -181,3 +181,20 @@ func TestUnlock_WrongPassphraseReschedulesBlink(t *testing.T) {
 	_ = v // re-focus happened; only the returned cmd matters here
 	assertBlinkCmd(t, cmd)
 }
+
+// TestUnlock_OpeningBlursTheField: enter moves to the opening stage, which
+// renders a spinner line and no field, so it must blur the input. A wrong
+// passphrase re-focuses it (TestUnlock_WrongPassphraseReschedulesBlink); a
+// right one hands the repo to the App, which rebuilds the shell.
+func TestUnlock_OpeningBlursTheField(t *testing.T) {
+	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	v = typeIntoUnlock(v, "hunter2")
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(UnlockView)
+	if v.stage != unlockOpening || cmd == nil {
+		t.Fatalf("precondition: enter on a non-empty entry must start the open (stage=%v cmd nil=%v)", v.stage, cmd == nil)
+	}
+	if v.input.Focused() {
+		t.Error("the opening stage renders no field — leaving input must blur it")
+	}
+}

@@ -415,3 +415,48 @@ func TestSync_NoBoxWhenToggleFocused(t *testing.T) {
 		t.Fatalf("toggle focused: boxCount = %d, want %d (no box on a non-text field)", got, n)
 	}
 }
+
+// syncRunningFromPathField drives a fresh view to running with the keyboard
+// still on the dst path field (enter from there validates and raises the
+// gate; the confirm starts the op). Entry point for the stage-exit tests.
+func syncRunningFromPathField(t *testing.T) SyncView {
+	t.Helper()
+	dstPath := writeDestConfig(t, "dest-bucket")
+	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v = typeIntoSync(v, dstPath)
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // validate → push the confirm
+	v = m.(SyncView)
+	m, _ = v.Update(confirmedMsg{id: syncConfirmID})
+	v = m.(SyncView)
+	if v.stage != syncRunning {
+		t.Fatalf("precondition: confirmation must start the sync; stage = %v (pathErr=%q)", v.stage, v.pathErr)
+	}
+	return v
+}
+
+// TestSync_StartingTheSyncBlursBothFields: the running stage renders no
+// field, so leaving configure must blur both text inputs.
+func TestSync_StartingTheSyncBlursBothFields(t *testing.T) {
+	v := syncRunningFromPathField(t)
+	if v.dstPath.Focused() || v.snapRefs.Focused() {
+		t.Errorf("entering the running stage must blur both fields (dst=%v snap=%v)",
+			v.dstPath.Focused(), v.snapRefs.Focused())
+	}
+}
+
+// TestSync_RejectedStartRefocusesTheField: bounced back to configure, the
+// flow must re-focus the control `field` still names (dst path) and restart
+// its blink.
+func TestSync_RejectedStartRefocusesTheField(t *testing.T) {
+	v := syncRunningFromPathField(t)
+	v.dstPath.Cursor.BlinkSpeed = time.Millisecond
+	m, cmd := v.Update(opRejectedMsg{name: "sync"})
+	v = m.(SyncView)
+	if v.stage != syncConfigure || v.field != syncFieldPath {
+		t.Fatalf("stage/field after rejection = %v/%v, want configure on the path field", v.stage, v.field)
+	}
+	if !v.dstPath.Focused() {
+		t.Fatal("returning to configure on the path control must re-focus dstPath")
+	}
+	assertBlinkCmd(t, cmd)
+}

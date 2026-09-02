@@ -290,3 +290,79 @@ func TestRestore_RoutesBlinkTicksToDestField(t *testing.T) {
 		t.Fatal("blink tick not routed to the focused dest field")
 	}
 }
+
+// restoreAtDestOnScope drives a fresh view to the dest stage with tab having
+// moved focus onto scope, so a stage exit that blurs only dest would still
+// be caught.
+func restoreAtDestOnScope(t *testing.T) RestoreView {
+	t.Helper()
+	r := newFlowRepo(t)
+	seedSnapshotReal(t, r)
+	v := NewRestoreView(Deps{Repo: r})
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick → dest
+	v = m.(RestoreView)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyTab}) // dest → scope
+	v = m.(RestoreView)
+	if v.stage != restoreDest || !v.scope.Focused() {
+		t.Fatalf("precondition: want the dest stage with scope focused (stage=%v scope=%v)", v.stage, v.scope.Focused())
+	}
+	return v
+}
+
+// TestRestore_LeavingTheDestStageBlursBothFields covers both exits from the
+// dest stage — esc back to the picker and enter on to the plan — because
+// the rule is "leaving the stage blurs its fields", not "esc does".
+func TestRestore_LeavingTheDestStageBlursBothFields(t *testing.T) {
+	t.Run("esc back to the picker", func(t *testing.T) {
+		v := restoreAtDestOnScope(t)
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		v = m.(RestoreView)
+		if v.stage != restorePick {
+			t.Fatalf("stage = %v, want restorePick", v.stage)
+		}
+		if v.dest.Focused() || v.scope.Focused() {
+			t.Errorf("esc out of the dest stage must blur both fields (dest=%v scope=%v)", v.dest.Focused(), v.scope.Focused())
+		}
+	})
+	t.Run("enter on to the plan", func(t *testing.T) {
+		v := restoreAtDestOnScope(t)
+		v.dest.SetValue(filepath.Join(t.TempDir(), "out"))
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+		v = m.(RestoreView)
+		if v.stage != restoreConfirm {
+			t.Fatalf("stage = %v, want restoreConfirm (destErr=%q)", v.stage, v.destErr)
+		}
+		if v.dest.Focused() || v.scope.Focused() {
+			t.Errorf("planning leaves the dest stage — it must blur both fields (dest=%v scope=%v)", v.dest.Focused(), v.scope.Focused())
+		}
+	})
+}
+
+// TestRestore_BackFromConfirmRefocusesDest: esc on the plan returns to the
+// dest stage, which now has to re-focus its field and restart the blink —
+// the blur on the way out ended the previous chain. Before that blur
+// existed this worked only by accident: dest had simply never been blurred.
+func TestRestore_BackFromConfirmRefocusesDest(t *testing.T) {
+	r := newFlowRepo(t)
+	seedSnapshotReal(t, r)
+	v := NewRestoreView(Deps{Repo: r})
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pick → dest
+	v = m.(RestoreView)
+	v.dest.SetValue(filepath.Join(t.TempDir(), "out"))
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // dest → confirm
+	v = m.(RestoreView)
+	if v.stage != restoreConfirm {
+		t.Fatalf("precondition: stage = %v, want restoreConfirm (destErr=%q)", v.stage, v.destErr)
+	}
+
+	v.dest.Cursor.BlinkSpeed = time.Millisecond
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	v = m.(RestoreView)
+	if v.stage != restoreDest {
+		t.Fatalf("stage = %v, want restoreDest", v.stage)
+	}
+	if !v.dest.Focused() || v.scope.Focused() {
+		t.Fatalf("back on the dest stage, dest alone must be focused (dest=%v scope=%v)", v.dest.Focused(), v.scope.Focused())
+	}
+	assertBlinkCmd(t, cmd)
+}

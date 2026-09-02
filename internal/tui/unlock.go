@@ -174,6 +174,10 @@ func (v UnlockView) startOpen() (tea.Model, tea.Cmd) {
 	}
 	v.stage = unlockOpening
 	v.openErr = nil
+	// The opening stage renders a status line, not the field: blur it so
+	// its blink chain ends and Focused() stays truthful. A failed open
+	// re-focuses it (unlockResultMsg); a successful one rebuilds the shell.
+	v.input.Blur()
 
 	deps := v.deps
 	pass := []byte(v.input.Value())

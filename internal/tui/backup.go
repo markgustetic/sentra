@@ -196,6 +196,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == backupRunning && msg.name == "backup" {
 			v.stage = backupConfigure
 			v.notice = "another operation is in progress — try again when it finishes"
+			// Back on configure with the keyboard still on the tag control:
+			// re-focus the field and restart its blink — startBackup blurred
+			// it on the way out, which ended the previous chain.
+			if v.focus == focusTagField {
+				cmd := v.tag.Focus()
+				return v, cmd
+			}
 		}
 		return v, nil
 
@@ -388,6 +395,10 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 
 	v.reporter = newOpReporter()
 	v.stage = backupRunning
+	// Leaving configure blurs the tag field: the running screen never
+	// renders it, and a focused field nobody renders keeps its blink chain
+	// rescheduling while Focused() lies to every guard that reads it.
+	v.tag.Blur()
 	r := v.deps.Repo
 	reporter := v.reporter
 	tag := strings.TrimSpace(v.tag.Value())

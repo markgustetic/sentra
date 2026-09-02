@@ -119,6 +119,31 @@ func (v SyncView) Init() tea.Cmd { return v.initBlink }
 
 func (v SyncView) Title() string { return "Sync" }
 
+// focusField focuses the text input `field` names (none on the toggles),
+// blurs the other, and returns Focus()'s blink cmd — nil when the keyboard
+// is on a toggle, which has no cursor. Tab and the one-op guard's bounce
+// back to configure both go through here so `field` and the inputs'
+// Focused() cannot disagree.
+func (v *SyncView) focusField() tea.Cmd {
+	v.dstPath.Blur()
+	v.snapRefs.Blur()
+	switch v.field {
+	case syncFieldPath:
+		return v.dstPath.Focus()
+	case syncFieldSnapshots:
+		return v.snapRefs.Focus()
+	}
+	return nil
+}
+
+// blurFields blurs both inputs. The running and done stages render neither,
+// and a focused field nobody renders keeps its blink chain alive while
+// Focused() lies to every guard that reads it.
+func (v *SyncView) blurFields() {
+	v.dstPath.Blur()
+	v.snapRefs.Blur()
+}
+
 // CapturesText is true on the configure stage: it hosts the dest-config path
 // input plus tab-navigated toggles, so every rune (path characters) and tab
 // (field navigation) must reach the view. The running/done stages take only
@@ -161,6 +186,10 @@ func (v SyncView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == syncRunning && msg.name == "sync" {
 			v.stage = syncConfigure
 			v.notice = "another operation is in progress — try again when it finishes"
+			// startSync blurred both fields on the way out; landing back on
+			// configure re-focuses whichever control `field` still names.
+			cmd := v.focusField()
+			return v, cmd
 		}
 		return v, nil
 
@@ -236,23 +265,8 @@ func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch {
 		case msg.Type == tea.KeyTab:
 			v.field = (v.field + 1) % syncFieldCount
-			v.dstPath.Blur()
-			v.snapRefs.Blur()
-			// Focus()'s own return is the real, tag-matched blink cmd; the
-			// dead-end textinput.Blink sentinel is never used. Sequenced
-			// rather than inlined into each return: Focus() mutates the
-			// field, and a return's copy-vs-evaluate order is unspecified.
-			switch v.field {
-			case syncFieldPath:
-				cmd := v.dstPath.Focus()
-				return v, cmd
-			case syncFieldSnapshots:
-				cmd := v.snapRefs.Focus()
-				return v, cmd
-			}
-			// Landed on a toggle: neither text field is focused, so no
-			// blink to (re)start.
-			return v, nil
+			cmd := v.focusField()
+			return v, cmd
 		case msg.Type == tea.KeyEnter:
 			return v.validateAndConfirm()
 		case isSpace && v.field != syncFieldPath:
@@ -345,6 +359,7 @@ func (v SyncView) validateAndConfirm() (tea.Model, tea.Cmd) {
 func (v SyncView) startSync() (tea.Model, tea.Cmd) {
 	v.reporter = newOpReporter()
 	v.stage = syncRunning
+	v.blurFields()
 	r := v.deps.Repo
 	reporter := v.reporter
 	dest := v.dstStore // blobstore.Store, resolved during validation

@@ -97,6 +97,27 @@ func NewRestoreView(deps Deps) RestoreView {
 
 func (RestoreView) Init() tea.Cmd { return nil }
 
+// focusField focuses the input focusScope names, blurs the other, and
+// returns Focus()'s blink cmd. Every path onto the dest stage goes through
+// here — the picker's enter, a seeded launch, tab, esc back from the plan —
+// so the flag and the fields' Focused() cannot disagree.
+func (v *RestoreView) focusField() tea.Cmd {
+	v.dest.Blur()
+	v.scope.Blur()
+	if v.focusScope {
+		return v.scope.Focus()
+	}
+	return v.dest.Focus()
+}
+
+// blurFields blurs both inputs. Every stage but dest renders neither, and a
+// focused field nobody renders keeps its blink chain alive while Focused()
+// lies to every guard that reads it.
+func (v *RestoreView) blurFields() {
+	v.dest.Blur()
+	v.scope.Blur()
+}
+
 // ConsumesArrows: only the snapshot picker has a cursor. The dest stage is a
 // text field, and confirm/running/done take single keys.
 func (v RestoreView) ConsumesArrows() bool {
@@ -159,9 +180,8 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.snapID = msg.snapID
 		v.stage = restoreDest
 		v.focusScope = false
-		v.scope.Blur()
-		v.dest.Focus()
-		return v, nil
+		cmd := v.focusField()
+		return v, cmd
 
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
@@ -222,16 +242,10 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Reset the two-field focus state: a previous visit may
 			// have tabbed to the scope field before esc'ing out, and a
 			// stale focusScope would route keystrokes into the blurred
-			// scope input.
+			// scope input. Choosing a snapshot is dest's first focus, so
+			// focusField's cmd is what starts the blink.
 			v.focusScope = false
-			v.scope.Blur()
-			// Choosing a snapshot is dest's first focus — start the blink.
-			// Focus()'s own return is the real, tag-matched cmd; textinput.
-			// Blink resolves to cursor's unexported bootstrap message, which
-			// no view's Update switch can name, so it was a dead end.
-			// Sequenced rather than inlined into the return: Focus() mutates
-			// v.dest, and a return's copy-vs-evaluate order is unspecified.
-			cmd := v.dest.Focus()
+			cmd := v.focusField()
 			return v, cmd
 		}
 		var cmd tea.Cmd
@@ -242,21 +256,13 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.Type {
 		case tea.KeyEsc:
 			v.stage = restorePick
+			v.blurFields()
 			return v, nil
 		case tea.KeyEnter:
 			return v.planIt()
 		case tea.KeyTab:
 			v.focusScope = !v.focusScope
-			// Every focus transition (re)starts the blink; Focus()'s own
-			// return is the real cmd, not the dead-end textinput.Blink.
-			var cmd tea.Cmd
-			if v.focusScope {
-				v.dest.Blur()
-				cmd = v.scope.Focus()
-			} else {
-				v.scope.Blur()
-				cmd = v.dest.Focus()
-			}
+			cmd := v.focusField()
 			return v, cmd
 		}
 		var cmd tea.Cmd
@@ -271,8 +277,13 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	case restoreConfirm:
 		switch {
 		case msg.Type == tea.KeyEsc:
+			// Back onto the dest stage: planIt blurred both fields on the
+			// way out, so this re-focuses the one focusScope names and
+			// restarts its blink. (Before that blur existed this worked by
+			// accident — dest had simply never been blurred.)
 			v.stage = restoreDest
-			return v, nil
+			cmd := v.focusField()
+			return v, cmd
 		case msg.Type == tea.KeyRunes && len(msg.Runes) == 1 && msg.Runes[0] == 'v':
 			v.verify = !v.verify
 			return v, nil
@@ -318,6 +329,7 @@ func (v RestoreView) planIt() (tea.Model, tea.Cmd) {
 	v.plan = plan
 	v.paths = paths
 	v.stage = restoreConfirm
+	v.blurFields()
 	return v, nil
 }
 

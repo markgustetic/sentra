@@ -715,3 +715,55 @@ func TestPreviewPaneWidth(t *testing.T) {
 		}
 	}
 }
+
+// backupRunningFromTagField drives a configure-stage view to running with
+// the keyboard on the TAG field: tab focuses it, enter raises the gate from
+// there, and the confirm enters running. It is the entry point for the two
+// stage-exit tests below, which care about what happens to that field's
+// focus on the way out and back.
+func backupRunningFromTagField(t *testing.T) BackupView {
+	t.Helper()
+	v := backupAt(t, tempTree(t))
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
+	v = m.(BackupView)
+	if !v.tag.Focused() {
+		t.Fatal("precondition: tab focuses the tag field")
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // gate, raised from the tag field
+	v = m.(BackupView)
+	m, _ = v.Update(confirmedMsg{id: backupConfirmID})
+	v = m.(BackupView)
+	if v.stage != backupRunning {
+		t.Fatalf("precondition: confirming must start the backup; stage = %v (pathErr=%q)", v.stage, v.pathErr)
+	}
+	return v
+}
+
+// TestBackup_StartingTheBackupBlursTheTagField: leaving the configure stage
+// must blur the tag field. The running screen never renders it, so a field
+// left focused there keeps its blink chain rescheduling for nothing — and
+// Focused() stops meaning "the keyboard is on this field".
+func TestBackup_StartingTheBackupBlursTheTagField(t *testing.T) {
+	v := backupRunningFromTagField(t)
+	if v.tag.Focused() {
+		t.Error("entering the running stage must blur the tag field")
+	}
+}
+
+// TestBackup_RejectedStartRefocusesTheTagField: the one-op guard can bounce
+// the start back to configure. focus still names the tag control there, so
+// the field must be re-focused — with a fresh blink cmd, because the blur on
+// the way out ended the old chain and nothing else restarts it.
+func TestBackup_RejectedStartRefocusesTheTagField(t *testing.T) {
+	v := backupRunningFromTagField(t)
+	v.tag.Cursor.BlinkSpeed = time.Millisecond
+	m, cmd := v.Update(opRejectedMsg{name: "backup"})
+	v = m.(BackupView)
+	if v.stage != backupConfigure || v.focus != focusTagField {
+		t.Fatalf("stage/focus after rejection = %v/%v, want configure on the tag field", v.stage, v.focus)
+	}
+	if !v.tag.Focused() {
+		t.Fatal("returning to the configure stage on the tag control must re-focus the tag field")
+	}
+	assertBlinkCmd(t, cmd)
+}
