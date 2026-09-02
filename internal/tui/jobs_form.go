@@ -82,9 +82,10 @@ func (f *policyForm) blurAll() {
 
 // newPolicyForm builds the ADD form with name focused, and also returns
 // the cmd Focus() produced — the caller (the 'a' key handler) needs it to
-// start the cursor blinking. There is no struct to hang an initBlink field
-// on the way the construction-focused views do: the form is rebuilt fresh
-// on every 'a' press rather than once at JobsView construction.
+// start the cursor blinking. Focusing here is fine where a view's
+// constructor must not: the form is rebuilt fresh on every 'a' press,
+// inside a view that is already on screen, so its field is never focused
+// off screen.
 func newPolicyForm() (policyForm, tea.Cmd) {
 	name := textinput.New()
 	name.Prompt = "name>     "

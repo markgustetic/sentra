@@ -2109,8 +2109,8 @@ func TestApp_ConnectLaunchHidesRail(t *testing.T) {
 // session takes.
 
 // TestApp_PaletteOpenSchedulesBlink: opening the palette through the real
-// App (the palette-toggle key) must return a cmd that yields a blink —
-// mirroring UnlockView.Init's "focused from birth" contract, but at the
+// App (the palette-toggle key) must return a cmd that yields a blink — the
+// overlay's counterpart of viewShownMsg for a view: the blink starts at the
 // point where the palette actually becomes visible (construction happens
 // once at NewApp, long before it's ever shown).
 //
@@ -2208,10 +2208,10 @@ func pushedTypedConfirmThroughApp(t *testing.T) (App, tea.Cmd) {
 
 // TestApp_ModalPushSchedulesBlink: pushing a modal with a text prompt
 // through the real App (pushModalMsg, exactly like a flow raises it) must
-// batch in that modal's blink-start cmd — mirroring UnlockView.Init's
-// "focused from birth" contract, but at the point where the modal actually
-// joins the stack (construction happens earlier, inside the flow, before
-// the App ever sees it). That cmd is the REAL one Focus() produced back at
+// batch in that modal's blink-start cmd — the modal's counterpart of
+// viewShownMsg for a view: the blink starts at the point where the modal
+// actually joins the stack (construction happens earlier, inside the flow,
+// before the App ever sees it). That cmd is the REAL one Focus() produced back at
 // NewTypedConfirmModal construction (see TypedConfirmModal.initBlink) —
 // executing it would block for the field's Cursor.BlinkSpeed (~530ms), and
 // there is no field handle reachable before the flow's own construction

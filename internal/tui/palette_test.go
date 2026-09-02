@@ -112,8 +112,9 @@ func TestPalette_CursorStaysVisibleAndActivates(t *testing.T) {
 
 // TestPalette_InitSchedulesBlink: the search field is constructed already
 // focused (NewPalette) and never blurred, so there is no later Focus()
-// transition to hang the blink cmd on — Init is where it starts, mirroring
-// UnlockView.Init for the same "focused from birth" shape.
+// transition to hang the blink cmd on — Init, called on every open, is
+// where it starts. (Views differ: they focus on viewShownMsg and their
+// Init schedules nothing, because App.Init batches every view's Init.)
 //
 // Init calls Focus() at CALL time (not at construction), so BlinkSpeed can
 // be dropped first and the cmd genuinely executed — this asserts the cmd
