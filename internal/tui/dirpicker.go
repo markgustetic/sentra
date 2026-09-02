@@ -20,15 +20,15 @@ import (
 // commands. The same reasoning already governs loadSnapshotsBestEffort.
 //
 // enter means exactly one thing on the rows themselves — navigate: descend into
-// a folder or climb via "..". Committing (starting the backup of the current
+// a folder or climb via "..". Committing (choosing the current
 // directory) is a separate affordance, the Start button. Keeping navigation and
 // commit on different keys is the fix for the old model, where enter on row 0
 // started the backup while enter on every other row navigated, so the same key
 // did two unrelated things.
 //
-// The Start button is the TOP, default option — backing up the current
+// The Start button is the TOP, default option — choosing the current
 // directory is the common case, so it leads rather than hiding past the folder
-// list, and a fresh picker opens on it (one enter backs up where you are). It is
+// list, and a fresh picker opens on it (one enter chooses where you are). It is
 // not a row: it is the cursor position BEFORE the rows (cursor == 0), with the
 // folder rows at cursor 1..len(rows). Modelling it as a sentinel rather than a
 // list entry keeps it pinned above the scrolling folder window so it never
@@ -299,9 +299,10 @@ func (p dirPicker) window() (rows []dirRow, start int) {
 // the Start button is simply lying.
 func (p dirPicker) enterVerb() string {
 	if p.onStart() {
-		// The Start button commits — for the sole caller (backup) that means
-		// starting the run against the current directory.
-		return "start the backup of " + filepath.Base(p.cwd)
+		// The button commits the browsed directory to the caller — for the
+		// backup wizard that means choosing it and moving to the next step,
+		// not starting anything.
+		return "choose " + filepath.Base(p.cwd)
 	}
 	switch r := p.rows[p.cursor-1]; r.kind {
 	case rowParent:
@@ -350,7 +351,7 @@ func (p dirPicker) View(focused bool) string {
 	if p.err != "" {
 		fmt.Fprintf(&b, "%s\n", ui.Danger.Render(p.clip(p.err)))
 	}
-	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), p.clipRow("▸ backup the current directory")))
+	fmt.Fprintf(&b, "%s\n", ui.SelectRow(focused && p.onStart(), p.clipRow("▸ choose the current directory")))
 	rows, start := p.window()
 	for i, r := range rows {
 		label := r.label

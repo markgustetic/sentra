@@ -152,7 +152,7 @@ func TestDirPickerEnterVerbNamesWhatEnterActuallyDoes(t *testing.T) {
 	p := newDirPicker(root)
 
 	p.cursor = 0 // the Start button (the top)
-	if got, want := p.enterVerb(), "start the backup of "+filepath.Base(root); got != want {
+	if got, want := p.enterVerb(), "choose "+filepath.Base(root); got != want {
 		t.Errorf("on the Start button, verb = %q, want %q", got, want)
 	}
 	p.cursor = 1 // ".."
@@ -162,6 +162,9 @@ func TestDirPickerEnterVerbNamesWhatEnterActuallyDoes(t *testing.T) {
 	p.cursor = 2 // alpha
 	if got := p.enterVerb(); got != "open alpha" {
 		t.Errorf("on a child row, verb = %q", got)
+	}
+	if !strings.Contains(p.View(true), "▸ choose the current directory") {
+		t.Errorf("button must read 'choose the current directory':\n%s", p.View(true))
 	}
 }
 
@@ -183,7 +186,7 @@ func TestDirPickerStartButtonPinnedAboveScrollingList(t *testing.T) {
 	if !strings.Contains(out, "…") {
 		t.Errorf("a list longer than the window must show the overflow indicator:\n%s", out)
 	}
-	const btn = "▸ backup the current directory"
+	const btn = "▸ choose the current directory"
 	if !strings.Contains(out, btn) {
 		t.Errorf("the Start button must render above the folder list:\n%s", out)
 	}

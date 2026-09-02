@@ -476,13 +476,12 @@ func TestBackupTagFieldEnterRaisesConfirmation(t *testing.T) {
 	}
 }
 
-// On the Start button the footer must promise starting the backup of the
-// browsed folder — a footer that says "open" while the cursor rests on the
-// button would be lying.
-func TestBackupStartButtonFooterSaysStart(t *testing.T) {
+// On the Start button the footer must promise choosing the browsed folder —
+// a footer that says "open" while the cursor rests on the button would be lying.
+func TestBackupStartButtonFooterSaysChoose(t *testing.T) {
 	root := tempTree(t)
 	v := onStartButton(backupAt(t, root))
-	want := "start the backup of " + filepath.Base(root)
+	want := "choose " + filepath.Base(root)
 	if v.picker.enterVerb() != want {
 		t.Errorf("Start-button verb = %q, want %q", v.picker.enterVerb(), want)
 	}
