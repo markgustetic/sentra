@@ -36,6 +36,7 @@ const (
 	fkTab
 	fkUp
 	fkDown
+	fkEsc
 )
 
 // FuzzAppKeyRouting drives random key sequences through the shell and asserts
@@ -70,6 +71,11 @@ func FuzzAppKeyRouting(f *testing.F) {
 	// goes unnoticed — TestFuzzSeed_ReachesATextCapturingView asserts the seed
 	// still lands in a field, so it cannot go stale in silence.
 	f.Add(keyTrapSeed)
+	// The re-enter case invariant 4 once misread as a bug: dive into Backup,
+	// esc back to the rail, and enter AGAIN on the same row. The view is
+	// already active, so the index never changes, yet focus must move back
+	// into its pane — that Enter is the only way to resume the wizard.
+	f.Add([]byte{fkDown, fkEnter, fkEsc, fkEnter})
 
 	// ONE repo for the whole run, not one per iteration: repo.Init runs
 	// Argon2id. Without it every flow that stats a directory refuses ("no
@@ -89,6 +95,7 @@ func FuzzAppKeyRouting(f *testing.F) {
 			railFocused := app.focus == focusSidebar
 			activeBefore := app.active
 			railIdxBefore := app.sidebar.list.Index()
+			railViewBefore := app.railView()
 			// Captured BEFORE the update: could the focused view have used an
 			// arrow, and did an overlay own the keyboard?
 			viewCouldTakeArrow := !railFocused && app.contentConsumesArrows()
@@ -110,14 +117,43 @@ func FuzzAppKeyRouting(f *testing.F) {
 			if i := app.sidebar.list.Index(); i < 0 || i >= len(app.views) {
 				t.Fatalf("rail index = %d, out of range [0,%d)", i, len(app.views))
 			}
-			// Invariant 4: an Enter on the rail that navigates NOWHERE must not
-			// move focus. This is the dashboard-freeze bug stated as a rule: a
-			// keystroke with no visible effect must not silently disable the
-			// rail's ↑/↓.
-			if railFocused && key.Type == tea.KeyEnter &&
-				app.active == activeBefore && app.focus != focusSidebar {
-				t.Fatalf("enter navigated nowhere (active stayed %d) yet moved focus off the rail",
-					activeBefore)
+			// Invariant 4: a rail Enter lands focus exactly where the highlighted
+			// view can use it. The view under the rail's cursor becomes active,
+			// and focus moves into its pane if and only if that view is
+			// focusable — a view that declares InertContent (the Dashboard)
+			// keeps focus on the rail.
+			//
+			// Both directions shipped as bugs. Focus moving into the inert
+			// Dashboard is the dashboard-freeze: nothing visibly happened, and
+			// ↑/↓ then went to a pane that ignores them. Focus NOT moving into a
+			// focusable view is the swallowed-Enter: the activate handler once
+			// skipped the focus move when the view was "already active", which
+			// under live rail preview is every view you scroll to.
+			//
+			// That is also why this is not stated as "an Enter that navigates
+			// nowhere must not move focus", as it first was: live preview
+			// (navPreviewMsg, which fuzzPress delivers) makes the highlighted
+			// view active BEFORE Enter, so on the real shell a rail Enter
+			// never changes m.active, and "navigated nowhere" is the normal
+			// case, not a symptom. Whether focus should move is decided by the
+			// view, not by whether the index changed.
+			if railFocused && key.Type == tea.KeyEnter && !overlayOwnedKeys && railViewBefore >= 0 {
+				if app.active != railViewBefore {
+					t.Fatalf("enter on rail row %d (view %q) activated view %q instead",
+						railIdxBefore, app.views[railViewBefore].id, app.views[app.active].id)
+				}
+				// The oracle reads the view's declaration itself rather than
+				// asking the shell's contentFocusable: a shell that ignored
+				// the declaration would agree with an oracle that shared its
+				// helper, and the mutation would pass. (Whether the Dashboard
+				// SHOULD declare itself inert is the Dashboard's contract,
+				// pinned by TestApp_EnterOnAlreadyActiveRailItemKeepsRailUsable.)
+				ic, declares := app.views[railViewBefore].model.(inertContent)
+				wantContent := !declares || !ic.InertContent()
+				if gotContent := app.focus == focusContent; gotContent != wantContent {
+					t.Fatalf("enter on view %q (focusable=%v) left focus=%v — want content focus iff the view can use it",
+						app.views[railViewBefore].id, wantContent, app.focus)
+				}
 			}
 
 			// Invariant 5: a Down key never does nothing. Eight views never use
@@ -174,6 +210,23 @@ func FuzzAppKeyRouting(f *testing.F) {
 // guard test below can replay.
 var keyTrapSeed = []byte{fkDown, fkEnter, fkEnter, fkEnter}
 
+// railView returns the index into m.views of the view under the rail's
+// cursor — the one a rail Enter activates. It can differ from m.active: a
+// launcher can activate a hidden view (restore, diff) the rail has no row
+// for, and Select leaves the cursor where it was.
+func (m App) railView() int {
+	it, ok := m.sidebar.list.SelectedItem().(sidebarItem)
+	if !ok {
+		return -1
+	}
+	for i, v := range m.views {
+		if v.id == it.cmd.ID {
+			return i
+		}
+	}
+	return -1
+}
+
 // fuzzApp builds the shell the fuzz target drives: a real repo (so the flows
 // that validate against one actually advance) and a real window size.
 func fuzzApp(tb testing.TB, r *repo.Repo) App {
@@ -183,18 +236,48 @@ func fuzzApp(tb testing.TB, r *repo.Repo) App {
 	return m.(App)
 }
 
-// fuzzPress delivers one key and then exactly the message a real tea.Program
-// would deliver next, and nothing else. Running arbitrary cmds would sleep on
-// tick timers and, in the setup wizard, shell out to `aws` via
+// fuzzPress delivers one key and then exactly the navigation message a real
+// tea.Program would deliver next, and nothing else. Running arbitrary cmds
+// would sleep on tick timers and, in the setup wizard, shell out to `aws` via
 // tea.ExecProcess.
+//
+// Two rail messages are delivered: activateMsg from Enter, and navPreviewMsg
+// from an arrow the rail handled — whether the rail was focused or took the
+// arrow through the never-dead fallback (focus ends on the rail either way).
+// The preview matters: it is what makes the highlighted view active BEFORE
+// Enter on the real shell, so without it the fuzzer never sees a rail Enter
+// on an already-active view, and invariant 4 checks a state the shell can
+// never reach.
 func fuzzPress(app App, key tea.KeyMsg) App {
 	railFocused := app.focus == focusSidebar
+	shellOwnsKeys := len(app.modals) == 0 && !app.paletteOpen &&
+		!app.inStartupGate() && !app.splashActive && !app.tooSmall()
 	next, cmd := app.Update(key)
 	app = next.(App)
-	if railFocused && key.Type == tea.KeyEnter && cmd != nil {
-		if msg, ok := cmd().(activateMsg); ok {
-			m2, _ := app.Update(msg)
-			app = m2.(App)
+	if cmd == nil {
+		return app
+	}
+	enterOnRail := railFocused && key.Type == tea.KeyEnter
+	arrowToRail := shellOwnsKeys && isArrowKey(key) && app.focus == focusSidebar
+	if !enterOnRail && !arrowToRail {
+		return app
+	}
+	return fuzzDeliverNav(app, cmd())
+}
+
+// fuzzDeliverNav delivers a rail navigation message to the App, looking one
+// batch deep because the sidebar batches its preview with the list's own cmd.
+// Every other message is dropped, per fuzzPress's contract.
+func fuzzDeliverNav(app App, msg tea.Msg) App {
+	switch msg := msg.(type) {
+	case activateMsg, navPreviewMsg:
+		m2, _ := app.Update(msg)
+		return m2.(App)
+	case tea.BatchMsg:
+		for _, c := range msg {
+			if c != nil {
+				app = fuzzDeliverNav(app, c())
+			}
 		}
 	}
 	return app
