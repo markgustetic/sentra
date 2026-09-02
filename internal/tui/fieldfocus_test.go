@@ -129,7 +129,7 @@ func fieldOwners() []fieldOwner {
 	return []fieldOwner{
 		{
 			name:    "unlock",
-			focused: func(t *testing.T) tea.Model { return NewUnlockView(unlockDeps(t, "hunter2")) },
+			focused: func(t *testing.T) tea.Model { return shown(t, NewUnlockView(unlockDeps(t, "hunter2"))) },
 			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(UnlockView)
 				do(&v.input)
@@ -138,7 +138,7 @@ func fieldOwners() []fieldOwner {
 		},
 		{
 			name:    "password",
-			focused: func(t *testing.T) tea.Model { return NewPasswordView(Deps{Repo: newFlowRepo(t)}) },
+			focused: func(t *testing.T) tea.Model { return shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)})) },
 			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(PasswordView)
 				do(&v.newPass)
@@ -148,7 +148,7 @@ func fieldOwners() []fieldOwner {
 		},
 		{
 			name:    "sync",
-			focused: func(t *testing.T) tea.Model { return NewSyncView(Deps{Repo: newFlowRepo(t)}) },
+			focused: func(t *testing.T) tea.Model { return shown(t, NewSyncView(Deps{Repo: newFlowRepo(t)})) },
 			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(SyncView)
 				do(&v.dstPath)
@@ -342,7 +342,7 @@ func TestFieldFocus_ShownFocusesNothingOutsideAFieldStage(t *testing.T) {
 			return m
 		}},
 		{"unlock, opening", func(t *testing.T) tea.Model {
-			v := typeIntoUnlock(NewUnlockView(unlockDeps(t, "hunter2")), "hunter2")
+			v := typeIntoUnlock(shown(t, NewUnlockView(unlockDeps(t, "hunter2"))), "hunter2")
 			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 			return m
 		}},
@@ -359,6 +359,51 @@ func TestFieldFocus_ShownFocusesNothingOutsideAFieldStage(t *testing.T) {
 			}
 			if got := boxCount(s.View()); got != 0 {
 				t.Fatalf("viewShownMsg on a fieldless stage focused a field (%d box(es)):\n%s", got, s.View())
+			}
+		})
+	}
+}
+
+// shown delivers viewShownMsg to v the way the shell does the moment it puts
+// a view on screen, and returns the model. Tests that drive a view directly
+// (no App) use it in place of the shell, because construction alone focuses
+// nothing — see TestFieldFocus_ConstructionFocusesNothing.
+func shown[V tea.Model](t *testing.T, v V) V {
+	t.Helper()
+	m, _ := v.Update(viewShownMsg{})
+	out, ok := m.(V)
+	if !ok {
+		t.Fatalf("viewShownMsg changed the model type from %T to %T", v, m)
+	}
+	return out
+}
+
+// TestFieldFocus_ConstructionFocusesNothing pins where focus comes FROM. A
+// constructor builds a view that is not yet on screen, so it must focus no
+// field and its Init must schedule no blink: the shell's viewShownMsg is the
+// only source of focus. Otherwise a view the operator never opens sits with
+// a focused field (Focused() lying off screen) and, when App.Init batched
+// every view's Init, ran a perpetual blink chain for it from launch. Only
+// the three views that used to focus at construction are listed — the rest
+// never did.
+func TestFieldFocus_ConstructionFocusesNothing(t *testing.T) {
+	built := map[string]func(t *testing.T) tea.Model{
+		"unlock":   func(t *testing.T) tea.Model { return NewUnlockView(unlockDeps(t, "hunter2")) },
+		"password": func(t *testing.T) tea.Model { return NewPasswordView(Deps{Repo: newFlowRepo(t)}) },
+		"sync":     func(t *testing.T) tea.Model { return NewSyncView(Deps{Repo: newFlowRepo(t)}) },
+	}
+	for _, fo := range fieldOwners() {
+		build, ok := built[fo.name]
+		if !ok {
+			continue
+		}
+		t.Run(fo.name, func(t *testing.T) {
+			v := build(t)
+			if n := fo.focusedCount(v); n != 0 {
+				t.Errorf("freshly constructed view owns %d focused field(s), want 0 — only viewShownMsg focuses", n)
+			}
+			if v.Init() != nil {
+				t.Error("Init must not schedule a blink — the chain starts on viewShownMsg, so an unopened view never runs one")
 			}
 		})
 	}

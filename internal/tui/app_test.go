@@ -2576,3 +2576,27 @@ func TestApp_InitShowsTheLaunchView(t *testing.T) {
 	}
 	assertBlinkCmd(t, cmd)
 }
+
+// TestApp_UnopenedViewsOwnNoFocusedField is the launch-time consequence of
+// the construction rule, seen from the shell: a freshly built App with a real
+// repo has every field-owning view registered, and none of them may own a
+// focused field until it is shown. Before, unlock, password and sync were
+// constructed focused, so App.Init's per-view batching started three blink
+// chains at launch for views the operator might never open.
+func TestApp_UnopenedViewsOwnNoFocusedField(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", Repo: newFlowRepo(t)})
+	for _, fo := range fieldOwners() {
+		var found bool
+		for _, v := range app.views {
+			if v.id == fo.name {
+				found = true
+				if n := fo.focusedCount(v.model); n != 0 {
+					t.Errorf("%s: %d focused field(s) before the view was ever shown, want 0", fo.name, n)
+				}
+			}
+		}
+		if !found {
+			t.Errorf("no view registered under %q", fo.name)
+		}
+	}
+}

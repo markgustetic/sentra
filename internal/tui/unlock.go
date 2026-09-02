@@ -58,38 +58,27 @@ type UnlockView struct {
 	inputErr string // local validation (empty entry)
 	openErr  error  // mapped repo.Open failure
 
-	// initBlink is the cmd field.Focus() returned at construction, captured
-	// here so Init can return it. Focus() (not textinput.Blink) is the only
-	// source of a REAL, tag-matched blink cmd: textinput.Blink resolves to
-	// cursor's unexported bootstrap message, which no view's Update switch
-	// can name, so it was silently dropped and the blink chain never
-	// started in a live terminal. A value-receiver Init can't call Focus()
-	// itself — it would mutate a throwaway copy and orphan the tick — so
-	// the cmd has to be captured once, right here, against the same model
-	// value that ends up live.
-	initBlink tea.Cmd
-
 	width int
 }
 
 // NewUnlockView builds the masked-entry gate. The single field echoes bullets,
-// mirroring password.go's masking discipline.
+// mirroring password.go's masking discipline. It is built blurred: the shell
+// focuses it — and starts its cursor blinking — with viewShownMsg the moment
+// the view is on screen (App.Init's showActiveMsg for the launch view).
 func NewUnlockView(deps Deps) UnlockView {
 	field := textinput.New()
 	field.Prompt = "passphrase> "
 	field.Placeholder = "repository passphrase"
 	field.EchoMode = textinput.EchoPassword
 	field.EchoCharacter = '•'
-	cmd := field.Focus()
-	return UnlockView{deps: deps, input: field, initBlink: cmd}
+	return UnlockView{deps: deps, input: field}
 }
 
-// Init starts the cursor blinking. The unlock field is constructed already
-// focused (NewUnlockView) — it's the landing view, not one the operator tabs
-// into — so there is no later Focus() transition to hang the blink cmd on;
-// Init returns the cmd Focus() produced back at construction (see
-// initBlink's doc comment).
-func (v UnlockView) Init() tea.Cmd { return v.initBlink }
+// Init schedules nothing. Focus, and with it the blink, comes from
+// viewShownMsg, never from construction or Init: App.Init batches every
+// view's Init at launch, so a blink here would run a chain for a view the
+// operator may never open, with a focused field nobody renders.
+func (UnlockView) Init() tea.Cmd { return nil }
 
 func (v UnlockView) Title() string { return "Unlock" }
 
@@ -120,14 +109,13 @@ func (v UnlockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// Clear the buffer so the failed secret doesn't linger and the
 			// user starts a fresh attempt.
 			v.input.SetValue("")
-			// Re-focusing for the retry is a second focus transition (the
-			// first was at construction, covered by Init) — it must also
-			// restart the blink, or the cursor looks dead after a failed
-			// attempt. Focus()'s own return is the real, tag-matched cmd;
-			// textinput.Blink would be the dead-end bootstrap sentinel.
-			// Sequenced rather than inlined into the return: Focus()
-			// mutates v.input, and a return's copy-vs-evaluate order is
-			// unspecified.
+			// startOpen blurred the field on the way out, so the retry is
+			// a fresh focus transition and must restart the blink, or the
+			// cursor looks dead after a failed attempt. Focus()'s own
+			// return is the real, tag-matched cmd; textinput.Blink would
+			// be the dead-end bootstrap sentinel. Sequenced rather than
+			// inlined into the return: Focus() mutates v.input, and a
+			// return's copy-vs-evaluate order is unspecified.
 			cmd := v.input.Focus()
 			return v, cmd
 		}

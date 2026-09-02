@@ -26,7 +26,7 @@ func typeIntoPassword(v PasswordView, s string) PasswordView {
 // TestPasswordFlow_BothFieldsMaskInput asserts the new + confirm inputs
 // are password-masked so the secret is never rendered in cleartext.
 func TestPasswordFlow_BothFieldsMaskInput(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	if v.newPass.EchoMode != textinput.EchoPassword {
 		t.Errorf("new-pass field EchoMode = %v, want EchoPassword", v.newPass.EchoMode)
 	}
@@ -44,7 +44,7 @@ func TestPasswordFlow_BothFieldsMaskInput(t *testing.T) {
 // TestPasswordFlow_TooShortRejected: a new passphrase under 8 bytes never
 // advances to the confirm modal.
 func TestPasswordFlow_TooShortRejected(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	v = typeIntoPassword(v, "short") // 5 bytes, then confirm the same
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)
@@ -64,7 +64,7 @@ func TestPasswordFlow_TooShortRejected(t *testing.T) {
 
 // TestPasswordFlow_MismatchRejected: new != confirm never advances.
 func TestPasswordFlow_MismatchRejected(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	v = typeIntoPassword(v, "longenough1")
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)
@@ -86,7 +86,7 @@ func TestPasswordFlow_MismatchRejected(t *testing.T) {
 // entries push the typed-confirm modal ("rotate") and nothing else — no
 // rotation happens on the input->confirm transition.
 func TestPasswordFlow_ValidEntryPushesTypedConfirm(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	v = typeIntoPassword(v, "longenough1")
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)
@@ -113,7 +113,7 @@ func TestPasswordFlow_ValidEntryPushesTypedConfirm(t *testing.T) {
 // the repo and the NEW one does — proving a real rotation happened.
 func TestPasswordFlow_ConfirmedRunRotates(t *testing.T) {
 	r := newFlowRepo(t)
-	v := NewPasswordView(Deps{Repo: r})
+	v := shown(t, NewPasswordView(Deps{Repo: r}))
 	v = typeIntoPassword(v, "brand-new-pass")
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)
@@ -161,7 +161,7 @@ func TestPasswordFlow_ConfirmedRunRotates(t *testing.T) {
 // repo sentinel.
 func TestPasswordFlow_SamePassphraseMapped(t *testing.T) {
 	r := newFlowRepo(t) // created with passphrase "flow-test-pass"
-	v := NewPasswordView(Deps{Repo: r})
+	v := shown(t, NewPasswordView(Deps{Repo: r}))
 	v = typeIntoPassword(v, "flow-test-pass")
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)
@@ -203,7 +203,7 @@ func TestPasswordFlow_KeyringSaveInvokedOnSuccess(t *testing.T) {
 			return nil
 		},
 	}
-	v := NewPasswordView(deps)
+	v := shown(t, NewPasswordView(deps))
 	v = typeIntoPassword(v, "brand-new-pass")
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)
@@ -233,7 +233,7 @@ func TestPasswordFlow_KeyringSaveInvokedOnSuccess(t *testing.T) {
 // TestPasswordFlow_OpRejectedResets: an op-rejection while running resets
 // the flow to the input stage so it never hangs.
 func TestPasswordFlow_OpRejectedResets(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	v.stage = passwordRunning // simulate the optimistic running stage
 	m, _ := v.Update(opRejectedMsg{name: "password"})
 	v = m.(PasswordView)
@@ -247,7 +247,7 @@ func TestPasswordFlow_OpRejectedResets(t *testing.T) {
 // over a fully-blurred baseline proves it tracks focus, not a fixed field
 // position.
 func TestPassword_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 
 	base := v
 	base.newPass.Blur()
@@ -280,28 +280,21 @@ func TestPassword_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 	}
 }
 
-// TestPassword_ConstructionFocusSchedulesBlink: newPass is focused at
-// construction (password.go:82) and this is the flow's landing state, so
-// Init — not a later Focus() transition — must schedule the blink, the same
-// contract unlock's Init established. Init's cmd is the REAL one Focus()
-// produced at construction (see PasswordView.initBlink); executing it would
-// block for the field's Cursor.BlinkSpeed (~530ms), and there is no field
-// handle to preset that before NewPasswordView's internal Focus() call
-// runs, so this only checks the cmd exists. TestBlinkChain_ClosesEndToEnd
-// (snapshots_test.go) proves the real round-trip once, on a key-triggered
-// site where BlinkSpeed can be dropped first.
-func TestPassword_ConstructionFocusSchedulesBlink(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
-	if v.Init() == nil {
-		t.Fatal("expected a blink command, got nil")
-	}
+// TestPassword_ShownSchedulesBlink: the shell's viewShownMsg focuses newPass
+// (the flow's landing field), so BlinkSpeed can be preset on the constructed
+// field and the REAL cmd Focus() returns executed here.
+func TestPassword_ShownSchedulesBlink(t *testing.T) {
+	fresh := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	fresh.newPass.Cursor.BlinkSpeed = time.Millisecond
+	_, cmd := fresh.Update(viewShownMsg{})
+	assertBlinkCmd(t, cmd)
 }
 
 // TestPassword_RoutesBlinkTicksToNewPassField exercises the other arm of the
 // focused-field switch: a tick reaches newPass while it (not confirmPass)
 // holds focus.
 func TestPassword_RoutesBlinkTicksToNewPassField(t *testing.T) {
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	v.newPass.Cursor.BlinkSpeed = time.Millisecond
 	tick := v.newPass.Cursor.BlinkCmd()
 	if _, cmd := v.Update(tick()); cmd == nil {
@@ -314,7 +307,7 @@ func TestPassword_RoutesBlinkTicksToNewPassField(t *testing.T) {
 // which care about what happens to that focus on the way out and back.
 func passwordAtRunning(t *testing.T) PasswordView {
 	t.Helper()
-	v := NewPasswordView(Deps{Repo: newFlowRepo(t)})
+	v := shown(t, NewPasswordView(Deps{Repo: newFlowRepo(t)}))
 	v = typeIntoPassword(v, "brand-new-pass")
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab})
 	v = m.(PasswordView)

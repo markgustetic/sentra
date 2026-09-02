@@ -70,13 +70,6 @@ type PasswordView struct {
 	inputErr string
 	notice   string // transient banner, e.g. after an op rejection
 
-	// initBlink is the cmd newField.Focus() returned at construction,
-	// captured so Init can return it. Focus() (not textinput.Blink) is the
-	// only source of a REAL, tag-matched blink cmd — see unlock.go's
-	// initBlink doc comment for why the bootstrap sentinel is a dead end
-	// and why this can't be recomputed inside a value-receiver Init.
-	initBlink tea.Cmd
-
 	result passwordDoneMsg
 	width  int
 }
@@ -87,7 +80,6 @@ func NewPasswordView(deps Deps) PasswordView {
 	newField.Placeholder = "new passphrase"
 	newField.EchoMode = textinput.EchoPassword
 	newField.EchoCharacter = '•'
-	cmd := newField.Focus()
 
 	confirmField := textinput.New()
 	confirmField.Prompt = "confirm> "
@@ -95,14 +87,16 @@ func NewPasswordView(deps Deps) PasswordView {
 	confirmField.EchoMode = textinput.EchoPassword
 	confirmField.EchoCharacter = '•'
 
-	return PasswordView{deps: deps, newPass: newField, confirmPass: confirmField, initBlink: cmd}
+	// Built blurred: the shell focuses newPass — and starts its blink —
+	// with viewShownMsg when the view is on screen (see Init).
+	return PasswordView{deps: deps, newPass: newField, confirmPass: confirmField}
 }
 
-// Init starts the cursor blinking. newPass is constructed already focused
-// (NewPasswordView) and this is the flow's landing state — there is no
-// later Focus() transition to hang the blink on, so Init carries it, same
-// as unlock's.
-func (v PasswordView) Init() tea.Cmd { return v.initBlink }
+// Init schedules nothing. Focus, and with it the blink, comes from
+// viewShownMsg, never from construction or Init: App.Init batches every
+// view's Init at launch, so a blink here would run a chain for a view the
+// operator may never open, with a focused field nobody renders.
+func (PasswordView) Init() tea.Cmd { return nil }
 
 func (v PasswordView) Title() string { return "Password" }
 

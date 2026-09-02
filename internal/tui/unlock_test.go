@@ -46,7 +46,7 @@ func typeIntoUnlock(v UnlockView, s string) UnlockView {
 
 // TestUnlock_MasksInput: the entry never renders the plaintext passphrase.
 func TestUnlock_MasksInput(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "hunter2secret"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "hunter2secret")))
 	v = typeIntoUnlock(v, "hunter2secret")
 	if strings.Contains(v.View(), "hunter2secret") {
 		t.Fatal("unlock view rendered the plaintext passphrase")
@@ -57,7 +57,7 @@ func TestUnlock_MasksInput(t *testing.T) {
 // right passphrase the flow opens the repo and returns a repoReadyMsg carrying
 // the live repo, so the App can swap to the dashboard.
 func TestUnlock_CorrectPassphraseOpensRepoAndEmitsRepoReady(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "hunter2secret"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "hunter2secret")))
 	v = typeIntoUnlock(v, "hunter2secret")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(UnlockView)
@@ -84,7 +84,7 @@ func TestUnlock_CorrectPassphraseOpensRepoAndEmitsRepoReady(t *testing.T) {
 // TestUnlock_WrongPassphraseShowsErrorNotReady: a bad passphrase renders an
 // error and does NOT emit repoReadyMsg — the App stays on the unlock gate.
 func TestUnlock_WrongPassphraseShowsErrorNotReady(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "correct-horse"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "correct-horse")))
 	v = typeIntoUnlock(v, "wrong-passphrase")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(UnlockView)
@@ -110,7 +110,7 @@ func TestUnlock_EmptyPassphraseIsRejectedLocally(t *testing.T) {
 		called = true
 		return inner(ctx, cfg)
 	}
-	v := NewUnlockView(d)
+	v := shown(t, NewUnlockView(d))
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(UnlockView)
 	if called {
@@ -121,40 +121,35 @@ func TestUnlock_EmptyPassphraseIsRejectedLocally(t *testing.T) {
 	}
 }
 
-// The box is the focus glyph: the unlock field is always focused, so its
-// render always carries exactly one FieldBox frame.
+// The box is the focus glyph: once the shell shows the view its one field
+// is focused, so the render carries exactly one FieldBox frame.
 func TestUnlock_FocusedFieldIsBoxed(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "hunter2")))
 	if got := boxCount(v.View()); got != 1 {
 		t.Fatalf("focused unlock field: boxCount = %d, want 1", got)
 	}
 }
 
-// Landing on unlock must start the cursor blinking. Init returns the cmd
-// Focus() produced back at construction (see UnlockView.initBlink) — that
-// cmd is REAL (BlinkCmd()'s own tag-matched output, not the dead-end
-// textinput.Blink sentinel), so executing it for real would block for the
-// field's Cursor.BlinkSpeed (~530ms by default). There is no field handle
-// to drop BlinkSpeed on before construction runs Focus() internally, so
-// this only checks the cmd exists rather than executing it; the real
-// end-to-end round-trip is proven once, on a key-triggered (presettable)
-// site, by TestBlinkChain_ClosesEndToEnd in snapshots_test.go.
-func TestUnlock_InitSchedulesBlink(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "hunter2"))
-	if v.Init() == nil {
-		t.Fatal("expected a blink command, got nil")
-	}
+// Landing on unlock must start the cursor blinking. The shell's
+// viewShownMsg is what focuses the field, so BlinkSpeed can be preset on
+// the constructed field and the REAL cmd Focus() returns executed here —
+// no nil check, no ~530ms wait.
+func TestUnlock_ShownSchedulesBlink(t *testing.T) {
+	fresh := NewUnlockView(unlockDeps(t, "hunter2"))
+	fresh.input.Cursor.BlinkSpeed = time.Millisecond
+	_, cmd := fresh.Update(viewShownMsg{})
+	assertBlinkCmd(t, cmd)
 }
 
 // Blink ticks must reach the focused input so the schedule continues. A bare
 // cursor.BlinkMsg{} won't do: bubbles/cursor tags each scheduled tick and
 // rejects one whose tag doesn't match its current count (stale-tick guard),
-// and Focus() at construction already advanced that counter past zero — so
+// and Focus() on show already advanced that counter past zero — so
 // the test captures a genuinely tag-matched tick from the field's own
 // cursor instead of a zero-value literal. BlinkSpeed is dropped to make
 // capturing one instant rather than a real ~530ms wait.
 func TestUnlock_RoutesBlinkTicks(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "hunter2")))
 	v.input.Cursor.BlinkSpeed = time.Millisecond
 	tick := v.input.Cursor.BlinkCmd()
 	_, cmd := v.Update(tick())
@@ -167,11 +162,9 @@ func TestUnlock_RoutesBlinkTicks(t *testing.T) {
 // re-focus is a second transition that must also (re)start the blink, or
 // the cursor looks dead after a failed attempt.
 func TestUnlock_WrongPassphraseReschedulesBlink(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "correct-horse"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "correct-horse")))
 	// The retry's Focus() call reads v.input.Cursor.BlinkSpeed at the time
-	// it runs, which is after construction — so, unlike the construction-
-	// time Init cmd, this one CAN be preset before triggering the
-	// transition, keeping the real cmd's execution below fast.
+	// it runs, so presetting it here keeps the real cmd's execution fast.
 	v.input.Cursor.BlinkSpeed = time.Millisecond
 	v = typeIntoUnlock(v, "wrong-passphrase")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -187,7 +180,7 @@ func TestUnlock_WrongPassphraseReschedulesBlink(t *testing.T) {
 // passphrase re-focuses it (TestUnlock_WrongPassphraseReschedulesBlink); a
 // right one hands the repo to the App, which rebuilds the shell.
 func TestUnlock_OpeningBlursTheField(t *testing.T) {
-	v := NewUnlockView(unlockDeps(t, "hunter2"))
+	v := shown(t, NewUnlockView(unlockDeps(t, "hunter2")))
 	v = typeIntoUnlock(v, "hunter2")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(UnlockView)

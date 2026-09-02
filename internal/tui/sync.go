@@ -81,12 +81,6 @@ type SyncView struct {
 	// op goroutine so the store is built exactly once per run.
 	dstStore blobstore.Store
 
-	// initBlink is the cmd path.Focus() returned at construction, captured
-	// so Init can return it. Focus() (not textinput.Blink) is the only
-	// source of a REAL, tag-matched blink cmd — see unlock.go's initBlink
-	// doc comment for why the bootstrap sentinel is a dead end.
-	initBlink tea.Cmd
-
 	reporter *opReporter
 	bar      progress.Model
 	result   syncDoneMsg
@@ -98,24 +92,24 @@ func NewSyncView(deps Deps) SyncView {
 	path := textinput.New()
 	path.Prompt = "dst>  "
 	path.Placeholder = "path to the destination's sentra.yaml"
-	cmd := path.Focus()
 	refs := textinput.New()
 	refs.Prompt = "snap> "
 	refs.Placeholder = "optional snapshot refs, space-separated (blank = everything)"
+	// Built blurred: the shell focuses dstPath — and starts its blink —
+	// with viewShownMsg when the view is on screen (see Init).
 	return SyncView{
-		deps:      deps,
-		dstPath:   path,
-		snapRefs:  refs,
-		bar:       progress.New(progress.WithDefaultGradient()),
-		initBlink: cmd,
+		deps:     deps,
+		dstPath:  path,
+		snapRefs: refs,
+		bar:      progress.New(progress.WithDefaultGradient()),
 	}
 }
 
-// Init starts the cursor blinking. dstPath is constructed already focused
-// (NewSyncView) and this is the flow's landing state — there is no later
-// Focus() transition to hang the blink on, so Init carries it, same as
-// unlock's/password's.
-func (v SyncView) Init() tea.Cmd { return v.initBlink }
+// Init schedules nothing. Focus, and with it the blink, comes from
+// viewShownMsg, never from construction or Init: App.Init batches every
+// view's Init at launch, so a blink here would run a chain for a view the
+// operator may never open, with a focused field nobody renders.
+func (SyncView) Init() tea.Cmd { return nil }
 
 func (v SyncView) Title() string { return "Sync" }
 

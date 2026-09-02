@@ -55,7 +55,7 @@ func TestSyncFlow_EnterValidatesAndPushesConfirm(t *testing.T) {
 	r := newFlowRepo(t)
 	dstPath := writeDestConfig(t, "dest-bucket")
 	dst := blobstore.NewMemory()
-	v := NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)})
+	v := shown(t, NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)}))
 	v = typeIntoSync(v, dstPath)
 
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
@@ -85,7 +85,7 @@ func TestSyncFlow_ConfirmStartsOpAndSyncsBlobs(t *testing.T) {
 
 	dstPath := writeDestConfig(t, "dest-bucket")
 	dst := blobstore.NewMemory()
-	v := NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)})
+	v := shown(t, NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)}))
 	v = typeIntoSync(v, dstPath)
 	// Enable --init-dest so the empty dest is bootstrapped rather than
 	// refused with ErrEmptyDest.
@@ -175,7 +175,7 @@ func TestSyncFlow_DryRunSkipsConfirm(t *testing.T) {
 	seedSnapshotReal(t, r)
 	dstPath := writeDestConfig(t, "dest-bucket")
 	dst := blobstore.NewMemory()
-	v := NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)})
+	v := shown(t, NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)}))
 	v = typeIntoSync(v, dstPath)
 	v.initDest = true // bootstrap allowed in the plan (dry-run writes nothing)
 	v.dryRun = true
@@ -213,14 +213,14 @@ func TestSyncFlow_SameLocationRefused(t *testing.T) {
 	dstPath := writeDestConfig(t, "same-bucket")
 
 	built := false
-	v := NewSyncView(Deps{
+	v := shown(t, NewSyncView(Deps{
 		Repo:   r,
 		Config: srcCfg,
 		NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
 			built = true
 			return blobstore.NewMemory(), nil
 		},
-	})
+	}))
 	v = typeIntoSync(v, dstPath)
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(SyncView)
@@ -241,7 +241,7 @@ func TestSyncFlow_SameLocationRefused(t *testing.T) {
 // TestSyncFlow_MissingPathRefuses: a dest path that does not exist keeps
 // the flow in configure with a validation error.
 func TestSyncFlow_MissingPathRefuses(t *testing.T) {
-	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v := shown(t, NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())}))
 	v = typeIntoSync(v, "/definitely/not/a/real/sentra.yaml")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(SyncView)
@@ -259,7 +259,7 @@ func TestSyncFlow_MissingPathRefuses(t *testing.T) {
 // TestSyncFlow_OpRejectedResetsStage: an opRejectedMsg{name:"sync"} while
 // running resets the flow to configure with a notice.
 func TestSyncFlow_OpRejectedResetsStage(t *testing.T) {
-	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v := shown(t, NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())}))
 	v.stage = syncRunning
 	m, _ := v.Update(opRejectedMsg{name: "sync"})
 	v = m.(SyncView)
@@ -293,7 +293,7 @@ func TestSyncFlow_SelectedSnapshotOnly(t *testing.T) {
 
 	dstPath := writeDestConfig(t, "dest-bucket")
 	dst := blobstore.NewMemory()
-	v := NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)})
+	v := shown(t, NewSyncView(Deps{Repo: r, NewStore: stubNewStore(dst)}))
 	v = typeIntoSync(v, dstPath)
 
 	// tab to the snapshot field and type a suffix ref for s1.
@@ -341,21 +341,10 @@ func TestSyncFlow_SelectedSnapshotOnly(t *testing.T) {
 }
 
 // TestSync_ExactlyOneBoxAndItFollowsFocus mirrors the brief's canonical
-// shape for the dst/snapshots pair. Construction focuses dstPath
-// (sync.go:94) — the landing state for this flow — so Init must schedule
-// the blink, the same contract unlock's/password's Init establishes. Init's
-// cmd is the REAL one Focus() produced at construction (see
-// SyncView.initBlink); executing it would block for the field's
-// Cursor.BlinkSpeed (~530ms), and there is no field handle to preset that
-// before NewSyncView's internal Focus() call runs, so this only checks the
-// cmd exists — TestBlinkChain_ClosesEndToEnd (snapshots_test.go) proves the
-// real round-trip once, on a key-triggered site where BlinkSpeed can be
-// dropped first.
+// shape for the dst/snapshots pair: once shown, dstPath (the landing field)
+// carries the one box, and tab moves it to snapRefs with a real blink cmd.
 func TestSync_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
-	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
-	if v.Init() == nil {
-		t.Fatal("expected a blink command, got nil")
-	}
+	v := shown(t, NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())}))
 
 	base := v
 	base.dstPath.Blur()
@@ -389,7 +378,7 @@ func TestSync_ExactlyOneBoxAndItFollowsFocus(t *testing.T) {
 // a tick reaches dstPath while it holds focus (the state right after
 // construction).
 func TestSync_RoutesBlinkTicksToDstPathField(t *testing.T) {
-	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v := shown(t, NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())}))
 	v.dstPath.Cursor.BlinkSpeed = time.Millisecond
 	tick := v.dstPath.Cursor.BlinkCmd()
 	if _, cmd := v.Update(tick()); cmd == nil {
@@ -401,7 +390,7 @@ func TestSync_RoutesBlinkTicksToDstPathField(t *testing.T) {
 // init-dest/dry-run toggles must drop the box entirely — neither toggle is a
 // text field, so the box must never mark a fixed position.
 func TestSync_NoBoxWhenToggleFocused(t *testing.T) {
-	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v := shown(t, NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())}))
 	base := v
 	base.dstPath.Blur()
 	base.snapRefs.Blur()
@@ -422,7 +411,7 @@ func TestSync_NoBoxWhenToggleFocused(t *testing.T) {
 func syncRunningFromPathField(t *testing.T) SyncView {
 	t.Helper()
 	dstPath := writeDestConfig(t, "dest-bucket")
-	v := NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())})
+	v := shown(t, NewSyncView(Deps{Repo: newFlowRepo(t), NewStore: stubNewStore(blobstore.NewMemory())}))
 	v = typeIntoSync(v, dstPath)
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // validate → push the confirm
 	v = m.(SyncView)
@@ -477,5 +466,15 @@ func TestSync_AgainRestartsTheBlink(t *testing.T) {
 	if v.stage != syncConfigure || !v.dstPath.Focused() {
 		t.Fatalf("again must land on configure with dstPath focused (stage=%v focused=%v)", v.stage, v.dstPath.Focused())
 	}
+	assertBlinkCmd(t, cmd)
+}
+
+// TestSync_ShownSchedulesBlink: the shell's viewShownMsg focuses dstPath
+// (the flow's landing field), so BlinkSpeed can be preset on the constructed
+// field and the REAL cmd Focus() returns executed here.
+func TestSync_ShownSchedulesBlink(t *testing.T) {
+	fresh := NewSyncView(Deps{Repo: newFlowRepo(t)})
+	fresh.dstPath.Cursor.BlinkSpeed = time.Millisecond
+	_, cmd := fresh.Update(viewShownMsg{})
 	assertBlinkCmd(t, cmd)
 }
