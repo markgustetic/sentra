@@ -239,12 +239,16 @@ func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			v.dstPath.Blur()
 			v.snapRefs.Blur()
 			// Focus()'s own return is the real, tag-matched blink cmd; the
-			// dead-end textinput.Blink sentinel is never used.
+			// dead-end textinput.Blink sentinel is never used. Sequenced
+			// rather than inlined into each return: Focus() mutates the
+			// field, and a return's copy-vs-evaluate order is unspecified.
 			switch v.field {
 			case syncFieldPath:
-				return v, v.dstPath.Focus()
+				cmd := v.dstPath.Focus()
+				return v, cmd
 			case syncFieldSnapshots:
-				return v, v.snapRefs.Focus()
+				cmd := v.snapRefs.Focus()
+				return v, cmd
 			}
 			// Landed on a toggle: neither text field is focused, so no
 			// blink to (re)start.

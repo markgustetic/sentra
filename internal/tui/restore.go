@@ -229,7 +229,10 @@ func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Focus()'s own return is the real, tag-matched cmd; textinput.
 			// Blink resolves to cursor's unexported bootstrap message, which
 			// no view's Update switch can name, so it was a dead end.
-			return v, v.dest.Focus()
+			// Sequenced rather than inlined into the return: Focus() mutates
+			// v.dest, and a return's copy-vs-evaluate order is unspecified.
+			cmd := v.dest.Focus()
+			return v, cmd
 		}
 		var cmd tea.Cmd
 		v.tbl, cmd = v.tbl.Update(msg)

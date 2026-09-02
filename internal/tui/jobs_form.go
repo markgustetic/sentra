@@ -165,15 +165,22 @@ func (v JobsView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Focus()'s own return is the real, tag-matched blink cmd; a tab
 		// landing on the check/prune toggle steps (focus 4/5) focuses no
 		// text field, so there is no blink to (re)start.
+		// Sequenced rather than inlined into each return: Focus() mutates
+		// the field, and the order in which a return copies v versus
+		// evaluates the call is unspecified.
 		switch v.form.focus {
 		case 0:
-			return v, v.form.name.Focus()
+			cmd := v.form.name.Focus()
+			return v, cmd
 		case 1:
-			return v, v.form.path.Focus()
+			cmd := v.form.path.Focus()
+			return v, cmd
 		case 2:
-			return v, v.form.tags.Focus()
+			cmd := v.form.tags.Focus()
+			return v, cmd
 		case 3:
-			return v, v.form.schedule.Focus()
+			cmd := v.form.schedule.Focus()
+			return v, cmd
 		}
 		return v, nil
 	case tea.KeyEnter:

@@ -498,8 +498,11 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.confirmPass.Blur()
 			v.notice = "enter the repository passphrase to continue"
 			// Landing on the passphrase stage is newPass's first focus —
-			// start its blink from Focus()'s own cmd.
-			return v, v.newPass.Focus()
+			// start its blink from Focus()'s own cmd. Sequenced rather than
+			// inlined into the return: Focus() mutates v.newPass, and a
+			// return's copy-vs-evaluate order is unspecified.
+			cmd := v.newPass.Focus()
+			return v, cmd
 		}
 		v.notice = ""
 		return v.startProvision()
@@ -926,8 +929,11 @@ func (v SetupWizardView) advanceFromBackend() (tea.Model, tea.Cmd) {
 	v.fieldCursor = setupFieldBucket
 	// Entering details is the bucket field's first focus, so this
 	// transition — not the view's Init, which lands on the fieldless
-	// backend stage — is what starts the blink.
-	return v, v.focusOnlyField(setupFieldBucket)
+	// backend stage — is what starts the blink. Sequenced rather than
+	// inlined into the return: focusOnlyField mutates v.fields, and a
+	// return's copy-vs-evaluate order is unspecified.
+	cmd := v.focusOnlyField(setupFieldBucket)
+	return v, cmd
 }
 
 // detailFieldCount is 5 for S3-compatible (endpoint shown) and 4 for AWS
@@ -976,7 +982,9 @@ func (v SetupWizardView) handleDetailsKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if v.fieldCursor < v.detailFieldCount() {
 			// Landing on a text field (re)starts its blink; landing on the
 			// IAM toggle pseudo-field focuses nothing, so there is none.
-			return v, v.focusOnlyField(v.fieldCursor)
+			// Sequenced for the same copy-vs-evaluate reason as above.
+			cmd := v.focusOnlyField(v.fieldCursor)
+			return v, cmd
 		}
 		for i := range v.fields {
 			v.fields[i].Blur()
@@ -1258,7 +1266,10 @@ func (v SetupWizardView) enterPassphraseStage() (SetupWizardView, tea.Cmd) {
 	v.focusConf = false
 	v.confirmPass.Blur()
 	// Landing on newPass is a focus transition — carry its blink cmd out.
-	return v, v.newPass.Focus()
+	// Sequenced rather than inlined into the return: Focus() mutates
+	// v.newPass, and a return's copy-vs-evaluate order is unspecified.
+	cmd := v.newPass.Focus()
+	return v, cmd
 }
 
 // interactiveAWSAuthCommand builds the `aws` subprocess for browser login
@@ -1491,7 +1502,11 @@ func (v SetupWizardView) moveActionCursor(delta int) (SetupWizardView, tea.Cmd) 
 // when it blurred it — there is nothing to blink).
 func (v SetupWizardView) syncProfileFocus() (SetupWizardView, tea.Cmd) {
 	if v.actionCursor == actionRowProfile && v.actionRowVisible(actionRowProfile) {
-		return v, v.backupProfile.Focus()
+		// Sequenced rather than inlined into the return: Focus() mutates
+		// v.backupProfile, and a return's copy-vs-evaluate order is
+		// unspecified.
+		cmd := v.backupProfile.Focus()
+		return v, cmd
 	}
 	v.backupProfile.Blur()
 	return v, nil

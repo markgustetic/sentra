@@ -535,8 +535,12 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			s.notice = ""
 			s.filtering = true
 			// Focus()'s own return is the real, tag-matched blink cmd; the
-			// dead-end textinput.Blink sentinel is never used.
-			return s, s.filter.Focus()
+			// dead-end textinput.Blink sentinel is never used. Sequenced
+			// rather than inlined into the return: Focus() mutates
+			// s.filter, and the order in which a return copies s versus
+			// evaluates the call is unspecified.
+			cmd := s.filter.Focus()
+			return s, cmd
 		case "s":
 			s.notice = ""
 			s.sortMode = (s.sortMode + 1) % 5

@@ -286,7 +286,11 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 				v.focus = focusTagField
 				// Focus()'s own return is the real, tag-matched blink cmd;
 				// the dead-end textinput.Blink sentinel is never used.
-				return v, v.tag.Focus()
+				// Sequenced rather than inlined into the return: Focus()
+				// mutates v.tag, and the order in which a return copies v
+				// versus evaluates the call is unspecified.
+				cmd := v.tag.Focus()
+				return v, cmd
 			}
 			v.focus = focusPicker
 			v.tag.Blur()

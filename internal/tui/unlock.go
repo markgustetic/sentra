@@ -125,7 +125,11 @@ func (v UnlockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			// restart the blink, or the cursor looks dead after a failed
 			// attempt. Focus()'s own return is the real, tag-matched cmd;
 			// textinput.Blink would be the dead-end bootstrap sentinel.
-			return v, v.input.Focus()
+			// Sequenced rather than inlined into the return: Focus()
+			// mutates v.input, and a return's copy-vs-evaluate order is
+			// unspecified.
+			cmd := v.input.Focus()
+			return v, cmd
 		}
 		// Success: forward to the App, which rebuilds the shell against the
 		// live repo and switches to the dashboard.
