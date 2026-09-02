@@ -63,8 +63,14 @@ Navigation contract, applied uniformly:
   current stage owns; `viewHiddenMsg` blurs everything.
 - `CapturesText()` is true exactly when a text field is focused (Schedule
   with the keyboard on name/time, Confirm with it on the tag field).
-  `ConsumesArrows()` is true on Location (picker) and on Schedule while the
-  cadence list has the keyboard. `ConsumesTab()` is true on Schedule and
+  `ConsumesArrows()` is true on Location (picker), on Schedule while the
+  cadence list or the weekday row has the keyboard, and on Confirm while the
+  rescan row has it. The two rows have no vertical motion — ↑/↓ are
+  swallowed there — but they must still *own* the keys: the shell hands any
+  arrow the view declines to the nav rail, whose live preview switches the
+  active view mid-wizard, and on a row whose control is ←/→ a vertical slip
+  is the likeliest keystroke of all. The text fields leave ↑/↓ to the shell
+  as before. `ConsumesTab()` is true on Schedule and
   Confirm, where tab cycles that stage's controls; false on Location, which
   has a single control now that the tag field has moved.
 

@@ -111,15 +111,20 @@ func (v BackupView) CapturesText() bool {
 	return false
 }
 
-// ConsumesArrows where a list owns them: the folder picker, and the
-// Schedule step's cadence list. Everywhere else ↑/↓ belong to the nav rail
-// (see App.routeKey).
+// ConsumesArrows where a list owns them — the folder picker, the Schedule
+// step's cadence list — and on the two glyph-selected rows that have no
+// vertical motion at all (Schedule's weekday, Confirm's rescan), which own
+// ↑/↓ precisely so the shell does not hand them to the nav rail and let its
+// live preview switch views mid-wizard. Everywhere else (the text fields,
+// running, done) ↑/↓ belong to the shell (see App.routeKey).
 func (v BackupView) ConsumesArrows() bool {
 	switch v.stage {
 	case backupLocation:
 		return true
 	case backupSchedule:
 		return v.sched.consumesArrows()
+	case backupConfirm:
+		return v.confirm.consumesArrows()
 	}
 	return false
 }

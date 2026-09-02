@@ -2600,3 +2600,62 @@ func TestApp_UnopenedViewsOwnNoFocusedField(t *testing.T) {
 		}
 	}
 }
+
+// wizardTo drives a sized App from launch into the backup wizard and presses
+// keys, the way the fuzz corpus does: rail ↓ to Backup, enter to activate,
+// enter on the picker's "choose the current directory" button → Schedule.
+func wizardTo(t *testing.T, keys ...tea.KeyMsg) App {
+	t.Helper()
+	app := fuzzApp(t, newFlowRepo(t))
+	seq := append([]tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyEnter}, {Type: tea.KeyEnter}}, keys...)
+	for _, k := range seq {
+		app = fuzzPress(app, k)
+	}
+	if got := app.views[app.active].id; got != "backup" {
+		t.Fatalf("active = %q, want backup", got)
+	}
+	return app
+}
+
+// ↓ on the Schedule step's weekday row must not reach the nav rail: the
+// rail's live preview would switch the active view mid-wizard, and on a row
+// whose control is ←/→ a vertical slip is the likeliest keystroke of all.
+func TestApp_DownOnTheWeekdayRowStaysInTheWizard(t *testing.T) {
+	app := wizardTo(t,
+		tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyDown}, tea.KeyMsg{Type: tea.KeyDown}, // weekly
+		tea.KeyMsg{Type: tea.KeyTab}, tea.KeyMsg{Type: tea.KeyTab}, tea.KeyMsg{Type: tea.KeyTab}) // weekday
+	v := app.views[app.active].model.(BackupView)
+	if v.stage != backupSchedule || v.sched.focus != schedWeekday {
+		t.Fatalf("setup: stage=%v focus=%v, want Schedule/weekday", v.stage, v.sched.focus)
+	}
+	activeBefore, railBefore := app.active, app.sidebar.list.Index()
+
+	app = fuzzPress(app, tea.KeyMsg{Type: tea.KeyDown})
+
+	if app.active != activeBefore {
+		t.Fatalf("↓ on the weekday row switched the active view: %q", app.views[app.active].id)
+	}
+	if app.focus != focusContent || app.sidebar.list.Index() != railBefore {
+		t.Fatalf("↓ reached the rail: focus=%v rail %d→%d", app.focus, railBefore, app.sidebar.list.Index())
+	}
+	got := app.views[app.active].model.(BackupView)
+	if got.sched.focus != schedWeekday || got.sched.weekday != v.sched.weekday {
+		t.Fatalf("↓ changed the weekday row: focus=%v weekday=%d", got.sched.focus, got.sched.weekday)
+	}
+}
+
+// The same for Confirm's rescan row, one tab past the tag field.
+func TestApp_DownOnTheRescanRowStaysInTheWizard(t *testing.T) {
+	app := wizardTo(t, tea.KeyMsg{Type: tea.KeyEnter}, tea.KeyMsg{Type: tea.KeyTab}) // Confirm, rescan row
+	v := app.views[app.active].model.(BackupView)
+	if v.stage != backupConfirm || v.confirm.focus != confirmRescan {
+		t.Fatalf("setup: stage=%v focus=%v, want Confirm/rescan", v.stage, v.confirm.focus)
+	}
+	activeBefore := app.active
+
+	app = fuzzPress(app, tea.KeyMsg{Type: tea.KeyDown})
+
+	if app.active != activeBefore || app.focus != focusContent {
+		t.Fatalf("↓ on the rescan row left the wizard: active=%q focus=%v", app.views[app.active].id, app.focus)
+	}
+}

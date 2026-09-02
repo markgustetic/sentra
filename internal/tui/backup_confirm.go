@@ -55,6 +55,11 @@ func (c *confirmControls) refocus() tea.Cmd {
 func (c *confirmControls) blur()             { c.tag.Blur() }
 func (c confirmControls) capturesText() bool { return c.focus == confirmTag && c.tag.Focused() }
 
+// consumesArrows on the rescan row, where ↑/↓ are swallowed rather than
+// handed to the nav rail — the rail's live preview would swap the view out
+// from under the confirm gate (see scheduleForm.consumesArrows).
+func (c confirmControls) consumesArrows() bool { return c.focus == confirmRescan }
+
 // update handles tab (cycle), space on the rescan row (toggle), and typing
 // into the tag. Enter and esc belong to the wizard.
 func (c confirmControls) update(msg tea.KeyMsg) (confirmControls, tea.Cmd) {

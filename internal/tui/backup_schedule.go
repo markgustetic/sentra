@@ -114,7 +114,17 @@ func (f scheduleForm) controls() []scheduleControl {
 func (f scheduleForm) capturesText() bool {
 	return (f.focus == schedName && f.name.Focused()) || (f.focus == schedAt && f.at.Focused())
 }
-func (f scheduleForm) consumesArrows() bool { return f.focus == schedCadence }
+
+// consumesArrows on the cadence list, where ↑/↓ move the cursor, and on the
+// weekday row, where they do nothing — deliberately. The shell hands any
+// arrow the view declines to the nav rail, whose live preview then switches
+// the active view mid-wizard; on a row whose control is ←/→ a vertical slip
+// is the likeliest keystroke, and losing the screen to it is worse than
+// the key going quiet. The text fields keep reporting false: they capture
+// text, and the shell already routes to them.
+func (f scheduleForm) consumesArrows() bool {
+	return f.focus == schedCadence || f.focus == schedWeekday
+}
 
 // refocus blurs both fields, focuses the one f.focus names, and returns its
 // Focus() cmd — nil when the keyboard is on the list or the weekday row,
@@ -168,6 +178,8 @@ func (f scheduleForm) update(msg tea.KeyMsg) (scheduleForm, tea.Cmd) {
 	case f.focus == schedWeekday && msg.Type == tea.KeyLeft:
 		f.weekday = (f.weekday + len(scheduleWeekdays) - 1) % len(scheduleWeekdays)
 		return f, nil
+	case f.focus == schedWeekday && (msg.Type == tea.KeyUp || msg.Type == tea.KeyDown):
+		return f, nil // owned (see consumesArrows) so the rail never sees them
 	case f.focus == schedName:
 		var cmd tea.Cmd
 		f.name, cmd = f.name.Update(msg)

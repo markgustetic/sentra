@@ -754,3 +754,27 @@ func TestPreviewPaneWidth(t *testing.T) {
 		}
 	}
 }
+
+// Confirm's rescan row is a toggle with no vertical motion of its own, but
+// reporting "arrows to the shell" there sends ↑/↓ to the nav rail and the
+// live preview swaps the view out from under the wizard. The row owns them
+// and drops them; the tag field, one tab away, still leaves them to the shell.
+func TestBackupWizard_RescanRowOwnsVerticalArrows(t *testing.T) {
+	v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+	if v.ConsumesArrows() {
+		t.Fatal("Confirm with the tag focused leaves ↑/↓ to the shell")
+	}
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // rescan row
+	v = m.(BackupView)
+	if v.confirm.focus != confirmRescan || !v.ConsumesArrows() {
+		t.Fatalf("rescan row: focus=%v consumesArrows=%v, want rescan/true", v.confirm.focus, v.ConsumesArrows())
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyUp}} {
+		m, _ = v.Update(k)
+		got := m.(BackupView)
+		if got.stage != backupConfirm || got.confirm.focus != confirmRescan || got.confirm.rescan || got.confirm.tag.Focused() {
+			t.Fatalf("%s on the rescan row changed the step: stage=%v focus=%v rescan=%v tagFocused=%v",
+				k, got.stage, got.confirm.focus, got.confirm.rescan, got.confirm.tag.Focused())
+		}
+	}
+}

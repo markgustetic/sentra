@@ -232,3 +232,27 @@ func TestScheduleForm_ChosenCadenceMarkedAfterTabbingOff(t *testing.T) {
 		t.Fatal("third tab should put the focus glyph on the weekday row")
 	}
 }
+
+// The weekday row's control is ←/→, so ↑/↓ there are the classic slip. The
+// row must own them (consumesArrows true) and let them do nothing rather
+// than reporting false and having the shell hand them to the nav rail, whose
+// live preview would switch the active view mid-wizard.
+func TestScheduleForm_WeekdayRowOwnsVerticalArrows(t *testing.T) {
+	f := pressDown(newScheduleForm("/tmp/docs", nil), 3) // weekly
+	for range 3 {
+		f, _ = f.update(keyTab()) // name, at, weekday
+	}
+	if f.focus != schedWeekday {
+		t.Fatalf("focus = %v, want weekday", f.focus)
+	}
+	if !f.consumesArrows() {
+		t.Fatal("the weekday row must report that it consumes ↑/↓")
+	}
+	for _, k := range []tea.KeyMsg{{Type: tea.KeyDown}, {Type: tea.KeyUp}} {
+		got, _ := f.update(k)
+		if got.focus != schedWeekday || got.weekday != f.weekday || got.cadenceIdx != f.cadenceIdx {
+			t.Fatalf("%s on the weekday row changed the form: focus=%v weekday=%d cadence=%d",
+				k, got.focus, got.weekday, got.cadenceIdx)
+		}
+	}
+}
