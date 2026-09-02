@@ -2111,20 +2111,20 @@ func TestApp_ConnectLaunchHidesRail(t *testing.T) {
 // App (the palette-toggle key) must return a cmd that yields a blink —
 // mirroring UnlockView.Init's "focused from birth" contract, but at the
 // point where the palette actually becomes visible (construction happens
-// once at NewApp, long before it's ever shown). This cmd is
-// m.palette.Init(), which is the REAL cmd Focus() produced back at
-// Palette construction (see Palette.initBlink) — executing it would block
-// for the field's Cursor.BlinkSpeed (~530ms), and there is no field handle
-// reachable before NewApp's internal NewPalette call runs Focus(), so this
-// only checks the cmd exists. TestBlinkChain_ClosesEndToEnd
-// (snapshots_test.go) proves the real round-trip once, on a key-triggered
-// site where BlinkSpeed can be dropped first.
+// once at NewApp, long before it's ever shown).
+//
+// Palette.Init calls Focus() at CALL time, so the field is reachable as
+// app.palette.input beforehand: drop its BlinkSpeed and the returned cmd
+// can be genuinely executed rather than merely checked for nil.
+//
+// This covers the FIRST open only. TestApp_PaletteReopenReArmsBlink
+// (palette_test.go) is the one that would catch a cmd cached at
+// construction, which blinks once per session and is invisible here.
 func TestApp_PaletteOpenSchedulesBlink(t *testing.T) {
 	app := newTestApp(t)
+	app.palette.input.Cursor.BlinkSpeed = time.Millisecond
 	_, cmd := app.Update(tea.KeyMsg{Type: tea.KeyCtrlP})
-	if cmd == nil {
-		t.Fatal("expected a blink command, got nil")
-	}
+	assertBlinkCmd(t, cmd)
 }
 
 // TestApp_PaletteRoutesBlinkTicks: with the palette open, a live blink tick

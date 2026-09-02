@@ -168,10 +168,10 @@ func (v RecoveryKitView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		case tea.KeyEsc:
 			v.stage = rkDone
 			v.saveErr = ""
-			// Leaving the stage must blur the field. A focused field that
-			// is no longer rendered keeps rescheduling its blink forever,
-			// and — since the box is drawn from Focused() — it would come
-			// back framed but unreachable if the stage were re-entered.
+			// Leaving the stage must blur the field: tick routing above is
+			// gated on savePath.Focused(), so a field left focused after
+			// its stage is gone keeps rescheduling a blink chain forever
+			// for something nothing renders.
 			v.savePath.Blur()
 			return v, nil
 		case tea.KeyEnter:

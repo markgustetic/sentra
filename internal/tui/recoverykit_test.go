@@ -265,10 +265,11 @@ func TestRecoveryKitFlow_NilRepoPlaceholder(t *testing.T) {
 // "esc blurs savePath" — fixing only the exit that was reported would leave
 // the identical defect on the other one.
 //
-// A field left focused after its stage is gone is not cosmetic. Its blink
-// chain keeps rescheduling for something nobody renders, and because the
-// box is drawn from Focused(), re-entering the stage would show a frame
-// around a field the operator never focused.
+// A field left focused after its stage is gone is not cosmetic: the view
+// routes blink ticks only when savePath.Focused() (recoverykit.go), so the
+// chain keeps rescheduling forever for something nothing renders. (The box
+// itself is safe either way — renderKit gates the frame on the STAGE, not
+// on Focused().)
 func TestRecoveryKit_LeavingSaveStageBlursTheField(t *testing.T) {
 	openPrompt := func(t *testing.T) RecoveryKitView {
 		t.Helper()
