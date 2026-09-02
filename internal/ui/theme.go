@@ -74,6 +74,15 @@ var (
 	// border is the focus affordance itself — a glyph, visible without
 	// color — so views must apply it only to the focused field. Padding
 	// matches Panel so boxed fields align with panel content.
+	//
+	// DO NOT add a Foreground (or any other text-level attribute) here.
+	// Callers wrap an ALREADY-STYLED textinput.View(), which is only safe
+	// while this style touches the border alone: Render then emits SGR on
+	// the border runes and passes the content through untouched. Give it a
+	// Foreground and the content comes back as
+	// "[92m[91mINNER[0m[0m" — the inner reset closes the
+	// OUTER style too, which is exactly the house "never wrap an
+	// already-styled string" bug.
 	FieldBox = lipgloss.NewStyle().Border(lipgloss.RoundedBorder()).
 			BorderForeground(AccentAqua).Padding(0, 1)
 

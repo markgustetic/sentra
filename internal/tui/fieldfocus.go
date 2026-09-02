@@ -19,9 +19,14 @@ import (
 func boxedField(f textinput.Model) string {
 	s := f.View()
 	if f.Focused() {
-		// Lipgloss draws border runs per line, so framing an
-		// already-styled textinput.View() does not trip the "never wrap an
-		// already-styled string" inline-reset bug (ModalBox precedent).
+		// Framing an already-styled textinput.View() is safe here — but for
+		// a narrower reason than "it's a border". ui.FieldBox sets no
+		// TEXT-level attributes (Border + BorderForeground + Padding only),
+		// so Render puts SGR on the border runes and passes the content
+		// through byte-for-byte; there is no outer style for the input's
+		// own reset to terminate. Add a Foreground to FieldBox and that
+		// stops being true — the house "never wrap an already-styled
+		// string" bug comes straight back. See FieldBox's own comment.
 		s = ui.FieldBox.Render(s)
 	}
 	return s
