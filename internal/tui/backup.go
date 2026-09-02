@@ -156,7 +156,11 @@ func (v BackupView) ShortHelp() []key.Binding {
 	case backupRunning:
 		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel"))}
 	case backupDone:
-		return []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "again"))}
+		keys := []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "again"))}
+		if v.installedName != "" {
+			keys = append(keys, key.NewBinding(key.WithKeys("s"), key.WithHelp("s", "scheduled backups")))
+		}
+		return keys
 	default: // backupLocation
 		return []key.Binding{
 			key.NewBinding(key.WithKeys("up", "down"), key.WithHelp("↑↓", "move")),
@@ -353,8 +357,11 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case backupDone:
-		if msg.Type == tea.KeyEnter {
+		switch {
+		case msg.Type == tea.KeyEnter:
 			return v.resetTo()
+		case msg.Type == tea.KeyRunes && string(msg.Runes) == "s" && v.installedName != "":
+			return v, func() tea.Msg { return activateMsg{id: "jobs"} }
 		}
 		return v, nil
 
@@ -528,7 +535,18 @@ func (v BackupView) View() string {
 				info.ID, info.Stats.Files,
 				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes))
 		}
-		fmt.Fprintf(&b, "\n\n%s", v.actionLine("run another backup", ""))
+		if v.installedName != "" {
+			line := fmt.Sprintf("policy %q installed", v.installedName)
+			if v.installedNextOK {
+				line += " — next run " + v.installedNext.Format("Mon 2006-01-02 15:04")
+			}
+			fmt.Fprintf(&b, "\n\n%s", ui.Success.Render(v.fit(line)))
+		}
+		secondary := ""
+		if v.installedName != "" {
+			secondary = "s scheduled backups"
+		}
+		fmt.Fprintf(&b, "\n\n%s", v.actionLine("run another backup", secondary))
 
 	case backupSchedule:
 		b.WriteString(v.header(2, "Schedule"))

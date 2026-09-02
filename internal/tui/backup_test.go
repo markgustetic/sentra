@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -390,6 +391,89 @@ func TestBackupFlow_RunAnotherKeepsSizing(t *testing.T) {
 	fresh := m.(BackupView)
 	if got, want := fresh.bar.Width, min(100-8, 60); got != want {
 		t.Errorf("bar width after 'run another' = %d, want %d (sizing lost on reset)", got, want)
+	}
+}
+
+// Done after a scheduled run names the policy and next run, and `s` jumps
+// to the Scheduled backups tab.
+func TestBackupWizard_DoneOffersScheduledBackups(t *testing.T) {
+	v := backupAt(t, tempTree(t))
+	v.installedName = "docs"
+	v.installedNext = time.Date(2026, 9, 3, 2, 0, 0, 0, time.UTC)
+	v.installedNextOK = true
+	m, _ := v.Update(backupDoneMsg{info: repo.SnapshotInfo{ID: "abc"}})
+	v = m.(BackupView)
+	for _, want := range []string{`policy "docs" installed`, "next run Thu 2026-09-03 02:00", "s scheduled backups"} {
+		if !strings.Contains(v.View(), want) {
+			t.Errorf("done view lacks %q:\n%s", want, v.View())
+		}
+	}
+	_, cmd := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
+	found := false
+	for _, msg := range execCmds(t, cmd) {
+		if a, ok := msg.(activateMsg); ok && a.id == "jobs" {
+			found = true
+		}
+	}
+	if !found {
+		t.Fatal("'s' on Done must emit activateMsg{jobs}")
+	}
+}
+
+// Keys through the whole wizard at App level: enter (Location) → enter
+// (Schedule, one-shot) → enter (Confirm) → running, with no modal raised.
+func TestApp_BackupWizardEndToEnd(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(Deps{Repo: r, RepoName: "x"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	bi := -1
+	for i, v := range app.views {
+		if v.id == "backup" {
+			bi = i
+		}
+	}
+	app.active, app.focus = bi, focusContent
+	bv := app.views[bi].model.(BackupView)
+	bv.picker = newDirPicker(src)
+	app.views[bi].model = bv
+
+	press := func(k tea.KeyMsg) {
+		m, cmd := app.Update(k)
+		app = m.(App)
+		for _, msg := range execCmds(t, cmd) {
+			if _, blink := msg.(cursor.BlinkMsg); blink {
+				continue
+			}
+			m, _ = app.Update(msg)
+			app = m.(App)
+		}
+	}
+	stage := func() backupStage { return app.views[bi].model.(BackupView).stage }
+
+	press(tea.KeyMsg{Type: tea.KeyEnter})
+	if stage() != backupSchedule {
+		t.Fatalf("after enter on Location: stage = %v", stage())
+	}
+	press(tea.KeyMsg{Type: tea.KeyEnter})
+	if stage() != backupConfirm {
+		t.Fatalf("after enter on Schedule: stage = %v", stage())
+	}
+	if len(app.modals) != 0 {
+		t.Fatalf("the wizard must raise no modal, got %d", len(app.modals))
+	}
+	press(tea.KeyMsg{Type: tea.KeyEsc})
+	if stage() != backupSchedule {
+		t.Fatalf("esc on Confirm must step back, stage = %v", stage())
+	}
+	press(tea.KeyMsg{Type: tea.KeyEnter})
+	press(tea.KeyMsg{Type: tea.KeyEnter})
+	if stage() != backupRunning {
+		t.Fatalf("after enter on Confirm: stage = %v", stage())
 	}
 }
 
