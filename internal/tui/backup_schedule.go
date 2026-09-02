@@ -111,7 +111,9 @@ func (f scheduleForm) controls() []scheduleControl {
 	return c
 }
 
-func (f scheduleForm) capturesText() bool   { return f.focus == schedName || f.focus == schedAt }
+func (f scheduleForm) capturesText() bool {
+	return (f.focus == schedName && f.name.Focused()) || (f.focus == schedAt && f.at.Focused())
+}
 func (f scheduleForm) consumesArrows() bool { return f.focus == schedCadence }
 
 // refocus blurs both fields, focuses the one f.focus names, and returns its

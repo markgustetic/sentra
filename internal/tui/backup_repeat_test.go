@@ -117,6 +117,48 @@ func TestBackupWizard_ScheduleFailureBlocksBackup(t *testing.T) {
 	}
 }
 
+// The directory can vanish between Location (last verified there) and enter
+// on Confirm — an unmounted volume, a deleted temp dir, a moved network
+// share. confirmRun's own checkDir must catch this BEFORE installRepeat
+// runs: install-then-fail would leave a policy on disk (and an OS timer)
+// pointing at a directory nothing will ever back up, discovered only when
+// the timer fires and every run fails. A refused confirmRun must leave the
+// wizard on Confirm with nothing installed.
+func TestBackupWizard_VanishedDirOnConfirmRefuses(t *testing.T) {
+	v, cfgPath, home := repeatFixture(t)
+	dir := filepath.Join(t.TempDir(), "docs")
+	if err := os.Mkdir(dir, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	v = atDailyConfirm(t, v, dir)
+	if err := os.RemoveAll(dir); err != nil {
+		t.Fatal(err)
+	}
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	got := m.(BackupView)
+	if got.stage != backupConfirm {
+		t.Fatalf("a vanished directory must stay on Confirm; stage=%v", got.stage)
+	}
+	if cmd != nil {
+		t.Error("a refused confirm must schedule nothing")
+	}
+	if !strings.Contains(got.View(), "not found") {
+		t.Errorf("the refused confirm's error must be visible:\n%s", got.View())
+	}
+	onDisk, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, ok := onDisk.Policies["docs"]; ok {
+		t.Error("installRepeat must not run for a directory that vanished before confirmRun's checkDir")
+	}
+	for _, f := range []string{"sentra-docs.service", "sentra-docs.timer"} {
+		if _, err := os.Stat(filepath.Join(home, ".config", "systemd", "user", f)); err == nil {
+			t.Errorf("scheduler file %s must not be installed for a vanished directory", f)
+		}
+	}
+}
+
 // installRepeat refuses a name the wizard did not resolve: an on-disk
 // policy of that name pointing elsewhere is an error, never uniquified.
 func TestInstallRepeat_RefusesForeignName(t *testing.T) {

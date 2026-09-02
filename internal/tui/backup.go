@@ -232,7 +232,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.stage = backupLocation
 			return v, nil
 		}
+		// Preserve the picker's already-computed column width: a fresh
+		// newDirPicker starts at 0 (unbounded), and two escs back to
+		// Location would render folder rows unclipped until the next
+		// resize recomputed it.
+		w := v.picker.width
 		v.picker = newDirPicker(dir)
+		v.picker.width = w
 		m, _ := v.enterSchedule(dir)
 		v = m.(BackupView)
 		v.confirm = newConfirmControls()

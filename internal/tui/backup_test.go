@@ -216,17 +216,70 @@ func TestBackupWizard_TagReachesTheSnapshot(t *testing.T) {
 	t.Fatal("no startOpMsg emitted")
 }
 
+// The toggle and the [x] glyph only prove the UI's own state; nothing
+// upstream of this test pinned that arming it actually reaches
+// SnapshotOptions.ForceRescan on the real backup. SnapshotInfo carries no
+// ForceRescan field to read back, and an unchanged file's stats (Files,
+// Bytes, NewBytes) come out identical whether the incremental scan reused
+// its parent's chunks or a forced rescan re-hashed them to the same
+// content — so nothing in the result distinguishes the two paths for a
+// quiet file. What does distinguish them, and what
+// TestCreateSnapshot_ReusesUnchangedParentEntries (internal/repo) already
+// uses to prove the repo layer's half of this: whether the file gets
+// OPENED. chmod 000 blocks the open; the incremental scan never opens an
+// unchanged (matching size+mtime) file, so it would silently succeed by
+// reusing the parent's chunk list, while ForceRescan must open every file
+// and so must fail on this one. Running the wizard's own startOpMsg (the
+// same route TestBackupWizard_TagReachesTheSnapshot uses) against a real
+// repo and asserting the run FAILS is a direct behavioral proof that the
+// armed toggle reached CreateSnapshot's ForceRescan option.
 func TestBackupWizard_RescanToggleReachesOptions(t *testing.T) {
-	v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+	if os.Getuid() == 0 {
+		t.Skip("chmod 000 does not block reads for root")
+	}
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	path := filepath.Join(src, "a.txt")
+	if err := os.WriteFile(path, []byte("hi"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	// Parent snapshot so the incremental scan below has a size+mtime match
+	// to reuse instead of opening the file.
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
+		t.Fatalf("parent snapshot: %v", err)
+	}
+	if err := os.Chmod(path, 0o000); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(path, 0o600) })
+
+	v, _ := toConfirm(t, toSchedule(t, backupAtRepo(t, r, src)))
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyTab}) // rescan row
 	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeySpace, Runes: []rune{' '}})
 	v = m.(BackupView)
 	if !v.confirm.rescan || !strings.Contains(v.View(), "[x]") {
 		t.Fatalf("space on the rescan row must arm it:\n%s", v.View())
 	}
-	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter from the rescan row confirms too
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // enter from the rescan row confirms too
 	if got := m.(BackupView); got.stage != backupRunning {
 		t.Fatalf("enter on the rescan row must confirm; stage=%v", got.stage)
+	}
+
+	var found bool
+	for _, msg := range execCmds(t, cmd) {
+		if start, ok := msg.(startOpMsg); ok {
+			found = true
+			res := start.run(context.Background())
+			done := res.(backupDoneMsg)
+			if done.err == nil {
+				t.Fatal("ForceRescan must open every file and fail on the unreadable one; " +
+					"the run succeeded instead, which means the armed toggle never reached ForceRescan " +
+					"(the incremental scan silently reused the parent's chunks)")
+			}
+		}
+	}
+	if !found {
+		t.Fatal("no startOpMsg emitted")
 	}
 }
 
@@ -319,6 +372,37 @@ func TestBackupWizard_ChatIntentWithAMissingDirBlursTheStep(t *testing.T) {
 	}
 	if !strings.Contains(out, "not found") {
 		t.Errorf("the refused intent's error must be visible:\n%s", out)
+	}
+}
+
+// The chat's start_backup intent rebuilds the picker for the seeded
+// directory (enterSchedule keeps v.picker as-is, but the earlier code
+// path replaced it outright): a fresh newDirPicker starts at width 0
+// (unbounded), so the column width the last resize computed must be
+// carried onto it — otherwise two escs back to Location render folder
+// rows unclipped until the next resize.
+func TestBackupWizard_ChatIntentPreservesPickerWidth(t *testing.T) {
+	src := tempTree(t)
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = m.(BackupView)
+	wantWidth := v.picker.width
+	if wantWidth == 0 {
+		t.Fatal("precondition: a sized view must have a nonzero picker width")
+	}
+	m, _ = v.Update(chatBackupMsg{dir: src, tag: "from-chat"})
+	v = m.(BackupView)
+	if v.stage != backupConfirm {
+		t.Fatalf("precondition: chat intent lands on Confirm, got %v", v.stage)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})              // Confirm -> Schedule
+	m, _ = m.(BackupView).Update(tea.KeyMsg{Type: tea.KeyEsc}) // Schedule -> Location
+	v = m.(BackupView)
+	if v.stage != backupLocation {
+		t.Fatalf("two escs from Confirm must land on Location, got %v", v.stage)
+	}
+	if v.picker.width != wantWidth {
+		t.Errorf("picker.width = %d after the chat seed, want %d preserved from the last resize", v.picker.width, wantWidth)
 	}
 }
 
