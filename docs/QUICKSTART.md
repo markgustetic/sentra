@@ -331,16 +331,16 @@ dispatching the action.
 sentra ui   # or just `sentra` with no args
 ```
 
-A left rail lists six views — **Dashboard, Backup, Snapshots, Maintenance,
-Settings, Help** — with a live preview as you scroll; digits `1`-`6` jump
-straight to one, and `ctrl+p` opens a command palette. The occasional jobs
-live one keypress inside: on a snapshot row `r` restores it and `d` diffs it
-against another; Maintenance holds check / prune / sync / doctor; Settings
-holds policies, the backup schedule, the recovery kit, passphrase rotation,
-and re-running setup. In the Backup view, `ctrl+e` arms a repeating schedule
-(daily/weekly/monthly — it installs a named policy plus a launchd/systemd
-timer when you confirm). `q` quits, and the status bar always shows which
-keys are live.
+A left rail lists seven views — **Dashboard, Backup, Scheduled backups,
+Snapshots, Maintenance, Settings, Help** — with a live preview as you scroll;
+digits `1`-`7` jump straight to one, and `ctrl+p` opens a command palette. The
+occasional jobs live one keypress inside: on a snapshot row `r` restores it
+and `d` diffs it against another; Maintenance holds check / prune / sync /
+doctor; Settings holds the recovery kit, passphrase rotation, and re-running
+setup. Backup is a three-step wizard: pick the folder, pick a schedule
+(one-shot, or hourly/daily/weekly/monthly — that installs a named policy plus
+a launchd/systemd timer), confirm. `q` quits, and the status bar always shows
+which keys are live.
 
 ## 10. Prune
 

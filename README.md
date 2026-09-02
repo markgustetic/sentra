@@ -12,7 +12,7 @@
 
 <img src="docs/screenshots/dashboard.png" width="840" alt="Sentra TUI dashboard: a synthwave sun banner over an activity sparkline, storage savings, tags, retention, and a recent-snapshots table.">
 
-<sub>The default surface is a full-screen TUI — a six-view rail, a first-run wizard, and every human workflow at your fingertips.</sub>
+<sub>The default surface is a full-screen TUI — a seven-view rail, a first-run wizard, and every human workflow at your fingertips.</sub>
 
 </div>
 
@@ -55,7 +55,7 @@ built-in agent that audits your repository and surfaces recommendations.
       <br><sub><b>Snapshots</b> — sort, filter, drill in; <code>r</code> restores and <code>d</code> diffs the highlighted row.</sub>
     </td>
     <td width="50%" valign="top" align="center">
-      <img src="docs/screenshots/backup.png" alt="Backup view: folder picker with jump-to places (~/Documents, ~/Downloads), a tag field, and a daily repeat schedule armed.">
+      <img src="docs/screenshots/backup.png" alt="Backup wizard, step 1: folder picker with jump-to places and the live preview pane.">
       <br><sub><b>Backup</b> — pick a folder (with jump-to places), tag it, and arm a daily/weekly/monthly schedule.</sub>
     </td>
   </tr>
@@ -247,11 +247,13 @@ The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 
 Bare `sentra` falls through to `sentra ui`. Where it lands depends on your state:
 **no `sentra.yaml` → first-run wizard**, **configured but locked → unlock gate**,
-otherwise **the dashboard**. The rail holds six destinations — Dashboard,
-Backup, Snapshots, Maintenance, Settings, Help — and the occasional jobs
-live one keypress inside them: restore and diff launch from a snapshot row,
-check/prune/sync/doctor from Maintenance, scheduled backups (jobs)/
-recovery-kit/passphrase/setup from Settings.
+otherwise **the dashboard**. The rail holds seven destinations — Dashboard,
+Backup, Scheduled backups, Snapshots, Maintenance, Settings, Help — and the
+occasional jobs live one keypress inside them: restore and diff launch from a
+snapshot row, check/prune/sync/doctor from Maintenance, recovery-kit/
+passphrase/setup from Settings. Backup is a three-step wizard: pick the
+folder, pick a schedule (one-shot, or hourly/daily/weekly/monthly — that
+installs a named policy plus a launchd/systemd timer), confirm.
 
 Handy keys (the status bar always shows what's live):
 
@@ -263,7 +265,7 @@ Handy keys (the status bar always shows what's live):
 | `ctrl+p` | Command palette |
 | `ctrl+a` | Assistant chat — ask questions, or say what to do (actions still confirm) |
 | `r` · `d` (in Snapshots) | Restore · diff the highlighted snapshot |
-| `ctrl+e` · `ctrl+r` (in Backup) | Repeat cadence (daily/weekly/monthly) · force full rescan |
+| `enter` · `esc` (in Backup) | Next wizard step · back a step |
 | `enter` · `e` · `d` (in Scheduled backups) | Drill into a job's files · edit · delete (policy + timer) |
 | `?` · `q` | Help · quit |
 

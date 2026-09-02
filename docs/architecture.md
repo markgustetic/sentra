@@ -199,7 +199,7 @@ Two important rails on the agent loop:
 
 `sentra ui` (and bare `sentra`) launches a single Bubbletea program
 with one parent `App` model and one `tea.Model` per view (dashboard,
-snapshots, diff, restore, …). The rail lists six destinations; the
+snapshots, diff, restore, …). The rail lists seven destinations; the
 other views stay registered but hidden, launched from a parent
 (Snapshots, Maintenance, Settings) via `activateMsg` routing. Inline-
 mode commands and the TUI both pull from `internal/ui` for theme +

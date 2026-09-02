@@ -16,15 +16,15 @@ it lands on the unlock gate; otherwise the dashboard. A configured repo that
 fails to *open* (expired AWS SSO, unreachable bucket) lands on the connect
 gate — retry or run the profile's aws login command from inside the TUI; only
 config-file errors exit to the CLI. The TUI covers the human floor through a
-six-view rail (Dashboard, Backup, Snapshots, Maintenance, Settings, Help) with
-the occasional jobs launched from inside those; stats and the agent are
-CLI-only. `ctrl+a` opens the assistant chat overlay anywhere outside the
-startup gates: it answers from snapshot metadata and compiles actions into the
-same confirm-gated flows the keyboard drives (needs `ANTHROPIC_API_KEY`; inert
-with a hint without it). The CLI is the machine and recovery surface (see the
-surface contract in AGENTS.md), and `sentra mcp` serves the repo to MCP
-clients over stdio — metadata-only reads, two-phase (plan → single-use token →
-confirm) mutations.
+seven-view rail (Dashboard, Backup, Scheduled backups, Snapshots, Maintenance,
+Settings, Help) with the occasional jobs launched from inside those; stats
+and the agent are CLI-only. `ctrl+a` opens the assistant chat overlay
+anywhere outside the startup gates: it answers from snapshot metadata and
+compiles actions into the same confirm-gated flows the keyboard drives (needs
+`ANTHROPIC_API_KEY`; inert with a hint without it). The CLI is the machine
+and recovery surface (see the surface contract in AGENTS.md), and
+`sentra mcp` serves the repo to MCP clients over stdio — metadata-only reads,
+two-phase (plan → single-use token → confirm) mutations.
 
 Config discovery: with no `--config`, commands use `./sentra.yaml` when
 present, else `$XDG_CONFIG_HOME/sentra/sentra.yaml` (default

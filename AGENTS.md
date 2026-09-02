@@ -200,14 +200,17 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   recovery kit must each be completable start to finish without leaving the
   TUI. A gap inside the floor is a bug; anything outside it is CLI-at-will,
   needing no TUI affordance and no entry in any list. Completable does not
-  mean rail-listed: the rail holds six destinations (Dashboard, Backup,
-  Snapshots, Maintenance, Settings, Help) and the rest of the floor lives
-  one launcher inside them — restore/diff from a snapshot row,
-  check/prune/sync/doctor from Maintenance, scheduled backups (jobs)/
-  recovery-kit/passphrase/setup from Settings. The jobs view (id `jobs`,
-  title "Scheduled backups") replaced the separate Policies and Schedule
-  views and is what satisfies the floor's run-a-named-policy item. Stats
-  and the agent are CLI-only (outside the floor by the sentence above).
+  mean rail-listed: the rail holds seven destinations (Dashboard, Backup,
+  Scheduled backups, Snapshots, Maintenance, Settings, Help) and the rest of
+  the floor lives one launcher inside them — restore/diff from a snapshot
+  row, check/prune/sync/doctor from Maintenance, recovery-kit/passphrase/
+  setup from Settings. The jobs view (id `jobs`, title "Scheduled backups")
+  sits on the rail under Backup; the Backup view is a three-step wizard
+  (Location → Schedule → Confirm) whose Schedule step writes a named policy
+  and OS timer through the same `config.Update` + `scheduler` path
+  `policy add`/`schedule install` use. It replaced the separate Policies and
+  Schedule views and is what satisfies the floor's run-a-named-policy item.
+  Stats and the agent are CLI-only (outside the floor by the sentence above).
   Per-run knobs (`prune --keep-*`, `--concurrency`, `--stale-lock-after`,
   agent `--root`/`--categories`/`--local-only`/`--max-tool-calls`) come
   from config in the TUI by design.
