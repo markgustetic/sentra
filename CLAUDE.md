@@ -184,20 +184,36 @@ below both.
   color profile, which emits **no ANSI at all**, so a color-only affordance is
   both invisible to `NO_COLOR` users and untestable. The same reasoning drives
   the splash animation, which twinkles by changing shape.
-- **The focused text field is boxed, and its cursor blinks.** A view's focused
-  input renders through `boxedField` / `ui.FieldBox` (a rounded frame — a
-  glyph, per the rule above), and every `Focus()` transition returns
-  **`Focus()`'s own cmd**, never `textinput.Blink`: that package var resolves
-  to bubbles/cursor's *unexported* bootstrap message, which no `Update` switch
-  can name, so it is silently dropped and the blink never starts. Views route
-  `cursor.BlinkMsg` to the focused field so the schedule keeps itself alive,
-  and **leaving a stage blurs its field** — a focused field nobody renders
-  blinks forever and comes back spuriously framed. Two exceptions take blink
-  only, no box: inputs already inside dedicated chrome (palette, typed-confirm
-  modal, chat overlay), and the setup wizard, whose rows already carry
-  `ui.SelectRow`'s `▍`. Sizing an input from the pane interior? Subtract
-  `ui.FieldBoxOverhead`. Assign `Focus()`'s cmd to a local before returning —
-  `return v, v.f.Focus()` leaves the copy-vs-evaluate order unspecified.
+- **The focused text field is boxed, its cursor blinks, and focus follows the
+  screen.** Every text field renders through `boxedField` (`ui.FieldBox`, a
+  rounded frame — a glyph, per the rule above), which frames the field when —
+  and only when — `Focused()` is true. Never box on a stage flag and never
+  inline the frame: snapshots and the recovery kit once boxed on their stage,
+  and a stage that forgot to blur came back framed around a field nobody
+  focused. Focus has exactly two sources: a stage transition inside the view
+  (tab, `/`, `s`, the picker's enter…) and the shell's `viewShownMsg`, which
+  re-focuses whatever the current stage owns. **Constructors and `Init` focus
+  nothing** — `App.Init` batches every view's `Init`, so a construction-time
+  focus ran a blink chain from launch for a view the operator might never
+  open. Every `Focus()` transition returns **`Focus()`'s own cmd**, never
+  `textinput.Blink`: that package var resolves to bubbles/cursor's
+  *unexported* bootstrap message, which no `Update` switch can name, so it is
+  silently dropped and the blink never starts. Views route `cursor.BlinkMsg`
+  to the focused field so the schedule keeps itself alive, and **leaving a
+  stage blurs its field, as does `viewHiddenMsg`** — a focused field nobody
+  renders blinks forever and lies to every `Focused()` guard. Multi-field
+  views keep one `focusField`/`blurFields` pair that tab, the stage entries,
+  the show, and the one-op guard's `opRejectedMsg` bounce all go through, so
+  the stage's flag and `Focused()` cannot disagree; a model swapped in on
+  the spot (the "again" resets) takes `viewShownMsg` itself. Two exceptions
+  take blink only, no box: inputs already inside dedicated chrome (palette,
+  typed-confirm modal, chat overlay), and the setup wizard, whose rows
+  already carry `ui.SelectRow`'s `▍`. Sizing an input from the pane
+  interior? Subtract `ui.FieldBoxOverhead`. Assign `Focus()`'s cmd to a
+  local before returning — `return v, v.f.Focus()` leaves the
+  copy-vs-evaluate order unspecified. `fieldOwners()` in
+  `internal/tui/fieldfocus_test.go` is the table every one of these rules is
+  asserted over; a new field-owning view goes in there.
 - **A `cursor.BlinkCmd` is SINGLE-USE — never cache one on a reopenable
   overlay.** `BlinkCmd` bakes `BlinkMsg{id, tag}` into its closure behind a
   one-shot context deadline, so replaying it delivers a tick tagged for a
@@ -207,14 +223,22 @@ below both.
   (`Palette`, `ChatOverlay`) must **re-`Focus()` in `Init`, with a pointer
   receiver**; only a model constructed fresh per use (`TypedConfirmModal`) may
   cache. Cover reopen, not just first open.
-- **Blink ticks are delivered to every focus owner at once, not by
-  precedence** (`App.Update`'s `cursor.BlinkMsg` case). Not because a tick
-  addresses one field — `cursor.Model.id` is never assigned in bubbles v1.0.0,
-  so tags alone discriminate and unrelated fields do accept each other's
-  ticks — but because accepting one advances the accepting field's tag,
-  invalidating every in-flight duplicate. Precedence routing instead *killed*
-  chains: an overlay does not blur the field beneath it, so handing that
-  field's tick to the overlay alone stopped a chain nothing re-arms.
+- **Blink ticks are delivered to every focus owner ON SCREEN at once — top
+  modal, palette, chat overlay, active view — never by precedence and never
+  to a hidden view** (`App.Update`'s `cursor.BlinkMsg` case). Simultaneous
+  delivery is safe not because a tick addresses one field — `cursor.Model.id`
+  is never assigned in bubbles v1.0.0, so tags alone discriminate and
+  unrelated fields do accept each other's ticks — but because accepting one
+  advances the accepting field's tag, invalidating every in-flight duplicate.
+  Precedence routing instead *killed* chains: an overlay does not blur the
+  field beneath it, so handing that field's tick to the overlay alone stopped
+  a chain nothing re-arms. Hidden views are off the list because every change
+  of `m.active` goes through `switchActive`, which sends the outgoing view
+  `viewHiddenMsg` before the incoming one `viewShownMsg`, so only the active
+  view can own a focused field; the launch view — never switched *to* — gets
+  its show from `App.Init`'s `showActiveMsg`. A test that pumps commands back
+  into the App must drop `cursor.BlinkMsg` (see `drainTurn`): a blink chain
+  never settles, and each pumped step waits out a real `BlinkSpeed`.
 - **Never wrap an already-styled string.** `outer.Render(s)` where `s` contains
   `ui.Muted.Render(help)` embeds an ANSI reset that terminates the outer style
   mid-line. Style the plain text and append styled fragments after it.

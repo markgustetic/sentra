@@ -6,6 +6,26 @@ import (
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
+// Field focus in the TUI has one contract, shared by every view that owns a
+// textinput (fieldOwners in fieldfocus_test.go enumerates them and asserts
+// each rule below over the whole set):
+//
+//   - A field is focused exactly while its view is ON SCREEN and its current
+//     stage owns it. Constructors and Init focus nothing; a stage transition
+//     inside the view or the shell's viewShownMsg focuses, and every stage
+//     exit or viewHiddenMsg blurs. Focused() is therefore a truthful
+//     predicate, and both the box below and each view's cursor.BlinkMsg
+//     guard trust it.
+//   - Every Focus() transition returns Focus()'s own cmd — the real, tagged
+//     cursor.BlinkCmd — and that is the only way a blink chain starts. The
+//     App routes ticks to on-screen focus owners only (App.Update).
+//   - A view with several fields funnels every entry into its field stage
+//     (tab, the stage's entry key, viewShownMsg, the one-op guard's
+//     opRejectedMsg bounce) through one focusField/blurFields pair, so the
+//     stage's own focus flag and the fields' Focused() cannot drift apart.
+//   - A model swapped in on the spot (the "again" resets) is on screen at
+//     once, so it takes viewShownMsg itself rather than a bare constructor.
+
 // boxedField renders a text input framed by ui.FieldBox when — and only
 // when — it holds focus. The border IS the focus affordance: a glyph, so
 // it survives NO_COLOR and the Ascii profile tests run under, unlike a
