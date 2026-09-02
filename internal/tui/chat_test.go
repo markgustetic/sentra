@@ -6,6 +6,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/agent/llm"
@@ -60,6 +61,14 @@ func drainTurn(t *testing.T, app App, cmd tea.Cmd) (App, []tea.Msg) {
 			for _, bc := range batch {
 				queue = append(queue, bc)
 			}
+			continue
+		}
+		// A cursor blink tick is self-perpetuating chrome, not part of the
+		// turn: routing it back would re-arm the chain and this loop would
+		// pump it (one real BlinkSpeed wait per step) until the step cap.
+		// Every view that lands on screen with a text field now starts one,
+		// so drop ticks here and let the turn's own messages settle.
+		if _, ok := msg.(cursor.BlinkMsg); ok {
 			continue
 		}
 		var next tea.Cmd

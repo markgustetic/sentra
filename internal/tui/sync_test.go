@@ -460,3 +460,22 @@ func TestSync_RejectedStartRefocusesTheField(t *testing.T) {
 	}
 	assertBlinkCmd(t, cmd)
 }
+
+// TestSync_AgainRestartsTheBlink: enter on the done screen swaps a fresh
+// configure form in on the spot (resetTo), so the swap must carry a real
+// blink cmd for dstPath — the field is on screen immediately. Built inside
+// the call, so no BlinkSpeed preset is possible; the real ~530ms is paid
+// once rather than weakening to a nil check.
+func TestSync_AgainRestartsTheBlink(t *testing.T) {
+	m, _ := syncRunningFromPathField(t).Update(syncDoneMsg{})
+	v := m.(SyncView)
+	if v.stage != syncDone {
+		t.Fatalf("precondition: stage = %v, want syncDone", v.stage)
+	}
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SyncView)
+	if v.stage != syncConfigure || !v.dstPath.Focused() {
+		t.Fatalf("again must land on configure with dstPath focused (stage=%v focused=%v)", v.stage, v.dstPath.Focused())
+	}
+	assertBlinkCmd(t, cmd)
+}

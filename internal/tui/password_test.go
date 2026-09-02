@@ -359,3 +359,23 @@ func TestPassword_RejectedStartRefocusesTheField(t *testing.T) {
 	}
 	assertBlinkCmd(t, cmd)
 }
+
+// TestPassword_AgainRestartsTheBlink: enter on the done screen swaps a
+// fresh form in on the spot, so the swap is the fresh field's first moment
+// on screen and must carry a real blink cmd — the same viewShownMsg path
+// the shell uses, not a bare constructor. The field is built inside the
+// call, so there is no handle to preset BlinkSpeed on; this test pays the
+// real ~530ms once rather than weaken to a nil check.
+func TestPassword_AgainRestartsTheBlink(t *testing.T) {
+	m, _ := passwordAtRunning(t).Update(passwordDoneMsg{})
+	v := m.(PasswordView)
+	if v.stage != passwordDone {
+		t.Fatalf("precondition: stage = %v, want passwordDone", v.stage)
+	}
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(PasswordView)
+	if v.stage != passwordInput || !v.newPass.Focused() {
+		t.Fatalf("again must land on input with newPass focused (stage=%v focused=%v)", v.stage, v.newPass.Focused())
+	}
+	assertBlinkCmd(t, cmd)
+}

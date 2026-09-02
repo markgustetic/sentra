@@ -242,6 +242,19 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v.startBackup(v.pending)
 
+	case viewShownMsg:
+		// On screen: the tag field owns the keyboard only on configure with
+		// focus on the tag control; re-focus it there and start its blink.
+		if v.stage != backupConfigure || v.focus != focusTagField {
+			return v, nil
+		}
+		cmd := v.tag.Focus()
+		return v, cmd
+
+	case viewHiddenMsg:
+		v.tag.Blur()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		if v.tag.Focused() {
 			var cmd tea.Cmd
@@ -258,9 +271,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // resetTo returns a fresh view carrying the current window size so the
 // progress bar keeps its width (bubbletea does not re-emit WindowSizeMsg
-// after a model swap).
+// after a model swap). The fresh view is on screen the moment it replaces
+// this one, so it takes the same viewShownMsg the shell sends (a no-op
+// today — a fresh view lands on the picker — but the seam is the same one
+// every field-owning stage uses).
 func (v BackupView) resetTo() (tea.Model, tea.Cmd) {
-	return NewBackupView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	m, _ := NewBackupView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	return m.Update(viewShownMsg{})
 }
 
 func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

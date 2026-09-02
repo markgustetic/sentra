@@ -147,6 +147,19 @@ func (v RecoveryKitView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case viewShownMsg:
+		// On screen: the save prompt owns the field only on rkSaving;
+		// re-focus it there and start its blink.
+		if v.stage != rkSaving {
+			return v, nil
+		}
+		cmd := v.savePath.Focus()
+		return v, cmd
+
+	case viewHiddenMsg:
+		v.savePath.Blur()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		if v.savePath.Focused() {
 			var cmd tea.Cmd

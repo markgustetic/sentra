@@ -178,6 +178,19 @@ func (v PasswordView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.notice = ""
 		return v.startRotate()
 
+	case viewShownMsg:
+		// On screen: only the input stage owns a field; focusField picks
+		// the one tab last chose and starts its blink.
+		if v.stage != passwordInput {
+			return v, nil
+		}
+		cmd := v.focusField()
+		return v, cmd
+
+	case viewHiddenMsg:
+		v.blurFields()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		// Exactly one of newPass/confirmPass is focused at a time (tab
 		// swaps which); route the tick to whichever that is.
@@ -203,9 +216,12 @@ func (v PasswordView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 
 	case passwordDone:
 		if msg.Type == tea.KeyEnter {
+			// The fresh form is on screen the moment it replaces this one,
+			// so it takes the same viewShownMsg the shell sends — that is
+			// what focuses newPass and starts its blink.
 			fresh := NewPasswordView(v.deps)
 			fresh.width = v.width
-			return fresh, nil
+			return fresh.Update(viewShownMsg{})
 		}
 		return v, nil
 

@@ -3,6 +3,7 @@ package tui
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
@@ -105,19 +106,23 @@ func TestAssertBlinkCmd_AcceptsOnlyTheRealBlink(t *testing.T) {
 
 // fieldOwners enumerates every view that renders a boxed text field, each
 // driven to the stage that owns its field so the field is focused, together
-// with a blurAll that force-blurs every field the view has while leaving the
-// stage exactly where it is.
+// with an accessor over every text input the view has.
 //
-// The pair is what lets a test separate the two things a box could be drawn
-// from — the stage flag and the field's own Focused() — because a view that
-// boxes on its stage keeps the frame after blurAll, and one that boxes on
-// Focused() drops it. Tests below iterate this table so the rule is asserted
-// for the CLASS of views, not re-derived per view (see "test the rule, not
-// the case" in the repo's memory notes).
+// `fields` is what lets a test separate the two things a box or a blink
+// could be driven from — the stage flag and the field's own Focused() —
+// because it can force-blur, inspect, or speed up every field while leaving
+// the stage exactly where it is. Tests below iterate this table so each rule
+// is asserted for the CLASS of views, not re-derived per view (see "test the
+// rule, not the case" in the repo's memory notes).
 type fieldOwner struct {
-	name    string
+	name string
+	// focused builds the view driven to the stage that owns its field, with
+	// that field focused.
 	focused func(t *testing.T) tea.Model
-	blurAll func(m tea.Model) tea.Model
+	// fields applies do to every text input of a copy of m and returns the
+	// copy, so a test can mutate (Blur, BlinkSpeed) or inspect (Focused)
+	// the fields of a value-typed model in one place.
+	fields func(m tea.Model, do func(f *textinput.Model)) tea.Model
 }
 
 func fieldOwners() []fieldOwner {
@@ -125,29 +130,29 @@ func fieldOwners() []fieldOwner {
 		{
 			name:    "unlock",
 			focused: func(t *testing.T) tea.Model { return NewUnlockView(unlockDeps(t, "hunter2")) },
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(UnlockView)
-				v.input.Blur()
+				do(&v.input)
 				return v
 			},
 		},
 		{
 			name:    "password",
 			focused: func(t *testing.T) tea.Model { return NewPasswordView(Deps{Repo: newFlowRepo(t)}) },
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(PasswordView)
-				v.newPass.Blur()
-				v.confirmPass.Blur()
+				do(&v.newPass)
+				do(&v.confirmPass)
 				return v
 			},
 		},
 		{
 			name:    "sync",
 			focused: func(t *testing.T) tea.Model { return NewSyncView(Deps{Repo: newFlowRepo(t)}) },
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(SyncView)
-				v.dstPath.Blur()
-				v.snapRefs.Blur()
+				do(&v.dstPath)
+				do(&v.snapRefs)
 				return v
 			},
 		},
@@ -157,9 +162,9 @@ func fieldOwners() []fieldOwner {
 				m, _ := backupAt(t, tempTree(t)).Update(tea.KeyMsg{Type: tea.KeyTab})
 				return m
 			},
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(BackupView)
-				v.tag.Blur()
+				do(&v.tag)
 				return v
 			},
 		},
@@ -170,9 +175,9 @@ func fieldOwners() []fieldOwner {
 					Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
 				return m
 			},
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				s := m.(Snapshots)
-				s.filter.Blur()
+				do(&s.filter)
 				return s
 			},
 		},
@@ -182,9 +187,9 @@ func fieldOwners() []fieldOwner {
 				m, _ := recoveryKitAtDone(t).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'s'}})
 				return m
 			},
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(RecoveryKitView)
-				v.savePath.Blur()
+				do(&v.savePath)
 				return v
 			},
 		},
@@ -196,10 +201,10 @@ func fieldOwners() []fieldOwner {
 				m, _ := NewRestoreView(Deps{Repo: r}).Update(tea.KeyMsg{Type: tea.KeyEnter})
 				return m
 			},
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(RestoreView)
-				v.dest.Blur()
-				v.scope.Blur()
+				do(&v.dest)
+				do(&v.scope)
 				return v
 			},
 		},
@@ -210,16 +215,38 @@ func fieldOwners() []fieldOwner {
 				m, _ := newJobsForTest(t, deps).Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{'a'}})
 				return m
 			},
-			blurAll: func(m tea.Model) tea.Model {
+			fields: func(m tea.Model, do func(*textinput.Model)) tea.Model {
 				v := m.(JobsView)
-				v.form.name.Blur()
-				v.form.path.Blur()
-				v.form.tags.Blur()
-				v.form.schedule.Blur()
+				do(&v.form.name)
+				do(&v.form.path)
+				do(&v.form.tags)
+				do(&v.form.schedule)
 				return v
 			},
 		},
 	}
+}
+
+// blurAll force-blurs every field of m without touching its stage.
+func (fo fieldOwner) blurAll(m tea.Model) tea.Model {
+	return fo.fields(m, func(f *textinput.Model) { f.Blur() })
+}
+
+// quick drops every field's BlinkSpeed so a Focus() cmd minted afterwards
+// yields its tick at once instead of after the default ~530ms.
+func (fo fieldOwner) quick(m tea.Model) tea.Model {
+	return fo.fields(m, func(f *textinput.Model) { f.Cursor.BlinkSpeed = time.Millisecond })
+}
+
+// focusedCount reports how many of m's fields are focused.
+func (fo fieldOwner) focusedCount(m tea.Model) int {
+	n := 0
+	fo.fields(m, func(f *textinput.Model) {
+		if f.Focused() {
+			n++
+		}
+	})
+	return n
 }
 
 // TestFieldBox_FollowsFocusedNotStage pins the one rule behind every box in
@@ -242,6 +269,96 @@ func TestFieldBox_FollowsFocusedNotStage(t *testing.T) {
 			blurred := fo.blurAll(focused)
 			if got := boxCount(blurred.View()); got != 0 {
 				t.Fatalf("every field blurred, stage unchanged: boxCount = %d, want 0 — the box is being drawn from the stage, not from Focused():\n%s", got, blurred.View())
+			}
+		})
+	}
+}
+
+// TestFieldFocus_HiddenBlursAndShownRefocuses pins the shell-facing half of
+// the focus contract for the class of field-owning views: viewHiddenMsg
+// blurs every field the view has, so a view that is off screen never owns
+// a focused field (its next blink tick finds nothing to reschedule), and
+// viewShownMsg re-focuses whatever the current stage owns, returning
+// Focus()'s REAL blink cmd so the chain restarts. The stage itself is not
+// touched by either — hide and show are about the screen, not the flow.
+func TestFieldFocus_HiddenBlursAndShownRefocuses(t *testing.T) {
+	for _, fo := range fieldOwners() {
+		t.Run(fo.name, func(t *testing.T) {
+			v := fo.focused(t)
+			if n := fo.focusedCount(v); n != 1 {
+				t.Fatalf("precondition: focused view owns %d focused fields, want 1", n)
+			}
+
+			h, hideCmd := v.Update(viewHiddenMsg{})
+			if hideCmd != nil {
+				t.Error("hiding a view must not schedule anything")
+			}
+			if n := fo.focusedCount(h); n != 0 {
+				t.Fatalf("hidden view still owns %d focused field(s) — viewHiddenMsg must blur them all", n)
+			}
+			if got := boxCount(h.View()); got != 0 {
+				t.Fatalf("hidden view renders %d box(es), want 0:\n%s", got, h.View())
+			}
+
+			h = fo.quick(h)
+			s, showCmd := h.Update(viewShownMsg{})
+			if n := fo.focusedCount(s); n != 1 {
+				t.Fatalf("shown view owns %d focused fields, want exactly 1 — viewShownMsg must re-focus the stage's field", n)
+			}
+			assertBlinkCmd(t, showCmd)
+		})
+	}
+}
+
+// TestFieldFocus_ShownFocusesNothingOutsideAFieldStage is the other half of
+// the show rule: on a stage that owns no text field, viewShownMsg must
+// focus nothing and schedule nothing. Otherwise every rail scroll past a
+// view would light up a field the operator cannot type into.
+func TestFieldFocus_ShownFocusesNothingOutsideAFieldStage(t *testing.T) {
+	cases := []struct {
+		name string
+		view func(t *testing.T) tea.Model
+	}{
+		{"snapshots, not filtering", func(t *testing.T) tea.Model {
+			return NewSnapshots(Deps{}).SetSnapshots(sampleSnaps())
+		}},
+		{"backup, keyboard on the picker", func(t *testing.T) tea.Model {
+			return backupAt(t, tempTree(t))
+		}},
+		{"restore, on the picker", func(t *testing.T) tea.Model {
+			r := newFlowRepo(t)
+			seedSnapshotReal(t, r)
+			return NewRestoreView(Deps{Repo: r})
+		}},
+		{"recovery kit, before save", func(t *testing.T) tea.Model {
+			return recoveryKitAtDone(t)
+		}},
+		{"password, rotation done", func(t *testing.T) tea.Model {
+			m, _ := passwordAtRunning(t).Update(passwordDoneMsg{})
+			return m
+		}},
+		{"sync, run done", func(t *testing.T) tea.Model {
+			m, _ := syncRunningFromPathField(t).Update(syncDoneMsg{})
+			return m
+		}},
+		{"unlock, opening", func(t *testing.T) tea.Model {
+			v := typeIntoUnlock(NewUnlockView(unlockDeps(t, "hunter2")), "hunter2")
+			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			return m
+		}},
+		{"jobs, list", func(t *testing.T) tea.Model {
+			deps, _ := jobsDeps(t)
+			return newJobsForTest(t, deps)
+		}},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			s, cmd := tc.view(t).Update(viewShownMsg{})
+			if cmd != nil {
+				t.Error("viewShownMsg on a fieldless stage must schedule nothing")
+			}
+			if got := boxCount(s.View()); got != 0 {
+				t.Fatalf("viewShownMsg on a fieldless stage focused a field (%d box(es)):\n%s", got, s.View())
 			}
 		})
 	}

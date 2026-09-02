@@ -136,6 +136,22 @@ func (v UnlockView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		ready := repoReadyMsg{repo: msg.repo, config: msg.config}
 		return v, func() tea.Msg { return ready }
 
+	case viewShownMsg:
+		// On screen: the input stage owns the field, so focus it and start
+		// its blink from Focus()'s own cmd. The shell sends this at launch
+		// and on every return to the view; the opening stage has no field.
+		if v.stage != unlockInput {
+			return v, nil
+		}
+		cmd := v.input.Focus()
+		return v, cmd
+
+	case viewHiddenMsg:
+		// Off screen: nothing renders the field, so blur it — its chain
+		// ends on the next tick and Focused() stays truthful.
+		v.input.Blur()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		if v.input.Focused() {
 			var cmd tea.Cmd

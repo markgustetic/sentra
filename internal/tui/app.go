@@ -1212,6 +1212,13 @@ func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 // offer, not the views'.)
 type viewShownMsg struct{}
 
+// viewHiddenMsg tells the view that was on screen it no longer is. A view
+// that owns a text field blurs it here: off screen, nothing renders the
+// field, so a focused one would keep its blink chain rescheduling for
+// nothing and make Focused() lie. viewShownMsg re-focuses whatever the
+// view's current stage owns when it comes back.
+type viewHiddenMsg struct{}
+
 // showActive notifies the active view it is displayed, returning any load
 // command it emits. Called whenever the App changes which view is active (rail
 // commit or live preview).

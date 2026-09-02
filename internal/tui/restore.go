@@ -207,6 +207,19 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, opTick()
 		}
 		return v, nil
+	case viewShownMsg:
+		// On screen: only the dest stage owns a field; focusField picks the
+		// one focusScope names and starts its blink.
+		if v.stage != restoreDest {
+			return v, nil
+		}
+		cmd := v.focusField()
+		return v, cmd
+
+	case viewHiddenMsg:
+		v.blurFields()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		// Only the dest stage has a focused field, and exactly one of
 		// dest/scope is focused at a time (tab swaps which).
@@ -228,9 +241,13 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 }
 
 // resetTo returns a fresh restore view carrying the current window size,
-// so the snapshot table and progress bar keep their dimensions.
+// so the snapshot table and progress bar keep their dimensions. The fresh
+// view is on screen the moment it replaces this one, so it takes the same
+// viewShownMsg the shell sends (a no-op today — a fresh view lands on the
+// picker — but the seam is the same one every field-owning stage uses).
 func (v RestoreView) resetTo() (tea.Model, tea.Cmd) {
-	return NewRestoreView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	m, _ := NewRestoreView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	return m.Update(viewShownMsg{})
 }
 
 func (v RestoreView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

@@ -495,6 +495,19 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case viewShownMsg:
+		// On screen: only the form owns fields; refocus picks the one
+		// form.focus names (nil on the toggle steps) and starts its blink.
+		if v.stage != jobsForm {
+			return v, nil
+		}
+		cmd := v.form.refocus()
+		return v, cmd
+
+	case viewHiddenMsg:
+		v.form.blurAll()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		// Only the form stage has focused text fields, and at most one of
 		// name/path/tags/schedule is focused at a time (the check/prune

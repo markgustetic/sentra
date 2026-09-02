@@ -206,6 +206,19 @@ func (v SyncView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return v, nil
 
+	case viewShownMsg:
+		// On screen: only configure owns a field; focusField picks the one
+		// `field` names (nil on a toggle) and starts its blink.
+		if v.stage != syncConfigure {
+			return v, nil
+		}
+		cmd := v.focusField()
+		return v, cmd
+
+	case viewHiddenMsg:
+		v.blurFields()
+		return v, nil
+
 	case cursor.BlinkMsg:
 		// Only the configure stage has a focused text field, and at most
 		// one of dstPath/snapRefs is focused at a time (the toggles have
@@ -230,9 +243,12 @@ func (v SyncView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 // resetTo returns a fresh view carrying the window size so the progress
 // bar keeps its width (bubbletea does not re-emit WindowSizeMsg after a
-// model swap).
+// model swap). The fresh view is on screen the moment it replaces this
+// one, so it takes the same viewShownMsg the shell sends — that is what
+// focuses dstPath and starts its blink.
 func (v SyncView) resetTo() (tea.Model, tea.Cmd) {
-	return NewSyncView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	m, _ := NewSyncView(v.deps).Update(tea.WindowSizeMsg{Width: v.width, Height: v.height})
+	return m.Update(viewShownMsg{})
 }
 
 func (v SyncView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {

@@ -509,6 +509,19 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		s.detailErr = msg.err
 		return s, nil
 
+	case viewShownMsg:
+		// On screen: the filter field owns the keyboard only while
+		// filtering; re-focus it there and start its blink.
+		if !s.filtering {
+			return s, nil
+		}
+		cmd := s.filter.Focus()
+		return s, cmd
+
+	case viewHiddenMsg:
+		s.filter.Blur()
+		return s, nil
+
 	case cursor.BlinkMsg:
 		if s.filter.Focused() {
 			var cmd tea.Cmd
