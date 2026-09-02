@@ -530,8 +530,7 @@ func (v SetupWizardView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// their own esc: the IAM-policy preview and the error screen restart (the
 	// error path also zeroizes the passphrase), and nothing sits behind backend.
 	if msg.Type == tea.KeyEsc && v.canGoBack() {
-		back, cmd := v.goBack()
-		return back, cmd
+		return v.goBack()
 	}
 
 	switch v.stage {
