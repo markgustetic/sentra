@@ -726,15 +726,24 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// opTickMsg do.
 		//
 		// Deliver to every possible focus owner AT ONCE — the top modal (if
-		// any), the palette (if open), AND every view via broadcast — never
-		// an exclusive, precedence-style route (the shape routeKey uses for
-		// keys: modal, then palette, then the focused view). A tick's tag
-		// matches only the ONE field cursor.BlinkCmd scheduled it for;
-		// cursor.Model no-ops on any tag it doesn't recognize (exercised
-		// directly by the RoutesBlinkTicks tests across every field this
-		// package blinks), so hearing the same tick, harmlessly, is safe for
-		// every candidate that isn't the match — exactly one of them
-		// actually reschedules, so this can never double-blink.
+		// any), the palette (if open), the chat overlay (if open), AND every
+		// view via broadcast — never an exclusive, precedence-style route
+		// (the shape routeKey uses for keys: modal, then palette, then the
+		// focused view).
+		//
+		// Why that is safe is NOT "each tick is addressed to exactly one
+		// field". It isn't: cursor.Model.id is declared but never assigned
+		// in bubbles v1.0.0 (there is no nextID()), so every cursor carries
+		// id == 0 and cursor.Update discriminates on tag ALONE. Fields
+		// routinely sit at the same tag, and a tick minted by field A is
+		// genuinely accepted by an unrelated focused field B.
+		//
+		// It is safe because accepting a tick ADVANCES the accepting field's
+		// tag, which invalidates every other tick still in flight under the
+		// old one. So duplicates self-extinguish after a single round, and
+		// the number of live chains stays bounded by the number of focused
+		// fields rather than growing — a field cannot be driven into a
+		// runaway double-blink by hearing a tick that was not "its own".
 		//
 		// An earlier version of this case DID route by precedence, and it
 		// froze cursors: opening an overlay does not blur whatever view
@@ -761,7 +770,11 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat, cmd = m.chat.Update(msg)
 			cmds = append(cmds, cmd)
 		}
-		_, viewCmd := m.broadcast(msg)
+		// broadcast returns the updated model; take it rather than relying
+		// on m.views being a slice whose backing array it happens to write
+		// through.
+		updated, viewCmd := m.broadcast(msg)
+		m = updated.(App)
 		cmds = append(cmds, viewCmd)
 		return m, tea.Batch(cmds...)
 
@@ -1001,7 +1014,11 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		// Bootstrap the ask field's cursor blink the moment the overlay
 		// becomes visible — ChatOverlay isn't in m.views, so App.Init's
 		// batching never reaches its Init (same shape as the palette).
-		return m, m.chat.Init()
+		// Sequenced, not inlined into the return: Init has a pointer
+		// receiver and mutates m.chat, and the order in which a return
+		// statement copies m versus evaluates the call is unspecified.
+		cmd := m.chat.Init()
+		return m, cmd
 	}
 
 	// The palette is an overlay: while open it owns the keyboard ahead of any
@@ -1024,11 +1041,15 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	if !m.inStartupGate() && key.Matches(msg, m.keys.Palette) {
 		m.paletteOpen = true
 		m.palette.Reset()
-		// Bootstrap the search field's cursor blink — Palette.Init() (never
-		// auto-invoked; Palette isn't in m.views, so App.Init's batching
-		// never reaches it) returns the real, tag-matched cmd Focus()
-		// produced back at construction (see Palette's initBlink field).
-		return m, m.palette.Init()
+		// Bootstrap the search field's cursor blink — Palette.Init() is
+		// never auto-invoked (Palette isn't in m.views, so App.Init's
+		// batching never reaches it) and re-focuses the field so every
+		// reopen re-arms the chain. Sequenced, not inlined into the return:
+		// Init has a pointer receiver and mutates m.palette, and the order
+		// in which a return statement copies m versus evaluates the call is
+		// unspecified.
+		cmd := m.palette.Init()
+		return m, cmd
 	}
 
 	// esc is the shell's escape hatch. A view that means something by it keeps
