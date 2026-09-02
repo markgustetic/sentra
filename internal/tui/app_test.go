@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -2383,4 +2384,195 @@ func TestApp_ConfirmModalOverlayKeepsTagFieldBlinking(t *testing.T) {
 	if cmd == nil {
 		t.Fatal("the tag field's blink chain died while the confirm modal was open")
 	}
+}
+
+// --- Field focus follows the screen: hide blurs, show re-focuses ---------
+//
+// A view's text field is focused exactly while the view is on screen AND its
+// stage owns the field. The shell enforces the screen half: switching views
+// sends viewHiddenMsg to the outgoing view before viewShownMsg to the
+// incoming one, and blink ticks are delivered only to focus owners that are
+// on screen. These tests drive the real App because a view cannot test the
+// shell — driving view.Update() alone cannot prove the shell ever sends the
+// messages, nor that a tick stops reaching a view once it is hidden.
+
+// registeredView returns the model registered under id, active or not.
+func registeredView(t *testing.T, app App, id string) tea.Model {
+	t.Helper()
+	for _, v := range app.views {
+		if v.id == id {
+			return v.model
+		}
+	}
+	t.Fatalf("no view registered under id %q", id)
+	return nil
+}
+
+// snapshotsFilteringInApp activates snapshots through the real App and opens
+// its filter, returning the App with the filter field focused and on screen.
+func snapshotsFilteringInApp(t *testing.T) App {
+	t.Helper()
+	app := newTestApp(t)
+	m, _ := app.Update(activateMsg{id: "snapshots"})
+	a := m.(App)
+	m, _ = a.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune("/")})
+	a = m.(App)
+	snap, ok := registeredView(t, a, "snapshots").(Snapshots)
+	if !ok || !snap.filter.Focused() {
+		t.Fatalf("precondition: '/' on the active snapshots view must focus the filter (ok=%v)", ok)
+	}
+	return a
+}
+
+// TestApp_LeavingAViewBlursItsFieldAndReturningRefocusesIt covers both ways
+// the shell changes the active view — the rail commit (activateMsg) and the
+// live preview scroll (navPreviewMsg) — because the rule is "leaving the
+// screen blurs", not "activateMsg blurs". On the way back the field must be
+// focused again with a real blink cmd, and the view's own stage (filtering)
+// must have survived the round trip untouched: hide and show are about the
+// screen, not the flow.
+func TestApp_LeavingAViewBlursItsFieldAndReturningRefocusesIt(t *testing.T) {
+	leave := map[string]tea.Msg{
+		"rail commit":  activateMsg{id: "dashboard"},
+		"live preview": navPreviewMsg{id: "dashboard"},
+	}
+	for name, away := range leave {
+		t.Run(name, func(t *testing.T) {
+			a := snapshotsFilteringInApp(t)
+
+			m, _ := a.Update(away)
+			a = m.(App)
+			if a.views[a.active].id != "dashboard" {
+				t.Fatalf("active = %q, want dashboard", a.views[a.active].id)
+			}
+			snap := registeredView(t, a, "snapshots").(Snapshots)
+			if snap.filter.Focused() {
+				t.Fatal("leaving the screen must blur the filter field — a hidden view must never own a focused field")
+			}
+			if !snap.filtering {
+				t.Fatal("hiding must not change the view's stage: filtering must survive")
+			}
+
+			// Come back. Focus() runs at show time, so BlinkSpeed can be
+			// preset on the hidden field and the returned cmd executed for
+			// real rather than nil-checked.
+			snap.filter.Cursor.BlinkSpeed = time.Millisecond
+			installView(t, &a, "snapshots", snap)
+			m, cmd := a.Update(activateMsg{id: "snapshots"})
+			a = m.(App)
+			snap = registeredView(t, a, "snapshots").(Snapshots)
+			if !snap.filter.Focused() {
+				t.Fatal("returning to the view must re-focus the field its stage owns")
+			}
+			assertBlinkCmd(t, cmd)
+		})
+	}
+}
+
+// blinkSpy wraps a registered view model and records whether a
+// cursor.BlinkMsg was ever delivered to it; every message passes through to
+// the wrapped model unchanged.
+type blinkSpy struct {
+	tea.Model
+	hit *bool
+}
+
+func (s blinkSpy) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
+	if _, ok := msg.(cursor.BlinkMsg); ok {
+		*s.hit = true
+	}
+	inner, cmd := s.Model.Update(msg)
+	s.Model = inner
+	return s, cmd
+}
+
+// TestApp_HiddenViewIsDeliveredNoBlinkTick: a tick minted for a field while
+// its view was on screen arrives after the view has left it. The shell must
+// not hand that tick to the hidden view at all — not merely trust the view
+// to drop it — because delivery is the only thing that could let a stage
+// that forgot to blur keep a chain alive for a field nobody renders. The
+// tick is captured before the switch, exactly like an in-flight one, and
+// a recording wrapper sits in the hidden view's slot when it lands.
+func TestApp_HiddenViewIsDeliveredNoBlinkTick(t *testing.T) {
+	a := snapshotsFilteringInApp(t)
+	snap := registeredView(t, a, "snapshots").(Snapshots)
+	snap.filter.Cursor.BlinkSpeed = time.Millisecond
+	tick := snap.filter.Cursor.BlinkCmd() // in flight for the filter field
+	installView(t, &a, "snapshots", snap)
+
+	m, _ := a.Update(activateMsg{id: "dashboard"}) // snapshots leaves the screen
+	a = m.(App)
+
+	hit := false
+	installView(t, &a, "snapshots", blinkSpy{Model: registeredView(t, a, "snapshots"), hit: &hit})
+	_, cmd := a.Update(tick())
+	if hit {
+		t.Fatal("a blink tick was delivered to a view that is not on screen")
+	}
+	if cmd != nil {
+		t.Fatal("a tick for a hidden view's field must produce no continuation — the chain ends with the view")
+	}
+}
+
+// firstInitMsg executes every leaf of cmd's batch tree concurrently and
+// returns the first message of type T to arrive within d. App.Init's batch
+// carries the dashboard's 30s refresh tick, so executing it synchronously
+// (execCmds) would hang the test; a goroutine per leaf lets the immediate
+// messages report while the long ticks time out unheard.
+func firstInitMsg[T tea.Msg](cmd tea.Cmd, d time.Duration) (T, bool) {
+	out := make(chan tea.Msg, 64)
+	var run func(c tea.Cmd)
+	run = func(c tea.Cmd) {
+		if c == nil {
+			return
+		}
+		msg := c()
+		if batch, ok := msg.(tea.BatchMsg); ok {
+			for _, sub := range batch {
+				go run(sub)
+			}
+			return
+		}
+		out <- msg
+	}
+	go run(cmd)
+	deadline := time.After(d)
+	for {
+		select {
+		case msg := <-out:
+			if want, ok := msg.(T); ok {
+				return want, true
+			}
+		case <-deadline:
+			var zero T
+			return zero, false
+		}
+	}
+}
+
+// TestApp_InitShowsTheLaunchView: the view the App lands on at launch is
+// never switched TO, so nothing would ever send it viewShownMsg — and with
+// the blink now starting on show rather than in a view's Init, the unlock
+// gate's cursor would sit dead until the first keystroke. Init must emit
+// showActiveMsg, and handling it must focus the launch view's field with a
+// real blink cmd. Focus() runs when the message is handled, so BlinkSpeed
+// can be preset and the cmd executed rather than nil-checked.
+func TestApp_InitShowsTheLaunchView(t *testing.T) {
+	app := NewApp(Deps{RepoName: "x", InitialView: "unlock"})
+	show, ok := firstInitMsg[showActiveMsg](app.Init(), 3*time.Second)
+	if !ok {
+		t.Fatal("App.Init must emit showActiveMsg so the launch view hears viewShownMsg")
+	}
+
+	u := registeredView(t, app, "unlock").(UnlockView)
+	u.input.Cursor.BlinkSpeed = time.Millisecond
+	installView(t, &app, "unlock", u)
+
+	m, cmd := app.Update(show)
+	a := m.(App)
+	u = registeredView(t, a, "unlock").(UnlockView)
+	if !u.input.Focused() {
+		t.Fatal("showing the launch view must focus the unlock field")
+	}
+	assertBlinkCmd(t, cmd)
 }

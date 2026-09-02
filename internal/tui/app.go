@@ -445,6 +445,11 @@ func (m App) Init() tea.Cmd {
 	// uiFrameMsg in Update), so this single tick keeps the shell breathing for
 	// the whole session.
 	cmds = append(cmds, uiTick())
+	// Tell the launch view it is on screen (see showActiveMsg). This — not a
+	// view's Init — is where a text field's cursor starts blinking: a view
+	// the operator never opens must never run a blink chain, so no view's
+	// Init returns one, and the launch view gets its viewShownMsg here.
+	cmds = append(cmds, func() tea.Msg { return showActiveMsg{} })
 	return tea.Batch(cmds...)
 }
 
@@ -639,9 +644,13 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		return m.Update(activateMsg{id: "diff"})
 
+	case showActiveMsg:
+		return m.switchActive(m.active)
+
 	case activateMsg:
 		m.paletteOpen = false
 		m.chatOpen = false
+		prev := m.active
 		for i, v := range m.views {
 			if v.id != msg.id {
 				continue
@@ -666,20 +675,21 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			break
 		}
-		return m.showActive()
+		return m.switchActive(prev)
 
 	case navPreviewMsg:
 		// Live rail scroll: show the highlighted view but keep focus on the rail
 		// (the list already moved its own selection, so don't touch it) so the
-		// user can keep scrolling through screens. showActive lets a lazy view
-		// (Files) begin loading as it scrolls into view; eager views ignore it.
+		// user can keep scrolling through screens. switchActive hides the view
+		// scrolled off (blurring its field) and shows the one scrolled on.
+		prev := m.active
 		for i, v := range m.views {
 			if v.id == msg.id {
 				m.active = i
 				break
 			}
 		}
-		return m.showActive()
+		return m.switchActive(prev)
 
 	case pushModalMsg:
 		pushed := msg.modal.SetSize(m.width, m.height)
@@ -725,18 +735,18 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// generic view broadcast, the same way splashFrameMsg/uiFrameMsg/
 		// opTickMsg do.
 		//
-		// Deliver to every possible focus owner AT ONCE — the top modal (if
-		// any), the palette (if open), the chat overlay (if open), AND every
-		// view via broadcast — never an exclusive, precedence-style route
-		// (the shape routeKey uses for keys: modal, then palette, then the
-		// focused view).
+		// Deliver to every focus owner that is ON SCREEN, all at once — the
+		// top modal (if any), the palette (if open), the chat overlay (if
+		// open), and the active view — never an exclusive, precedence-style
+		// route (the shape routeKey uses for keys: modal, then palette, then
+		// the focused view).
 		//
-		// Why that is safe is NOT "each tick is addressed to exactly one
-		// field". It isn't: cursor.Model.id is declared but never assigned
-		// in bubbles v1.0.0 (there is no nextID()), so every cursor carries
-		// id == 0 and cursor.Update discriminates on tag ALONE. Fields
-		// routinely sit at the same tag, and a tick minted by field A is
-		// genuinely accepted by an unrelated focused field B.
+		// Why simultaneous delivery is safe is NOT "each tick is addressed
+		// to exactly one field". It isn't: cursor.Model.id is declared but
+		// never assigned in bubbles v1.0.0 (there is no nextID()), so every
+		// cursor carries id == 0 and cursor.Update discriminates on tag
+		// ALONE. Fields routinely sit at the same tag, and a tick minted by
+		// field A is genuinely accepted by an unrelated focused field B.
 		//
 		// It is safe because accepting a tick ADVANCES the accepting field's
 		// tag, which invalidates every other tick still in flight under the
@@ -754,6 +764,15 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// even drops non-key messages outright — silently killing the view
 		// field's chain. Nothing re-arms a chain that already stopped, so
 		// the cursor stayed frozen even after the overlay was dismissed.
+		//
+		// Hidden views are deliberately NOT on the list (an earlier version
+		// broadcast to all of them). Every view blurs its fields on
+		// viewHiddenMsg (see switchActive), so the active view is the only
+		// view that can own a focused field, and a tick minted for a field
+		// that has since left the screen has nowhere to go. Delivering it
+		// anyway would only let a stage that forgot to blur keep a chain
+		// alive for a field nobody renders — the exact leak the hide exists
+		// to end. TestApp_HiddenViewIsDeliveredNoBlinkTick pins this.
 		var cmds []tea.Cmd
 		if n := len(m.modals); n > 0 {
 			var cmd tea.Cmd
@@ -770,11 +789,8 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			m.chat, cmd = m.chat.Update(msg)
 			cmds = append(cmds, cmd)
 		}
-		// broadcast returns the updated model; take it rather than relying
-		// on m.views being a slice whose backing array it happens to write
-		// through.
-		updated, viewCmd := m.broadcast(msg)
-		m = updated.(App)
+		var viewCmd tea.Cmd
+		m.views[m.active].model, viewCmd = m.views[m.active].model.Update(msg)
 		cmds = append(cmds, viewCmd)
 		return m, tea.Batch(cmds...)
 
@@ -1129,10 +1145,11 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 					continue
 				}
 				if seen == n {
+					prev := m.active
 					m.active = i
 					m.sidebar.Select(v.id)
 					m.focus = focusContent
-					return m, nil
+					return m.switchActive(prev)
 				}
 				seen++
 			}
@@ -1205,11 +1222,12 @@ func (m App) broadcast(msg tea.Msg) (tea.Model, tea.Cmd) {
 	return m, tea.Batch(cmds...)
 }
 
-// viewShownMsg tells the now-active view it is on screen. A view that
-// defers heavy loading can hydrate lazily on first display instead of
-// eagerly at startup; views that load in their constructor or Init simply
-// ignore it. (No current view defers, but the seam is the shell's to
-// offer, not the views'.)
+// viewShownMsg tells the now-active view it is on screen. A view that owns
+// a text field focuses the one its current stage names and returns Focus()'s
+// blink cmd — this, not the view's Init, is where a cursor starts blinking,
+// so a view the operator never opens never runs a chain. A view that defers
+// heavy loading could hydrate here too; none does today, and views with
+// nothing to do on show simply ignore it.
 type viewShownMsg struct{}
 
 // viewHiddenMsg tells the view that was on screen it no longer is. A view
@@ -1219,13 +1237,32 @@ type viewShownMsg struct{}
 // view's current stage owns when it comes back.
 type viewHiddenMsg struct{}
 
-// showActive notifies the active view it is displayed, returning any load
-// command it emits. Called whenever the App changes which view is active (rail
-// commit or live preview).
-func (m App) showActive() (tea.Model, tea.Cmd) {
-	var c tea.Cmd
-	m.views[m.active].model, c = m.views[m.active].model.Update(viewShownMsg{})
-	return m, c
+// showActiveMsg is how App.Init tells the launch view it is on screen. Init
+// has a value receiver and cannot deliver viewShownMsg itself — the focus a
+// view takes on show has to land on the live model, not on Init's copy — so
+// it emits this and Update runs the show against the real state. Every
+// later view change goes through switchActive directly; only the view the
+// App lands on is never switched TO, which is the gap this closes.
+type showActiveMsg struct{}
+
+// switchActive completes a change of active view: the view that was on
+// screen (prev) hears viewHiddenMsg first — skipped when prev IS the active
+// view, e.g. enter re-committing a rail preview, or the launch show — and
+// then the active view hears viewShownMsg. Hidden-before-shown is what keeps
+// text-field focus truthful: the outgoing view blurs its field (ending its
+// blink chain and making Focused() false off screen), and the incoming view
+// re-focuses whatever its stage owns, returning the fresh cursor.BlinkCmd
+// this App's blink case will route back to it. Every path that changes
+// m.active goes through here — rail commit, live preview, digit jump — and
+// Init's showActiveMsg lands here for the view the App starts on.
+func (m App) switchActive(prev int) (tea.Model, tea.Cmd) {
+	var hide tea.Cmd
+	if prev != m.active {
+		m.views[prev].model, hide = m.views[prev].model.Update(viewHiddenMsg{})
+	}
+	var show tea.Cmd
+	m.views[m.active].model, show = m.views[m.active].model.Update(viewShownMsg{})
+	return m, tea.Batch(hide, show)
 }
 
 // resize recomputes layout regions and forwards content-pane sizes to
