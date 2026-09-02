@@ -23,6 +23,10 @@ import (
 // non-nil and "looks" fine to a naive nil check. Every focus site in this
 // package now returns Focus()'s own cmd for exactly this reason.
 //
+// yieldsBlink accepts ONLY the real cursor.BlinkMsg, never textinput.Blink's
+// bootstrap sentinel — see its doc comment for why that rejection is what
+// gives every *SchedulesBlink test in this package its teeth.
+//
 // A CAVEAT for callers: because Focus()'s cmd is real, EXECUTING it (as
 // this function does) blocks until the field's Cursor.BlinkSpeed elapses
 // (~530ms by default) before yielding cursor.BlinkMsg. For a focus
@@ -48,23 +52,18 @@ func assertBlinkCmd(t *testing.T, cmd tea.Cmd) {
 }
 
 // yieldsBlink recursively checks whether msg (possibly a batch of commands)
-// yields a cursor blink signal. It recognizes three forms: the real
-// cursor.BlinkMsg (what a genuine Focus()/BlinkCmd() round-trip produces —
-// the canonical production form), the unexported bootstrap sentinel from
-// textinput.Blink by value equality (kept for any legacy/batched
-// textinput.Blink a test constructs directly — see
-// TestAssertBlinkCmd_RecognizesAllBlinkForms), and batches containing
-// either.
+// yields a cursor blink signal. It accepts EXACTLY ONE form: the real
+// cursor.BlinkMsg that a genuine Focus()/BlinkCmd() round-trip produces
+// (and batches containing one).
+//
+// It deliberately does NOT accept cursor.Blink()'s unexported bootstrap
+// sentinel, which is what textinput.Blink yields. Accepting it would make
+// this helper blind to the precise regression the package was fixed for:
+// with a `msg == cursor.Blink()` branch here, reintroducing textinput.Blink
+// at any of the ~ten focus sites stayed green even though no view's Update
+// switch can name that unexported type, so the blink chain never started in
+// a live terminal. The helper must reject what production must never emit.
 func yieldsBlink(msg tea.Msg) bool {
-	// textinput.Blink yields cursor's unexported bootstrap sentinel; the
-	// real cursor.BlinkMsg is what Focus()/BlinkCmd() actually produces.
-	// Recognize the bootstrap by value equality so a test CAN still assert
-	// on a bare textinput.Blink if one shows up, even though production
-	// code no longer emits it.
-	if msg == cursor.Blink() {
-		return true
-	}
-
 	switch m := msg.(type) {
 	case cursor.BlinkMsg:
 		return true
@@ -82,14 +81,24 @@ func yieldsBlink(msg tea.Msg) bool {
 // The rule every view test asserts: focusing a field adds exactly one.
 func boxCount(s string) int { return strings.Count(s, "╭") }
 
-// TestAssertBlinkCmd_RecognizesAllBlinkForms verifies that assertBlinkCmd
-// recognizes every message shape it might see: a bare textinput.Blink
-// command and a batched textinput.Blink (the legacy bootstrap-sentinel
-// forms, kept recognizable even though production code no longer emits
-// them — see yieldsBlink's doc comment), and a raw cursor.BlinkMsg (what a
-// real Focus()/BlinkCmd() round-trip actually produces).
-func TestAssertBlinkCmd_RecognizesAllBlinkForms(t *testing.T) {
-	assertBlinkCmd(t, textinput.Blink)
-	assertBlinkCmd(t, tea.Batch(func() tea.Msg { return nil }, textinput.Blink))
-	assertBlinkCmd(t, func() tea.Msg { return cursor.BlinkMsg{} })
+// TestAssertBlinkCmd_AcceptsOnlyTheRealBlink pins the helper's discrimination
+// in both directions: it must accept a real cursor.BlinkMsg (bare or
+// batched) and must REJECT textinput.Blink's bootstrap sentinel. The
+// rejection half is the load-bearing one — it is what makes every
+// *SchedulesBlink test in this package able to catch a regression back to
+// the dead-end sentinel.
+func TestAssertBlinkCmd_AcceptsOnlyTheRealBlink(t *testing.T) {
+	real := func() tea.Msg { return cursor.BlinkMsg{} }
+	if !yieldsBlink(real()) {
+		t.Error("a bare cursor.BlinkMsg must be accepted")
+	}
+	if !yieldsBlink(tea.Batch(func() tea.Msg { return nil }, real)()) {
+		t.Error("a batched cursor.BlinkMsg must be accepted")
+	}
+	if yieldsBlink(textinput.Blink()) {
+		t.Error("textinput.Blink's bootstrap sentinel must be REJECTED: no view's Update switch can name that unexported type, so a cmd built from it never starts the blink chain")
+	}
+	if yieldsBlink(tea.Batch(textinput.Blink)()) {
+		t.Error("a batched textinput.Blink must be REJECTED for the same reason")
+	}
 }
