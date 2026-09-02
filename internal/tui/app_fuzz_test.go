@@ -4,6 +4,8 @@ import (
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/markgustetic/sentra/internal/repo"
 )
 
 // fuzzKeys is the alphabet the fuzzer draws from. Every entry is a key a real
@@ -65,16 +67,21 @@ func FuzzAppKeyRouting(f *testing.F) {
 	// enter twice more to reach the wizard's Confirm step, where the tag field
 	// captures text. Invariant 6 must find esc still works there. Without this
 	// seed the corpus never reaches a text-capturing view at all, and the trap
-	// goes unnoticed.
-	f.Add([]byte{fkDown, fkEnter, fkEnter, fkEnter})
+	// goes unnoticed — TestFuzzSeed_ReachesATextCapturingView asserts the seed
+	// still lands in a field, so it cannot go stale in silence.
+	f.Add(keyTrapSeed)
+
+	// ONE repo for the whole run, not one per iteration: repo.Init runs
+	// Argon2id. Without it every flow that stats a directory refuses ("no
+	// repository configured"), which pins the backup wizard on its first step
+	// and starves the states below of anything to check.
+	r := newFlowRepo(f)
 
 	f.Fuzz(func(t *testing.T, seq []byte) {
 		if len(seq) > 64 {
 			seq = seq[:64] // keep sequences short; deep ones add no new states
 		}
-		app := NewApp(Deps{RepoName: "fuzz"})
-		m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
-		app = m.(App)
+		app := fuzzApp(t, r)
 
 		for _, b := range seq {
 			key := fuzzKeys[int(b)%len(fuzzKeys)]
@@ -89,18 +96,7 @@ func FuzzAppKeyRouting(f *testing.F) {
 				app.inStartupGate() || app.contentCapturesText() || app.splashActive ||
 				app.tooSmall()
 
-			next, cmd := app.Update(key)
-			app = next.(App)
-
-			// Deliver exactly the message a real tea.Program would deliver here,
-			// and nothing else. Running arbitrary cmds would sleep on tick timers
-			// and, in the setup wizard, shell out to `aws` via tea.ExecProcess.
-			if railFocused && key.Type == tea.KeyEnter && cmd != nil {
-				if msg, ok := cmd().(activateMsg); ok {
-					m2, _ := app.Update(msg)
-					app = m2.(App)
-				}
-			}
+			app = fuzzPress(app, key)
 
 			// Invariant 1: focus is always one of the two panes.
 			if app.focus != focusSidebar && app.focus != focusContent {
@@ -170,4 +166,53 @@ func FuzzAppKeyRouting(f *testing.F) {
 			}
 		}
 	})
+}
+
+// keyTrapSeed walks the rail to Backup, activates it, then presses enter
+// twice more to reach the wizard's Confirm step and its tag field. It is the
+// corpus's only route to a text-capturing view, so it is a named value the
+// guard test below can replay.
+var keyTrapSeed = []byte{fkDown, fkEnter, fkEnter, fkEnter}
+
+// fuzzApp builds the shell the fuzz target drives: a real repo (so the flows
+// that validate against one actually advance) and a real window size.
+func fuzzApp(tb testing.TB, r *repo.Repo) App {
+	tb.Helper()
+	app := NewApp(Deps{RepoName: "fuzz", Repo: r})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	return m.(App)
+}
+
+// fuzzPress delivers one key and then exactly the message a real tea.Program
+// would deliver next, and nothing else. Running arbitrary cmds would sleep on
+// tick timers and, in the setup wizard, shell out to `aws` via
+// tea.ExecProcess.
+func fuzzPress(app App, key tea.KeyMsg) App {
+	railFocused := app.focus == focusSidebar
+	next, cmd := app.Update(key)
+	app = next.(App)
+	if railFocused && key.Type == tea.KeyEnter && cmd != nil {
+		if msg, ok := cmd().(activateMsg); ok {
+			m2, _ := app.Update(msg)
+			app = m2.(App)
+		}
+	}
+	return app
+}
+
+// TestFuzzSeed_ReachesATextCapturingView keeps the corpus honest. Invariant 6
+// — esc always makes progress — only bites where a view captures text, and
+// exactly one seed reaches such a state. That seed has gone stale twice
+// already (the rail grew a row; the backup view stopped focusing a field on
+// tab), and a stale seed fails silently: the fuzzer still passes, having
+// checked nothing. Assert the destination, not the keystrokes.
+func TestFuzzSeed_ReachesATextCapturingView(t *testing.T) {
+	app := fuzzApp(t, newFlowRepo(t))
+	for _, b := range keyTrapSeed {
+		app = fuzzPress(app, fuzzKeys[int(b)%len(fuzzKeys)])
+	}
+	if !app.contentCapturesText() {
+		t.Fatalf("the keyboard-trap seed no longer reaches a text-capturing view (active=%q, focus=%v) — invariant 6 is checking nothing",
+			app.views[app.active].id, app.focus)
+	}
 }

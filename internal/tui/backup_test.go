@@ -15,14 +15,16 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 )
 
-// newFlowRepo creates a real in-memory repo for flow tests.
-func newFlowRepo(t *testing.T) *repo.Repo {
-	t.Helper()
+// newFlowRepo creates a real in-memory repo for flow tests. It takes a
+// testing.TB so a fuzz target can build ONE repo for the whole run (repo.Init
+// runs Argon2id; per-iteration would starve the fuzzer).
+func newFlowRepo(tb testing.TB) *repo.Repo {
+	tb.Helper()
 	r, err := repo.Init(context.Background(), blobstore.NewMemory(), []byte("flow-test-pass"))
 	if err != nil {
-		t.Fatalf("repo.Init: %v", err)
+		tb.Fatalf("repo.Init: %v", err)
 	}
-	t.Cleanup(func() { r.Close() })
+	tb.Cleanup(func() { r.Close() })
 	return r
 }
 
@@ -285,6 +287,37 @@ func TestBackupWizard_ChatIntentLandsOnConfirm(t *testing.T) {
 	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	if got := m.(BackupView); got.stage != backupRunning {
 		t.Fatalf("enter on the seeded Confirm starts; stage=%v", got.stage)
+	}
+}
+
+// A chat intent naming a directory that is gone drops the wizard back to
+// Location with the error — and must leave no field focused behind it. The
+// operator can be anywhere when the intent arrives (ctrl+a works on every
+// step), and a field focused on a stage that never renders it blinks
+// forever while Focused() lies to every guard.
+func TestBackupWizard_ChatIntentWithAMissingDirBlursTheStep(t *testing.T) {
+	v, _ := toConfirm(t, toSchedule(t, backupAt(t, tempTree(t))))
+	if !v.confirm.tag.Focused() {
+		t.Fatal("precondition: Confirm focuses the tag")
+	}
+	m, cmd := v.Update(chatBackupMsg{dir: filepath.Join(t.TempDir(), "gone"), tag: "x"})
+	v = m.(BackupView)
+	if v.stage != backupLocation {
+		t.Fatalf("a missing directory must drop back to Location; stage=%v", v.stage)
+	}
+	if cmd != nil {
+		t.Error("a refused intent must schedule nothing")
+	}
+	if v.confirm.tag.Focused() || v.sched.name.Focused() || v.sched.at.Focused() {
+		t.Errorf("no field may stay focused: tag=%v name=%v at=%v",
+			v.confirm.tag.Focused(), v.sched.name.Focused(), v.sched.at.Focused())
+	}
+	out := v.View()
+	if n := boxCount(out); n != 0 {
+		t.Errorf("Location renders %d field box(es), want 0:\n%s", n, out)
+	}
+	if !strings.Contains(out, "not found") {
+		t.Errorf("the refused intent's error must be visible:\n%s", out)
 	}
 }
 

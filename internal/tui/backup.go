@@ -218,6 +218,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		dir := strings.TrimSpace(msg.dir)
 		if !v.checkDir(dir) {
+			// Drop back to Location with the error, blurring whatever the
+			// step we were on owned: a field left focused on a stage that
+			// never renders it keeps its blink chain rescheduling and makes
+			// Focused() lie to every guard that reads it. checkDir's pathErr
+			// stands, so backTo (which clears it) is not the path here.
+			v.sched.blur()
+			v.confirm.blur()
 			v.stage = backupLocation
 			return v, nil
 		}
