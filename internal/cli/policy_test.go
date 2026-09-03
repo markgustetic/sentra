@@ -3,6 +3,7 @@ package cli
 import (
 	"bytes"
 	"context"
+	"errors"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -11,9 +12,11 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/scheduler"
 )
@@ -508,5 +511,220 @@ func TestPolicyRemoveUninstallsTimer(t *testing.T) {
 	}
 	if _, ok := got.Policies["home"]; ok {
 		t.Fatal("policy must be gone from the config")
+	}
+}
+
+// policyDueFixture builds a daily@03:00 policy "home" against a fresh
+// in-memory repo, returning deps whose clock the test controls.
+func policyDueFixture(t *testing.T, now func() time.Time) (PolicyDeps, *blobstore.Memory, *bytes.Buffer) {
+	t.Helper()
+	dir := t.TempDir()
+	chDir(t, dir)
+	src := filepath.Join(dir, "src")
+	if err := os.MkdirAll(src, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["home"] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
+	}
+	writePolicyConfigFile(t, dir, &cfg)
+
+	store := blobstore.NewMemory()
+	r, err := repo.Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+
+	out := &bytes.Buffer{}
+	deps := PolicyDeps{
+		RepoDeps: RepoDeps{
+			NewStore: func(context.Context, *config.Config) (blobstore.Store, error) {
+				return store, nil
+			},
+			Passphrase: func() ([]byte, error) { return []byte("hunter2"), nil },
+			Stdout:     out,
+		},
+		Stderr: io.Discard,
+		Now:    now,
+	}
+	return deps, store, out
+}
+
+func runPolicyWith(t *testing.T, deps PolicyDeps, ctx context.Context, args ...string) error {
+	t.Helper()
+	cmd := NewPolicy(deps)
+	cmd.SetOut(io.Discard)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs(args)
+	return cmd.ExecuteContext(ctx)
+}
+
+func countSnapshots(t *testing.T, store blobstore.Store) int {
+	t.Helper()
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return len(snaps)
+}
+
+// TestPolicyRun_IfDue_FirstRunIsDue: with no snapshot matching the
+// policy, --if-due runs immediately — a freshly installed schedule
+// must not wait for its first slot.
+func TestPolicyRun_IfDue_FirstRunIsDue(t *testing.T) {
+	deps, store, out := policyDueFixture(t, time.Now)
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home", "--if-due"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if n := countSnapshots(t, store); n != 1 {
+		t.Fatalf("snapshots: got %d, want 1", n)
+	}
+	if !strings.Contains(out.String(), "Policy run complete") {
+		t.Fatalf("output missing run summary: %q", out.String())
+	}
+}
+
+// TestPolicyRun_IfDue_SkipsWhenLastRunCoversSlot: a run at or after
+// the previous slot means the schedule is satisfied. The skip must
+// neither back up nor take the repo lock — a foreign lock is planted
+// so that any attempt to acquire it fails the command.
+func TestPolicyRun_IfDue_SkipsWhenLastRunCoversSlot(t *testing.T) {
+	deps, store, out := policyDueFixture(t, time.Now)
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home"); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	out.Reset()
+	if err := store.Put(context.Background(), "meta/lock", strings.NewReader(`{"holder":"someone-else"}`)); err != nil {
+		t.Fatal(err)
+	}
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home", "--if-due"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if n := countSnapshots(t, store); n != 1 {
+		t.Fatalf("snapshots: got %d, want the seed alone", n)
+	}
+	got := out.String()
+	next, _ := policycfg.NextRun(config.PolicySchedule{Cadence: "daily", At: "03:00"}, time.Now())
+	if !strings.Contains(got, "not due until "+next.Format("2006-01-02 15:04")) {
+		t.Fatalf("output %q should name the next run %s", got, next)
+	}
+	if strings.Contains(got, "Policy run complete") {
+		t.Fatalf("a skipped run must not print a run summary: %q", got)
+	}
+}
+
+// TestPolicyRun_IfDue_RunsWhenLastRunIsStale: the clock moves two days
+// past the seed run, so the previous slot lies after it — a missed
+// slot (shut down through 03:00) is caught up.
+func TestPolicyRun_IfDue_RunsWhenLastRunIsStale(t *testing.T) {
+	deps, store, _ := policyDueFixture(t, time.Now)
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home"); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	deps.Now = func() time.Time { return time.Now().AddDate(0, 0, 2) }
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home", "--if-due"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if n := countSnapshots(t, store); n != 2 {
+		t.Fatalf("snapshots: got %d, want 2", n)
+	}
+}
+
+// TestPolicyRun_IfDue_BeforeHookDoesNotFireWhenNotDue: a skipped run
+// never started, so neither hook runs — the same rule config-shape
+// errors follow.
+func TestPolicyRun_IfDue_BeforeHookDoesNotFireWhenNotDue(t *testing.T) {
+	marker := filepath.Join(t.TempDir(), "hook-ran")
+	deps, store, _ := policyHookFixture(t, func(string) config.PolicyHooks {
+		return config.PolicyHooks{Before: "touch " + marker}
+	})
+	// Seed under the policy's tag by running once, then switch the
+	// fixture's manual policy to a daily cadence for the due check.
+	if err := runPolicyWith(t, deps, context.Background(), "run", "hooked"); err != nil {
+		t.Fatalf("seed run: %v", err)
+	}
+	if err := os.Remove(marker); err != nil {
+		t.Fatalf("seed run should have fired the hook: %v", err)
+	}
+	err := config.Update("sentra.yaml", func(cfg *config.Config) error {
+		p := cfg.Policies["hooked"]
+		p.Schedule = config.PolicySchedule{Cadence: "daily", At: "03:00"}
+		cfg.Policies["hooked"] = p
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := runPolicyWith(t, deps, context.Background(), "run", "hooked", "--if-due"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if _, err := os.Stat(marker); err == nil {
+		t.Fatal("before hook fired for a run that was not due")
+	}
+	if n := countSnapshots(t, store); n != 1 {
+		t.Fatalf("snapshots: got %d, want the seed alone", n)
+	}
+}
+
+// TestPolicyRun_StartupDelay_HonorsContextCancel: the login-path delay
+// must be interruptible — launchd unloading the agent must not leave a
+// sleeping process behind.
+func TestPolicyRun_StartupDelay_HonorsContextCancel(t *testing.T) {
+	deps, store, _ := policyDueFixture(t, time.Now)
+	ctx, cancel := context.WithCancel(context.Background())
+	cancel()
+	start := time.Now()
+	err := runPolicyWith(t, deps, ctx, "run", "home", "--startup-delay", "1h")
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("want context.Canceled, got %v", err)
+	}
+	if time.Since(start) > 5*time.Second {
+		t.Fatal("cancelled delay should return promptly")
+	}
+	if n := countSnapshots(t, store); n != 0 {
+		t.Fatalf("snapshots: got %d, want 0", n)
+	}
+}
+
+func TestPolicyRun_StartupDelay_ThenRuns(t *testing.T) {
+	deps, store, _ := policyDueFixture(t, time.Now)
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home", "--startup-delay", "20ms", "--if-due"); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if n := countSnapshots(t, store); n != 1 {
+		t.Fatalf("snapshots: got %d, want 1", n)
+	}
+}
+
+// TestPolicyRun_IfDue_FailedCheckFiresOnFailure: the due check runs
+// inside the hook envelope. An unreachable store at login is exactly
+// the unattended failure on_failure exists to report, so it must not
+// slip out ahead of the hooks just because --if-due asked first.
+func TestPolicyRun_IfDue_FailedCheckFiresOnFailure(t *testing.T) {
+	var marker string
+	deps, _, _ := policyHookFixture(t, func(dir string) config.PolicyHooks {
+		marker = filepath.Join(dir, "failed.marker")
+		return config.PolicyHooks{OnFailure: "touch " + marker}
+	})
+	deps.NewStore = func(context.Context, *config.Config) (blobstore.Store, error) {
+		return nil, errors.New("bucket unreachable")
+	}
+	if err := runPolicyWith(t, deps, context.Background(), "run", "hooked", "--if-due"); err == nil {
+		t.Fatal("an unreachable store must fail the run")
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("on_failure hook did not run: %v", err)
 	}
 }

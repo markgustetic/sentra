@@ -4,6 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"os"
 	"sort"
 	"strings"
 	"time"
@@ -29,6 +30,21 @@ type PolicyDeps struct {
 	// values fall back to the runtime platform and home directory.
 	OS      string
 	HomeDir func() (string, error)
+
+	// Now is the clock `run --if-due` measures the schedule against;
+	// nil means time.Now.
+	Now func() time.Time
+}
+
+// policyRunFlags are the switches the OS timers pass to `policy run`.
+type policyRunFlags struct {
+	// ifDue skips the run when the last matching snapshot already
+	// covers the schedule's most recent slot — the anacron-style
+	// catch-up the login-time launch relies on.
+	ifDue bool
+	// startupDelay is slept before anything else, so a run launched at
+	// login waits for the network and the keyring to settle.
+	startupDelay time.Duration
 }
 
 type policyAddFlags struct {
@@ -130,16 +146,27 @@ func newPolicyRemove(deps PolicyDeps, cfgPath *string) *cobra.Command {
 }
 
 func newPolicyRun(deps PolicyDeps, cfgPath *string) *cobra.Command {
-	return &cobra.Command{
-		Use:           "run <name>",
-		Short:         "Run a named backup policy now",
+	flags := &policyRunFlags{}
+	cmd := &cobra.Command{
+		Use:   "run <name>",
+		Short: "Run a named backup policy now",
+		Long: `Run a named backup policy now.
+
+The OS timers installed by "sentra schedule" run this with --if-due so
+a slot missed while the machine was shut down is caught up at the next
+login, and one that already ran is not repeated.`,
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: false,
 		RunE: func(cmd *cobra.Command, args []string) error {
-			return runPolicy(cmd, deps, *cfgPath, args[0])
+			return runPolicy(cmd, deps, *cfgPath, args[0], flags)
 		},
 	}
+	cmd.Flags().BoolVar(&flags.ifDue, "if-due", false,
+		"run only if no snapshot of this policy exists since its most recent scheduled slot")
+	cmd.Flags().DurationVar(&flags.startupDelay, "startup-delay", 0,
+		"wait this long before starting (the login-time timer passes 1m so the network can settle)")
+	return cmd
 }
 
 func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *policyAddFlags) error {
@@ -297,7 +324,7 @@ func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) 
 	return nil
 }
 
-func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error {
+func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags *policyRunFlags) error {
 	cfgPath, err := resolveConfigPath(cmd, cfgPath)
 	if err != nil {
 		return err
@@ -313,18 +340,46 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error 
 	if err := policycfg.Validate(name, p); err != nil {
 		return err
 	}
+	if flags.startupDelay > 0 {
+		// Interruptible: launchd unloading the agent (or the user's
+		// ctrl-c) must not leave a sleeping process behind.
+		select {
+		case <-time.After(flags.startupDelay):
+		case <-cmd.Context().Done():
+			return cmd.Context().Err()
+		}
+	}
 
 	// Hooks wrap the run: before → stages → after, with on_failure
 	// (command and/or webhook) firing when ANY of them fails.
 	// Config-shape errors above don't count as a run failure — the
-	// run never started.
+	// run never started. Neither does a run --if-due finds not due:
+	// it owes no before hook and no notification. But a failure of
+	// the due check itself (expired credentials, unreachable bucket)
+	// is exactly the unattended failure on_failure exists for, so the
+	// check runs inside the hook envelope.
 	runErr := func() error {
+		var r *repo.Repo
+		if flags.ifDue {
+			var due bool
+			opened, due, err := policyDue(cmd, deps, cfg, name, p)
+			if err != nil {
+				return err
+			}
+			if !due {
+				return errPolicyNotDue
+			}
+			// Handed on to the stages so the passphrase is derived
+			// once per run.
+			r = opened
+			defer r.Close()
+		}
 		if p.Hooks.Before != "" {
 			if err := runPolicyHook(cmd, deps, "before", p.Hooks.Before); err != nil {
 				return err
 			}
 		}
-		if err := runPolicyStages(cmd, deps, cfg, name, p); err != nil {
+		if err := runPolicyStages(cmd, deps, cfg, name, p, r); err != nil {
 			return err
 		}
 		if p.Hooks.After != "" {
@@ -334,31 +389,106 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) error 
 		}
 		return nil
 	}()
+	if errors.Is(runErr, errPolicyNotDue) {
+		return nil
+	}
 	if runErr != nil {
 		firePolicyFailureHooks(cmd, deps, name, p.Hooks, runErr)
 	}
 	return runErr
 }
 
-func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig) error {
+// errPolicyNotDue is how the --if-due check leaves the hook envelope
+// without counting as a failure; runPolicy maps it to a clean exit.
+var errPolicyNotDue = errors.New("policy not due")
+
+// policyDue answers `--if-due`: it opens the repo and reports whether
+// the policy's most recent slot (policy.PreviousRun) is uncovered by
+// its last run (policy.LastRun — the same resolver behind the TUI's
+// Last-run column). No matching snapshot means due, so a freshly
+// installed schedule runs at once. Not due prints one line naming the
+// next slot and closes the repo; due hands the open repo back. Listing
+// snapshots never takes the repo lock, so a skipped run leaves a
+// concurrent backup or GC undisturbed. A manual cadence has no slot
+// and is always due — nothing installs a timer for it, but an operator
+// passing the flag by hand should still get their run.
+func policyDue(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig) (*repo.Repo, bool, error) {
+	r, err := openPolicyRepo(cmd, deps, cfg)
+	if err != nil {
+		return nil, false, err
+	}
+	nowFn := deps.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	now := nowFn()
+	slot, ok := policycfg.PreviousRun(p.Schedule, now)
+	if !ok {
+		return r, true, nil
+	}
+	snaps, err := r.ListSnapshots(cmd.Context())
+	if err != nil {
+		r.Close()
+		return nil, false, fmt.Errorf("list snapshots: %w", err)
+	}
+	home := ""
+	if deps.HomeDir != nil {
+		home, _ = deps.HomeDir()
+	} else {
+		home, _ = os.UserHomeDir()
+	}
+	abs := make([]string, 0, len(p.Paths))
+	for _, path := range p.Paths {
+		abs = append(abs, policycfg.NormalizePath(path, home))
+	}
+	last, found := policycfg.LastRun(name, abs, snaps)
+	if !found || last.CreatedAt.Before(slot) {
+		return r, true, nil
+	}
+	r.Close()
+	out := policyStdout(cmd, deps)
+	if next, ok := policycfg.NextRun(p.Schedule, now); ok {
+		fmt.Fprintf(out, "%s: last run %s; not due until %s\n",
+			name, last.CreatedAt.Local().Format("2006-01-02 15:04"), next.Format("2006-01-02 15:04"))
+	}
+	return nil, false, nil
+}
+
+// openPolicyRepo opens the configured blobstore and repo with the
+// resolved passphrase, zeroizing the passphrase before returning.
+func openPolicyRepo(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config) (*repo.Repo, error) {
 	if deps.NewStore == nil {
-		return errors.New("policy run: blobstore factory is not configured")
+		return nil, errors.New("policy run: blobstore factory is not configured")
 	}
 	store, err := deps.NewStore(cmd.Context(), cfg)
 	if err != nil {
-		return fmt.Errorf("open blobstore: %w", err)
+		return nil, fmt.Errorf("open blobstore: %w", err)
 	}
 	pass, err := resolvePassphrase(deps.Passphrase, deps.PassphraseWithConfig, cfg)
 	if err != nil {
-		return fmt.Errorf("resolve passphrase: %w", err)
+		return nil, fmt.Errorf("resolve passphrase: %w", err)
 	}
 	defer crypto.Zeroize(pass)
 
 	r, err := repo.Open(cmd.Context(), store, pass)
 	if err != nil {
-		return fmt.Errorf("open repo: %w", err)
+		return nil, fmt.Errorf("open repo: %w", err)
 	}
-	defer r.Close()
+	return r, nil
+}
+
+// runPolicyStages takes the snapshots and runs the post-backup check
+// and prune. r may be an already-open repo (from the --if-due check);
+// nil opens one here and closes it on return.
+func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) error {
+	if r == nil {
+		opened, err := openPolicyRepo(cmd, deps, cfg)
+		if err != nil {
+			return err
+		}
+		defer opened.Close()
+		r = opened
+	}
 
 	out := policyStdout(cmd, deps)
 	walkerOpts := walker.Options{
