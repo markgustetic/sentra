@@ -27,10 +27,30 @@ func TestRender_DarwinLaunchAgent(t *testing.T) {
 		"--config", "/etc/sentra.yaml",
 		"<key>Hour</key>", "<integer>3</integer>",
 		"<key>Minute</key>", "<integer>0</integer>",
+		// Catch-up: launchd skips a StartCalendarInterval slot that
+		// passes while the machine is off, so the agent also runs at
+		// load (login) and lets --if-due decide whether that run is owed.
+		"<key>RunAtLoad</key>\n  <true/>",
+		"<string>--if-due</string>",
+		"<string>--startup-delay</string>\n    <string>1m</string>",
 	} {
 		if !strings.Contains(body, want) {
 			t.Fatalf("plist missing %q:\n%s", want, body)
 		}
+	}
+	wantArgs := "<string>/usr/local/bin/sentra</string>\n" +
+		"    <string>policy</string>\n" +
+		"    <string>run</string>\n" +
+		"    <string>home</string>\n" +
+		"    <string>--if-due</string>\n" +
+		"    <string>--startup-delay</string>\n" +
+		"    <string>1m</string>\n" +
+		"    <string>--config</string>\n" +
+		"    <string>/etc/sentra.yaml</string>\n" +
+		"    <string>--log-level</string>\n" +
+		"    <string>info</string>\n"
+	if !strings.Contains(body, wantArgs) {
+		t.Fatalf("plist ProgramArguments differ from the one command shape:\n%s", body)
 	}
 }
 
@@ -46,10 +66,11 @@ func TestRender_LinuxSystemdUnits(t *testing.T) {
 	}
 	service := files[paths.Files[0]]
 	timer := files[paths.Files[1]]
-	for _, want := range []string{"/usr/bin/sentra", "policy run home", "--config", "/etc/sentra.yaml", "--log-level info"} {
-		if !strings.Contains(service, want) {
-			t.Fatalf("service missing %q:\n%s", want, service)
-		}
+	// One command shape on both platforms: --if-due is redundant with
+	// Persistent=true here but keeps the units in step with launchd.
+	wantExec := "ExecStart=/usr/bin/sentra policy run home --if-due --startup-delay 1m --config /etc/sentra.yaml --log-level info\n"
+	if !strings.Contains(service, wantExec) {
+		t.Fatalf("service missing %q:\n%s", wantExec, service)
 	}
 	if !strings.Contains(timer, "OnCalendar=Mon *-*-* 04:30:00") {
 		t.Fatalf("timer missing weekly calendar:\n%s", timer)

@@ -111,7 +111,7 @@ func renderLaunchAgent(home, exe, cfgPath, name string, schedule config.PolicySc
 	if err != nil {
 		return "", err
 	}
-	args := []string{exe, "policy", "run", name, "--config", cfgPath, "--log-level", "info"}
+	args := policyRunArgs(exe, cfgPath, name)
 	var b strings.Builder
 	b.WriteString(`<?xml version="1.0" encoding="UTF-8"?>
 <!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
@@ -125,7 +125,14 @@ func renderLaunchAgent(home, exe, cfgPath, name string, schedule config.PolicySc
 	for _, arg := range args {
 		fmt.Fprintf(&b, "    <string>%s</string>\n", xmlEscape(arg))
 	}
+	// RunAtLoad: launchd skips a StartCalendarInterval slot that passes
+	// while the machine is shut down (it only catches up after sleep),
+	// so the agent also runs when it loads — at login — and --if-due
+	// decides whether that run is owed. --startup-delay lets the
+	// network and keyring settle first.
 	b.WriteString(`  </array>
+  <key>RunAtLoad</key>
+  <true/>
   <key>StartCalendarInterval</key>
   <dict>
 `)
@@ -143,6 +150,21 @@ func renderLaunchAgent(home, exe, cfgPath, name string, schedule config.PolicySc
 </plist>
 `, xmlEscape(logPath), xmlEscape(logPath))
 	return b.String(), nil
+}
+
+// policyRunArgs is the one command both platforms install:
+// `sentra policy run <name> --if-due --startup-delay 1m --config <path>
+// --log-level info`. --if-due makes a login-time launch a no-op when
+// the last run already covers the schedule's most recent slot, so the
+// catch-up never doubles a backup that fired on time.
+func policyRunArgs(exe, cfgPath, name string) []string {
+	return []string{
+		exe, "policy", "run", name,
+		"--if-due",
+		"--startup-delay", "1m",
+		"--config", cfgPath,
+		"--log-level", "info",
+	}
 }
 
 type launchdCalendarEntry struct {
@@ -186,16 +208,15 @@ func renderSystemdUserUnits(exe, cfgPath, name string, schedule config.PolicySch
 	if err != nil {
 		return "", "", err
 	}
-	execStart := strings.Join([]string{
-		systemdQuoteArg(exe),
-		"policy",
-		"run",
-		systemdQuoteArg(name),
-		"--config",
-		systemdQuoteArg(cfgPath),
-		"--log-level",
-		"info",
-	}, " ")
+	// systemd already catches up a missed slot via Persistent=true, so
+	// --if-due is redundant here; it is passed anyway so both platforms
+	// install one command shape.
+	args := policyRunArgs(exe, cfgPath, name)
+	quoted := make([]string, len(args))
+	for i, arg := range args {
+		quoted[i] = systemdQuoteArg(arg)
+	}
+	execStart := strings.Join(quoted, " ")
 	service = fmt.Sprintf(`[Unit]
 Description=Sentra policy %s backup
 
