@@ -238,7 +238,13 @@ func NewJobsView(deps Deps) JobsView {
 
 func (JobsView) Init() tea.Cmd { return nil }
 
-func (v JobsView) Title() string { return "Scheduled backups" }
+// Title is the rail, palette, and help label. It is deliberately shorter
+// than the pane heading ("Scheduled backups"): App.View pins the rail to
+// sidebarWidth (18) and the delegate spends up to three of those cells on
+// the indent or the "▍ " marker, so a label past 15 cells wraps onto a
+// second row and shoves every entry below it down a line.
+// TestSidebar_EveryRowFitsTheRailWidth holds the line.
+func (v JobsView) Title() string { return "Schedules" }
 
 func (v JobsView) ConsumesArrows() bool {
 	return (v.stage == jobsList && len(v.rows) > 0) || v.stage == jobsDetail

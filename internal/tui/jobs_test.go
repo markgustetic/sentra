@@ -456,8 +456,8 @@ func TestJobs_OnTheRailUnderBackup(t *testing.T) {
 		}
 		t.Fatalf("rail = %v, want jobs at index 2 under backup", ids)
 	}
-	if cmds[2].Title != "Scheduled backups" {
-		t.Errorf("rail title = %q, want Scheduled backups", cmds[2].Title)
+	if cmds[2].Title != "Schedules" {
+		t.Errorf("rail title = %q, want Schedules", cmds[2].Title)
 	}
 }
 

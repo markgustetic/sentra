@@ -201,10 +201,10 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   TUI. A gap inside the floor is a bug; anything outside it is CLI-at-will,
   needing no TUI affordance and no entry in any list. Completable does not
   mean rail-listed: the rail holds seven destinations (Dashboard, Backup,
-  Scheduled backups, Snapshots, Maintenance, Settings, Help) and the rest of
+  Schedules, Snapshots, Maintenance, Settings, Help) and the rest of
   the floor lives one launcher inside them — restore/diff from a snapshot
   row, check/prune/sync/doctor from Maintenance, recovery-kit/passphrase/
-  setup from Settings. The jobs view (id `jobs`, title "Scheduled backups")
+  setup from Settings. The jobs view (id `jobs`, rail title "Schedules")
   sits on the rail under Backup; the Backup view is a three-step wizard
   (Location → Schedule → Confirm) whose Schedule step writes a named policy
   and OS timer through the same `config.Update` + `scheduler` path

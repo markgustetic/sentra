@@ -72,7 +72,7 @@ built-in agent that audits your repository and surfaces recommendations.
   <tr>
     <td colspan="2" valign="top" align="center">
       <img src="docs/screenshots/backup-schedule.png" width="50%" alt="Backup wizard, step 2: a cadence list (one-shot, hourly, daily, weekly, monthly) with daily selected, and prefilled policy name and time fields.">
-      <br><sub><b>Backup, step 2</b> — one-shot, or a cadence that installs a named policy and an OS timer; it then shows up under Scheduled backups.</sub>
+      <br><sub><b>Backup, step 2</b> — one-shot, or a cadence that installs a named policy and an OS timer; it then shows up under Schedules.</sub>
     </td>
   </tr>
 </table>
@@ -254,7 +254,7 @@ The full walkthrough lives in [`docs/QUICKSTART.md`](docs/QUICKSTART.md).
 Bare `sentra` falls through to `sentra ui`. Where it lands depends on your state:
 **no `sentra.yaml` → first-run wizard**, **configured but locked → unlock gate**,
 otherwise **the dashboard**. The rail holds seven destinations — Dashboard,
-Backup, Scheduled backups, Snapshots, Maintenance, Settings, Help — and the
+Backup, Schedules, Snapshots, Maintenance, Settings, Help — and the
 occasional jobs live one keypress inside them: restore and diff launch from a
 snapshot row, check/prune/sync/doctor from Maintenance, recovery-kit/
 passphrase/setup from Settings. Backup is a three-step wizard: pick the
@@ -273,7 +273,7 @@ Handy keys (the status bar always shows what's live):
 | `ctrl+a` | Assistant chat — ask questions, or say what to do (actions still confirm) |
 | `r` · `d` (in Snapshots) | Restore · diff the highlighted snapshot |
 | `enter` · `esc` (in Backup) | Next wizard step · back a step |
-| `enter` · `e` · `d` (in Scheduled backups) | Drill into a job's files · edit · delete (policy + timer) |
+| `enter` · `e` · `d` (in Schedules) | Drill into a job's files · edit · delete (policy + timer) |
 | `?` · `q` | Help · quit |
 
 > Selection is carried by a `▍` glyph, not just color, and the neon strips

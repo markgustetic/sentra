@@ -99,7 +99,7 @@ func NewUI(deps UIDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "ui",
 		Short:         "Launch the full-screen TUI dashboard",
-		Long:          "Open the full-screen TUI: a seven-view rail (Dashboard, Backup, Scheduled backups, Snapshots, Maintenance, Settings, Help). Digits 1-7 jump to a view, ctrl+p opens the command palette, q quits.",
+		Long:          "Open the full-screen TUI: a seven-view rail (Dashboard, Backup, Schedules, Snapshots, Maintenance, Settings, Help). Digits 1-7 jump to a view, ctrl+p opens the command palette, q quits.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,

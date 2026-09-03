@@ -331,7 +331,7 @@ dispatching the action.
 sentra ui   # or just `sentra` with no args
 ```
 
-A left rail lists seven views — **Dashboard, Backup, Scheduled backups,
+A left rail lists seven views — **Dashboard, Backup, Schedules,
 Snapshots, Maintenance, Settings, Help** — with a live preview as you scroll;
 digits `1`-`7` jump straight to one, and `ctrl+p` opens a command palette. The
 occasional jobs live one keypress inside: on a snapshot row `r` restores it

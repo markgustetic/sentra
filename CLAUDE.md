@@ -16,7 +16,7 @@ it lands on the unlock gate; otherwise the dashboard. A configured repo that
 fails to *open* (expired AWS SSO, unreachable bucket) lands on the connect
 gate — retry or run the profile's aws login command from inside the TUI; only
 config-file errors exit to the CLI. The TUI covers the human floor through a
-seven-view rail (Dashboard, Backup, Scheduled backups, Snapshots, Maintenance,
+seven-view rail (Dashboard, Backup, Schedules, Snapshots, Maintenance,
 Settings, Help) with the occasional jobs launched from inside those; stats
 and the agent are CLI-only. `ctrl+a` opens the assistant chat overlay
 anywhere outside the startup gates: it answers from snapshot metadata and
