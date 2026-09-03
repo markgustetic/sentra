@@ -77,3 +77,55 @@ func clockParts(at string) (int, int, bool) {
 	mm, _ := strconv.Atoi(at[3:5])
 	return hh, mm, true
 }
+
+// PreviousRun is NextRun's backward twin: the most recent slot at or
+// before now (inclusive — a snapshot taken exactly at the slot counts
+// as that slot's run). It is what `policy run --if-due` compares the
+// last snapshot against, so it must agree slot-for-slot with NextRun
+// and with the renderers: for any now, NextRun(PreviousRun(now)) ==
+// NextRun(now). All stepping is wall-clock (AddDate, time.Date), never
+// absolute (Add(-24h)): on the day the clocks change those disagree,
+// and the OS timers fire on wall time.
+func PreviousRun(s config.PolicySchedule, now time.Time) (time.Time, bool) {
+	s = NormalizeSchedule(s)
+	loc := now.Location()
+	switch s.Cadence {
+	case CadenceHourly:
+		return time.Date(now.Year(), now.Month(), now.Day(), now.Hour(), 0, 0, 0, loc), true
+	case CadenceDaily:
+		hh, mm, ok := clockParts(s.At)
+		if !ok {
+			return time.Time{}, false
+		}
+		t := time.Date(now.Year(), now.Month(), now.Day(), hh, mm, 0, 0, loc)
+		if t.After(now) {
+			t = t.AddDate(0, 0, -1)
+		}
+		return t, true
+	case CadenceWeekly:
+		hh, mm, ok := clockParts(s.At)
+		target, wok := weekdayIndex[s.Weekday]
+		if !ok || !wok {
+			return time.Time{}, false
+		}
+		days := (int(now.Weekday()) - int(target) + 7) % 7
+		t := time.Date(now.Year(), now.Month(), now.Day()-days, hh, mm, 0, 0, loc)
+		if t.After(now) {
+			t = t.AddDate(0, 0, -7)
+		}
+		return t, true
+	case CadenceMonthly:
+		hh, mm, ok := clockParts(s.At)
+		if !ok {
+			return time.Time{}, false
+		}
+		t := time.Date(now.Year(), now.Month(), 1, hh, mm, 0, 0, loc)
+		if t.After(now) {
+			// time.Date normalizes month 0 to December of the prior year.
+			t = time.Date(now.Year(), now.Month()-1, 1, hh, mm, 0, 0, loc)
+		}
+		return t, true
+	default: // manual, or anything unrecognized
+		return time.Time{}, false
+	}
+}
