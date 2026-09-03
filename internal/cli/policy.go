@@ -28,8 +28,11 @@ type PolicyDeps struct {
 
 	// OS and HomeDir steer the timer-file cleanup in remove; zero
 	// values fall back to the runtime platform and home directory.
+	// Runner unloads the timer from launchd/systemd before the files go;
+	// nil means scheduler.ExecRunner, so tests must inject a fake.
 	OS      string
 	HomeDir func() (string, error)
+	Runner  scheduler.Runner
 
 	// Now is the clock `run --if-due` measures the schedule against;
 	// nil means time.Now.
@@ -314,6 +317,11 @@ func runPolicyRemove(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string) 
 	}
 	if paths, pErr := scheduler.PathsFor(deps.OS, home, name); pErr == nil {
 		if installed, iErr := scheduler.Installed(paths); iErr == nil && installed {
+			// Unload before removing: a job launchd/systemd still holds
+			// would keep firing `policy run` on the deleted name.
+			if dErr := scheduler.Deactivate(cmd.Context(), paths, deps.Runner); dErr != nil {
+				fmt.Fprintf(out, "  warning: %v\n", dErr)
+			}
 			if uErr := scheduler.Uninstall(paths); uErr != nil {
 				fmt.Fprintf(out, "  warning: schedule entry not removed: %v\n", uErr)
 			} else {

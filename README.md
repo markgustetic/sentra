@@ -199,13 +199,22 @@ sentra schedule install home
 sentra schedule status home
 ```
 
+`schedule install` writes the LaunchAgent plist (macOS) or the systemd user
+service + timer (Linux) **and loads it right away** — `launchctl bootstrap
+gui/$UID …` or `systemctl --user enable --now …` — so nothing waits for your
+next login. `schedule status` asks the OS whether the timer is actually
+loaded, and when it is not (a headless SSH session has no user session to
+load into) it prints the exact command to run once you have one.
+`schedule uninstall` unloads the timer before removing its files.
+
 A slot that passes while the machine is **asleep** fires when it wakes, on
 both platforms. One that passes while it is **shut down** is caught up at
 your next login: the timer also runs `sentra policy run --if-due` at load,
 which backs up only if no snapshot of the policy exists since its most
-recent scheduled slot and otherwise exits with "not due until …".
-`schedule status` and the Schedules view show the computed next slot, not
-the catch-up.
+recent scheduled slot and otherwise exits with "not due until …". Loading
+at install counts too, so a brand-new schedule takes its first backup right
+after `schedule install`. `schedule status` and the Schedules view show the
+computed next slot, not the catch-up.
 
 Want a reviewed, two-step run? Write a JSON plan, inspect it, then apply:
 

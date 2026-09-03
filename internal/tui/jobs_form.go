@@ -339,7 +339,13 @@ func (v JobsView) syncTimerAfterSave(name, oldSpec string, p config.PolicyConfig
 	if err != nil || !installed {
 		return "", err
 	}
+	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
 	if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
+		// Unload before removing the files, or the OS keeps firing the
+		// old cadence until logout.
+		if err := scheduler.Deactivate(ctx, paths, runner); err != nil {
+			return "", err
+		}
 		if err := scheduler.Uninstall(paths); err != nil {
 			return "", err
 		}
@@ -354,6 +360,11 @@ func (v JobsView) syncTimerAfterSave(name, oldSpec string, p config.PolicyConfig
 		return "", err
 	}
 	if err := scheduler.Install(files); err != nil {
+		return "", err
+	}
+	// launchd keeps running the OLD plist until the label is bootstrapped
+	// again; systemd needs a daemon-reload to see the new OnCalendar.
+	if err := scheduler.Activate(ctx, paths, runner); err != nil {
 		return "", err
 	}
 	return "timer reinstalled for " + newSpec, nil

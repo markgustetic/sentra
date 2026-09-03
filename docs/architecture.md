@@ -26,7 +26,7 @@ sentra/
 │   ├── setup/                  # headless setup engine: pure state model, an
 │   │                           #   Effects seam for AWS/keyring, stepwise Engine
 │   ├── policy/                 # named-policy validation + hooks
-│   ├── scheduler/              # launchd/systemd unit rendering + install
+│   ├── scheduler/              # launchd/systemd unit rendering, install + activation
 │   ├── recoverykit/            # printable recovery-document rendering
 │   ├── progress/               # progress reporters shared by CLI + TUI
 │   └── diag/                   # doctor's AWS/repo probes (below both surfaces)

@@ -134,14 +134,37 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   post-backup check/prune preferences, but must never include passphrases,
   key material, AWS credentials, or other secrets. `sentra policy run` should
   reuse existing repo snapshot/check/prune primitives instead of duplicating
-  storage logic. `policy remove` uninstalls the policy's OS timer files when
-  present (best-effort, warning on failure) — an installed timer for a
-  deleted policy can only fail.
-- `sentra schedule` installs user-level OS scheduler files for named policies.
-  It should generate launchd/systemd files that invoke `sentra policy run`;
-  do not introduce a resident Sentra daemon or write secrets into scheduler
-  files. `schedule status` prints the computed next run for an installed
-  schedule (`policy.NextRun` — wall-clock, mirrors the renderers).
+  storage logic. `policy remove` uninstalls the policy's OS timer when
+  present — deactivates it, then removes the files (best-effort, warning on
+  failure) — an installed timer for a deleted policy can only fail.
+- `sentra schedule` installs user-level OS scheduler entries for named
+  policies. It generates launchd/systemd files that invoke `sentra policy
+  run`; do not introduce a resident Sentra daemon or write secrets into
+  scheduler files. **Writing the files is not installing:** a LaunchAgent is
+  only picked up at the next login and an un-enabled systemd timer never
+  fires, so `install` also activates — darwin `launchctl bootout` (so a
+  re-render replaces the loaded job) then `launchctl bootstrap gui/$UID
+  <plist>`, falling back to legacy `launchctl load -w` when bootstrap is
+  unknown; linux `systemctl --user daemon-reload && systemctl --user enable
+  --now sentra-<name>.timer`. `uninstall` deactivates FIRST (`bootout` /
+  `disable --now`; an already-unloaded label is success), then removes the
+  files, and removes them even when the OS could not be told. Activation
+  runs through an injectable `scheduler.Runner` (nil = `ExecRunner`); the
+  render/write helpers (`Render`, `Install`, `Uninstall`, `Installed`) stay
+  filesystem-only, and **tests must inject a fake runner** — the real one
+  loads a job on the developer's machine. A failed activation leaves the
+  files in place and returns `*scheduler.ActivationError`, whose message
+  names the exact command for the operator (headless SSH, no user bus,
+  missing binary); `install`/`uninstall` still print their summary and exit
+  non-zero. `schedule status` asks the OS (`launchctl print` /
+  `systemctl --user is-active`) and prints `timer: active`, `timer: not
+  active — run: <command>`, or `timer: unknown (<why>)` when it could not
+  ask; the computed next run (`policy.NextRun` — wall-clock, mirrors the
+  renderers) is printed only for an active or unknown timer, never for one
+  the OS will not fire. The TUI jobs view's Timer column shows the same
+  three states (`active` / `inactive` / `installed` for unknown) and its
+  install, uninstall, delete, and edit paths activate/deactivate through
+  `Deps.SchedulerRunner`.
 - Missed slots are caught up anacron-style, and the catch-up lives in the
   command, not the timer. A slot that passes while the machine sleeps fires
   on wake on both platforms; one that passes while it is shut down is
@@ -155,11 +178,15 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   (`policy.PreviousRun`, NextRun's backward twin): a run at or after the slot
   prints one "not due until <NextRun>" line and exits 0 without taking the
   repo lock; no matching snapshot means due, so a fresh schedule runs at
-  once. The check runs inside the hook envelope — a not-due run fires no
-  hook, a failed check still fires `on_failure`. `--startup-delay` is for the
-  login path only, so the network and keyring can settle. `schedule status`
-  and the Schedules view keep showing the computed next slot; nothing shells
-  out to `launchctl` or `systemctl` to ask the OS.
+  once — and since `install` bootstraps the plist immediately, "at once"
+  means right after `schedule install` on darwin, not at the next login.
+  The check runs inside the hook envelope — a not-due run fires no hook, a
+  failed check still fires `on_failure`. `--startup-delay` is for the login
+  path only, so the network and keyring can settle. `schedule status` and
+  the Schedules view keep showing the computed next slot, never the
+  catch-up; the slot math never shells out — only the activation layer
+  (`scheduler.Activate` / `Deactivate` / `Active`) talks to `launchctl` /
+  `systemctl`.
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.

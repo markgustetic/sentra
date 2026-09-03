@@ -300,6 +300,7 @@ func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 	goos := v.osOverride
 	home := v.homeOverride
 	exeOverride := v.exeOverride
+	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
 	run := func() tea.Msg {
 		if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
 			return jobTimerMsg{err: fmt.Errorf("job %q has a manual schedule; set a cadence before installing", name)}
@@ -319,7 +320,13 @@ func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 		if err := scheduler.Install(files); err != nil {
 			return jobTimerMsg{err: err}
 		}
-		return jobTimerMsg{notice: fmt.Sprintf("installed timer for %q", name)}
+		// Files alone wait for the next login (launchd) or forever
+		// (systemd): load them now. On failure the files stay and the
+		// error carries the command to run by hand.
+		if err := scheduler.Activate(ctx, paths, runner); err != nil {
+			return jobTimerMsg{err: err}
+		}
+		return jobTimerMsg{notice: fmt.Sprintf("installed timer for %q; now active", name)}
 	}
 	return v, run
 }
@@ -334,13 +341,21 @@ func (v JobsView) runTimerUninstall() (tea.Model, tea.Cmd) {
 	name := row.name
 	goos := v.osOverride
 	home := v.homeOverride
+	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
 	run := func() tea.Msg {
 		paths, err := scheduler.PathsFor(goos, home, name)
 		if err != nil {
 			return jobTimerMsg{err: err}
 		}
+		// Unload first (systemd resolves `disable` from the unit on disk),
+		// then remove the files either way so a headless session can
+		// still clean up; the error names the command to finish with.
+		deactErr := scheduler.Deactivate(ctx, paths, runner)
 		if err := scheduler.Uninstall(paths); err != nil {
 			return jobTimerMsg{err: err}
+		}
+		if deactErr != nil {
+			return jobTimerMsg{err: deactErr}
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("removed timer for %q", name)}
 	}
@@ -362,6 +377,7 @@ func (v JobsView) runDelete() (tea.Model, tea.Cmd) {
 	name := row.name
 	cfgPath := v.deps.ConfigPath
 	goos, home := v.osOverride, v.homeOverride
+	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
 	run := func() tea.Msg {
 		if err := config.Update(cfgPath, func(cfg *config.Config) error {
 			delete(cfg.Policies, name)
@@ -373,8 +389,14 @@ func (v JobsView) runDelete() (tea.Model, tea.Cmd) {
 		if err != nil {
 			return jobTimerMsg{notice: fmt.Sprintf("deleted %q (timer cleanup skipped: %v)", name, err)}
 		}
+		// A job the OS still holds would keep running `policy run` on
+		// the deleted name: unload it, then drop the files.
+		deactErr := scheduler.Deactivate(ctx, paths, runner)
 		if err := scheduler.Uninstall(paths); err != nil {
 			return jobTimerMsg{notice: fmt.Sprintf("deleted %q, but removing its timer failed: %v", name, err)}
+		}
+		if deactErr != nil {
+			return jobTimerMsg{notice: fmt.Sprintf("deleted %q; %v", name, deactErr)}
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("deleted %q — policy and timer removed; snapshots kept", name)}
 	}

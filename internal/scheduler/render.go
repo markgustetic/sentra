@@ -22,6 +22,7 @@ import (
 type Paths struct {
 	OS    string
 	Home  string
+	Name  string
 	Files []string
 }
 
@@ -46,6 +47,7 @@ func PathsFor(goos, home, name string) (Paths, error) {
 		return Paths{
 			OS:    goos,
 			Home:  home,
+			Name:  name,
 			Files: []string{filepath.Join(home, "Library", "LaunchAgents", "com.sentra."+name+".plist")},
 		}, nil
 	case "linux":
@@ -53,6 +55,7 @@ func PathsFor(goos, home, name string) (Paths, error) {
 		return Paths{
 			OS:   goos,
 			Home: home,
+			Name: name,
 			Files: []string{
 				filepath.Join(dir, "sentra-"+name+".service"),
 				filepath.Join(dir, "sentra-"+name+".timer"),

@@ -29,6 +29,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/scheduler"
 	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -104,6 +105,13 @@ type Deps struct {
 	// at call time. May be nil when the wizard view isn't reachable (a
 	// repo that's already configured and unlocked never needs it).
 	SetupEffects setup.Effects
+
+	// SchedulerRunner executes launchctl/systemctl for the jobs view and
+	// the Backup wizard: activating a freshly written timer, unloading
+	// one being removed, and asking whether an installed one is live.
+	// nil means scheduler.ExecRunner. Tests MUST inject a fake — the real
+	// runner loads a job on the developer's machine.
+	SchedulerRunner scheduler.Runner
 
 	// PassphraseFile is the --passphrase-file path the process was launched
 	// with, empty when the flag was not given. The setup wizard resolves it

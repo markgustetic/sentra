@@ -24,6 +24,11 @@ type ScheduleDeps struct {
 	// Now feeds the next-run computation; nil means time.Now. A seam so
 	// status output is testable against a pinned clock.
 	Now func() time.Time
+
+	// Runner executes launchctl/systemctl for activation, deactivation and
+	// the status query; nil means scheduler.ExecRunner. Tests MUST inject
+	// a fake: the real one loads a job on the developer's machine.
+	Runner scheduler.Runner
 }
 
 // NewSchedule returns the command group for installing policy schedules.
@@ -32,7 +37,7 @@ func NewSchedule(deps ScheduleDeps) *cobra.Command {
 	cmd := &cobra.Command{
 		Use:           "schedule",
 		Short:         "Install OS scheduler entries for policies",
-		Long:          "Install, inspect, and remove user-level OS scheduler entries that run `sentra policy run`.",
+		Long:          "Install, inspect, and remove user-level OS scheduler entries that run `sentra policy run`. Install loads the timer into launchd/systemd right away; uninstall unloads it before removing the files.",
 		Args:          cobra.NoArgs,
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -48,7 +53,7 @@ func NewSchedule(deps ScheduleDeps) *cobra.Command {
 func newScheduleInstall(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:           "install <policy>",
-		Short:         "Install a policy schedule",
+		Short:         "Install and activate a policy schedule",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -61,7 +66,7 @@ func newScheduleInstall(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 func newScheduleStatus(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:           "status <policy>",
-		Short:         "Show whether a policy schedule is installed",
+		Short:         "Show whether a policy schedule is installed and active",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -74,7 +79,7 @@ func newScheduleStatus(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 func newScheduleUninstall(deps ScheduleDeps, cfgPath *string) *cobra.Command {
 	return &cobra.Command{
 		Use:           "uninstall <policy>",
-		Short:         "Remove an installed policy schedule",
+		Short:         "Deactivate and remove an installed policy schedule",
 		Args:          cobra.ExactArgs(1),
 		SilenceUsage:  true,
 		SilenceErrors: false,
@@ -115,6 +120,10 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 	if err := scheduler.Install(files); err != nil {
 		return err
 	}
+	// Files alone do nothing until launchd/systemd loads them (at the next
+	// login, or never for a systemd timer that was not enabled). Activate
+	// now; on failure the files stay and the error names the command.
+	actErr := scheduler.Activate(cmd.Context(), paths, deps.Runner)
 
 	out := scheduleStdout(cmd, deps)
 	fmt.Fprintln(out, ui.Success.Render("Schedule installed"))
@@ -123,6 +132,11 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 	for _, path := range paths.Files {
 		fmt.Fprintf(out, "  file:     %s\n", path)
 	}
+	if actErr != nil {
+		fmt.Fprintln(out, "  timer:    not active")
+		return actErr
+	}
+	fmt.Fprintln(out, "  timer:    active")
 	return nil
 }
 
@@ -157,14 +171,29 @@ func runScheduleStatus(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name stri
 	for _, path := range paths.Files {
 		fmt.Fprintf(out, "  file:   %s\n", path)
 	}
-	if installed {
-		nowFn := deps.Now
-		if nowFn == nil {
-			nowFn = time.Now
-		}
-		if next, ok := policycfg.NextRun(p.Schedule, nowFn()); ok {
-			fmt.Fprintf(out, "  next run: %s\n", next.Format("2006-01-02 15:04"))
-		}
+	if !installed {
+		return nil
+	}
+	// Installed files are only half the story: report whether the OS has
+	// the timer loaded, and hand over the activation command when it does
+	// not. A next run is promised only when the timer can actually fire —
+	// or when we could not ask (no user bus), which is not a "no".
+	active, actErr := scheduler.Active(cmd.Context(), paths, deps.Runner)
+	switch {
+	case actErr != nil:
+		fmt.Fprintf(out, "  timer:  unknown (%v)\n", actErr)
+	case active:
+		fmt.Fprintln(out, "  timer:  active")
+	default:
+		fmt.Fprintf(out, "  timer:  not active — run: %s\n", scheduler.ActivateCommand(paths))
+		return nil
+	}
+	nowFn := deps.Now
+	if nowFn == nil {
+		nowFn = time.Now
+	}
+	if next, ok := policycfg.NextRun(p.Schedule, nowFn()); ok {
+		fmt.Fprintf(out, "  next run: %s\n", next.Format("2006-01-02 15:04"))
 	}
 	return nil
 }
@@ -185,12 +214,22 @@ func runScheduleUninstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name s
 	if err != nil {
 		return err
 	}
+	// Deactivate first — systemd resolves `disable` from the unit on disk —
+	// then remove the files regardless: a headless session that cannot
+	// reach the OS scheduler must still be able to clean up, and the
+	// returned error names the command to finish the job with.
+	deactErr := scheduler.Deactivate(cmd.Context(), paths, deps.Runner)
 	if err := scheduler.Uninstall(paths); err != nil {
 		return err
 	}
 	out := scheduleStdout(cmd, deps)
 	fmt.Fprintln(out, ui.Success.Render("Schedule removed"))
 	fmt.Fprintf(out, "  policy: %s\n", name)
+	if deactErr != nil {
+		fmt.Fprintln(out, "  timer:  may still be loaded")
+		return deactErr
+	}
+	fmt.Fprintln(out, "  timer:  stopped")
 	return nil
 }
 

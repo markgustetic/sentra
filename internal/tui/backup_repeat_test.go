@@ -28,7 +28,10 @@ func repeatFixture(t *testing.T) (BackupView, string, string) {
 		t.Fatal(err)
 	}
 	home := t.TempDir()
-	v := NewBackupView(Deps{Repo: newFlowRepo(t), Config: loaded, ConfigPath: cfgPath})
+	v := NewBackupView(Deps{
+		Repo: newFlowRepo(t), Config: loaded, ConfigPath: cfgPath,
+		SchedulerRunner: (&fakeSchedRunner{}).run, // never shell out from a test
+	})
 	v.schedGOOS = "linux"
 	v.schedHome = home
 	v.schedExe = "/usr/bin/sentra"

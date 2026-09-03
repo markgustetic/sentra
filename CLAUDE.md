@@ -101,8 +101,9 @@ git worktree remove --force /tmp/chk
   `credentialsfile.go`): one customer-managed policy per bucket so buckets
   accumulate on the user, the secret never crosses the Effects seam,
   `~/.aws/config` and the `default` credentials profile are never written.
-- `internal/recoverykit` — recovery-kit rendering; `internal/scheduler` — cron
-  emission; `internal/diag` — doctor's AWS/repo probes + `Explain` (known-cause
+- `internal/recoverykit` — recovery-kit rendering; `internal/scheduler` —
+  launchd/systemd emission + activation behind an injectable `Runner`
+  (tests inject a fake; the real one loads jobs on your machine); `internal/diag` — doctor's AWS/repo probes + `Explain` (known-cause
   error prose for the TUI)
 - `internal/mcpserver` — `sentra mcp`: stdio MCP server; metadata-only reads,
   two-phase plan→confirm mutations (see AGENTS.md for the contract)

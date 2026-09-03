@@ -77,10 +77,17 @@ type jobRow struct {
 	spec      string
 	manual    bool
 	installed bool
-	next      time.Time
-	nextOK    bool
-	lastID    string
-	lastAt    time.Time
+	// active/activeKnown carry the OS scheduler's answer for an installed
+	// timer: files under LaunchAgents or systemd/user do nothing until
+	// launchd/systemd loads them, so "installed" alone can lie. activeKnown
+	// is false when the question could not be asked (no user bus, no
+	// launchctl) — rendered as plain "installed", never as "inactive".
+	active      bool
+	activeKnown bool
+	next        time.Time
+	nextOK      bool
+	lastID      string
+	lastAt      time.Time
 }
 
 // jobDetailMsg carries a finished manifest load for the drill-in
@@ -275,9 +282,15 @@ func (v *JobsView) reload() {
 				if installed, sErr := scheduler.Installed(paths); sErr == nil {
 					row.installed = installed
 				}
+				if row.installed {
+					active, aErr := scheduler.Active(ctxOrBackground(v.deps.Ctx), paths, v.deps.SchedulerRunner)
+					row.active, row.activeKnown = active, aErr == nil
+				}
 			}
 		}
-		if row.installed {
+		// A next run is a promise the OS will fire the timer: only for a
+		// loaded one, or one whose state we could not check.
+		if row.installed && (row.active || !row.activeKnown) {
 			row.next, row.nextOK = policycfg.NextRun(p.Schedule, nowT)
 		}
 		abs := make([]string, 0, len(p.Paths))
@@ -308,15 +321,19 @@ func jobTimerLabel(r jobRow) string {
 	switch {
 	case r.manual:
 		return "—"
-	case r.installed:
-		return "installed"
-	default:
+	case !r.installed:
 		return "not installed"
+	case !r.activeKnown:
+		return "installed"
+	case r.active:
+		return "active"
+	default:
+		return "inactive"
 	}
 }
 
 func jobNextLabel(r jobRow) string {
-	if !r.installed || !r.nextOK {
+	if !r.nextOK {
 		return "—"
 	}
 	return r.next.Format("Jan 2 15:04")

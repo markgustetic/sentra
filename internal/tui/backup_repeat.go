@@ -82,6 +82,13 @@ func (v BackupView) installRepeat(root, name string, schedule config.PolicySched
 	if err := scheduler.Install(files); err != nil {
 		return err
 	}
+	// Load it now: the files alone wait for the next login (launchd) or
+	// never fire (an un-enabled systemd timer). A failure leaves the
+	// policy and files in place and names the command; the wizard shows
+	// it instead of starting a run it cannot promise to repeat.
+	if err := scheduler.Activate(ctxOrBackground(v.deps.Ctx), paths, v.deps.SchedulerRunner); err != nil {
+		return err
+	}
 	// Mirror disk in the shared resolved config so the Scheduled backups
 	// tab lists the policy without a relaunch.
 	if v.deps.Config != nil {

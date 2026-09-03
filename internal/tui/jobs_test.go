@@ -82,6 +82,11 @@ func jobsDeps(t *testing.T) (Deps, string) {
 
 func newJobsForTest(t *testing.T, deps Deps) JobsView {
 	t.Helper()
+	if deps.SchedulerRunner == nil {
+		// Never the production runner: a test that installs a timer
+		// would otherwise load a real launchd job on this machine.
+		deps.SchedulerRunner = (&fakeSchedRunner{}).run
+	}
 	v := NewJobsView(deps)
 	v.homeOverride = t.TempDir() // no scheduler files -> not installed
 	v.now = func() time.Time { return jobsNow }
@@ -121,8 +126,10 @@ func TestJobs_InstalledRowComputesNextRun(t *testing.T) {
 	v.reload()
 	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	out := sized.(JobsView).View()
-	// jobsNow is Mar 10 14:30; daily@03:00 -> next run Mar 11 03:00.
-	if !strings.Contains(out, "installed") || !strings.Contains(out, "Mar 11 03:00") {
+	// jobsNow is Mar 10 14:30; daily@03:00 -> next run Mar 11 03:00. The
+	// fake runner answers every query with success, so the loaded timer
+	// reads "active".
+	if !strings.Contains(out, "active") || !strings.Contains(out, "Mar 11 03:00") {
 		t.Fatalf("installed daily job must show next run:\n%s", out)
 	}
 }

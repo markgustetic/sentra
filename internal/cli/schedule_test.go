@@ -34,6 +34,7 @@ func TestScheduleInstall_DarwinWritesLaunchAgent(t *testing.T) {
 		OS:         "darwin",
 		HomeDir:    func() (string, error) { return home, nil },
 		Executable: func() (string, error) { return "/usr/local/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Stdout:     out,
 	})
 	cmd.SetOut(out)
@@ -82,6 +83,7 @@ func TestScheduleInstall_LinuxWritesSystemdUserFiles(t *testing.T) {
 		OS:         "linux",
 		HomeDir:    func() (string, error) { return home, nil },
 		Executable: func() (string, error) { return "/usr/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Stdout:     out,
 	})
 	cmd.SetOut(out)
@@ -122,6 +124,7 @@ func TestScheduleStatusAndUninstall(t *testing.T) {
 		OS:         "linux",
 		HomeDir:    func() (string, error) { return home, nil },
 		Executable: func() (string, error) { return "/usr/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Stdout:     out,
 	}
 
@@ -170,6 +173,7 @@ func TestScheduleInstall_RejectsManualPolicy(t *testing.T) {
 		OS:         "linux",
 		HomeDir:    func() (string, error) { return filepath.Join(dir, "home"), nil },
 		Executable: func() (string, error) { return "/usr/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Stdout:     io.Discard,
 	})
 	cmd.SetOut(io.Discard)
@@ -190,6 +194,7 @@ func TestScheduleInstall_RejectsUnsupportedOS(t *testing.T) {
 		OS:         "plan9",
 		HomeDir:    func() (string, error) { return filepath.Join(dir, "home"), nil },
 		Executable: func() (string, error) { return "/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Stdout:     io.Discard,
 	})
 	cmd.SetOut(io.Discard)
@@ -226,6 +231,7 @@ func TestScheduleInstall_DiscoversHomeConfigAndEmbedsAbsolutePath(t *testing.T) 
 		OS:         "darwin",
 		HomeDir:    func() (string, error) { return home, nil },
 		Executable: func() (string, error) { return "/usr/local/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Stdout:     out,
 	})
 	cmd.SetOut(out)
@@ -253,6 +259,7 @@ func TestScheduleStatusPrintsNextRun(t *testing.T) {
 		OS:         "darwin",
 		HomeDir:    func() (string, error) { return home, nil },
 		Executable: func() (string, error) { return "/usr/local/bin/sentra", nil },
+		Runner:     (&fakeSchedRunner{}).run,
 		Now:        func() time.Time { return time.Date(2026, 3, 10, 14, 30, 0, 0, time.UTC) },
 	}
 

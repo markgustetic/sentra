@@ -491,6 +491,7 @@ func TestPolicyRemoveUninstallsTimer(t *testing.T) {
 		RepoDeps: RepoDeps{Stdout: out},
 		OS:       "darwin",
 		HomeDir:  func() (string, error) { return home, nil },
+		Runner:   (&fakeSchedRunner{}).run,
 	})
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
