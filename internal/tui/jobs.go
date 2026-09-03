@@ -4,7 +4,6 @@ import (
 	"context"
 	"fmt"
 	"os"
-	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -21,33 +20,6 @@ import (
 	"github.com/markgustetic/sentra/internal/ui"
 )
 
-// normalizeJobPath resolves a policy path the way the walker records
-// snapshot roots (filepath.Abs + Clean), expanding a leading ~ against
-// home, so job paths and SnapshotInfo.Root compare equal.
-func normalizeJobPath(p, home string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return filepath.Clean(p)
-	}
-	return filepath.Clean(abs)
-}
-
-// hasPolicyTag reports whether the space-joined tag string carries the
-// exact token "policy:<name>" — token equality, not substring, so
-// "policy:home" never matches job "hom" or tag "my-policy:home".
-func hasPolicyTag(tag, name string) bool {
-	want := "policy:" + name
-	for _, f := range strings.Fields(tag) {
-		if f == want {
-			return true
-		}
-	}
-	return false
-}
-
 // newestJobSnapshot is the drill-in resolver: the newest snapshot rooted
 // at pathAbs, preferring ones tagged policy:<name> — an ad-hoc backup of
 // the same directory must not shadow the job's own snapshots, but with
@@ -60,38 +32,11 @@ func newestJobSnapshot(name, pathAbs string, snaps []repo.SnapshotInfo) (repo.Sn
 		if s.Root != pathAbs {
 			continue
 		}
-		st := hasPolicyTag(s.Tag, name)
+		st := policycfg.HasPolicyTag(s.Tag, name)
 		switch {
 		case st && !tagged:
 			best, found, tagged = s, true, true
 		case st == tagged && (!found || s.CreatedAt.After(best.CreatedAt)):
-			best, found = s, true
-		}
-	}
-	return best, found
-}
-
-// lastJobRun is the Last-run column: the newest snapshot tagged
-// policy:<name> anywhere (a run is a run, even for a path since edited
-// out), falling back to the newest snapshot rooted at any of the job's
-// paths when the job has never run under its own tag.
-func lastJobRun(name string, pathsAbs []string, snaps []repo.SnapshotInfo) (repo.SnapshotInfo, bool) {
-	var best repo.SnapshotInfo
-	found := false
-	for _, s := range snaps {
-		if hasPolicyTag(s.Tag, name) && (!found || s.CreatedAt.After(best.CreatedAt)) {
-			best, found = s, true
-		}
-	}
-	if found {
-		return best, true
-	}
-	roots := make(map[string]bool, len(pathsAbs))
-	for _, p := range pathsAbs {
-		roots[p] = true
-	}
-	for _, s := range snaps {
-		if roots[s.Root] && (!found || s.CreatedAt.After(best.CreatedAt)) {
 			best, found = s, true
 		}
 	}
@@ -337,9 +282,9 @@ func (v *JobsView) reload() {
 		}
 		abs := make([]string, 0, len(p.Paths))
 		for _, path := range p.Paths {
-			abs = append(abs, normalizeJobPath(path, home))
+			abs = append(abs, policycfg.NormalizePath(path, home))
 		}
-		if last, ok := lastJobRun(name, abs, v.snaps); ok {
+		if last, ok := policycfg.LastRun(name, abs, v.snaps); ok {
 			row.lastID, row.lastAt = last.ID, last.CreatedAt
 		}
 		rows = append(rows, row)
@@ -659,7 +604,7 @@ func (v *JobsView) openDetail() tea.Cmd {
 	if v.detailPathIdx >= len(p.Paths) {
 		return nil
 	}
-	pathAbs := normalizeJobPath(p.Paths[v.detailPathIdx], v.jobsHome())
+	pathAbs := policycfg.NormalizePath(p.Paths[v.detailPathIdx], v.jobsHome())
 	snap, ok := newestJobSnapshot(v.detailName, pathAbs, v.snaps)
 	if !ok {
 		return nil
