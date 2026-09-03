@@ -219,7 +219,10 @@ sentra schedule status demo
 On macOS this writes a LaunchAgent under `~/Library/LaunchAgents`. On Linux it
 writes systemd user service/timer files under `~/.config/systemd/user`. Sentra
 does not install a background daemon; the scheduler launches `sentra policy run
-demo` with your existing config and passphrase resolution.
+demo --if-due` with your existing config and passphrase resolution. A slot
+missed while the machine was asleep fires on wake; one missed while it was
+shut down is caught up at your next login, and a slot that already ran is
+never repeated.
 
 ## 4. List snapshots
 

@@ -199,6 +199,14 @@ sentra schedule install home
 sentra schedule status home
 ```
 
+A slot that passes while the machine is **asleep** fires when it wakes, on
+both platforms. One that passes while it is **shut down** is caught up at
+your next login: the timer also runs `sentra policy run --if-due` at load,
+which backs up only if no snapshot of the policy exists since its most
+recent scheduled slot and otherwise exits with "not due until …".
+`schedule status` and the Schedules view show the computed next slot, not
+the catch-up.
+
 Want a reviewed, two-step run? Write a JSON plan, inspect it, then apply:
 
 ```bash

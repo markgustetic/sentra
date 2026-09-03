@@ -142,6 +142,24 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   do not introduce a resident Sentra daemon or write secrets into scheduler
   files. `schedule status` prints the computed next run for an installed
   schedule (`policy.NextRun` — wall-clock, mirrors the renderers).
+- Missed slots are caught up anacron-style, and the catch-up lives in the
+  command, not the timer. A slot that passes while the machine sleeps fires
+  on wake on both platforms; one that passes while it is shut down is
+  skipped by launchd (systemd's `Persistent=true` already replays it). So
+  the launchd plist sets `RunAtLoad` and both platforms install one command
+  shape: `policy run <name> --if-due --startup-delay 1m --config … --log-level
+  info`. `--if-due` lists snapshots, finds the policy's last run
+  (`policy.LastRun` — the newest snapshot tagged `policy:<name>`, else the
+  newest rooted at one of its paths; the same resolver behind the TUI's
+  Last-run column) and compares it with the most recent slot
+  (`policy.PreviousRun`, NextRun's backward twin): a run at or after the slot
+  prints one "not due until <NextRun>" line and exits 0 without taking the
+  repo lock; no matching snapshot means due, so a fresh schedule runs at
+  once. The check runs inside the hook envelope — a not-due run fires no
+  hook, a failed check still fires `on_failure`. `--startup-delay` is for the
+  login path only, so the network and keyring can settle. `schedule status`
+  and the Schedules view keep showing the computed next slot; nothing shells
+  out to `launchctl` or `systemctl` to ask the OS.
 - `sentra restore --dry-run` must not create or write the destination.
 - `sentra restore --verify` should compare restored files against manifest
   chunk hashes.
