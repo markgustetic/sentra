@@ -57,13 +57,17 @@ func FuzzAppKeyRouting(f *testing.F) {
 	f.Add([]byte{fkDown, fkEnter, fkTab, fkDown})
 	f.Add([]byte{fkTab, fkTab, fkEnter})
 	f.Add([]byte{fkEnter, fkEnter, fkEnter})
-	// The snapshots-freeze bug: walk the rail to a DIFFERENT view, activate it
-	// (focus moves to the content pane), then press Down. With Deps{} that view
-	// has no rows and cannot use the arrow, so the rail must take it. Without a
-	// seed that actually reaches a content-focused inert view, invariant 5 never
-	// fires.
-	f.Add([]byte{fkDown, fkEnter, fkDown})
-	f.Add([]byte{fkDown, fkDown, fkEnter, fkDown, fkDown})
+	// The snapshots-freeze bug: walk the rail to a view that cannot use ↑/↓
+	// right now, activate it (focus moves to the content pane), then press
+	// Down. The rail must take it. Without a seed that actually reaches a
+	// content-focused arrowless view, invariant 5 never fires — and which
+	// row that is has drifted: rail row 1 was once such a view and is now
+	// Backup, whose folder picker consumes arrows, so the seed goes one row
+	// further to Scheduled backups, which has no rows because the fuzz repo
+	// has no policies. TestFuzzSeed_ReachesAnArrowlessView pins the
+	// destination so the drift cannot recur in silence.
+	f.Add(arrowFallbackSeed)
+	f.Add(append(append([]byte{}, arrowFallbackSeed...), fkDown))
 	// The keyboard-trap bug: walk to Backup (rail row 1), activate it, then
 	// enter twice more to reach the wizard's Confirm step, where the tag field
 	// captures text. Invariant 6 must find esc still works there. Without this
@@ -204,6 +208,12 @@ func FuzzAppKeyRouting(f *testing.F) {
 	})
 }
 
+// arrowFallbackSeed walks the rail to Scheduled backups, activates it, and
+// presses Down. The view has no rows, so it cannot use the arrow and the
+// rail must take it — the state invariant 5 exists to check. Rail row 1
+// (Backup) no longer qualifies: its picker owns ↑/↓ on every step.
+var arrowFallbackSeed = []byte{fkDown, fkDown, fkEnter, fkDown}
+
 // keyTrapSeed walks the rail to Backup, activates it, then presses enter
 // twice more to reach the wizard's Confirm step and its tag field. It is the
 // corpus's only route to a text-capturing view, so it is a named value the
@@ -297,5 +307,22 @@ func TestFuzzSeed_ReachesATextCapturingView(t *testing.T) {
 	if !app.contentCapturesText() {
 		t.Fatalf("the keyboard-trap seed no longer reaches a text-capturing view (active=%q, focus=%v) — invariant 6 is checking nothing",
 			app.views[app.active].id, app.focus)
+	}
+}
+
+// TestFuzzSeed_ReachesAnArrowlessView is the same guard for invariant 5: it
+// only bites where a content-focused view cannot use ↑/↓, and the seed that
+// reaches such a view went stale once already when Backup moved to rail row
+// 1 and brought a picker that owns the arrows. Replay everything but the
+// final Down and assert the destination.
+func TestFuzzSeed_ReachesAnArrowlessView(t *testing.T) {
+	app := fuzzApp(t, newFlowRepo(t))
+	walk := arrowFallbackSeed[:len(arrowFallbackSeed)-1]
+	for _, b := range walk {
+		app = fuzzPress(app, fuzzKeys[int(b)%len(fuzzKeys)])
+	}
+	if app.focus != focusContent || app.contentConsumesArrows() {
+		t.Fatalf("the arrow-fallback seed no longer reaches a content-focused view that cannot use ↑/↓ (active=%q, focus=%v, consumesArrows=%v) — invariant 5 is checking nothing",
+			app.views[app.active].id, app.focus, app.contentConsumesArrows())
 	}
 }
