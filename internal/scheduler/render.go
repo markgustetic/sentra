@@ -152,6 +152,13 @@ type launchdCalendarEntry struct {
 
 func launchdCalendar(schedule config.PolicySchedule) ([]launchdCalendarEntry, error) {
 	s := policycfg.NormalizeSchedule(schedule)
+	// Hourly carries no clock, so it must branch before scheduleClock:
+	// a Minute-only StartCalendarInterval matches every hour at :00, the
+	// same instant policy.NextRun computes. Adding an Hour key would pin
+	// it to one firing a day.
+	if s.Cadence == policycfg.CadenceHourly {
+		return []launchdCalendarEntry{{Key: "Minute", Value: 0}}, nil
+	}
 	hour, minute, err := scheduleClock(s)
 	if err != nil {
 		return nil, err

@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/config"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 )
 
 func TestRender_DarwinLaunchAgent(t *testing.T) {
@@ -88,5 +89,46 @@ func TestRender_RejectsSignedClock(t *testing.T) {
 	}
 	if !strings.Contains(got, "09:00:00") {
 		t.Errorf("daily 09:00 rendered as %q, want it to contain 09:00:00", got)
+	}
+}
+
+// TestRender_EveryCadenceRendersOnEveryOS is a rule test: every cadence the
+// policy package can install must render on every scheduler OS. The TUI
+// wizard offers the cadence list regardless of platform, so a cadence one
+// renderer accepts and the other rejects surfaces only at timer install —
+// exactly what happened when launchd demanded HH:MM from an hourly schedule.
+func TestRender_EveryCadenceRendersOnEveryOS(t *testing.T) {
+	schedules := []config.PolicySchedule{
+		{Cadence: policycfg.CadenceHourly},
+		{Cadence: policycfg.CadenceDaily, At: "03:00"},
+		{Cadence: policycfg.CadenceWeekly, Weekday: "mon", At: "04:30"},
+		{Cadence: policycfg.CadenceMonthly, At: "05:15"},
+	}
+	for _, goos := range []string{"darwin", "linux"} {
+		for _, s := range schedules {
+			t.Run(goos+"/"+s.Cadence, func(t *testing.T) {
+				paths, err := PathsFor(goos, "/home/u", "home")
+				if err != nil {
+					t.Fatalf("PathsFor: %v", err)
+				}
+				if _, err := Render(paths, "/usr/bin/sentra", "/etc/sentra.yaml", "home", s); err != nil {
+					t.Fatalf("Render(%s, %+v): %v", goos, s, err)
+				}
+			})
+		}
+	}
+}
+
+// An hourly launch agent fires at the top of every hour: a
+// StartCalendarInterval dict carrying Minute 0 and nothing else, matching
+// policy.NextRun's "hourly at minute 0". An Hour key would pin it to one
+// hour a day; a Weekday or Day key would pin it further still.
+func TestRender_DarwinHourlyFiresAtTopOfEveryHour(t *testing.T) {
+	cal, err := launchdCalendar(config.PolicySchedule{Cadence: policycfg.CadenceHourly})
+	if err != nil {
+		t.Fatalf("launchdCalendar: %v", err)
+	}
+	if len(cal) != 1 || cal[0].Key != "Minute" || cal[0].Value != 0 {
+		t.Fatalf("want [{Minute 0}], got %+v", cal)
 	}
 }
