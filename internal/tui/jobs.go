@@ -466,7 +466,16 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case viewShownMsg:
 		// On screen: only the form owns fields; refocus picks the one
 		// form.focus names (nil on the toggle steps) and starts its blink.
+		// Every other stage re-reads disk instead. Policies land in
+		// sentra.yaml behind this view's back — the Backup wizard's
+		// Schedule step, `sentra policy add` in another terminal — and
+		// rows built once at launch showed an empty table for a schedule
+		// the operator had just confirmed. The form stays untouched: a
+		// reload mid-edit would not clobber the fields, but it would
+		// shift the rows under a table the operator is about to return
+		// to. TestJobs_ShownReloadsFromDisk holds the line.
 		if v.stage != jobsForm {
+			v.reload()
 			return v, nil
 		}
 		cmd := v.form.refocus()

@@ -1347,3 +1347,39 @@ func TestJobs_LeavingTheFormBlursItsFields(t *testing.T) {
 		}
 	})
 }
+
+// TestJobs_ShownReloadsFromDisk pins the rule that shipped broken on
+// 2026-09-07: the Backup wizard (and `sentra policy add` in another
+// terminal) write the policy to sentra.yaml and install its timer, but
+// nothing told the Schedules view, which had built its rows once at
+// launch and showed the operator an empty table for the schedule they
+// had just confirmed. Disk is the source of truth; being shown is when
+// the view must re-read it.
+func TestJobs_ShownReloadsFromDisk(t *testing.T) {
+	deps, path := jobsDeps(t)
+	v := newJobsForTest(t, deps)
+	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	v = sized.(JobsView)
+	if strings.Contains(v.View(), "Documents") {
+		t.Fatal("precondition: Documents must not be listed before it is written")
+	}
+
+	// The wizard's write path: a fresh policy landing on disk behind the
+	// view's back.
+	err := config.Update(path, func(cfg *config.Config) error {
+		cfg.Policies["Documents"] = config.PolicyConfig{
+			Paths:    []string{"/data/Documents"},
+			Schedule: config.PolicySchedule{Cadence: "weekly", At: "02:00", Weekday: "sun"},
+		}
+		return nil
+	})
+	if err != nil {
+		t.Fatalf("update config: %v", err)
+	}
+
+	shown, _ := v.Update(viewShownMsg{})
+	v = shown.(JobsView)
+	if out := v.View(); !strings.Contains(out, "Documents") {
+		t.Fatalf("Schedules shown after a policy was added on disk must list it; got:\n%s", out)
+	}
+}
