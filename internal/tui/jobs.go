@@ -820,14 +820,51 @@ func (v JobsView) viewDetail() string {
 
 // jobsColumns lays out the five columns in the interior width, the same
 // budget split scheduleColumns used.
-func jobsColumns(width int) []table.Column {
-	if width < 56 {
-		width = 56
+// Job-table column budget. Schedule fits "weekly@sun:02:00" (16), Timer
+// "not installed" (13), Next run "Sep 13 02:00" (12), Last run its header
+// (8; the cells are "never" or "54m ago"). The Job column flexes between
+// jobsNameMin and jobsNameIdeal — surplus stays as panel whitespace
+// rather than stretching the name across the pane.
+const (
+	jobsNameIdeal = 36
+	jobsNameMin   = 8
+	jobsSchedW    = 16
+	jobsTimerW    = 13
+	jobsNextW     = 12
+	jobsLastW     = 8
+)
+
+// jobsColumns sizes the job table to fit within avail on-screen cells.
+// bubbles/table draws every non-empty column at Width + snapColPad, so
+// the budget is spent in rendered cells, not Widths — spending it on
+// Widths alone once put five columns ten cells past the pane and wrapped
+// "Last run" under every row. When even a minimum Job column cannot fit,
+// the rightmost columns are dropped one at a time (Width 0 keeps the
+// slot: bubbles/table indexes columns by row cell). The App's 80-col
+// minimum forwards a 57-cell interior, where Last run gives way.
+func jobsColumns(avail int) []table.Column {
+	sched, timer, next, last := jobsSchedW, jobsTimerW, jobsNextW, jobsLastW
+	cost := func(ws ...int) int {
+		total := 0
+		for _, w := range ws {
+			if w > 0 {
+				total += w + snapColPad
+			}
+		}
+		return total
 	}
-	sched, timer, next, last := 16, 13, 12, 10
-	name := width - sched - timer - next - last
-	if name < 8 {
-		name = 8
+	for _, drop := range []*int{&last, &next, &timer} {
+		if cost(jobsNameMin, sched, timer, next, last) <= avail {
+			break
+		}
+		*drop = 0
+	}
+	name := avail - cost(sched, timer, next, last) - snapColPad
+	if name > jobsNameIdeal {
+		name = jobsNameIdeal
+	}
+	if name < jobsNameMin {
+		name = jobsNameMin
 	}
 	return []table.Column{
 		{Title: "Job", Width: name},

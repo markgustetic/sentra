@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -1381,5 +1382,35 @@ func TestJobs_ShownReloadsFromDisk(t *testing.T) {
 	v = shown.(JobsView)
 	if out := v.View(); !strings.Contains(out, "Documents") {
 		t.Fatalf("Schedules shown after a policy was added on disk must list it; got:\n%s", out)
+	}
+}
+
+// TestJobs_TableFitsThePaneAtEveryWidth pins the rule, not the case:
+// bubbles/table draws each column at Width + snapColPad, and jobsColumns
+// once spent the whole interior on Widths alone, so five columns rendered
+// ten cells past the pane and lipgloss wrapped "Last run" onto its own
+// line under every row. Every width the App can forward must produce a
+// table whose widest line fits the interior it was sized for.
+func TestJobs_TableFitsThePaneAtEveryWidth(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	for width := 60; width <= 240; width++ {
+		v := newJobsForTest(t, deps)
+		sized, _ := v.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+		v = sized.(JobsView)
+		avail := pickerContentWidth(width)
+		total := 0
+		for _, c := range v.tbl.Columns() {
+			if c.Width > 0 { // a dropped column renders nothing, padding included
+				total += c.Width + snapColPad
+			}
+		}
+		if total > avail {
+			t.Fatalf("width %d: columns render %d cells into a %d-cell interior", width, total, avail)
+		}
+		for _, line := range strings.Split(v.tbl.View(), "\n") {
+			if got := lipgloss.Width(line); got > avail {
+				t.Fatalf("width %d: table line %d cells wide, interior %d:\n%q", width, got, avail, line)
+			}
+		}
 	}
 }
