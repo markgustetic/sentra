@@ -10,6 +10,7 @@ package ui
 import (
 	"strings"
 
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -93,6 +94,20 @@ var (
 	// from the style rather than written as a literal 4 so it can't drift
 	// if FieldBox's border or padding ever changes.
 	FieldBoxOverhead = FieldBox.GetHorizontalFrameSize()
+
+	// TableHeader styles a bubbles/table header cell: bold aqua text over
+	// a muted rule. The rule is the affordance that survives NO_COLOR —
+	// bubbles' default header is merely bold, which lipgloss strips in
+	// the Ascii profile, leaving the header indistinguishable from the
+	// rows beneath it. Padding matches bubbles' default Cell style so
+	// header and cells stay column-aligned; the border rides under the
+	// padding, so adjacent cells' rules join into one unbroken line.
+	// The rule makes the header two rows tall; bubbles' SetHeight budgets
+	// the whole table, header included, so callers need not adjust — the
+	// viewport simply shows one row fewer.
+	TableHeader = lipgloss.NewStyle().Foreground(AccentAqua).Bold(true).Padding(0, 1).
+			BorderStyle(lipgloss.NormalBorder()).BorderBottom(true).
+			BorderForeground(FgMuted)
 )
 
 // Severity returns the style for an agent finding's severity level.
@@ -171,4 +186,13 @@ func ActionLine(primary, secondary string) string {
 		out += Muted.Render("   " + secondary)
 	}
 	return out
+}
+
+// TableStyles is bubbles' default table styling with TableHeader in place
+// of the plain bold header. Cell and Selected stay at their defaults so
+// the data rows read as data: only the header changes.
+func TableStyles() table.Styles {
+	st := table.DefaultStyles()
+	st.Header = TableHeader
+	return st
 }

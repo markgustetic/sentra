@@ -181,6 +181,7 @@ func NewJobsView(deps Deps) JobsView {
 	v.tbl = table.New(
 		table.WithColumns(jobsColumns(pickerIdealWidth)),
 		table.WithFocused(true),
+		table.WithStyles(ui.TableStyles()),
 	)
 	snaps, _ := initialSnapshots(deps)
 	v.snaps = snaps

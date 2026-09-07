@@ -1414,3 +1414,36 @@ func TestJobs_TableFitsThePaneAtEveryWidth(t *testing.T) {
 		}
 	}
 }
+
+// TestJobs_HeaderIsRuledOffFromRows pins how the header differs from the
+// data rows without color: a rule of box-drawing dashes directly under
+// the header, exactly as wide as the header, and under no data row. Unit
+// tests run in lipgloss's Ascii profile, so the header's aqua and bold
+// are invisible here; the rule is the glyph that survives NO_COLOR.
+func TestJobs_HeaderIsRuledOffFromRows(t *testing.T) {
+	deps, _ := jobsDeps(t)
+	for _, width := range []int{59, 100, 160} {
+		v := newJobsForTest(t, deps)
+		sized, _ := v.Update(tea.WindowSizeMsg{Width: width, Height: 30})
+		v = sized.(JobsView)
+		lines := strings.Split(v.tbl.View(), "\n")
+		if len(lines) < 3 {
+			t.Fatalf("width %d: table view has %d lines, want header, rule, rows", width, len(lines))
+		}
+		header, rule := lines[0], lines[1]
+		if !strings.Contains(header, "Job") || !strings.Contains(header, "Schedule") {
+			t.Fatalf("width %d: first line is not the header: %q", width, header)
+		}
+		if strings.Trim(rule, "─") != "" || rule == "" {
+			t.Fatalf("width %d: line under the header must be a solid rule, got %q", width, rule)
+		}
+		if lipgloss.Width(rule) != lipgloss.Width(header) {
+			t.Fatalf("width %d: rule is %d cells, header %d", width, lipgloss.Width(rule), lipgloss.Width(header))
+		}
+		for _, row := range lines[2:] {
+			if strings.Contains(row, "─") {
+				t.Fatalf("width %d: a data row carries the rule: %q", width, row)
+			}
+		}
+	}
+}
