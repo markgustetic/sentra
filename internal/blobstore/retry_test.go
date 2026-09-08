@@ -39,6 +39,8 @@ func TestIsRetryable(t *testing.T) {
 	}{
 		{"nil never retries", nil, false},
 		{"ErrNotFound never retries", ErrNotFound, false},
+		{"ErrAlreadyExists never retries", ErrAlreadyExists, false},
+		{"wrapped ErrAlreadyExists never retries", fmt.Errorf("wrap: %w", ErrAlreadyExists), false},
 		{"wrapped ErrNotFound never retries", fmt.Errorf("wrap: %w", ErrNotFound), false},
 		{"context.Canceled never retries", context.Canceled, false},
 		{"context.DeadlineExceeded retries", context.DeadlineExceeded, true},
@@ -240,21 +242,75 @@ func TestRetryStore_RetriesReadAndDeleteOperations(t *testing.T) {
 	})
 }
 
-func TestRetryStore_PutIfAbsentDoesNotRetry(t *testing.T) {
+// drainingFailingStore consumes the body before failing, the way a
+// real HTTP client does when the request went out and the reply was a
+// SlowDown. It proves the retry replays the body from a buffer: an
+// unbuffered pass-through would hand the second attempt an exhausted
+// reader and land an empty object under a content-addressed key.
+type drainingFailingStore struct {
+	Store
+	failures int
+	calls    int
+	err      error
+}
+
+func (d *drainingFailingStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
+	d.calls++
+	if d.calls <= d.failures {
+		_, _ = io.Copy(io.Discard, body)
+		return d.err
+	}
+	return d.Store.PutIfAbsent(ctx, key, body)
+}
+
+// TestRetryStore_PutIfAbsentRetriesTransientErrors: every chunk upload
+// goes through PutIfAbsent, so a SlowDown burst that exhausts the SDK's
+// own retries must get the same outer policy as Put — otherwise one
+// throttled chunk aborts a whole backup while manifests sail through.
+// The body must survive the failed attempts intact.
+func TestRetryStore_PutIfAbsentRetriesTransientErrors(t *testing.T) {
 	mem := NewMemory()
-	fs := &operationFailingStore{Store: mem, putIfAbsentFailures: 1, err: fakeRetryableError}
+	fs := &drainingFailingStore{Store: mem, failures: 2, err: fakeRetryableError}
 	rs := NewRetryStore(fs, RetryPolicy{MaxAttempts: 4, BaseDelay: time.Millisecond})
 	rs.sleep = noSleep
 
-	err := rs.PutIfAbsent(context.Background(), "lock", strings.NewReader("owner"))
-	if !errors.Is(err, fakeRetryableError) {
-		t.Fatalf("PutIfAbsent err = %v, want fake retryable error", err)
+	if err := rs.PutIfAbsent(context.Background(), "data/abc", strings.NewReader("chunk-body")); err != nil {
+		t.Fatalf("PutIfAbsent: %v", err)
+	}
+	if fs.calls != 3 {
+		t.Fatalf("PutIfAbsent calls = %d, want 3 (2 failures + 1 success)", fs.calls)
+	}
+	rc, err := mem.Get(context.Background(), "data/abc")
+	if err != nil {
+		t.Fatalf("Get after retried PutIfAbsent: %v", err)
+	}
+	defer rc.Close()
+	got, _ := io.ReadAll(rc)
+	if string(got) != "chunk-body" {
+		t.Fatalf("stored body = %q, want the full body replayed on retry", got)
+	}
+}
+
+// TestRetryStore_PutIfAbsentAlreadyExistsIsTerminal: ErrAlreadyExists
+// is the definitive answer — for a content-addressed chunk it is the
+// dedup success path, for the lock key it means someone holds it.
+// Neither improves with a retry, and retrying would burn the whole
+// backoff budget on every deduplicated chunk of an incremental backup.
+func TestRetryStore_PutIfAbsentAlreadyExistsIsTerminal(t *testing.T) {
+	mem := NewMemory()
+	if err := mem.Put(context.Background(), "data/abc", strings.NewReader("first")); err != nil {
+		t.Fatal(err)
+	}
+	fs := &operationFailingStore{Store: mem}
+	rs := NewRetryStore(fs, RetryPolicy{MaxAttempts: 4, BaseDelay: time.Millisecond})
+	rs.sleep = noSleep
+
+	err := rs.PutIfAbsent(context.Background(), "data/abc", strings.NewReader("second"))
+	if !errors.Is(err, ErrAlreadyExists) {
+		t.Fatalf("PutIfAbsent err = %v, want ErrAlreadyExists", err)
 	}
 	if fs.putIfAbsentCalls != 1 {
-		t.Fatalf("PutIfAbsent calls = %d, want 1", fs.putIfAbsentCalls)
-	}
-	if _, err := mem.Stat(context.Background(), "lock"); !errors.Is(err, ErrNotFound) {
-		t.Fatalf("PutIfAbsent should not have retried into success, Stat err = %v", err)
+		t.Fatalf("PutIfAbsent calls = %d, want 1 (ErrAlreadyExists must not be retried)", fs.putIfAbsentCalls)
 	}
 }
 
