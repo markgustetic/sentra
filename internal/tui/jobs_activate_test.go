@@ -70,15 +70,13 @@ func installAlphaFiles(t *testing.T, v JobsView, path string) scheduler.Paths {
 	return paths
 }
 
-// confirmTimerOp runs the confirm for id through the view and feeds the
-// resulting jobTimerMsg back, returning the reloaded view.
+// confirmTimerOp runs the confirm for id through the view, runs the
+// guarded op it emits the way the App would, and feeds the resulting
+// jobTimerMsg back, returning the reloaded view.
 func confirmTimerOp(t *testing.T, v JobsView, id string) JobsView {
 	t.Helper()
 	m, cmd := v.Update(confirmedMsg{id: id})
-	if cmd == nil {
-		t.Fatalf("confirm %s must return the timer cmd", id)
-	}
-	m2, _ := m.(JobsView).Update(cmd())
+	m2, _ := runGuardedOp(t, m, cmd)
 	return m2.(JobsView)
 }
 
@@ -196,7 +194,8 @@ func TestJobs_EditToManualDeactivatesTimer(t *testing.T) {
 	v2, _ := pressJobsKey(v, 'e')
 	v2.form.schedule.SetValue("manual")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	m, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	runGuardedOp(t, m, cmd)
 	if !f.ran("launchctl bootout " + launchdGUIDomain() + "/com.sentra.alpha") {
 		t.Fatalf("edit-to-manual must boot the job out, ran %q", f.calls)
 	}
@@ -218,7 +217,8 @@ func TestJobs_EditRescheduleReactivatesTimer(t *testing.T) {
 	v2, _ := pressJobsKey(v, 'e')
 	v2.form.schedule.SetValue("daily@09:00")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m2, _ := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	m, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	m2, _ := runGuardedOp(t, m, cmd)
 	if !f.ran("launchctl bootstrap " + launchdGUIDomain() + " " + paths.Files[0]) {
 		t.Fatalf("reschedule must bootstrap the new plist, ran %q", f.calls)
 	}
@@ -304,7 +304,7 @@ func TestBackupWizard_InstallRepeatActivatesTimer(t *testing.T) {
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}
-	if err := v.installRepeat(dir, "docs", config.PolicySchedule{Cadence: "daily", At: "02:00"}, ""); err != nil {
+	if err := v.installRepeat(context.Background(), dir, "docs", config.PolicySchedule{Cadence: "daily", At: "02:00"}, ""); err != nil {
 		t.Fatalf("installRepeat: %v", err)
 	}
 	want := []string{"systemctl --user daemon-reload", "systemctl --user enable --now sentra-docs.timer"}
@@ -319,7 +319,7 @@ func TestBackupWizard_InstallRepeatActivationFailureNamesCommand(t *testing.T) {
 		"systemctl --user enable --now sentra-docs.timer": "Failed to connect to bus: No medium found",
 	}}
 	v.deps.SchedulerRunner = f.run
-	err := v.installRepeat("/tmp/docs", "docs", config.PolicySchedule{Cadence: "daily", At: "02:00"}, "")
+	err := v.installRepeat(context.Background(), "/tmp/docs", "docs", config.PolicySchedule{Cadence: "daily", At: "02:00"}, "")
 	if err == nil || !strings.Contains(err.Error(), "systemctl --user daemon-reload && systemctl --user enable --now sentra-docs.timer") {
 		t.Fatalf("installRepeat err = %v, want the activation command", err)
 	}

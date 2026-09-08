@@ -114,7 +114,9 @@ func (c confirmControls) view() string {
 // confirmRun is the wizard's gate. Re-check the directory (it can vanish
 // between steps), install the schedule if one was chosen — FIRST, so a
 // failed install blocks the run rather than degrading a confirmed
-// repeating backup to a one-shot — then start the op.
+// repeating backup to a one-shot — then start the op. The install is its
+// own guarded op (see startRepeatInstall); finishRepeatInstall starts the
+// backup once it lands.
 func (v BackupView) confirmRun() (tea.Model, tea.Cmd) {
 	if !v.checkDir(v.pending) {
 		return v, nil
@@ -126,12 +128,7 @@ func (v BackupView) confirmRun() (tea.Model, tea.Cmd) {
 			v.pathErr = err.Error()
 			return v, nil
 		}
-		if err := v.installRepeat(v.pending, name, sched, v.confirm.tag.Value()); err != nil {
-			v.pathErr = "could not install the schedule: " + err.Error()
-			return v, nil
-		}
-		v.installedName = name
-		v.installedNext, v.installedNextOK = policycfg.NextRun(sched, v.clock())
+		return v.startRepeatInstall(v.pending, name, sched, v.confirm.tag.Value())
 	}
 	return v.startBackup(v.pending)
 }

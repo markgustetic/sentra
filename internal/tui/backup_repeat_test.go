@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"os"
 	"path/filepath"
 	"strings"
@@ -65,12 +66,12 @@ func TestBackupWizard_ConfirmInstallsPolicyScheduleThenRuns(t *testing.T) {
 	}
 	v.confirm.tag.SetValue("nightly")
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	// The install is the first guarded op; the backup's own start is the
+	// cmd its result returns.
+	m, _ = runGuardedOp(t, m, cmd)
 	got := m.(BackupView)
 	if got.stage != backupRunning {
 		t.Fatalf("stage = %v, want backupRunning (pathErr=%q)", got.stage, got.pathErr)
-	}
-	if cmd == nil {
-		t.Fatal("no backup op started")
 	}
 	onDisk, err := config.Load(cfgPath)
 	if err != nil {
@@ -108,12 +109,10 @@ func TestBackupWizard_ScheduleFailureBlocksBackup(t *testing.T) {
 	}
 	v = atDailyConfirm(t, v, dir)
 	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = runGuardedOp(t, m, cmd)
 	got := m.(BackupView)
 	if got.stage != backupConfirm {
-		t.Fatalf("stage = %v, want to stay on Confirm", got.stage)
-	}
-	if cmd != nil {
-		t.Fatal("a failed install must not start the backup")
+		t.Fatalf("stage = %v, want to return to Confirm", got.stage)
 	}
 	if !strings.Contains(got.View(), "could not install the schedule") {
 		t.Errorf("view must surface the install error:\n%s", got.View())
@@ -172,7 +171,7 @@ func TestInstallRepeat_RefusesForeignName(t *testing.T) {
 	}); err != nil {
 		t.Fatal(err)
 	}
-	err := v.installRepeat("/tmp/docs", "docs", config.PolicySchedule{Cadence: policycfg.CadenceDaily, At: "02:00"}, "")
+	err := v.installRepeat(context.Background(), "/tmp/docs", "docs", config.PolicySchedule{Cadence: policycfg.CadenceDaily, At: "02:00"}, "")
 	if err == nil || !strings.Contains(err.Error(), "/elsewhere") {
 		t.Fatalf("want a collision error naming /elsewhere, got %v", err)
 	}

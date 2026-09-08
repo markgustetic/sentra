@@ -1,13 +1,95 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
+
+	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/scheduler"
 )
+
+// repeatInstallOpName is the guard name of the schedule install, distinct
+// from "backup" so an opRejectedMsg bounces the stage that armed it.
+const repeatInstallOpName = "backup-schedule"
+
+// repeatInstalledMsg is the guard-clearing result of the schedule install.
+// On success it carries what the wizard mirrors into the shared resolved
+// config and records for the done screen; err returns the wizard to
+// Confirm with the reason.
+type repeatInstalledMsg struct {
+	root     string
+	name     string
+	schedule config.PolicySchedule
+	tags     []string
+	err      error
+}
+
+func (repeatInstalledMsg) opResult() {}
+
+// startRepeatInstall leaves Confirm for the Installing stage and hands
+// installRepeat to the App's one-op guard. It used to run inline in
+// confirmRun: a config write is quick, but scheduler.Activate execs
+// launchctl/systemctl with a 15s timeout per call — up to a minute across
+// bootout/bootstrap/fallback — and inline in Update that froze the whole
+// TUI with no esc. Under the guard it is serialized with every other
+// mutation, cancellable, and drawn with a spinner. Leaving Confirm blurs
+// the tag: nothing renders it on the Installing stage.
+func (v BackupView) startRepeatInstall(root, name string, schedule config.PolicySchedule, tag string) (tea.Model, tea.Cmd) {
+	v.confirm.blur()
+	v.stage = backupInstalling
+	v.pathErr = ""
+	schedule = policycfg.NormalizeSchedule(schedule)
+	var tags []string
+	if tag = strings.TrimSpace(tag); tag != "" {
+		tags = []string{tag}
+	}
+	install := v.installRepeat
+	start := startOpMsg{
+		name: repeatInstallOpName,
+		run: func(ctx context.Context) tea.Msg {
+			err := install(ctx, root, name, schedule, tag)
+			return repeatInstalledMsg{root: root, name: name, schedule: schedule, tags: tags, err: err}
+		},
+	}
+	return v, tea.Batch(func() tea.Msg { return start }, v.spin.Tick)
+}
+
+// finishRepeatInstall consumes the install result. A failure returns to
+// Confirm with the reason, the tag re-focused for the retry. Success
+// mirrors the policy into the shared resolved config — here, on the UI
+// goroutine, never inside the op, because deps.Config is read by every
+// view and a write from the op's goroutine would race them — records the
+// done screen's "next run", and starts the backup itself through its own
+// guarded startOpMsg; the guard has already cleared on this result, so
+// that start is accepted.
+func (v BackupView) finishRepeatInstall(msg repeatInstalledMsg) (tea.Model, tea.Cmd) {
+	if v.stage != backupInstalling {
+		return v, nil
+	}
+	if msg.err != nil {
+		v.stage = backupConfirm
+		v.pathErr = "could not install the schedule: " + msg.err.Error()
+		cmd := v.confirm.refocus()
+		return v, cmd
+	}
+	if v.deps.Config != nil {
+		if v.deps.Config.Policies == nil {
+			v.deps.Config.Policies = map[string]config.PolicyConfig{}
+		}
+		p := v.deps.Config.Policies[msg.name]
+		p.Paths = []string{msg.root}
+		p.Tags = msg.tags
+		p.Schedule = msg.schedule
+		v.deps.Config.Policies[msg.name] = p
+	}
+	v.installedName = msg.name
+	v.installedNext, v.installedNextOK = policycfg.NextRun(msg.schedule, v.clock())
+	return v.startBackup(v.pending)
+}
 
 // repeatPolicyName derives a policy name from a directory basename that is
 // safe for config keys, scheduler labels, and generated filenames (see
@@ -39,8 +121,10 @@ func repeatPolicyName(base string) string {
 // another directory rather than uniquifying: the operator just confirmed
 // this name, and silently renaming it would lie to them. The same
 // directory reuses its policy — cadence and tag refresh, config-authored
-// hooks survive, mirroring `policy add --replace`.
-func (v BackupView) installRepeat(root, name string, schedule config.PolicySchedule, tag string) error {
+// hooks survive, mirroring `policy add --replace`. It runs inside the
+// guarded op (see startRepeatInstall) and touches nothing but disk and the
+// OS scheduler; the in-memory mirror happens on the result.
+func (v BackupView) installRepeat(ctx context.Context, root, name string, schedule config.PolicySchedule, tag string) error {
 	if strings.TrimSpace(v.deps.ConfigPath) == "" {
 		return fmt.Errorf("no config file to hold the policy — run setup first")
 	}
@@ -86,20 +170,8 @@ func (v BackupView) installRepeat(root, name string, schedule config.PolicySched
 	// never fire (an un-enabled systemd timer). A failure leaves the
 	// policy and files in place and names the command; the wizard shows
 	// it instead of starting a run it cannot promise to repeat.
-	if err := scheduler.Activate(ctxOrBackground(v.deps.Ctx), paths, v.deps.SchedulerRunner); err != nil {
+	if err := scheduler.Activate(ctx, paths, v.deps.SchedulerRunner); err != nil {
 		return err
-	}
-	// Mirror disk in the shared resolved config so the Scheduled backups
-	// tab lists the policy without a relaunch.
-	if v.deps.Config != nil {
-		if v.deps.Config.Policies == nil {
-			v.deps.Config.Policies = map[string]config.PolicyConfig{}
-		}
-		p := v.deps.Config.Policies[name]
-		p.Paths = []string{root}
-		p.Tags = tags
-		p.Schedule = schedule
-		v.deps.Config.Policies[name] = p
 	}
 	return nil
 }

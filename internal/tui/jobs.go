@@ -10,6 +10,7 @@ import (
 
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	"github.com/charmbracelet/bubbles/table"
 	tea "github.com/charmbracelet/bubbletea"
 
@@ -60,7 +61,9 @@ func relAge(t, now time.Time) string {
 
 // jobsStage tracks the JobsView's position. jobsList is the table;
 // jobsDetail is the drill-in; jobsForm hosts add/edit; the run stages
-// mirror the old PoliciesView run flow.
+// mirror the old PoliciesView run flow; jobsBusy is the spinner shown
+// while a config/timer mutation (install, uninstall, delete, save) runs
+// under the App's one-op guard.
 type jobsStage int
 
 const (
@@ -69,6 +72,7 @@ const (
 	jobsForm
 	jobsRunning
 	jobsRunDone
+	jobsBusy
 )
 
 // jobRow is one policy's line in the jobs table.
@@ -132,6 +136,14 @@ type JobsView struct {
 	form     policyForm
 	editName string
 
+	// busyOp/busyLabel identify the guarded config/timer mutation in
+	// flight on the jobsBusy stage: busyOp is the startOpMsg name an
+	// opRejectedMsg must match to bounce this view (and no other), and
+	// busyLabel is what the spinner line says. spin is that spinner.
+	busyOp    string
+	busyLabel string
+	spin      spinner.Model
+
 	// Drill-in detail stage. detailName/detailPathIdx identify the job
 	// and which of its paths is on screen; loading/snapID/man/err carry
 	// the async manifest load for that path's newest snapshot, mirroring
@@ -172,11 +184,14 @@ func NewJobsView(deps Deps) JobsView {
 			return deps.Repo.LoadSnapshot(ctx, id)
 		}
 	}
+	spin := spinner.New()
+	spin.Spinner = spinner.Dot
 	v := JobsView{
 		deps:    deps,
 		now:     time.Now,
 		homeDir: os.UserHomeDir,
 		loader:  loader,
+		spin:    spin,
 	}
 	v.tbl = table.New(
 		table.WithColumns(jobsColumns(pickerIdealWidth)),
@@ -391,28 +406,30 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 
 	case jobTimerMsg:
+		v.leaveBusy()
 		v.notice = msg.notice
 		if msg.err != nil {
 			v.notice = msg.err.Error()
 		}
 		v.reload()
-		// A delete (or any other timer/policy op) resolving while the
-		// deleted job is the one on screen in detail would otherwise
-		// leave a ghost page: viewDetail rendering a zero-value summary
-		// over the last-loaded manifest, with left/right/tab a no-op
-		// (n==0 short-circuits) so only esc could recover. reload()
-		// above has already rebuilt v.policies, so an absent detailName
-		// means exactly that.
-		if v.stage == jobsDetail {
-			if _, ok := v.policies[v.detailName]; !ok {
+		// A delete (or any other timer/policy op) resolving for the job
+		// that was on screen in detail would otherwise leave a ghost
+		// page: viewDetail rendering a zero-value summary over the
+		// last-loaded manifest, with left/right/tab a no-op (n==0
+		// short-circuits) so only esc could recover. reload() above has
+		// already rebuilt v.policies, so an absent detailName means
+		// exactly that. Checked by name rather than by stage: the delete
+		// ran from the busy stage, which leaveBusy has just left.
+		if _, ok := v.policies[v.detailName]; v.detailName != "" && !ok {
+			if v.stage == jobsDetail {
 				v.stage = jobsList
-				v.detailName = ""
-				v.detailPathIdx = 0
-				v.detailSnapID = ""
-				v.detailMan = repo.Manifest{}
-				v.detailErr = nil
-				v.detailLoading = false
 			}
+			v.detailName = ""
+			v.detailPathIdx = 0
+			v.detailSnapID = ""
+			v.detailMan = repo.Manifest{}
+			v.detailErr = nil
+			v.detailLoading = false
 		}
 		return v, nil
 
@@ -457,12 +474,37 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.reload()
 		return v, nil
 
+	case jobSavedMsg:
+		return v.finishSave(msg)
+
 	case opRejectedMsg:
 		if v.stage == jobsRunning && msg.name == "job-run" {
 			v.stage = jobsList
 			v.notice = "another operation is in progress — try again when it finishes"
 		}
+		if v.stage == jobsBusy && msg.name == v.busyOp {
+			// The App dropped the op without running it: nothing changed,
+			// so return to where the operator armed it. A refused save
+			// goes back to the form with its entries intact rather than
+			// to the list, so a retry is one enter, not a re-type.
+			save := v.busyOp == jobSaveOpName
+			v.leaveBusy()
+			v.notice = "another operation is in progress — try again when it finishes"
+			if save {
+				v.stage = jobsForm
+				cmd := v.form.refocus()
+				return v, cmd
+			}
+		}
 		return v, nil
+
+	case spinner.TickMsg:
+		if v.stage != jobsBusy {
+			return v, nil
+		}
+		var cmd tea.Cmd
+		v.spin, cmd = v.spin.Update(msg)
+		return v, cmd
 
 	case viewShownMsg:
 		// On screen: only the form owns fields; refocus picks the one
@@ -735,6 +777,9 @@ func (v JobsView) View() string {
 		}
 		fmt.Fprintf(&b, "\n%s", ui.ActionLine("save the job", "tab field · esc cancel"))
 		return b.String()
+	}
+	if v.stage == jobsBusy {
+		return v.spin.View() + " " + ui.Primary.Render(v.busyLabel)
 	}
 	if v.stage == jobsRunning {
 		var b strings.Builder

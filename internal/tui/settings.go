@@ -1,10 +1,12 @@
 package tui
 
 import (
+	"context"
 	"fmt"
 	"strings"
 
 	"github.com/charmbracelet/bubbles/key"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -24,6 +26,25 @@ const (
 // settingsForgetConfirmID ties the forget-keyring confirm modal back to
 // this view.
 const settingsForgetConfirmID = "settings-forget-keyring"
+
+// Op names for the two guarded mutations, distinct so an opRejectedMsg
+// bounces exactly the one that was refused.
+const (
+	settingsSplashOpName = "settings-splash"
+	settingsForgetOpName = "settings-forget"
+)
+
+// settingsSavedMsg is the guard-clearing result of a settings mutation.
+// apply mirrors the persisted change into the resolved config on the UI
+// goroutine — only after the file is on disk, so a failed write never
+// leaves the process disagreeing with sentra.yaml. It is nil on error.
+type settingsSavedMsg struct {
+	op    string
+	apply func(cfg *config.Config)
+	err   error
+}
+
+func (settingsSavedMsg) opResult() {}
 
 // settingsEntry is one actionable row in the Settings view. A navigate entry
 // emits an activateMsg for targetID; a toggle entry mutates the config and
@@ -52,11 +73,20 @@ type SettingsView struct {
 	cursor  int
 	width   int
 	err     string // inline failure text, e.g. a failed config write
+
+	// busy is set while a guarded mutation runs: enter is ignored until
+	// the result (or a rejection) clears it, and spin draws beside the row.
+	busy   bool
+	busyOp string
+	spin   spinner.Model
 }
 
 func NewSettingsView(deps Deps) SettingsView {
+	spin := spinner.New()
+	spin.Spinner = spinner.Dot
 	return SettingsView{
 		deps: deps,
+		spin: spin,
 		entries: []settingsEntry{
 			// The management views live behind Settings rather than on the
 			// rail: they are configured rarely, and each rail slot they held
@@ -107,6 +137,9 @@ func (v SettingsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			}
 			return v, nil
 		case tea.KeyEnter:
+			if v.busy {
+				return v, nil
+			}
 			e := v.entries[v.cursor]
 			switch e.kind {
 			case entryToggleSplash:
@@ -123,12 +156,52 @@ func (v SettingsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return v, nil
 
 	case confirmedMsg:
-		if msg.id == settingsForgetConfirmID {
+		if msg.id == settingsForgetConfirmID && !v.busy {
 			return v.forgetKeyring()
 		}
 		return v, nil
+
+	case settingsSavedMsg:
+		if !v.busy || msg.op != v.busyOp {
+			return v, nil
+		}
+		v.busy, v.busyOp = false, ""
+		if msg.err != nil {
+			v.err = msg.err.Error()
+			return v, nil
+		}
+		msg.apply(v.deps.Config)
+		v.err = ""
+		return v, nil
+
+	case opRejectedMsg:
+		if v.busy && msg.name == v.busyOp {
+			v.busy, v.busyOp = false, ""
+			v.err = "another operation is in progress — try again when it finishes"
+		}
+		return v, nil
+
+	case spinner.TickMsg:
+		if !v.busy {
+			return v, nil
+		}
+		var cmd tea.Cmd
+		v.spin, cmd = v.spin.Update(msg)
+		return v, cmd
 	}
 	return v, nil
+}
+
+// startOp marks the view busy and hands run to the App's one-op guard.
+// Both settings mutations rewrite sentra.yaml (and forget talks to the OS
+// keyring); inline in Update they blocked the UI goroutine and ran
+// unserialized against every other config writer. The spinner's tick is
+// batched with the start so the first frame moves.
+func (v SettingsView) startOp(op string, run func(ctx context.Context) tea.Msg) (tea.Model, tea.Cmd) {
+	v.busy, v.busyOp = true, op
+	v.err = ""
+	start := startOpMsg{name: op, run: run}
+	return v, tea.Batch(func() tea.Msg { return start }, v.spin.Tick)
 }
 
 // forgetKeyring is the TUI face of `sentra password forget`: delete the
@@ -144,20 +217,19 @@ func (v SettingsView) forgetKeyring() (tea.Model, tea.Cmd) {
 		v.err = "keyring access is not wired in this build"
 		return v, nil
 	}
-	if _, err := v.deps.DeleteKeyringPassphrase(v.deps.Config); err != nil {
-		v.err = "keyring delete failed: " + err.Error()
-		return v, nil
-	}
-	if err := config.Update(v.deps.ConfigPath, func(c *config.Config) error {
-		c.Passphrase.UseKeyring = false
-		return nil
-	}); err != nil {
-		v.err = "could not save: " + err.Error()
-		return v, nil
-	}
-	v.deps.Config.Passphrase.UseKeyring = false
-	v.err = ""
-	return v, nil
+	del, cfg, path := v.deps.DeleteKeyringPassphrase, v.deps.Config, v.deps.ConfigPath
+	return v.startOp(settingsForgetOpName, func(context.Context) tea.Msg {
+		if _, err := del(cfg); err != nil {
+			return settingsSavedMsg{op: settingsForgetOpName, err: fmt.Errorf("keyring delete failed: %w", err)}
+		}
+		if err := config.Update(path, func(c *config.Config) error {
+			c.Passphrase.UseKeyring = false
+			return nil
+		}); err != nil {
+			return settingsSavedMsg{op: settingsForgetOpName, err: fmt.Errorf("could not save: %w", err)}
+		}
+		return settingsSavedMsg{op: settingsForgetOpName, apply: func(c *config.Config) { c.Passphrase.UseKeyring = false }}
+	})
 }
 
 func (v SettingsView) View() string {
@@ -169,7 +241,11 @@ func (v SettingsView) View() string {
 		if e.kind == entryToggleSplash {
 			line = e.label + "   [" + v.splashState() + "]"
 		}
-		fmt.Fprintf(&b, "%s\n", ui.SelectRow(i == v.cursor, line))
+		row := ui.SelectRow(i == v.cursor, line)
+		if v.busy && i == v.cursor {
+			row += "  " + v.spin.View()
+		}
+		fmt.Fprintf(&b, "%s\n", row)
 		fmt.Fprintf(&b, "    %s\n", ui.Muted.Render(e.desc))
 	}
 	if v.err != "" {
@@ -197,17 +273,17 @@ func (v SettingsView) toggleSplash() (tea.Model, tea.Cmd) {
 		return v, nil
 	}
 	next := !v.deps.Config.UI.HideSplash
-	err := config.Update(v.deps.ConfigPath, func(c *config.Config) error {
-		c.UI.HideSplash = next
-		return nil
+	path := v.deps.ConfigPath
+	return v.startOp(settingsSplashOpName, func(context.Context) tea.Msg {
+		err := config.Update(path, func(c *config.Config) error {
+			c.UI.HideSplash = next
+			return nil
+		})
+		if err != nil {
+			return settingsSavedMsg{op: settingsSplashOpName, err: fmt.Errorf("could not save: %w", err)}
+		}
+		return settingsSavedMsg{op: settingsSplashOpName, apply: func(c *config.Config) { c.UI.HideSplash = next }}
 	})
-	if err != nil {
-		v.err = "could not save: " + err.Error()
-		return v, nil
-	}
-	v.deps.Config.UI.HideSplash = next
-	v.err = ""
-	return v, nil
 }
 
 // splashState renders the toggle's current value for the row label.
