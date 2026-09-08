@@ -141,7 +141,12 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   (launchd starts jobs in `/`), so `policy run` resolves each stored path
   again with `policy.ResolvePathFrom`, anchoring any relative path that a
   hand-edited or pre-resolution `sentra.yaml` still carries to the config
-  file's directory — never the process cwd. `policy remove` uninstalls the
+  file's directory — never the process cwd. `policy add --replace` that
+  changes the schedule resyncs an installed timer through
+  `scheduler.Resync` (manual → deactivate + uninstall; otherwise re-render,
+  reinstall, re-activate): the OS keeps firing whatever calendar it loaded,
+  so rewriting `sentra.yaml` alone leaves `schedule status` lying. An
+  unchanged schedule never shells out. `policy remove` uninstalls the
   policy's OS timer when present — deactivates it, then removes the files
   (best-effort, warning on failure) — an installed timer for a deleted
   policy can only fail.

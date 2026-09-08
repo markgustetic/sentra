@@ -27,13 +27,16 @@ type PolicyDeps struct {
 	RepoDeps
 	Stderr io.Writer
 
-	// OS and HomeDir steer the timer-file cleanup in remove; zero
-	// values fall back to the runtime platform and home directory.
-	// Runner unloads the timer from launchd/systemd before the files go;
-	// nil means scheduler.ExecRunner, so tests must inject a fake.
-	OS      string
-	HomeDir func() (string, error)
-	Runner  scheduler.Runner
+	// OS and HomeDir steer the timer-file cleanup in remove and the
+	// resync in add --replace; zero values fall back to the runtime
+	// platform and home directory. Executable is the binary a
+	// re-rendered timer invokes; nil means os.Executable. Runner
+	// loads/unloads the timer in launchd/systemd; nil means
+	// scheduler.ExecRunner, so tests must inject a fake.
+	OS         string
+	HomeDir    func() (string, error)
+	Executable func() (string, error)
+	Runner     scheduler.Runner
 
 	// Now is the clock `run --if-due` measures the schedule against;
 	// nil means time.Now.
@@ -212,6 +215,8 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	// editing the policies map can't persist this process's SENTRA_*
 	// overrides into repo.s3. The duplicate-name check runs inside the
 	// mutation, against the same on-disk map we're about to write back.
+	replaced := false
+	oldSpec := ""
 	err = config.Update(*flags.configPath, func(cfg *config.Config) error {
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
@@ -224,6 +229,8 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 			// replace carries them forward rather than silently wiping
 			// a hand-written notifier because someone added a path.
 			p.Hooks = existing.Hooks
+			replaced = true
+			oldSpec = policycfg.FormatScheduleSpec(existing.Schedule)
 		}
 		cfg.Policies[name] = p
 		return nil
@@ -237,7 +244,54 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	fmt.Fprintf(out, "  name:      %s\n", name)
 	fmt.Fprintf(out, "  paths:     %d\n", len(p.Paths))
 	fmt.Fprintf(out, "  schedule:  %s\n", policycfg.FormatScheduleSpec(p.Schedule))
+	if replaced && oldSpec != policycfg.FormatScheduleSpec(p.Schedule) {
+		resyncPolicyTimer(cmd, deps, out, *flags.configPath, name, p.Schedule)
+	}
 	return nil
+}
+
+// resyncPolicyTimer reconciles an installed OS timer after --replace
+// changed the schedule. The config is already rewritten, so a problem
+// here is a warning (with the command to run by hand, via
+// ActivationError) rather than a failed add — but it is loud, because
+// until the label is bootstrapped again launchd keeps firing the OLD
+// calendar while `schedule status` reports the new one.
+func resyncPolicyTimer(cmd *cobra.Command, deps PolicyDeps, out io.Writer, cfgPath, name string, schedule config.PolicySchedule) {
+	home := ""
+	if deps.HomeDir != nil {
+		home, _ = deps.HomeDir()
+	}
+	paths, err := scheduler.PathsFor(deps.OS, home, name)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
+		return
+	}
+	exe := ""
+	if deps.Executable != nil {
+		exe, _ = deps.Executable()
+	}
+	exe, err = scheduler.Executable(exe)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
+		return
+	}
+	absConfig, err := filepath.Abs(cfgPath)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
+		return
+	}
+	outcome, err := scheduler.Resync(cmd.Context(), paths, exe, absConfig, schedule, deps.Runner)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: %v\n", err)
+	}
+	switch outcome {
+	case scheduler.SyncUninstalled:
+		fmt.Fprintln(out, "  timer uninstalled (schedule is now manual)")
+	case scheduler.SyncReinstalled:
+		if err == nil {
+			fmt.Fprintf(out, "  timer reinstalled for %s\n", policycfg.FormatScheduleSpec(schedule))
+		}
+	}
 }
 
 func runPolicyList(cmd *cobra.Command, deps PolicyDeps, cfgPath string) error {
