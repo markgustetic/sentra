@@ -398,6 +398,118 @@ func TestCreateSnapshot_EmptyDir(t *testing.T) {
 	}
 }
 
+// TestCreateSnapshot_SymlinkedRootCapturesTarget: `sentra backup
+// ~/Dropbox` where ~/Dropbox is a symlink must back up the directory
+// behind the link. filepath.WalkDir does not descend a root that is
+// itself a symlink, so an unresolved root produced a zero-file
+// snapshot holding a single "." symlink entry and exit 0 — a backup
+// that looked successful and restored nothing.
+//
+// The manifest records the RESOLVED root: retention groups by Root,
+// and the linked and real spellings of one directory must land in one
+// group rather than pruning each other's dailies.
+func TestCreateSnapshot_SymlinkedRootCapturesTarget(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writeFile(t, filepath.Join(real, "a.txt"), "alpha")
+	writeFile(t, filepath.Join(real, "sub", "b.txt"), "bravo")
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	snap, err := r.CreateSnapshot(ctx, link, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot via symlinked root: %v", err)
+	}
+	if snap.Stats.Files != 2 {
+		t.Errorf("Stats.Files: got %d, want 2 (the walk must descend the link's target)", snap.Stats.Files)
+	}
+	wantRoot, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Root != wantRoot {
+		t.Errorf("Root: got %q, want the resolved directory %q", snap.Root, wantRoot)
+	}
+	// Both spellings are one retention group: a second backup through
+	// the real path is the linked one's incremental parent.
+	snap2, err := r.CreateSnapshot(ctx, real, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot via real root: %v", err)
+	}
+	if snap2.Root != snap.Root {
+		t.Errorf("Root differs between spellings: %q vs %q", snap2.Root, snap.Root)
+	}
+	if snap2.Stats.NewBytes != 0 {
+		t.Errorf("real-path re-backup uploaded %d new bytes; the symlinked snapshot should have been its parent", snap2.Stats.NewBytes)
+	}
+}
+
+// TestPlanSnapshot_SymlinkedRootMatchesDirectBackup: the plan path
+// (backup → review → apply) is the second way a snapshot's Root gets
+// settled. It must canonicalise identically, or a plan-driven backup
+// of a linked directory sees zero files and lands in a different
+// retention group from a direct backup of the same tree.
+func TestPlanSnapshot_SymlinkedRootMatchesDirectBackup(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writeFile(t, filepath.Join(real, "a.txt"), "alpha")
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	plan, err := PlanSnapshot(ctx, link, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("plan via symlinked root: %v", err)
+	}
+	wantRoot, err := ResolveRoot(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Root != wantRoot {
+		t.Errorf("plan.Root: got %q, want %q", plan.Root, wantRoot)
+	}
+	if len(plan.Files) != 1 {
+		t.Errorf("plan.Files: got %d, want 1", len(plan.Files))
+	}
+}
+
+// TestCreateSnapshot_RootMustBeDirectory: a root that resolves to
+// anything but a directory is refused up front. WalkDir on a file
+// yields one "." entry and exit 0 — the same silent-nothing failure
+// as the symlinked root, so both are closed by one check.
+func TestCreateSnapshot_RootMustBeDirectory(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	base := t.TempDir()
+	file := filepath.Join(base, "file.txt")
+	writeFile(t, file, "not a directory")
+	link := filepath.Join(base, "link-to-file")
+	if err := os.Symlink(file, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	for _, root := range []string{file, link} {
+		if _, err := r.CreateSnapshot(ctx, root, SnapshotOptions{}); !errors.Is(err, ErrRootNotDir) {
+			t.Errorf("CreateSnapshot(%q): got %v, want ErrRootNotDir", root, err)
+		}
+		// Refused before any write: no manifest, and the lock released.
+		if entries, _ := store.List(ctx, snapshotPrefix); len(entries) != 0 {
+			t.Errorf("CreateSnapshot(%q) wrote %d manifest(s) for a non-directory root", root, len(entries))
+		}
+		if _, err := store.Stat(ctx, lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+			t.Errorf("CreateSnapshot(%q) left the lock behind (err=%v)", root, err)
+		}
+	}
+}
+
 func TestLoadSnapshot_Missing(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)
