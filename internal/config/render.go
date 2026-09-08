@@ -1,6 +1,7 @@
 package config
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"os"
@@ -204,11 +205,31 @@ func Write(path string, cfg *Config) error {
 // fsyncs it, and renames it over path, so readers only ever observe the old
 // file or the complete new one. Every failure leg removes the temp file: a
 // stray `.sentra-*.tmp` beside the config would otherwise outlive the crash
-// it was meant to protect against. The temp file lives in path's directory
-// because rename is atomic only within one filesystem. Same shape as the
-// credentials-file writer in internal/setup.
+// it was meant to protect against. The temp file lives in the target's
+// directory because rename is atomic only within one filesystem. Same shape
+// as the credentials-file writer in internal/setup.
+//
+// write is a callback rather than a finished []byte so a test can fail
+// midway through the write and prove the previous file survives; Write
+// itself just hands over the completed render.
+//
+// A symlinked path is written through, not replaced. Operators keep
+// sentra.yaml in a dotfiles repo behind a symlink (stow, chezmoi, `ln -s`),
+// and renaming the temp file over the link would swap the link for a
+// regular file — severing the dotfiles on every settings toggle, policy add
+// or passwd forget, which the plain os.WriteFile this replaced never did.
+// So when path is a symlink it is resolved with EvalSymlinks and the
+// resolved file is what gets staged beside and renamed over. A dangling
+// link is an error rather than a fresh file: creating a regular file at the
+// link's path is the same severing, and inventing the target's directory
+// writes where nobody asked. A path that does not exist at all stays as
+// given, so a fresh config lands exactly where the operator named it.
 func writeAtomic(path string, write func(w io.Writer) error) error {
-	dir := filepath.Dir(path)
+	target, err := resolveWriteTarget(path)
+	if err != nil {
+		return err
+	}
+	dir := filepath.Dir(target)
 	tmp, err := os.CreateTemp(dir, ".sentra-*.tmp")
 	if err != nil {
 		return fmt.Errorf("create temp config file in %s: %w", dir, err)
@@ -222,8 +243,10 @@ func writeAtomic(path string, write func(w io.Writer) error) error {
 	if err := write(tmp); err != nil {
 		return fail("write", err)
 	}
-	// CreateTemp already opens 0o600, but chmod pins it against an umask or
-	// platform that decides otherwise; the file names the bucket and region.
+	// CreateTemp already opens 0o600 and a umask can only clear bits from
+	// that, so this is belt and braces: restore 0o600 explicitly in case a
+	// platform's CreateTemp decides otherwise; the file names the bucket
+	// and region.
 	if err := tmp.Chmod(0o600); err != nil {
 		return fail("chmod", err)
 	}
@@ -237,11 +260,33 @@ func writeAtomic(path string, write func(w io.Writer) error) error {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("close %s: %w", path, err)
 	}
-	if err := os.Rename(tmpPath, path); err != nil {
+	if err := os.Rename(tmpPath, target); err != nil {
 		_ = os.Remove(tmpPath)
 		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil
+}
+
+// resolveWriteTarget returns the file writeAtomic should stage beside and
+// rename over: path itself unless path is a symlink, in which case the
+// fully resolved target. See writeAtomic for why a link is written through
+// and why a dangling one fails instead of being overwritten.
+func resolveWriteTarget(path string) (string, error) {
+	fi, err := os.Lstat(path)
+	if err != nil {
+		if errors.Is(err, os.ErrNotExist) {
+			return path, nil
+		}
+		return "", fmt.Errorf("stat %s: %w", path, err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		return path, nil
+	}
+	target, err := filepath.EvalSymlinks(path)
+	if err != nil {
+		return "", fmt.Errorf("resolve symlink %s: %w", path, err)
+	}
+	return target, nil
 }
 
 // Update applies mutate to the config as it exists on disk and writes the

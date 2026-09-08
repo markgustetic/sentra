@@ -446,3 +446,100 @@ func policyNames(m map[string]PolicyConfig) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestWrite_WritesThroughSymlink is the dotfiles rule: when sentra.yaml is a
+// symlink into a managed directory (stow, chezmoi, a plain `ln -s` into a
+// dotfiles repo), Write must update the link's target and leave the link
+// standing. Renaming the temp file over the link path would replace the link
+// with a regular file — silently severing the operator's dotfiles on every
+// settings toggle, policy add, or passwd forget — which is exactly what the
+// pre-atomic os.WriteFile never did. No temp file may be left in either
+// directory.
+func TestWrite_WritesThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "real")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(realDir, "sentra.yaml")
+	if err := os.WriteFile(target, []byte("repo:\n  s3:\n    bucket: \"old\"\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "sentra.yaml")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	cfg := Defaults()
+	cfg.Repo.S3.Bucket = "new"
+	if err := Write(link, &cfg); err != nil {
+		t.Fatalf("Write through symlink: %v", err)
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("Write replaced the symlink with a %v; the dotfiles link is severed", fi.Mode())
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(Render(&cfg)) {
+		t.Errorf("link target does not hold the new render:\n%s", got)
+	}
+	for _, d := range []string{dir, realDir} {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if e.Name() != "sentra.yaml" && e.Name() != "real" {
+				t.Errorf("%s holds stray entry %q after Write", d, e.Name())
+			}
+		}
+	}
+}
+
+// TestWrite_DanglingSymlinkFails pins the other half of the rule: a link
+// whose target is missing is neither a fresh file nor a file to write
+// through. Creating a regular file at the link's own path would sever it
+// just like the rename did, and inventing the target's parent directory
+// would write somewhere the operator never named. The only honest outcome
+// is a clear error naming the link, with the link left as it was.
+func TestWrite_DanglingSymlinkFails(t *testing.T) {
+	dir := t.TempDir()
+	link := filepath.Join(dir, "sentra.yaml")
+	if err := os.Symlink(filepath.Join(dir, "missing", "sentra.yaml"), link); err != nil {
+		t.Fatal(err)
+	}
+	cfg := Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	err := Write(link, &cfg)
+	if err == nil {
+		t.Fatal("Write through a dangling symlink succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), link) {
+		t.Errorf("error %q does not name the link %s", err, link)
+	}
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("failed Write replaced the dangling symlink with a %v", fi.Mode())
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("failed Write left entries behind: %v", names)
+	}
+}
