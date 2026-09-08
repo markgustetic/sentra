@@ -457,6 +457,15 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.reload()
 		return v, nil
 
+	case snapshotsReloadedMsg:
+		// The shell's one post-op snapshot reload (broadcast from the
+		// snapshots view). Last run and the drill-in's newest snapshot come
+		// from this list, so take it and recompute the rows — without this
+		// the column froze on the launch-time list for the whole session.
+		v.snaps = msg.snaps
+		v.reload()
+		return v, nil
+
 	case opRejectedMsg:
 		if v.stage == jobsRunning && msg.name == "job-run" {
 			v.stage = jobsList

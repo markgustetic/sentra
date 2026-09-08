@@ -1447,3 +1447,50 @@ func TestJobs_HeaderIsRuledOffFromRows(t *testing.T) {
 		}
 	}
 }
+
+// The Last-run column (and the drill-in's newest snapshot) come from the
+// shell's shared snapshot load. A policy run this session must show up
+// after the shell reloads — the view used to freeze on the launch-time
+// list because it never handled snapshotsReloadedMsg.
+func TestApp_JobsLastRunFollowsReload(t *testing.T) {
+	r := newFlowRepo(t)
+	src := t.TempDir()
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("hello"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	// A name no real timer on this machine could carry: the view stats the
+	// operator's own launchd/systemd dirs for installed timers.
+	const name = "g5-live-preload-test"
+	cfg.Policies[name] = config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+	}
+	if err := config.Write(path, &cfg); err != nil {
+		t.Fatal(err)
+	}
+	app := NewApp(Deps{Repo: r, RepoName: "x", Config: &cfg, ConfigPath: path,
+		SchedulerRunner: (&fakeSchedRunner{}).run})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	jobs := app.views[indexOf(app, "jobs")].model.(JobsView)
+	if row, ok := jobs.rowByName(name); !ok || row.lastID != "" {
+		t.Fatalf("precondition: no run yet, row=%+v ok=%t", row, ok)
+	}
+
+	// The policy runs this session (tagged the way the runner tags it).
+	info, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{Tag: "policy:" + name})
+	if err != nil {
+		t.Fatal(err)
+	}
+	app = reloadAfterOp(t, app)
+
+	jobs = app.views[indexOf(app, "jobs")].model.(JobsView)
+	row, ok := jobs.rowByName(name)
+	if !ok || row.lastID != info.ID {
+		t.Fatalf("last run after reload = %q, want %q", row.lastID, info.ID)
+	}
+}

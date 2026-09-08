@@ -160,9 +160,12 @@ type Deps struct {
 	Version string
 	Commit  string
 
-	// preload is the App's one shared snapshot-list load, set by NewApp before
-	// it constructs the views (see initialSnapshots). nil in tests that build a
-	// view directly, which then load fresh — unchanged behavior.
+	// preload is the App's one shared snapshot-list cache, set by NewApp before
+	// it constructs the views and refreshed by the App on every
+	// snapshotsReloadedMsg (see snapshotPreload / initialSnapshots). The
+	// pointer is shared with every view's Deps copy, so a view rebuilt from
+	// Deps mid-session reads the current list. nil in tests that build a view
+	// directly, which then load fresh — unchanged behavior.
 	preload *snapshotPreload
 }
 
@@ -299,14 +302,14 @@ func NewApp(deps Deps) App {
 	deps.Ctx = ctx
 
 	// One shared snapshot-list load for every view that needs the list at
-	// construction (dashboard, snapshots, diff, restore, prune) — five separate
-	// ListSnapshots at launch collapse into one. Bounded so a slow store can't
-	// stall startup; each view still falls back gracefully on error.
+	// construction (dashboard, snapshots, diff, restore, prune, jobs) — five
+	// separate ListSnapshots at launch collapse into one. Bounded so a slow
+	// store can't stall startup; each view still falls back gracefully on
+	// error. The cache stays live from here: App.Update refreshes it on every
+	// snapshotsReloadedMsg.
 	if deps.Repo != nil && deps.preload == nil {
-		loadCtx, loadCancel := context.WithTimeout(ctx, 20*time.Second)
 		var pre snapshotPreload
-		pre.snaps, pre.err = deps.Repo.ListSnapshots(loadCtx)
-		loadCancel()
+		pre.snaps, pre.err = listSnapshots(deps)
 		deps.preload = &pre
 	}
 
@@ -821,6 +824,18 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.views[m.active].model, viewCmd = m.views[m.active].model.Update(msg)
 		cmds = append(cmds, viewCmd)
 		return m, tea.Batch(cmds...)
+
+	case snapshotsReloadedMsg:
+		// The snapshots view's post-op reload is the ONE fresh ListSnapshots
+		// per op (the shared-load rule, launch and after). Refresh the shared
+		// cache from it before the broadcast so every consumer that reads the
+		// list through Deps — the jobs view's Last-run column, restore's and
+		// prune's resets, a fresh Diff, the chat's list_snapshots tool — sees
+		// this reload rather than the launch-time list for the whole session.
+		if m.deps.preload != nil {
+			m.deps.preload.set(msg.snaps, msg.err)
+		}
+		return m.broadcast(msg)
 
 	case tea.KeyMsg:
 		return m.routeKey(msg)

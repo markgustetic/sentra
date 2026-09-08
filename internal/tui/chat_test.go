@@ -420,3 +420,35 @@ func (blockingProvider) Generate(ctx context.Context, _ string, _ []llm.Message,
 	<-ctx.Done()
 	return nil, "", ctx.Err()
 }
+
+// The list_snapshots tool answers from the shell's shared snapshot cache, so
+// a snapshot taken this session must be in its answer once the shell has
+// reloaded — the tool used to serve the launch-time list all session.
+func TestChat_ListSnapshotsSeesReloadedList(t *testing.T) {
+	r := newFlowRepo(t)
+	p := &llm.FakeProvider{Steps: []llm.FakeStep{
+		{ToolCalls: []llm.ToolCall{{ID: "t1", Name: "list_snapshots", Input: map[string]any{}}}},
+		{Text: "done"},
+	}}
+	app := NewApp(Deps{Repo: r, RepoName: "x", Provider: p})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+
+	seedTaggedSnaps(t, r, "fresh")
+	app = reloadAfterOp(t, app)
+	want, err := r.ListSnapshots(context.Background())
+	if err != nil || len(want) != 1 {
+		t.Fatalf("precondition: one fresh snapshot, got %d %v", len(want), err)
+	}
+
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	app, cmd := typeAndSend(t, m.(App), "list my snapshots")
+	_, _ = drainTurn(t, app, cmd)
+	if len(p.Calls) != 2 {
+		t.Fatalf("expected 2 provider rounds, got %d", len(p.Calls))
+	}
+	last := p.Calls[1].Msgs[len(p.Calls[1].Msgs)-1]
+	if last.ToolResult == nil || !strings.Contains(last.ToolResult.Content, want[0].ID) {
+		t.Fatalf("list_snapshots must answer from the reloaded list (want %s): %+v", want[0].ID, last)
+	}
+}
