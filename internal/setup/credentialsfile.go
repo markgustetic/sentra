@@ -50,6 +50,39 @@ func CheckAWSCredentialsProfileFree(path, profile string) error {
 	return err
 }
 
+// ErrConfigProfileExists is returned when ~/.aws/config already defines
+// [profile NAME] for the requested backup profile. Static keys in the
+// credentials file merge into that same profile, and aws-sdk-go-v2 resolves
+// them ahead of the profile's SSO / role / credential_process settings — so
+// writing the key would silently retarget every tool that uses the profile
+// at the backup user. Sentra never edits ~/.aws/config, so the only safe
+// answer is a different name.
+var ErrConfigProfileExists = errors.New("aws config already defines a profile of that name")
+
+// CheckAWSConfigProfileFree refuses a backup profile whose [profile NAME]
+// section exists in the AWS CLI config at path. It is the config-file half
+// of CheckAWSCredentialsProfileFree: the credentials check catches a key
+// that is already there, this catches a definition the key would shadow. A
+// missing file is free. Only the "profile NAME" spelling counts — a bare
+// [NAME] section in the config file is not a profile to the SDK or the CLI.
+func CheckAWSConfigProfileFree(path, profile string) error {
+	profile = strings.TrimSpace(profile)
+	if err := ValidateBackupUserProfile(profile); err != nil {
+		return err
+	}
+	cfg, err := loadAWSCLIConfigFile(path)
+	if err != nil {
+		return err
+	}
+	// The parser records a section the moment it sees the header, so an
+	// empty [profile NAME] is still a definition — and still one the SDK
+	// would merge the key into.
+	if _, defined := cfg[AWSProfileSection(profile)]; defined {
+		return fmt.Errorf("%w: [profile %s] in %s", ErrConfigProfileExists, profile, path)
+	}
+	return nil
+}
+
 // WriteAWSCredentialsProfile stores accessKeyID/secret under [profile] in
 // the shared credentials file at path. It is a minimal-touch edit: the file
 // is the operator's, so every byte outside the target section is preserved,

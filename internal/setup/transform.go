@@ -210,6 +210,57 @@ func ValidateBackupUserProfile(name string) error {
 	return nil
 }
 
+// ErrBackupUserProfileIsSession is returned when the backup user's
+// credentials profile is the very profile setup signs in with
+// (Repo.S3.Profile). aws-sdk-go-v2 resolves one profile's static keys
+// BEFORE its SSO or assume-role settings (resolveCredsFromProfile tests
+// Credentials.HasKeys() first), so a key written under that name would
+// make every tool using the profile authenticate as the least-privilege
+// backup user, and the operator's own identity would be unreachable under
+// the name they know it by.
+var ErrBackupUserProfileIsSession = errors.New("backup user profile must differ from the profile setup signs in with")
+
+// ValidateBackupUserProfileFor is ValidateBackupUserProfile plus the one
+// rule that needs the plan: the name must not be sessionProfile. Both
+// drivers and the engine call this form so the refusal is the same
+// wherever the operator meets it.
+func ValidateBackupUserProfileFor(name, sessionProfile string) error {
+	if err := ValidateBackupUserProfile(name); err != nil {
+		return err
+	}
+	if strings.TrimSpace(name) == strings.TrimSpace(sessionProfile) {
+		return fmt.Errorf("%w: %q", ErrBackupUserProfileIsSession, strings.TrimSpace(name))
+	}
+	return nil
+}
+
+// DefaultBackupUserProfileFor is DefaultBackupUserProfile made safe for the
+// plan at hand: when the session profile is itself called "sentra" — this
+// is common, since DefaultPlan prefers a [profile sentra] from ~/.aws/config
+// — the default steps aside to "sentra-backup" (and keeps stepping until it
+// differs) rather than failing the happy path with the collision it exists
+// to prevent. Pure, so the review line and the engine can agree on the name
+// before anything runs.
+func DefaultBackupUserProfileFor(sessionProfile string) string {
+	session := strings.TrimSpace(sessionProfile)
+	profile := DefaultBackupUserProfile
+	for profile == session {
+		profile += "-backup"
+	}
+	return profile
+}
+
+// ResolveBackupUserProfile is the single reading of Plan.BackupUserProfile:
+// the operator's explicit name, else the plan-derived default. Every
+// consumer goes through it so "blank" cannot resolve to two different
+// sections on the review screen and in the credentials file.
+func ResolveBackupUserProfile(p *Plan) string {
+	if profile := strings.TrimSpace(p.BackupUserProfile); profile != "" {
+		return profile
+	}
+	return DefaultBackupUserProfileFor(p.Config.Repo.S3.Profile)
+}
+
 // ShouldProvisionBackupUser is the single gate for the IAM provisioning
 // stage. Existing-credentials and skip never provision: the operator already
 // chose a durable identity, and an IAM mutation they did not ask for is the

@@ -64,7 +64,11 @@ func DefaultProvisionBackupUser(ctx context.Context, cfg *config.Config, opts Ba
 	if cfg == nil {
 		return BackupUserReport{}, errors.New("provision backup user: nil config")
 	}
-	path, err := AWSCredentialsPath()
+	credsPath, err := AWSCredentialsPath()
+	if err != nil {
+		return BackupUserReport{}, err
+	}
+	configPath, err := AWSConfigPath()
 	if err != nil {
 		return BackupUserReport{}, err
 	}
@@ -72,7 +76,7 @@ func DefaultProvisionBackupUser(ctx context.Context, cfg *config.Config, opts Ba
 	if err != nil {
 		return BackupUserReport{}, err
 	}
-	return provisionBackupUser(ctx, iam.NewFromConfig(awsCfg), cfg, opts, path, WriteAWSCredentialsProfile)
+	return provisionBackupUser(ctx, iam.NewFromConfig(awsCfg), cfg, opts, credsPath, configPath, WriteAWSCredentialsProfile)
 }
 
 // provisionBackupUser is the ordered body: pre-check the profile, create (or
@@ -83,14 +87,29 @@ func DefaultProvisionBackupUser(ctx context.Context, cfg *config.Config, opts Ba
 // exists only between the mint and the write and is never returned. A write
 // failure deletes the just-minted key so no live secret is left homeless; if
 // that cleanup fails too, the key ID is reported as orphaned.
-func provisionBackupUser(ctx context.Context, client iamAPI, cfg *config.Config, opts BackupUserOptions, credsPath string, write credentialsWriter) (BackupUserReport, error) {
+//
+// cfg.Repo.S3.Profile is the SESSION profile at this point — the engine
+// switches it to the backup profile only after the new key verifies — which
+// is what the collision pre-check compares against.
+func provisionBackupUser(ctx context.Context, client iamAPI, cfg *config.Config, opts BackupUserOptions, credsPath, configPath string, write credentialsWriter) (BackupUserReport, error) {
+	sessionProfile := cfg.Repo.S3.Profile
 	profile := strings.TrimSpace(opts.Profile)
 	if profile == "" {
-		profile = DefaultBackupUserProfile
+		profile = DefaultBackupUserProfileFor(sessionProfile)
 	}
 	report := BackupUserReport{UserName: BackupUserName, Profile: profile, CredentialsPath: credsPath}
 
-	// Refuse a taken or forbidden profile BEFORE any IAM mutation.
+	// Refuse a taken, shadowing, or forbidden profile BEFORE any IAM
+	// mutation. Three checks, because the name can be unsafe three ways: it
+	// is the profile setup signed in with; ~/.aws/config defines it (the key
+	// would shadow that definition); ~/.aws/credentials already holds a key
+	// under it (Sentra never overwrites a credential it did not create).
+	if err := ValidateBackupUserProfileFor(profile, sessionProfile); err != nil {
+		return report, &BackupUserError{Step: "credentials", Err: err}
+	}
+	if err := CheckAWSConfigProfileFree(configPath, profile); err != nil {
+		return report, &BackupUserError{Step: "credentials", Err: err}
+	}
 	if err := CheckAWSCredentialsProfileFree(credsPath, profile); err != nil {
 		return report, &BackupUserError{Step: "credentials", Err: err}
 	}

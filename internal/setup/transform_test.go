@@ -345,3 +345,87 @@ func TestShouldProvisionBackupUser(t *testing.T) {
 		t.Fatal("nil plan must never provision")
 	}
 }
+
+// TestDefaultBackupUserProfileFor pins the rule, not the case: the default
+// section name must never equal the session profile the plan signs in with,
+// whatever that profile is called. A static key written under the session
+// profile's own name shadows it (aws-sdk-go-v2 resolves static keys before
+// SSO within one profile), so the default steps aside instead of colliding.
+func TestDefaultBackupUserProfileFor(t *testing.T) {
+	tests := []struct {
+		session string
+		want    string
+	}{
+		{"", "sentra"},
+		{"default", "sentra"},
+		{"work", "sentra"},
+		{"sentra", "sentra-backup"},
+		{"  sentra  ", "sentra-backup"},
+		{"sentra-backup", "sentra"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.session, func(t *testing.T) {
+			got := DefaultBackupUserProfileFor(tc.session)
+			if got != tc.want {
+				t.Fatalf("DefaultBackupUserProfileFor(%q) = %q, want %q", tc.session, got, tc.want)
+			}
+			if err := ValidateBackupUserProfileFor(got, tc.session); err != nil {
+				t.Fatalf("derived default %q must pass its own validation against session %q: %v", got, tc.session, err)
+			}
+		})
+	}
+}
+
+func TestValidateBackupUserProfileFor(t *testing.T) {
+	tests := []struct {
+		name    string
+		in      string
+		session string
+		wantIs  error // nil means accepted
+	}{
+		{"no session", "sentra", "", nil},
+		{"distinct", "sentra", "work", nil},
+		{"equal", "sentra", "sentra", ErrBackupUserProfileIsSession},
+		{"equal after trim", " sentra ", "sentra ", ErrBackupUserProfileIsSession},
+		{"base rules still apply", "default", "work", ErrBackupUserProfileDefault},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			err := ValidateBackupUserProfileFor(tc.in, tc.session)
+			if tc.wantIs == nil {
+				if err != nil {
+					t.Fatalf("ValidateBackupUserProfileFor(%q, %q) = %v, want nil", tc.in, tc.session, err)
+				}
+				return
+			}
+			if !errors.Is(err, tc.wantIs) {
+				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
+			}
+		})
+	}
+}
+
+// ResolveBackupUserProfile is the one place blank means "the default", and
+// the default is a function of the plan's session profile — so every
+// consumer (engine, review line) agrees on where the key lands.
+func TestResolveBackupUserProfile(t *testing.T) {
+	tests := []struct {
+		name      string
+		requested string
+		session   string
+		want      string
+	}{
+		{"explicit wins", "mine", "sentra", "mine"},
+		{"blank, no collision", "  ", "work", "sentra"},
+		{"blank, collision", "", "sentra", "sentra-backup"},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			p := Plan{BackupUserProfile: tc.requested}
+			p.Config.Repo.S3.Profile = tc.session
+			if got := ResolveBackupUserProfile(&p); got != tc.want {
+				t.Fatalf("ResolveBackupUserProfile = %q, want %q", got, tc.want)
+			}
+		})
+	}
+}

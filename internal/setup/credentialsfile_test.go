@@ -157,3 +157,43 @@ func TestAWSCredentialsPathHonorsEnv(t *testing.T) {
 		t.Fatalf("path = %q, want ~/.aws/credentials", got)
 	}
 }
+
+// A static key under [NAME] in ~/.aws/credentials shadows a [profile NAME]
+// in ~/.aws/config: aws-sdk-go-v2's resolveCredsFromProfile tests
+// Credentials.HasKeys() before hasSSOConfiguration(), so an SSO or
+// assume-role profile of that name would silently authenticate as the
+// backup user from then on. The pre-check refuses the name outright.
+func TestCheckAWSConfigProfileFree(t *testing.T) {
+	tests := []struct {
+		name    string
+		config  string // "" means no file
+		profile string
+		wantIs  error
+		wantErr bool
+	}{
+		{"no config file", "", "sentra", nil, false},
+		{"config without the profile", "[profile work]\nregion = us-east-1\n", "sentra", nil, false},
+		{"sso profile of that name", "[profile sentra]\nsso_session = corp\nsso_account_id = 1\nsso_role_name = r\nregion = us-east-1\n", "sentra", ErrConfigProfileExists, true},
+		{"region-only profile of that name", "[profile sentra]\nregion = us-east-1\n", "sentra", ErrConfigProfileExists, true},
+		{"trimmed lookup", "[profile sentra]\nregion = us-east-1\n", "  sentra ", ErrConfigProfileExists, true},
+		{"bare section is not a config profile", "[sentra]\nregion = us-east-1\n", "sentra", nil, false},
+		{"default refused by name", "", "default", ErrBackupUserProfileDefault, true},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			path := filepath.Join(t.TempDir(), "config")
+			if tc.config != "" {
+				if err := os.WriteFile(path, []byte(tc.config), 0o600); err != nil {
+					t.Fatal(err)
+				}
+			}
+			err := CheckAWSConfigProfileFree(path, tc.profile)
+			if (err != nil) != tc.wantErr {
+				t.Fatalf("CheckAWSConfigProfileFree err = %v, wantErr %v", err, tc.wantErr)
+			}
+			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
+				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
+			}
+		})
+	}
+}

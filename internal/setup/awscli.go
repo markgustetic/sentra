@@ -142,6 +142,13 @@ func LoadAWSCLIConfig() (AWSCLIConfig, error) {
 	if err != nil {
 		return nil, err
 	}
+	return loadAWSCLIConfigFile(path)
+}
+
+// loadAWSCLIConfigFile is LoadAWSCLIConfig for an explicit path, so the
+// profile pre-checks can read the same file the provisioner resolved and
+// tests can point at a fixture instead of the developer's ~/.aws.
+func loadAWSCLIConfigFile(path string) (AWSCLIConfig, error) {
 	f, err := os.Open(path) //nolint:gosec // AWS CLI config path comes from AWS_CONFIG_FILE or the current user's home dir.
 	if err != nil {
 		if os.IsNotExist(err) {

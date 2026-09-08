@@ -140,15 +140,20 @@ func TestReviewTextBackupUserLine(t *testing.T) {
 		method  AWSAuthMethod
 		on      bool
 		profile string
+		session string // Repo.S3.Profile the plan signs in with
 		want    string // substring that must appear
 		absent  string // substring that must not appear ("" to skip)
 	}{
-		{"login on", AWSAuthLogin, true, "sentra", "Backup user: create sentra-backup, keys → ~/.aws/credentials [sentra]", ""},
-		{"login on custom profile", AWSAuthLogin, true, "backups", "~/.aws/credentials [backups]", ""},
-		{"login on blank profile defaults", AWSAuthLogin, true, "", "[sentra]", ""},
-		{"sso off", AWSAuthSSO, false, "", "Backup user: skipped", ""},
-		{"existing", AWSAuthExisting, true, "sentra", "AWS sign-in", "Backup user"},
-		{"skip", AWSAuthSkip, true, "sentra", "AWS sign-in", "Backup user"},
+		{"login on", AWSAuthLogin, true, "sentra", "", "Backup user: create sentra-backup, keys → ~/.aws/credentials [sentra]", ""},
+		{"login on custom profile", AWSAuthLogin, true, "backups", "", "~/.aws/credentials [backups]", ""},
+		{"login on blank profile defaults", AWSAuthLogin, true, "", "work", "[sentra]", ""},
+		// The review must name the section the engine will actually write:
+		// blank resolves against the session profile, so a sign-in profile
+		// called "sentra" shows the derived name, not the constant.
+		{"login on blank profile steps aside from session", AWSAuthLogin, true, "", "sentra", "[sentra-backup]", "[sentra]"},
+		{"sso off", AWSAuthSSO, false, "", "", "Backup user: skipped", ""},
+		{"existing", AWSAuthExisting, true, "sentra", "", "AWS sign-in", "Backup user"},
+		{"skip", AWSAuthSkip, true, "sentra", "", "AWS sign-in", "Backup user"},
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
@@ -156,6 +161,7 @@ func TestReviewTextBackupUserLine(t *testing.T) {
 			p.AWSAuthMethod = tc.method
 			p.ProvisionBackupUser = tc.on
 			p.BackupUserProfile = tc.profile
+			p.Config.Repo.S3.Profile = tc.session
 			got := ReviewText("sentra.yaml", p)
 			if !strings.Contains(got, tc.want) {
 				t.Fatalf("review text missing %q:\n%s", tc.want, got)
