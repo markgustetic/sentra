@@ -263,6 +263,52 @@ func TestCreateSnapshot_ReleasesLockOnError(t *testing.T) {
 	}
 }
 
+// lostResponseStore models a PutIfAbsent whose first attempt committed
+// but whose response never arrived: the SDK retries, the retry sees
+// the object it just wrote, and the caller is handed ErrAlreadyExists
+// for a write that succeeded. The object lands; the error lies.
+type lostResponseStore struct {
+	blobstore.Store
+}
+
+func (s *lostResponseStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	if err := s.Store.PutIfAbsent(ctx, key, r); err != nil {
+		return err
+	}
+	if key == lockKey {
+		return blobstore.ErrAlreadyExists
+	}
+	return nil
+}
+
+// TestAcquireLock_OwnUUIDAfterLostResponseIsSuccess: when the lock
+// blob already holds the UUID this call generated, the write went
+// through and the acquire succeeded — reporting ErrRepoLocked would
+// name the process as its own blocker and strand a lock only it can
+// release. Ownership is decided by reading the holder back, not by
+// the PutIfAbsent result alone.
+func TestAcquireLock_OwnUUIDAfterLostResponseIsSuccess(t *testing.T) {
+	ctx := context.Background()
+	store := &lostResponseStore{Store: blobstore.NewMemory()}
+
+	info, err := acquireLock(ctx, store, "snapshot")
+	if err != nil {
+		t.Fatalf("acquireLock after a lost response: got %v, want success", err)
+	}
+	if !strings.Contains(readLockHolder(ctx, store), info.UUID) {
+		t.Fatalf("lock blob does not carry the returned UUID %s: %s", info.UUID, readLockHolder(ctx, store))
+	}
+	// The lock is genuinely held: a foreign acquire is refused.
+	if _, err := acquireLock(ctx, store.Store, "other"); !errors.Is(err, ErrRepoLocked) {
+		t.Fatalf("foreign acquire: got %v, want ErrRepoLocked", err)
+	}
+	// And the returned info releases it.
+	releaseLock(ctx, store, info)
+	if _, err := store.Stat(ctx, lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("lock still present after release (err=%v)", err)
+	}
+}
+
 // cancelAfterFirstChunkStore cancels the caller's context the moment
 // the first data/ chunk lands. It models an operator hitting esc/quit
 // (or any op cancellation) partway through a backup: every later
