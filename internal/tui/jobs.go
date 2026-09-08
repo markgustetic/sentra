@@ -367,7 +367,7 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	switch msg := msg.(type) {
 	case tea.WindowSizeMsg:
 		v.width, v.height = msg.Width, msg.Height
-		v.tbl.SetColumns(jobsColumns(pickerContentWidth(v.width)))
+		v.tbl.SetColumns(jobsColumns(pickerContentWidth(v.width) - ui.TableGutter))
 		v.tbl.SetHeight(max(msg.Height-8, 3))
 		return v, nil
 
@@ -762,7 +762,7 @@ func (v JobsView) View() string {
 	}
 	var b strings.Builder
 	fmt.Fprintf(&b, "%s\n\n", ui.Primary.Render("Scheduled backups"))
-	fmt.Fprintf(&b, "%s\n\n", v.tbl.View())
+	fmt.Fprintf(&b, "%s\n\n", ui.TableView(v.tbl))
 	if v.notice != "" {
 		fmt.Fprintf(&b, "%s\n\n", ui.Warn.Render(v.notice))
 	}

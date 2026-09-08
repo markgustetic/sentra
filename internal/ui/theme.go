@@ -188,11 +188,67 @@ func ActionLine(primary, secondary string) string {
 	return out
 }
 
+// tableMarker is the selection glyph a bubbles/table's Selected style
+// prepends to the cursor row (see TableStyles). The same glyph SelectRow
+// uses, so a table row reads like every other selectable row in the TUI.
+const tableMarker = "▍"
+
+// TableGutter is the width in cells TableView adds to every line of a
+// table: the marker and the space lipgloss joins it to the row with. A
+// view that budgets its columns to the pane interior must subtract it, or
+// the table overflows the pane by exactly this much.
+const TableGutter = 2
+
 // TableStyles is bubbles' default table styling with TableHeader in place
-// of the plain bold header. Cell and Selected stay at their defaults so
-// the data rows read as data: only the header changes.
+// of the plain bold header and the selection glyph in place of the
+// colour-only Selected. Cell stays at its default so the data rows read
+// as data. This is the ONE place a table is styled: every table in the
+// TUI takes these and renders through TableView, which turns the glyph
+// into an aligned gutter.
+//
+// bubbles' own Selected is bold plus a foreground colour and nothing else:
+// under NO_COLOR, a pipe, or the Ascii profile every unit test runs in,
+// lipgloss emits no ANSI at all, so the cursor row was indistinguishable
+// from its neighbours. SetString makes the style itself emit the marker
+// ahead of the row (lipgloss joins the set string and the content with a
+// space), which survives every profile. bubbles/table has no row-render
+// hook, so its Selected style is the only seam that sees the cursor row.
 func TableStyles() table.Styles {
 	st := table.DefaultStyles()
 	st.Header = TableHeader
+	st.Selected = rowSelected.SetString(tableMarker)
 	return st
+}
+
+// TableView renders t with the selection gutter: the cursor row keeps the
+// marker its Selected style emitted, and every other line — header and
+// rule included — is indented by TableGutter so the columns stay aligned.
+// Callers use this in place of t.View(); through the raw View the cursor
+// row sits two cells right of every other row.
+func TableView(t table.Model) string {
+	lines := strings.Split(t.View(), "\n")
+	for i, line := range lines {
+		if line == "" || hasSelectionMarker(line) {
+			continue
+		}
+		lines[i] = strings.Repeat(" ", TableGutter) + line
+	}
+	return strings.Join(lines, "\n")
+}
+
+// hasSelectionMarker reports whether line is the row Selected rendered:
+// the marker is its first visible rune. Under a colour profile the style's
+// SGR sequences precede the glyph, so leading CSI sequences are skipped
+// before the comparison; a marker anywhere else in the line (inside a
+// cell value) does not count, so a row can never be mistaken for the
+// cursor row by its content.
+func hasSelectionMarker(line string) bool {
+	for strings.HasPrefix(line, "\x1b[") {
+		end := strings.IndexByte(line, 'm')
+		if end < 0 {
+			return false
+		}
+		line = line[end+1:]
+	}
+	return strings.HasPrefix(line, tableMarker)
 }

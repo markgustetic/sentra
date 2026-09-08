@@ -4,6 +4,7 @@ import (
 	"strings"
 	"testing"
 
+	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/lipgloss"
 )
 
@@ -180,4 +181,91 @@ func stripANSI(s string) string {
 		}
 	}
 	return b.String()
+}
+
+// tableLines renders a three-row table with the cursor on row idx and
+// returns TableView's lines.
+func tableLines(idx int) []string {
+	t := table.New(
+		table.WithColumns([]table.Column{{Title: "ID", Width: 6}, {Title: "Tag", Width: 6}}),
+		table.WithRows([]table.Row{{"one", "a"}, {"two", "b"}, {"three", "c"}}),
+		table.WithHeight(5),
+		table.WithStyles(TableStyles()),
+	)
+	t.SetCursor(idx)
+	return strings.Split(TableView(t), "\n")
+}
+
+// TestTableView_MarksExactlyTheCursorRow pins the rule bubbles/table
+// breaks on its own: the selected row is marked by the "▍" glyph — visible
+// under NO_COLOR and the Ascii profile the tests run in — on exactly one
+// line, and the marker follows the cursor. Every other line, the header
+// included, is indented by the same gutter so the columns stay aligned.
+func TestTableView_MarksExactlyTheCursorRow(t *testing.T) {
+	for _, idx := range []int{0, 1, 2} {
+		lines := tableLines(idx)
+		var marked []string
+		for _, l := range lines {
+			if strings.HasPrefix(l, "▍") {
+				marked = append(marked, l)
+			} else if l != "" && !strings.HasPrefix(l, "  ") {
+				t.Errorf("cursor %d: unmarked line lacks the gutter: %q", idx, l)
+			}
+		}
+		if len(marked) != 1 {
+			t.Fatalf("cursor %d: %d marked lines, want 1:\n%s", idx, len(marked), strings.Join(lines, "\n"))
+		}
+		want := []string{"one", "two", "three"}[idx]
+		if !strings.Contains(marked[0], want) {
+			t.Errorf("cursor %d: marked line %q does not carry row %q", idx, marked[0], want)
+		}
+		header := lines[0]
+		if !strings.HasPrefix(header, "  ") || !strings.Contains(header, "ID") {
+			t.Errorf("header must sit behind the gutter: %q", header)
+		}
+		if lipgloss.Width(marked[0]) != lipgloss.Width(header) {
+			t.Errorf("marked row width %d != header width %d — the gutter misaligned the columns",
+				lipgloss.Width(marked[0]), lipgloss.Width(header))
+		}
+	}
+}
+
+// TestTableView_GutterMatchesTableGutter: callers budget their columns
+// against TableGutter, so the gutter TableView actually draws must cost
+// exactly that many cells or the table overflows its pane once selected.
+func TestTableView_GutterMatchesTableGutter(t *testing.T) {
+	lines := tableLines(0)
+	raw := strings.Split(tableLines0Raw(), "\n")
+	if got := lipgloss.Width(lines[0]) - lipgloss.Width(raw[0]); got != TableGutter {
+		t.Fatalf("gutter costs %d cells, TableGutter = %d", got, TableGutter)
+	}
+}
+
+func tableLines0Raw() string {
+	t := table.New(
+		table.WithColumns([]table.Column{{Title: "ID", Width: 6}, {Title: "Tag", Width: 6}}),
+		table.WithRows([]table.Row{{"one", "a"}, {"two", "b"}, {"three", "c"}}),
+		table.WithHeight(5),
+		table.WithStyles(TableStyles()),
+	)
+	return t.View()
+}
+
+// TestHasSelectionMarker_SkipsANSI: under a colour profile the selected row
+// begins with SGR sequences before the glyph. Detection must look past
+// them, or a coloured terminal gets every row indented and the selected
+// one shifted two cells further.
+func TestHasSelectionMarker_SkipsANSI(t *testing.T) {
+	cases := map[string]bool{
+		"▍ row":                        true,
+		"\x1b[1m\x1b[38;2;1;2;3m▍ row": true,
+		"  row":                        false,
+		"\x1b[1mrow ▍":                 false,
+		"":                             false,
+	}
+	for in, want := range cases {
+		if got := hasSelectionMarker(in); got != want {
+			t.Errorf("hasSelectionMarker(%q) = %v, want %v", in, got, want)
+		}
+	}
 }
