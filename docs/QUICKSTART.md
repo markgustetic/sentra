@@ -88,8 +88,11 @@ Browser-login and SSO sessions are temporary — hours, not days — so on those
 paths the wizard offers **create dedicated backup user** (pre-checked for
 browser login). It creates IAM user `sentra-backup` with the least-privilege
 policy, stores its access key under the `sentra` profile in
-`~/.aws/credentials`, and points `sentra.yaml` at that profile once the key
-verifies. Leave it on if you plan to schedule backups. If it cannot run (the
+`~/.aws/credentials` (or `sentra-backup` when you sign in with a profile
+already called `sentra` — the backup key never lands under the profile you
+sign in with, and never under a name `~/.aws/config` already defines), and
+points `sentra.yaml` at that profile once the key verifies. Leave it on if
+you plan to schedule backups. If it cannot run (the
 signed-in identity lacks IAM permissions, say), setup still completes on the
 session credentials and tells you so; you can create the user later with the
 policy from `sentra setup iam-policy`.

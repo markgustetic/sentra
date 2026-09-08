@@ -215,3 +215,62 @@ func TestEngineBackupUser_ProvisionFailureWarnsAndContinues(t *testing.T) {
 		})
 	}
 }
+
+// A blank profile resolves against the plan's session profile: on a machine
+// whose sign-in profile is already called "sentra" the default steps aside,
+// so the happy path never writes a static key over the SSO definition.
+func TestEngineBackupUser_BlankProfileStepsAsideFromSessionProfile(t *testing.T) {
+	var gotProfile string
+	eff := fakeEffects{
+		provisionBackupUser: func(_ context.Context, _ *config.Config, o BackupUserOptions) (BackupUserReport, error) {
+			gotProfile = o.Profile
+			return BackupUserReport{Profile: o.Profile}, nil
+		},
+	}
+	p := loginPlanWithBackupUser()
+	p.BackupUserProfile = ""
+	p.Config.Repo.S3.Profile = "sentra"
+	if _, _, err := newTestEngine(eff).PrepareAWS(context.Background(), &p); err != nil {
+		t.Fatal(err)
+	}
+	if gotProfile != "sentra-backup" {
+		t.Fatalf("profile passed = %q, want sentra-backup", gotProfile)
+	}
+	if p.Config.Repo.S3.Profile != "sentra-backup" {
+		t.Fatalf("plan profile = %q, want the verified backup profile", p.Config.Repo.S3.Profile)
+	}
+}
+
+// An explicit profile equal to the session profile is refused in the engine
+// itself, before the Effects seam: no IAM call, a warning that names the
+// collision, and the plan still on the session profile.
+func TestEngineBackupUser_ExplicitSessionProfileRefused(t *testing.T) {
+	called := false
+	eff := fakeEffects{
+		provisionBackupUser: func(context.Context, *config.Config, BackupUserOptions) (BackupUserReport, error) {
+			called = true
+			return BackupUserReport{}, nil
+		},
+	}
+	p := loginPlanWithBackupUser()
+	p.BackupUserProfile = "sentra"
+	p.Config.Repo.S3.Profile = "sentra"
+	_, prep, err := newTestEngine(eff).PrepareAWS(context.Background(), &p)
+	if err != nil {
+		t.Fatalf("a refused profile must not fail setup: %v", err)
+	}
+	if called {
+		t.Fatal("Effects.ProvisionBackupUser must not run for a profile that collides with the session profile")
+	}
+	if prep.BackupUser == nil || prep.BackupUser.ProfileSwitched {
+		t.Fatalf("report = %+v", prep.BackupUser)
+	}
+	for _, want := range []string{"session", "another profile name", "expire"} {
+		if !strings.Contains(prep.BackupUser.Warning, want) {
+			t.Fatalf("warning %q lacks %q", prep.BackupUser.Warning, want)
+		}
+	}
+	if p.Config.Repo.S3.Profile != "sentra" {
+		t.Fatalf("profile must be untouched on refusal, got %q", p.Config.Repo.S3.Profile)
+	}
+}

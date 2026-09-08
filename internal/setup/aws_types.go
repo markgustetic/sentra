@@ -47,7 +47,12 @@ const (
 	BackupUserPolicyName = "sentra-s3-backup"
 	// DefaultBackupUserProfile is where the minted key lands in
 	// ~/.aws/credentials when the operator leaves the field blank. Never
-	// "default": that section is the operator's, not Sentra's.
+	// "default": that section is the operator's, not Sentra's. It is the
+	// PREFERRED name, not the guaranteed one: DefaultPlan infers a session
+	// profile of the same name from a [profile sentra] in ~/.aws/config, and
+	// a key written there would shadow that sign-in, so consumers resolve
+	// blank through DefaultBackupUserProfileFor / ResolveBackupUserProfile
+	// rather than reading this constant directly.
 	DefaultBackupUserProfile = "sentra"
 )
 

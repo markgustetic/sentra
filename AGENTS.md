@@ -87,13 +87,19 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   `sentra-backup`, attach the canonical `BuildIAMPolicy` document as that
   bucket's customer-managed policy (`sentra-s3-backup-<bucket>`), mint an
   access key into a dedicated `~/.aws/credentials` profile (default
-  `sentra`), verify it, and switch `sentra.yaml` to that profile — the
-  session identity is used once and retired. The step is pre-checked for
-  browser login, offered unchecked for SSO, and absent for
-  existing-credentials/skip/S3-compatible (`setup.ShouldProvisionBackupUser`
-  is the single gate). It must never write the `default` credentials
-  profile, never modify `~/.aws/config`, never overwrite a credentials
-  section that already holds keys, and never let the secret reach the
+  `sentra`, or `sentra-backup` when the session profile is itself called
+  `sentra` — `setup.ResolveBackupUserProfile`), verify it, and switch
+  `sentra.yaml` to that profile — the session identity is used once and
+  retired. The step is pre-checked for browser login, offered unchecked for
+  SSO, and absent for existing-credentials/skip/S3-compatible
+  (`setup.ShouldProvisionBackupUser` is the single gate). It must never
+  write the `default` credentials profile, never modify `~/.aws/config`,
+  never overwrite a credentials section that already holds keys, never use
+  the profile setup signed in with or one `~/.aws/config` already defines
+  (`ErrBackupUserProfileIsSession` / `ErrConfigProfileExists`: static keys
+  under that name would shadow the SSO or role definition, since
+  aws-sdk-go-v2 resolves a profile's keys before its `sso_*` settings), and
+  never let the secret reach the
   report, plan, draft, review text, logs, or an error. The profile switch
   happens only after the new identity verifies (bounded retry); any failure
   degrades to `BackupUserReport.Warning` and setup continues on the session

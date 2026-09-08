@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/url"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 	"time"
@@ -325,7 +326,7 @@ func backupUserCfg() *config.Config {
 func okWriter(_, _, _, _ string) error { return nil }
 
 func provision(f *fakeIAM, cfg *config.Config, write credentialsWriter) (BackupUserReport, error) {
-	return provisionBackupUser(context.Background(), f, cfg, BackupUserOptions{Profile: "sentra"}, "/tmp/creds", write)
+	return provisionBackupUser(context.Background(), f, cfg, BackupUserOptions{Profile: "sentra"}, "/tmp/creds", "/tmp/aws-config", write)
 }
 
 func TestProvisionBackupUser_HappyPath(t *testing.T) {
@@ -385,7 +386,7 @@ func TestProvisionBackupUser_BlankProfileDefaults(t *testing.T) {
 	var gotProfile string
 	write := func(_, profile, _, _ string) error { gotProfile = profile; return nil }
 	report, err := provisionBackupUser(context.Background(), f, backupUserCfg(),
-		BackupUserOptions{}, "/tmp/creds", write)
+		BackupUserOptions{}, "/tmp/creds", "/tmp/aws-config", write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -706,7 +707,7 @@ func TestProvisionBackupUser_TakenProfileFailsBeforeIAM(t *testing.T) {
 	}
 	f := newFakeIAM()
 	_, err := provisionBackupUser(context.Background(), f, backupUserCfg(),
-		BackupUserOptions{Profile: "sentra"}, path, WriteAWSCredentialsProfile)
+		BackupUserOptions{Profile: "sentra"}, path, filepath.Join(dir, "config"), WriteAWSCredentialsProfile)
 	if !errors.Is(err, ErrCredentialsProfileExists) {
 		t.Fatalf("err = %v, want ErrCredentialsProfileExists", err)
 	}
@@ -733,4 +734,74 @@ func TestProvisionBackupUser_SecretNeverInReportOrError(t *testing.T) {
 
 func writeFile(path, content string) error {
 	return os.WriteFile(path, []byte(content), 0o600)
+}
+
+// The profile pre-checks, as a table over every input that can make the
+// name unsafe: the session profile sentra.yaml signs in with, the config
+// file, the credentials file, and the requested name. Every refusal must
+// land before the first IAM call — a doomed run makes no mutation it would
+// only have to undo — and a blank request must derive a default that
+// passes the same checks instead of colliding with the session profile.
+func TestProvisionBackupUser_ProfilePreChecks(t *testing.T) {
+	tests := []struct {
+		name        string
+		session     string
+		config      string // ~/.aws/config contents, "" for no file
+		credentials string // ~/.aws/credentials contents, "" for no file
+		requested   string
+		wantProfile string // profile written on success
+		wantIs      error  // refusal sentinel; nil means success
+	}{
+		{"clean", "work", "", "", "sentra", "sentra", nil},
+		{"blank derives default", "work", "", "", "", "sentra", nil},
+		{"blank steps aside from the session profile", "sentra", "", "", "", "sentra-backup", nil},
+		{"requested equals session profile", "sentra", "[profile sentra]\nsso_session = corp\n", "", "sentra", "", ErrBackupUserProfileIsSession},
+		{"requested equals session profile, no config file", "sentra", "", "", "sentra", "", ErrBackupUserProfileIsSession},
+		{"config profile of that name, not the session", "work", "[profile sentra]\nsso_session = corp\n", "", "sentra", "", ErrConfigProfileExists},
+		{"credentials section holds keys", "work", "", "[sentra]\naws_access_key_id = x\n", "sentra", "", ErrCredentialsProfileExists},
+		{"default", "work", "", "", "default", "", ErrBackupUserProfileDefault},
+	}
+	for _, tc := range tests {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			configPath := filepath.Join(dir, "config")
+			credsPath := filepath.Join(dir, "credentials")
+			if tc.config != "" {
+				if err := writeFile(configPath, tc.config); err != nil {
+					t.Fatal(err)
+				}
+			}
+			if tc.credentials != "" {
+				if err := writeFile(credsPath, tc.credentials); err != nil {
+					t.Fatal(err)
+				}
+			}
+			cfg := backupUserCfg()
+			cfg.Repo.S3.Profile = tc.session
+			f := newFakeIAM()
+			var gotProfile string
+			write := func(_, profile, _, _ string) error { gotProfile = profile; return nil }
+			report, err := provisionBackupUser(context.Background(), f, cfg,
+				BackupUserOptions{Profile: tc.requested}, credsPath, configPath, write)
+			if tc.wantIs != nil {
+				if !errors.Is(err, tc.wantIs) {
+					t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
+				}
+				var perr *BackupUserError
+				if !errors.As(err, &perr) || perr.Step != "credentials" {
+					t.Fatalf("refusal must be a credentials-step BackupUserError, got %v", err)
+				}
+				if len(f.calls) != 0 {
+					t.Fatalf("IAM must not be called when the profile is refused: %v", f.calls)
+				}
+				return
+			}
+			if err != nil {
+				t.Fatalf("provisionBackupUser: %v", err)
+			}
+			if gotProfile != tc.wantProfile || report.Profile != tc.wantProfile {
+				t.Fatalf("profile = %q / %q, want %q", gotProfile, report.Profile, tc.wantProfile)
+			}
+		})
+	}
 }

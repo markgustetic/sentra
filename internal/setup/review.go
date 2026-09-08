@@ -122,9 +122,5 @@ func backupUserPlanLine(p Plan) string {
 		}
 		return "Backup user: skipped"
 	}
-	profile := strings.TrimSpace(p.BackupUserProfile)
-	if profile == "" {
-		profile = DefaultBackupUserProfile
-	}
-	return fmt.Sprintf("Backup user: create %s, keys → ~/.aws/credentials [%s]", BackupUserName, profile)
+	return fmt.Sprintf("Backup user: create %s, keys → ~/.aws/credentials [%s]", BackupUserName, ResolveBackupUserProfile(&p))
 }

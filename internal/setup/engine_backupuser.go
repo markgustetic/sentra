@@ -4,7 +4,6 @@ import (
 	"context"
 	"errors"
 	"fmt"
-	"strings"
 	"time"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -28,9 +27,15 @@ const (
 // Never returns an error. Provisioning is hardening, and a working setup on
 // session credentials beats no setup; every failure becomes Warning.
 func (e *Engine) provisionBackupUser(ctx context.Context, p *Plan) *BackupUserReport {
-	profile := strings.TrimSpace(p.BackupUserProfile)
-	if profile == "" {
-		profile = DefaultBackupUserProfile
+	profile := ResolveBackupUserProfile(p)
+	// The session-profile collision is refused here as well as inside the
+	// Effects driver: it needs nothing but the plan, and catching it before
+	// the seam means no driver — real or injected — is ever handed a name
+	// that would shadow the identity setup is signed in with.
+	if err := ValidateBackupUserProfileFor(profile, p.Config.Repo.S3.Profile); err != nil {
+		report := BackupUserReport{UserName: BackupUserName, Profile: profile}
+		report.Warning = backupUserWarning(&BackupUserError{Step: "credentials", Err: err}, false)
+		return &report
 	}
 	report, err := e.eff.ProvisionBackupUser(ctx, &p.Config, BackupUserOptions{Profile: profile})
 	if err != nil {
@@ -54,6 +59,16 @@ func (e *Engine) provisionBackupUser(ctx context.Context, p *Plan) *BackupUserRe
 	}
 	report.ProfileSwitched = true
 	return &report
+}
+
+// profileRefused reports whether err is one of the profile-name pre-check
+// refusals — the failures the operator fixes by picking another name, as
+// opposed to a write that failed for reasons outside their control.
+func profileRefused(err error) bool {
+	return errors.Is(err, ErrCredentialsProfileExists) ||
+		errors.Is(err, ErrConfigProfileExists) ||
+		errors.Is(err, ErrBackupUserProfileIsSession) ||
+		errors.Is(err, ErrBackupUserProfileDefault)
 }
 
 // verifyIdentityWithRetry runs CheckAWSSDKIdentity until it passes or the
@@ -87,8 +102,9 @@ func (e *Engine) verifyIdentityWithRetry(ctx context.Context, cfg *config.Config
 // expire — because that is the fact the step existed to prevent.
 //
 // minted discriminates the generic "credentials" step failure: a pre-check
-// refusal (profile taken, or named "default") never touched IAM, so nothing
-// was deleted; a post-mint write failure did mint a key and then deleted it
+// refusal (profile taken, defined in ~/.aws/config, equal to the session
+// profile, or named "default") never touched IAM, so nothing was deleted;
+// a post-mint write failure did mint a key and then deleted it
 // again as cleanup. The caller passes report.AccessKeyID != "" — the mint
 // contract from provisionBackupUser (internal/setup/backupuser.go): that
 // field is set the moment CreateAccessKey succeeds, before the write that
@@ -108,9 +124,7 @@ func backupUserWarning(err error, minted bool) string {
 		return fmt.Sprintf("backup user %s already has the maximum number of managed policies attached (IAM allows 10 by default); detach one in IAM and rerun setup.", BackupUserName) + tail
 	case perr.KeyOrphaned != "":
 		return fmt.Sprintf("backup user key %s was created but could not be saved (%v), and deleting it failed — delete that key in IAM.", perr.KeyOrphaned, perr.Err) + tail
-	case perr.Step == "credentials" && errors.Is(perr.Err, ErrCredentialsProfileExists):
-		return fmt.Sprintf("backup user key not saved: %v — choose another profile name and rerun setup.", perr.Err) + tail
-	case perr.Step == "credentials" && errors.Is(perr.Err, ErrBackupUserProfileDefault):
+	case perr.Step == "credentials" && profileRefused(perr.Err):
 		return fmt.Sprintf("backup user key not saved: %v — choose another profile name and rerun setup.", perr.Err) + tail
 	case perr.Step == "credentials" && minted:
 		return fmt.Sprintf("backup user key could not be saved (%v); the key was deleted again.", perr.Err) + tail
