@@ -13,6 +13,7 @@ import (
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -219,16 +220,21 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// Incremental scan: files whose size AND mtime match the newest
 	// prior snapshot of the same root reuse that snapshot's chunk
 	// list without being opened — re-backups of a quiet tree read
-	// ~zero bytes. Safe under the repo lock held above: GC can't run
-	// concurrently, and every chunk a present manifest references is
-	// live by the GC invariant, so reused chunk lists always point at
-	// existing blobs. The mtime check is equality on the lstat
-	// timestamp; content rewritten without the mtime moving is the
-	// classic blind spot, covered by ForceRescan.
+	// ~zero bytes. The repo lock held above keeps GC from reaping a
+	// referenced chunk, but nothing stops an out-of-band delete (an
+	// operator, a bucket lifecycle rule), and a reused list would
+	// carry that dangling reference into every later snapshot — the
+	// file intact on disk, unrestorable forever. So reuse confirms
+	// each chunk still exists (one Stat per unique chunk per
+	// snapshot, see reusedChunkProbe) and re-reads the file when one
+	// is gone. The mtime check is equality on the lstat timestamp;
+	// content rewritten without the mtime moving is the classic
+	// blind spot, covered by ForceRescan.
 	var parent map[string]FileEntry
 	if !opts.ForceRescan {
 		parent = r.parentFileEntries(ctx, absRoot)
 	}
+	probe := &reusedChunkProbe{store: r.store}
 
 	// Single-walk progress: as each file is discovered, add its
 	// plaintext size to the running total and update reporter.Total.
@@ -253,17 +259,26 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 			reporter.Total(estimated.Add(e.Size))
 
 			if pe, ok := parent[e.RelPath]; ok && pe.Size == e.Size && pe.MTime.Equal(e.MTime) {
-				// Unchanged since the parent: reuse its chunks, but
-				// record the CURRENT mode — a chmod doesn't move the
-				// mtime and must not go stale in the new manifest.
-				state.add(FileEntry{
-					Path:   e.RelPath,
-					Size:   e.Size,
-					Mode:   e.Mode,
-					MTime:  e.MTime,
-					Chunks: pe.Chunks,
-				}, 0)
-				return nil
+				present, err := probe.allPresent(ctx, pe.Chunks)
+				if err != nil {
+					return err
+				}
+				if present {
+					// Unchanged since the parent: reuse its chunks,
+					// but record the CURRENT mode — a chmod doesn't
+					// move the mtime and must not go stale in the
+					// new manifest.
+					state.add(FileEntry{
+						Path:   e.RelPath,
+						Size:   e.Size,
+						Mode:   e.Mode,
+						MTime:  e.MTime,
+						Chunks: pe.Chunks,
+					}, 0)
+					return nil
+				}
+				// A chunk vanished out of band: fall through and
+				// read the file as if it had changed.
 			}
 
 			fe, newBytes, err := r.captureFile(ctx, repoKey, e, reporter)
@@ -283,6 +298,52 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	}
 
 	return r.finishSnapshot(ctx, repoKey, absRoot, opts.Tag, state)
+}
+
+// reusedChunkProbe confirms, once per snapshot, that a chunk the
+// incremental scan wants to reuse still exists in the store. Walker
+// workers call it concurrently, so it bounds the cost the way
+// captureFile's dedup Stat is bounded — by the walker's pool — and
+// adds single-flight per hash: two unchanged files sharing a chunk
+// (or two workers racing on one) produce exactly one Stat. Results
+// are cached for the run, present or absent; a transient transport
+// error is cached too, because the snapshot aborts on it anyway.
+type reusedChunkProbe struct {
+	store blobstore.Store
+	seen  sync.Map // hex hash → *chunkProbeResult
+}
+
+type chunkProbeResult struct {
+	once    sync.Once
+	present bool
+	err     error
+}
+
+// allPresent reports whether every chunk in hashes exists. ErrNotFound
+// is an answer (false), not an error; anything else aborts the caller.
+func (p *reusedChunkProbe) allPresent(ctx context.Context, hashes []string) (bool, error) {
+	for _, h := range hashes {
+		v, _ := p.seen.LoadOrStore(h, &chunkProbeResult{})
+		res := v.(*chunkProbeResult)
+		res.once.Do(func() {
+			_, err := p.store.Stat(ctx, ChunkKey(h))
+			switch {
+			case err == nil:
+				res.present = true
+			case errors.Is(err, blobstore.ErrNotFound):
+				res.present = false
+			default:
+				res.err = fmt.Errorf("repo: stat reused chunk %s: %w", ChunkKey(h), err)
+			}
+		})
+		if res.err != nil {
+			return false, res.err
+		}
+		if !res.present {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // parentFileEntries returns the regular-file entries of the newest

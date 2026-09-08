@@ -5,8 +5,12 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
+
+	"github.com/markgustetic/sentra/internal/blobstore"
 )
 
 // TestSnapshotRestore_SymlinksAndDirs is the fidelity round-trip: a
@@ -287,6 +291,99 @@ func TestCreateSnapshot_ChangedFileIsRechunked(t *testing.T) {
 	body, err := os.ReadFile(filepath.Join(dest, "a.txt"))
 	if err != nil || string(body) != "version-two" {
 		t.Errorf("changed file must restore its new content: got %q err=%v", body, err)
+	}
+}
+
+// statCountingStore counts Stat calls against data/ keys so a test can
+// bound the incremental scan's existence checks: one per unique
+// reused chunk per snapshot, not one per file that references it.
+type statCountingStore struct {
+	blobstore.Store
+	dataStats atomic.Int32
+}
+
+func (s *statCountingStore) Stat(ctx context.Context, key string) (blobstore.Info, error) {
+	if strings.HasPrefix(key, DataPrefix) {
+		s.dataStats.Add(1)
+	}
+	return s.Store.Stat(ctx, key)
+}
+
+// TestCreateSnapshot_ReusedChunkDeletedOutOfBandIsReuploaded: the
+// incremental scan reuses the parent's chunk list off size+mtime.
+// The repo lock keeps GC from deleting a referenced chunk, but nothing
+// stops an operator (or a bucket lifecycle rule) deleting one out of
+// band — and a reused list carried the dangling reference into every
+// later snapshot, so a file intact on disk became unrestorable
+// forever. Reuse must confirm each chunk still exists and re-read the
+// file when one is gone.
+//
+// Cost rule: existence is confirmed with one Stat per UNIQUE reused
+// chunk per snapshot — two unchanged files with identical content
+// share one check.
+func TestCreateSnapshot_ReusedChunkDeletedOutOfBandIsReuploaded(t *testing.T) {
+	ctx := context.Background()
+	store := &statCountingStore{Store: blobstore.NewMemory()}
+	r, err := Init(ctx, store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer r.Close()
+
+	src := t.TempDir()
+	writeFile(t, filepath.Join(src, "a.txt"), "shared-content")
+	writeFile(t, filepath.Join(src, "b.txt"), "shared-content") // same chunk as a.txt
+	writeFile(t, filepath.Join(src, "c.txt"), "different-content")
+	snap1, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	m1, err := r.LoadSnapshot(ctx, snap1.ID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	var cChunk string
+	unique := make(map[string]bool)
+	for _, fe := range m1.Tree {
+		for _, h := range fe.Chunks {
+			unique[h] = true
+			if fe.Path == "c.txt" {
+				cChunk = h
+			}
+		}
+	}
+	if cChunk == "" || len(unique) != 2 {
+		t.Fatalf("test setup: want 2 unique chunks with c.txt's known, got %d (c=%q)", len(unique), cChunk)
+	}
+
+	// Out-of-band deletion of c.txt's only chunk.
+	if err := store.Delete(ctx, ChunkKey(cChunk)); err != nil {
+		t.Fatal(err)
+	}
+
+	store.dataStats.Store(0)
+	snap2, err := r.CreateSnapshot(ctx, src, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot 2: %v", err)
+	}
+	if snap2.Stats.NewBytes == 0 {
+		t.Error("the missing chunk must be re-uploaded; NewBytes is 0")
+	}
+	dest := filepath.Join(t.TempDir(), "out")
+	if err := r.Restore(ctx, snap2.ID, dest, RestoreOptions{}); err != nil {
+		t.Fatalf("restore of the second snapshot must succeed: %v", err)
+	}
+	body, err := os.ReadFile(filepath.Join(dest, "c.txt"))
+	if err != nil || string(body) != "different-content" {
+		t.Errorf("c.txt after re-upload: got %q err=%v", body, err)
+	}
+
+	// Cost: a.txt and b.txt share one chunk → one existence Stat for
+	// both; c.txt's chunk → one Stat (missing) plus the re-read's own
+	// dedup Stat in captureFile. Anything above 3 means the check was
+	// per file, not per unique chunk.
+	if got := store.dataStats.Load(); got > 3 {
+		t.Errorf("data/ Stat calls on the incremental snapshot: got %d, want at most 3 (one per unique reused chunk)", got)
 	}
 }
 
