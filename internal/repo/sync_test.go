@@ -553,6 +553,85 @@ func TestSyncTo_DoesNotCopyMetaSnapshots(t *testing.T) {
 	}
 }
 
+// TestSyncTo_InvalidatesStaleDestIndex: a mirror that has been listed
+// once carries meta/snapshots, and ListSnapshots trusts a present
+// index unconditionally. SyncTo copies manifests but never touched
+// that index, so every snapshot synced after the first listing was
+// invisible on the mirror — present in the bucket, absent from
+// `snapshots`, `restore`, and retention. After copying at least one
+// manifest, sync must leave the dest index either updated or absent
+// (so the next ListSnapshots rebuilds it from the manifests).
+func TestSyncTo_InvalidatesStaleDestIndex(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstStore := twoRepos(t)
+	seedSourceWithSnapshot(t, src, "first")
+	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{InitDest: true}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+
+	// Listing the mirror materialises its index.
+	dst, err := Open(ctx, dstStore, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if infos, err := dst.ListSnapshots(ctx); err != nil || len(infos) != 1 {
+		t.Fatalf("dst list after first sync: %d, %v", len(infos), err)
+	}
+	if _, err := dstStore.Stat(ctx, snapshotIndexKey); err != nil {
+		t.Fatalf("test setup: dest index not materialised: %v", err)
+	}
+
+	second := seedSourceWithSnapshot(t, src, "second")
+	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{}); err != nil {
+		t.Fatalf("second sync: %v", err)
+	}
+
+	infos, err := dst.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatalf("dst list after second sync: %v", err)
+	}
+	var seen bool
+	for _, s := range infos {
+		if s.ID == second {
+			seen = true
+		}
+	}
+	if len(infos) != 2 || !seen {
+		t.Errorf("dst ListSnapshots after sync: got %d entries (second seen=%v), want 2 including %s", len(infos), seen, second)
+	}
+}
+
+// TestSyncTo_NoManifestCopiedLeavesDestIndex: a sync that copies no
+// manifest (nothing new, or a dry run) has no reason to touch the
+// mirror's index — discarding it would cost the next listing a full
+// manifest fan-out for nothing.
+func TestSyncTo_NoManifestCopiedLeavesDestIndex(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstStore := twoRepos(t)
+	seedSourceWithSnapshot(t, src, "first")
+	if _, err := src.SyncTo(ctx, dstStore, SyncOptions{InitDest: true}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	dst, err := Open(ctx, dstStore, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if _, err := dst.ListSnapshots(ctx); err != nil {
+		t.Fatal(err)
+	}
+
+	for _, opts := range []SyncOptions{{}, {DryRun: true}} {
+		if _, err := src.SyncTo(ctx, dstStore, opts); err != nil {
+			t.Fatalf("sync %+v: %v", opts, err)
+		}
+		if _, err := dstStore.Stat(ctx, snapshotIndexKey); err != nil {
+			t.Errorf("sync %+v copied nothing but dropped the dest index: %v", opts, err)
+		}
+	}
+}
+
 // TestSyncTo_DryRunMakesNoWrites confirms DryRun=true is read-only:
 // returns realistic stats but the destination is byte-identical
 // before and after.
