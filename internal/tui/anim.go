@@ -30,10 +30,18 @@ const uiFrameInterval = 240 * time.Millisecond
 // uiFrameMsg advances the ambient animation clock. It is self-sustaining: Init
 // arms the first tick and each frame re-arms the next, so the chrome breathes
 // for the whole session.
-type uiFrameMsg struct{}
+//
+// gen names the chain the tick belongs to (App.animGen). A chain is only ever
+// started by Init, and the shell runs Init twice in one session — once at
+// launch and again when unlock rebuilds it — while the first chain's next tick
+// is still in flight. Without the tag both ticks were accepted and both
+// re-armed, and the chrome repainted at twice its rate from unlock onward.
+// The App drops any tick from a generation it no longer owns, the way a
+// splashFrameMsg that outlives the splash is dropped.
+type uiFrameMsg struct{ gen int }
 
-func uiTick() tea.Cmd {
-	return tea.Tick(uiFrameInterval, func(time.Time) tea.Msg { return uiFrameMsg{} })
+func uiTick(gen int) tea.Cmd {
+	return tea.Tick(uiFrameInterval, func(time.Time) tea.Msg { return uiFrameMsg{gen: gen} })
 }
 
 // Breathing ramps — each oscillates gently around its base color, a small

@@ -2760,3 +2760,79 @@ func TestApp_EscWithOpRunningAsksTheFocusedViewFirst(t *testing.T) {
 		})
 	}
 }
+
+// settledTicks runs every leaf of cmd concurrently and returns the chrome
+// ticks (uiFrameMsg) that arrive within a short window. Leaves are timers
+// of very different lengths — uiTick fires at uiFrameInterval, the
+// dashboard's refresh at 30s — so running them in sequence would wait out
+// the longest; the ones that do not fire in time are simply not counted.
+func settledTicks(t *testing.T, cmd tea.Cmd) []uiFrameMsg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	results := make(chan tea.Msg, 64)
+	run := func(c tea.Cmd) { go func() { results <- c() }() }
+	pending := 1
+	run(cmd)
+	var ticks []uiFrameMsg
+	deadline := time.After(6 * uiFrameInterval)
+	for pending > 0 {
+		select {
+		case msg := <-results:
+			pending--
+			switch m := msg.(type) {
+			case tea.BatchMsg:
+				for _, sub := range m {
+					if sub != nil {
+						pending++
+						run(sub)
+					}
+				}
+			case uiFrameMsg:
+				ticks = append(ticks, m)
+			}
+		case <-deadline:
+			return ticks
+		}
+	}
+	return ticks
+}
+
+// TestApp_RepoReadyKeepsOneChromeTickChain: unlocking rebuilds the shell and
+// runs the rebuilt Init, which arms a fresh chrome tick — while the gate-era
+// chain's next tick is still in flight. Both used to be accepted and both
+// re-armed, so the session ran two chains (twice the repaint rate) from
+// unlock onward. Pumping the outstanding old tick plus everything the rebuilt
+// Init armed must leave exactly one chain alive. splashFrameMsg is guarded
+// the same way (a stale tick must not resurrect the splash).
+func TestApp_RepoReadyKeepsOneChromeTickChain(t *testing.T) {
+	r := newFlowRepo(t)
+	cfg := config.Defaults()
+	app := NewApp(Deps{RepoName: "x", InitialView: "unlock"})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = sized.(App)
+	// The gate-era chain: the tick its launch Init armed, exactly as the
+	// runtime would deliver it after unlock lands.
+	oldTick := settledTicks(t, app.Init())
+	if len(oldTick) != 1 {
+		t.Fatalf("precondition: the launch Init arms one chrome tick, got %d", len(oldTick))
+	}
+
+	m, initCmd := app.Update(repoReadyMsg{repo: r, config: &cfg})
+	app = m.(App)
+	pending := append(oldTick, settledTicks(t, initCmd)...)
+	if len(pending) != 2 {
+		t.Fatalf("precondition: one old tick + one from the rebuilt Init, got %d", len(pending))
+	}
+
+	rearmed := 0
+	for _, tick := range pending {
+		m, cmd := app.Update(tick)
+		app = m.(App)
+		rearmed += len(settledTicks(t, cmd))
+	}
+	if rearmed != 1 {
+		t.Fatalf("re-armed chrome ticks after unlock = %d, want exactly 1 chain", rearmed)
+	}
+}

@@ -243,6 +243,13 @@ type App struct {
 	// focused border, and the active nav item.
 	animFrame int
 
+	// animGen identifies the chrome tick chain this App owns. Init arms a
+	// chain tagged with it; a tick tagged otherwise is dropped in Update.
+	// repoReadyMsg's rebuilt App takes the next generation so the gate-era
+	// chain, whose next tick is still in flight when unlock lands, dies out
+	// instead of running alongside the one the rebuilt Init starts.
+	animGen int
+
 	width  int
 	height int
 
@@ -455,7 +462,7 @@ func (m App) Init() tea.Cmd {
 	// Kick the ambient chrome-animation clock. It re-arms itself each frame (see
 	// uiFrameMsg in Update), so this single tick keeps the shell breathing for
 	// the whole session.
-	cmds = append(cmds, uiTick())
+	cmds = append(cmds, uiTick(m.animGen))
 	// Tell the launch view it is on screen (see showActiveMsg). This — not a
 	// view's Init — is where a text field's cursor starts blinking: a view
 	// the operator never opens must never run a blink chain, so no view's
@@ -555,11 +562,17 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case uiFrameMsg:
+		// A tick from a chain this App no longer owns (the pre-unlock shell's,
+		// see animGen) must neither advance the frame nor re-arm, or the
+		// session runs two chains.
+		if msg.gen != m.animGen {
+			return m, nil
+		}
 		// Advance the ambient chrome clock and re-arm. This runs for the whole
 		// session (chrome is hidden behind the splash/overlays but the counter
 		// keeps ticking, so the breathe is already in motion when they clear).
 		m.animFrame++
-		return m, uiTick()
+		return m, uiTick(m.animGen)
 
 	case repoReadyMsg:
 		// Rebuild the whole shell against the unlocked repo. Reusing NewApp
@@ -580,6 +593,10 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// time and eat the user's next keystroke dismissing it.
 		nd.ShowSplash = false
 		rebuilt := NewApp(nd)
+		// The rebuilt Init below arms a fresh chrome tick chain while this
+		// shell's next tick is still in flight; a new generation lets that
+		// old tick be dropped rather than re-armed into a second chain.
+		rebuilt.animGen = m.animGen + 1
 		if m.width > 0 {
 			sized, _ := rebuilt.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			rebuilt = sized.(App)
