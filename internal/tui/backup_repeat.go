@@ -128,6 +128,10 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 	if strings.TrimSpace(v.deps.ConfigPath) == "" {
 		return fmt.Errorf("no config file to hold the policy — run setup first")
 	}
+	// The picker hands over absolute directories; the chat intent may
+	// not. Resolve before the collision check and the write, so the
+	// policy the timer runs names the directory that was confirmed.
+	root = absPath(root)
 	schedule = policycfg.NormalizeSchedule(schedule)
 	var tags []string
 	if tag = strings.TrimSpace(tag); tag != "" {

@@ -113,7 +113,18 @@ func (policyRunDoneMsg) opResult() {}
 // only caller now (opName "job-run"), left as a parameter because a
 // second run-taking view once shared this function ("policy-run", the
 // deleted PoliciesView).
-func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter) startOpMsg {
+//
+// home resolves the policy's paths the way the timer's `policy run`
+// must: "~/docs" or a relative dir stored by an older form save reached
+// CreateSnapshot raw and failed, so every path is normalized here at run
+// time as well as at persist time.
+//
+// The retention prune plans around the repo's pin set, loaded inside the
+// op (it is a blobstore read). Without it a pinned snapshot beyond
+// keep_last was planned for deletion, DeleteSnapshot refused it at the
+// choke point, and every run of the job failed — the prune view already
+// loads pins; the job run must too.
+func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter, home string) startOpMsg {
 	r := deps.Repo
 	var wopts walker.Options
 	var retention repo.RetentionPolicy
@@ -130,7 +141,10 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			KeepMonthly: deps.Config.Retention.KeepMonthly,
 		}
 	}
-	paths := append([]string(nil), p.Paths...)
+	paths := make([]string, 0, len(p.Paths))
+	for _, path := range p.Paths {
+		paths = append(paths, policycfg.NormalizePath(path, home))
+	}
 	tag := policyRunTag(name, p.Tags)
 	doCheck := p.AfterBackup.Check
 	pruneMode := policyPruneModeOrOff(p.AfterBackup.Prune)
@@ -170,6 +184,12 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 					if !report.Healthy() {
 						return errors.New("post-backup check found integrity issues")
 					}
+				}
+				// Pins keep snapshots unconditionally; a load failure
+				// degrades to planning without them, and the prune step
+				// then skips the refusal rather than failing the run.
+				if pins, err := r.Pins(ctx); err == nil {
+					retention.Pinned = pins
 				}
 				if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
 					return err
@@ -237,7 +257,12 @@ func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.Rete
 		return errors.New("policy prune would drop every snapshot; refusing automatic apply")
 	}
 	for _, id := range drop {
-		if err := r.DeleteSnapshot(ctx, id); err != nil && !errors.Is(err, blobstore.ErrNotFound) {
+		// Already gone is fine, and so is a pin placed between planning
+		// and deleting: the choke point refused it, the snapshot stays,
+		// and GC computes its live set from what is present, so nothing
+		// of it is reaped. Neither is a reason to fail an unattended run.
+		if err := r.DeleteSnapshot(ctx, id); err != nil &&
+			!errors.Is(err, blobstore.ErrNotFound) && !errors.Is(err, repo.ErrSnapshotPinned) {
 			return fmt.Errorf("delete snapshot %s: %w", id, err)
 		}
 	}
@@ -325,8 +350,9 @@ func (v JobsView) startRun() (tea.Model, tea.Cmd) {
 	v.run = policyRunState{reporter: reporter, name: name}
 	v.stage = jobsRunning
 
+	home := v.jobsHome()
 	return v, tea.Batch(func() tea.Msg {
-		return buildPolicyRunOp(v.deps, "job-run", name, p, reporter)
+		return buildPolicyRunOp(v.deps, "job-run", name, p, reporter, home)
 	}, opTick())
 }
 

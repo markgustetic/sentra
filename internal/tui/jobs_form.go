@@ -281,6 +281,14 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 		v.form.err = err.Error()
 		return v, nil
 	}
+	// Persist absolute paths: "~/docs" or "rel/dir" as typed would be
+	// stored raw and fail under the timer, whose cwd and HOME are not
+	// this shell's. Resolved against the view's home seam so the stored
+	// path is the one the drill-in and last-run lookups already compute.
+	home := v.jobsHome()
+	for i, path := range p.Paths {
+		p.Paths[i] = policycfg.NormalizePath(path, home)
+	}
 	editing := v.editName != ""
 	cfgPath := v.deps.ConfigPath
 	sync := v.syncTimerAfterSave
