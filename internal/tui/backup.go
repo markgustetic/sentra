@@ -167,7 +167,7 @@ func (v BackupView) ShortHelp() []key.Binding {
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "start")),
 			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		}
-	case backupRunning:
+	case backupRunning, backupInstalling:
 		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel"))}
 	case backupDone:
 		keys := []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "again"))}
@@ -250,8 +250,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		}
 		// Resolve "~/x" or a relative dir before it becomes pending: the
 		// summary, the policy the schedule step installs, and the snapshot
-		// root must all name the same absolute directory.
-		dir := absPath(strings.TrimSpace(msg.dir))
+		// root must all name the same absolute directory. An empty dir
+		// stays empty — filepath.Abs("") is the cwd, which checkDir would
+		// happily accept as the intent's directory.
+		dir := strings.TrimSpace(msg.dir)
+		if dir != "" {
+			dir = absPath(dir)
+		}
 		if !v.checkDir(dir) {
 			// Drop back to Location with the error, blurring whatever the
 			// step we were on owned: a field left focused on a stage that

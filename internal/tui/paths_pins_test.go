@@ -206,3 +206,13 @@ func TestBackupWizard_ChatDirIsResolvedBeforePending(t *testing.T) {
 		}
 	}
 }
+
+// An empty chat dir must still be refused: resolving "" would yield the
+// cwd and quietly aim the backup at wherever sentra was launched.
+func TestBackupWizard_EmptyChatDirStaysRefused(t *testing.T) {
+	v := NewBackupView(Deps{Repo: newFlowRepo(t)})
+	m, _ := v.Update(chatBackupMsg{dir: "  ", tag: "x"})
+	if got := m.(BackupView); got.stage != backupLocation || got.pending != "" {
+		t.Fatalf("empty dir: stage=%v pending=%q, want Location with nothing pending", got.stage, got.pending)
+	}
+}
