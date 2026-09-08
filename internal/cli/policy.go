@@ -450,7 +450,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 			defer r.Close()
 		}
 		if p.Hooks.Before != "" {
-			if err := runPolicyHook(cmd, deps, "before", p.Hooks.Before); err != nil {
+			if err := runPolicyHook(cmd, deps, p.Hooks, "before", p.Hooks.Before); err != nil {
 				return err
 			}
 		}
@@ -458,7 +458,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 			return err
 		}
 		if p.Hooks.After != "" {
-			if err := runPolicyHook(cmd, deps, "after", p.Hooks.After); err != nil {
+			if err := runPolicyHook(cmd, deps, p.Hooks, "after", p.Hooks.After); err != nil {
 				return err
 			}
 		}
@@ -617,8 +617,10 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 // runPolicyHook and firePolicyFailureHooks delegate to internal/policy
 // so a policy run behaves identically from the CLI and the TUI — hook
 // execution lives below both surfaces.
-func runPolicyHook(cmd *cobra.Command, deps PolicyDeps, label, script string) error {
-	return policycfg.RunHook(cmd.Context(), policyStdout(cmd, deps), label, script)
+// The webhook env var name rides along so the URL it holds is scrubbed
+// from before/after hooks too, not only from on_failure.
+func runPolicyHook(cmd *cobra.Command, deps PolicyDeps, hooks config.PolicyHooks, label, script string) error {
+	return policycfg.RunHook(cmd.Context(), policyStdout(cmd, deps), label, script, hooks.OnFailureWebhookEnv)
 }
 
 func firePolicyFailureHooks(cmd *cobra.Command, deps PolicyDeps, name string, hooks config.PolicyHooks, cause error) {

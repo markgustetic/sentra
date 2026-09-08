@@ -244,7 +244,12 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   only the variable NAME may appear in `sentra.yaml`. Hook execution lives in
   `internal/policy` (below both surfaces) and MUST run identically from
   `sentra policy run` and the TUI's policy run — a surface that skips hooks
-  backs up different data.
+  backs up different data. A hook's output goes to the timer log, so
+  `RunHook` echoes only `hook <label>: running` — never the command line,
+  which carries inline credentials (`PGPASSWORD=… pg_dump`) — and the child
+  environment is `HookEnv`: `os.Environ()` minus every `SENTRA_*` variable
+  and the configured webhook variable. Pass `hooks.OnFailureWebhookEnv` to
+  `RunHook` from every surface so before/after are scrubbed like on_failure.
 - Surface contract — the obligation between the two surfaces runs ONE WAY.
   The CLI is the machine and recovery surface: every capability lands in the
   core layer plus a CLI verb, always. Three consumers depend on that and none

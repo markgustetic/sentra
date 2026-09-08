@@ -9,6 +9,7 @@ import (
 	"net/http"
 	"os"
 	"os/exec"
+	"strings"
 	"time"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -22,10 +23,17 @@ import (
 // RunHook executes one hook command via `sh -c`, streaming its output
 // to out. The command comes from the operator's own sentra.yaml —
 // running what the operator wrote is the feature, not an injection
-// surface.
-func RunHook(ctx context.Context, out io.Writer, label, script string) error {
-	fmt.Fprintf(out, "  hook %s: %s\n", label, script)
+// surface. Two things the hook must NOT get: its own command line
+// echoed (out is a timer log under ~/Library/Logs, and hooks carry
+// inline credentials like `PGPASSWORD=… pg_dump`), and this process's
+// secrets in its environment — every SENTRA_* variable (the passphrase
+// above all) and the failure-webhook URL named by webhookEnv are
+// dropped; see HookEnv. Callers pass hooks.OnFailureWebhookEnv as
+// webhookEnv so before/after hooks are scrubbed the same as on_failure.
+func RunHook(ctx context.Context, out io.Writer, label, script string, webhookEnv ...string) error {
+	fmt.Fprintf(out, "  hook %s: running\n", label)
 	hook := exec.CommandContext(ctx, "sh", "-c", script) //nolint:gosec // operator-authored command from their own config
+	hook.Env = HookEnv(os.Environ(), strings.Join(webhookEnv, ""))
 	hook.Stdout = out
 	hook.Stderr = out
 	if err := hook.Run(); err != nil {
@@ -34,12 +42,34 @@ func RunHook(ctx context.Context, out io.Writer, label, script string) error {
 	return nil
 }
 
+// HookEnv is environ minus every SENTRA_* entry and, when webhookEnv is
+// non-empty, the variable of that name. SENTRA_* is dropped by prefix
+// rather than by a list of known secrets because the overlay accepts
+// any config key (SENTRA_PASSPHRASE today, whatever tomorrow adds), and
+// a hook has no business reading Sentra's own configuration. Everything
+// else — PATH, HOME, the operator's PG*/AWS_* — passes through, since
+// the hook is the operator's own command and needs its own environment.
+func HookEnv(environ []string, webhookEnv string) []string {
+	kept := make([]string, 0, len(environ))
+	for _, kv := range environ {
+		name, _, _ := strings.Cut(kv, "=")
+		if strings.HasPrefix(name, "SENTRA_") {
+			continue
+		}
+		if webhookEnv != "" && name == webhookEnv {
+			continue
+		}
+		kept = append(kept, kv)
+	}
+	return kept
+}
+
 // FireFailureHooks runs the on_failure command and/or webhook. Both
 // are best-effort: the run's own error is what the caller reports,
 // and a broken notifier must not mask it.
 func FireFailureHooks(ctx context.Context, out io.Writer, name string, hooks config.PolicyHooks, cause error) {
 	if hooks.OnFailure != "" {
-		if err := RunHook(ctx, out, "on_failure", hooks.OnFailure); err != nil {
+		if err := RunHook(ctx, out, "on_failure", hooks.OnFailure, hooks.OnFailureWebhookEnv); err != nil {
 			fmt.Fprintf(out, "  hook on_failure failed: %v\n", err)
 		}
 	}
