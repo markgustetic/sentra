@@ -4,6 +4,7 @@ import (
 	"errors"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"testing"
 )
@@ -27,7 +28,7 @@ func TestRender_IncludesPolicies(t *testing.T) {
 	body := string(Render(&cfg))
 	for _, want := range []string{
 		"policies:",
-		"  home:",
+		"  \"home\":",
 		"    paths:",
 		"      - \"~/Documents\"",
 		"    tags:",
@@ -274,4 +275,63 @@ func TestWrite_CreatesMissingParentDirs(t *testing.T) {
 	if _, err := Load(path); err != nil {
 		t.Errorf("round-trip Load: %v", err)
 	}
+}
+
+// TestWrite_PolicyNamesRoundTripUntyped pins the rule that a policy name is
+// written as a quoted YAML key. ValidateName admits names that look like YAML
+// scalars, and an unquoted key is re-typed by the parser on the next Load —
+// "07" reads back as "7", "1e3" as "1000", "null" as "<nil>" — so `policy run
+// 07` then reports an unknown policy and the timer installed for it fails on
+// every fire. The table covers each scalar family YAML would coerce.
+func TestWrite_PolicyNamesRoundTripUntyped(t *testing.T) {
+	names := []string{
+		"07",    // octal-looking
+		"1e3",   // float exponent
+		"0x1f",  // hex
+		"1_000", // underscore digit separator
+		"12",    // plain int
+		"1.5",   // float
+		"null",  // null literal
+		"true",  // bool literal
+		"yes",   // YAML 1.1 bool
+		"home",  // ordinary name, must keep working
+	}
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	cfg := Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	for _, name := range names {
+		cfg.Policies[name] = PolicyConfig{
+			Paths:    []string{"/data/" + name},
+			Schedule: PolicySchedule{Cadence: "manual"},
+		}
+	}
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	got, err := loadOnDisk(path)
+	if err != nil {
+		t.Fatalf("loadOnDisk: %v", err)
+	}
+	for _, name := range names {
+		p, ok := got.Policies[name]
+		if !ok {
+			t.Errorf("policy %q did not round-trip; keys on disk: %v", name, policyNames(got.Policies))
+			continue
+		}
+		if len(p.Paths) != 1 || p.Paths[0] != "/data/"+name {
+			t.Errorf("policy %q paths = %v, want [/data/%s]", name, p.Paths, name)
+		}
+	}
+	if len(got.Policies) != len(names) {
+		t.Errorf("policy count = %d, want %d: %v", len(got.Policies), len(names), policyNames(got.Policies))
+	}
+}
+
+func policyNames(m map[string]PolicyConfig) []string {
+	out := make([]string, 0, len(m))
+	for k := range m {
+		out = append(out, k)
+	}
+	sort.Strings(out)
+	return out
 }

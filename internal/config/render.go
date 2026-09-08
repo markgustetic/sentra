@@ -113,7 +113,13 @@ func renderPoliciesYAML(policies map[string]PolicyConfig) string {
 	b.WriteString("\npolicies:\n")
 	for _, name := range names {
 		p := policies[name]
-		fmt.Fprintf(&b, "  %s:\n", name)
+		// The name is the only map key in the file that comes from the user,
+		// and ValidateName admits scalar-looking names ("07", "1e3", "null").
+		// Bare, yaml.v3 re-types those on the next Load ("07" -> "7", "null"
+		// -> nil), so the policy the operator just added can't be found by
+		// the name they gave it and the timer installed for it fails on every
+		// fire. Quoting the key pins it as a string, as every value already is.
+		fmt.Fprintf(&b, "  %q:\n", name)
 		writeYAMLStringList(&b, "    paths", p.Paths)
 		writeYAMLStringList(&b, "    tags", p.Tags)
 		fmt.Fprintln(&b, "    schedule:")
