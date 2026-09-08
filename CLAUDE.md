@@ -188,7 +188,11 @@ below both.
   `ui.SelectRow`, which prepends `▍`. Unit tests run under lipgloss's Ascii
   color profile, which emits **no ANSI at all**, so a color-only affordance is
   both invisible to `NO_COLOR` users and untestable. The same reasoning drives
-  the splash animation, which twinkles by changing shape.
+  the splash animation, which twinkles by changing shape. bubbles/table has
+  no row-render hook and its default `Selected` is colour-only, so every
+  table takes `ui.TableStyles()` (whose `Selected` emits the glyph) and
+  renders through `ui.TableView`, which aligns it into a gutter; budget
+  columns against `ui.TableGutter`.
 - **The focused text field is boxed, its cursor blinks, and focus follows the
   screen.** Every text field renders through `boxedField` (`ui.FieldBox`, a
   rounded frame — a glyph, per the rule above), which frames the field when —

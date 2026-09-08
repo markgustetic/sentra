@@ -164,7 +164,14 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   the OS will not fire. The TUI jobs view's Timer column shows the same
   three states (`active` / `inactive` / `installed` for unknown) and its
   install, uninstall, delete, and edit paths activate/deactivate through
-  `Deps.SchedulerRunner`.
+  `Deps.SchedulerRunner`. The view never asks the OS on the UI goroutine:
+  being shown re-reads sentra.yaml and stats the timer files, renders an
+  installed row as `installed`, and returns a deadline-bounded probe cmd
+  whose result settles the column — the rail's live preview shows the
+  view on every scroll past it. Its install/uninstall/delete/save, the
+  Backup wizard's schedule install, and the Settings toggles run under
+  the App's one-op guard (serialized, esc-cancellable, spinner), never
+  synchronously inside `Update`.
 - Missed slots are caught up anacron-style, and the catch-up lives in the
   command, not the timer. A slot that passes while the machine sleeps fires
   on wake on both platforms; one that passes while it is shut down is
