@@ -270,10 +270,6 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	stats.CopiedBlobs += manCopied
 	stats.CopiedBytes += manBytes
 	stats.SkippedBlobs += manSkipped
-	if err != nil {
-		stats.Elapsed = time.Since(start)
-		return stats, fmt.Errorf("repo: sync snapshots/: %w", err)
-	}
 
 	// Dest's meta/snapshots index knows nothing about the manifests
 	// just copied, and ListSnapshots trusts a present index without
@@ -286,12 +282,18 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	// Done under the dest lock still held above, so a concurrent
 	// dest-side CreateSnapshot cannot be mid-append. Skipped when no
 	// manifest moved (nothing new, dry run) so an unchanged mirror
-	// keeps its O(1) listing.
+	// keeps its O(1) listing. Runs BEFORE the phase's error is
+	// returned: a manifest that landed before the failure is on dest
+	// for good (sync never rolls back), and must not stay hidden.
 	if manCopied > 0 && !opts.DryRun {
-		if err := dest.Delete(ctx, snapshotIndexKey); err != nil && !errors.Is(err, blobstore.ErrNotFound) {
+		if derr := dest.Delete(ctx, snapshotIndexKey); derr != nil && !errors.Is(derr, blobstore.ErrNotFound) {
 			stats.Elapsed = time.Since(start)
-			return stats, fmt.Errorf("repo: sync invalidate dest index: %w", err)
+			return stats, errors.Join(err, fmt.Errorf("repo: sync invalidate dest index: %w", derr))
 		}
+	}
+	if err != nil {
+		stats.Elapsed = time.Since(start)
+		return stats, fmt.Errorf("repo: sync snapshots/: %w", err)
 	}
 
 	stats.Elapsed = time.Since(start)

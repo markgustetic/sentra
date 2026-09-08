@@ -632,6 +632,61 @@ func TestSyncTo_NoManifestCopiedLeavesDestIndex(t *testing.T) {
 	}
 }
 
+// failSecondManifestPutStore lets the first snapshots/ Put through and
+// fails every later one: the manifest phase ends with one manifest on
+// dest and an error in hand.
+type failSecondManifestPutStore struct {
+	blobstore.Store
+	manifestPuts atomic.Int32
+}
+
+func (s *failSecondManifestPutStore) Put(ctx context.Context, key string, r io.Reader) error {
+	if strings.HasPrefix(key, snapshotPrefix) && s.manifestPuts.Add(1) > 1 {
+		return errors.New("injected manifest put failure")
+	}
+	return s.Store.Put(ctx, key, r)
+}
+
+// TestSyncTo_PartialManifestPhaseStillInvalidatesDestIndex: a manifest
+// that landed before the phase failed is on the mirror for good (sync
+// is resumable, never rolls back), so the stale index has to go even
+// on the error path — otherwise the mirror hides that snapshot until
+// some later sync happens to copy another manifest.
+func TestSyncTo_PartialManifestPhaseStillInvalidatesDestIndex(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstMem := twoRepos(t)
+	seedSourceWithSnapshot(t, src, "first")
+	if _, err := src.SyncTo(ctx, dstMem, SyncOptions{InitDest: true}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	dst, err := Open(ctx, dstMem, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if _, err := dst.ListSnapshots(ctx); err != nil { // materialise the index
+		t.Fatal(err)
+	}
+
+	seedSourceWithSnapshot(t, src, "second")
+	seedSourceWithSnapshot(t, src, "third")
+	failing := &failSecondManifestPutStore{Store: dstMem}
+	if _, err := src.SyncTo(ctx, failing, SyncOptions{}); err == nil {
+		t.Fatal("test setup: the manifest phase was meant to fail")
+	}
+	if got := failing.manifestPuts.Load(); got < 2 {
+		t.Fatalf("test setup: want at least 2 manifest puts (1 landed, 1 failed), got %d", got)
+	}
+
+	infos, err := dst.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 2 {
+		t.Errorf("dst ListSnapshots after a partial manifest phase: got %d, want 2 (the manifest that landed must be visible)", len(infos))
+	}
+}
+
 // TestSyncTo_DryRunMakesNoWrites confirms DryRun=true is read-only:
 // returns realistic stats but the destination is byte-identical
 // before and after.
