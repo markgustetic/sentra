@@ -541,3 +541,30 @@ func TestWalk_RootDoesNotExist(t *testing.T) {
 		t.Fatal("expected error for non-existent root, got nil")
 	}
 }
+
+// TestWalk_CachedirTagNeverSkipsRoot pins the rule that the root is
+// exempt from the cache-tag short-circuit. The operator named that
+// directory on purpose; treating its own CACHEDIR.TAG as "skip me"
+// silently produced an empty backup with exit 0. A tagged *child*
+// directory must still be skipped, so the guard is root-only and not
+// a regression of the ExcludeCaches feature.
+func TestWalk_CachedirTagNeverSkipsRoot(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "CACHEDIR.TAG"),
+		"Signature: 8a477f597d28d172789f06886806bc55\n")
+	writeFile(t, filepath.Join(root, "real.txt"), "r")
+	writeFile(t, filepath.Join(root, "cache", "CACHEDIR.TAG"),
+		"Signature: 8a477f597d28d172789f06886806bc55\n")
+	writeFile(t, filepath.Join(root, "cache", "junk"), "x")
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{ExcludeCaches: true}, fn); err != nil {
+		t.Fatal(err)
+	}
+	got := get()
+	slices.Sort(got)
+	want := []string{"CACHEDIR.TAG", "real.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v (root must be walked; tagged child skipped)", got, want)
+	}
+}

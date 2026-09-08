@@ -197,7 +197,12 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 				if relSlash != "." && matcher.Match(relSlash+"/") {
 					return fs.SkipDir
 				}
-				if opts.ExcludeCaches && isCacheDir(path) {
+				// The root is exempt from the cache-tag check for the
+				// same reason it is exempt from ignore matching: the
+				// operator named it explicitly. A SkipDir here would
+				// end the walk before its first entry, and the backup
+				// would report success over an empty tree.
+				if opts.ExcludeCaches && relSlash != "." && isCacheDir(path) {
 					return fs.SkipDir
 				}
 				if opts.IncludeNonRegular && relSlash != "." {
