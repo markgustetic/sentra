@@ -29,7 +29,7 @@ type CheckOptions struct {
 	StaleLockAfter time.Duration
 
 	// ReadData additionally downloads, decrypts, decompresses, and
-	// re-hashes referenced chunks instead of only Stat-ing presence —
+	// re-hashes referenced chunks instead of only listing presence —
 	// the only check that proves the repo is actually restorable.
 	// Costs one GET per verified chunk (S3 egress); bound it with
 	// ReadDataSubset on large repos.
@@ -135,6 +135,18 @@ func (r CheckReport) Healthy() bool {
 // Check verifies the readable snapshot manifests, confirms every
 // referenced data blob exists, detects unreferenced data blobs, and
 // reports an advisory lock that appears stale.
+//
+// Presence is decided from a single listing of DataPrefix rather than
+// a HEAD per chunk reference. The listing is needed anyway for orphan
+// detection, and it costs one request per thousand keys; HEADs cost
+// one request per reference, sequentially, so a repo with many
+// snapshots sharing chunks paid (and waited) O(references) round trips
+// to learn what one List already said. Ordering matters against a
+// concurrent backup, which writes every chunk before its manifest:
+// the data listing is taken AFTER the snapshot listing, so any
+// manifest this check will read had all of its chunks in place before
+// the data listing began. A backup still in flight shows up only as
+// orphan warnings, never as a false missing-blob failure.
 func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error) {
 	// The key stays alive for the whole call (deferred zeroize, not
 	// immediate): the deep verify decrypts chunk bodies. Presence-only
@@ -168,6 +180,18 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 	slices.SortFunc(snapshotObjects, func(a, b blobstore.Info) int {
 		return cmp.Compare(a.Key, b.Key)
 	})
+
+	dataObjects, err := r.store.List(ctx, DataPrefix)
+	if err != nil {
+		return CheckReport{}, fmt.Errorf("repo: list data: %w", err)
+	}
+	slices.SortFunc(dataObjects, func(a, b blobstore.Info) int {
+		return cmp.Compare(a.Key, b.Key)
+	})
+	present := make(map[string]struct{}, len(dataObjects))
+	for _, obj := range dataObjects {
+		present[obj.Key] = struct{}{}
+	}
 
 	referenced := make(map[string]struct{})
 	missingSeen := make(map[string]struct{})
@@ -214,18 +238,14 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 				if _, dup := missingSeen[key]; dup {
 					continue
 				}
-				if _, err := r.store.Stat(ctx, key); err != nil {
-					if errors.Is(err, blobstore.ErrNotFound) {
-						missingSeen[key] = struct{}{}
-						report.MissingBlobs = append(report.MissingBlobs, MissingBlob{
-							Key:        key,
-							Hash:       hash,
-							SnapshotID: m.ID,
-							Path:       fe.Path,
-						})
-						continue
-					}
-					return CheckReport{}, fmt.Errorf("repo: stat %s: %w", key, err)
+				if _, ok := present[key]; !ok {
+					missingSeen[key] = struct{}{}
+					report.MissingBlobs = append(report.MissingBlobs, MissingBlob{
+						Key:        key,
+						Hash:       hash,
+						SnapshotID: m.ID,
+						Path:       fe.Path,
+					})
 				}
 			}
 		}
@@ -238,13 +258,6 @@ func (r *Repo) Check(ctx context.Context, opts CheckOptions) (CheckReport, error
 		}
 	}
 
-	dataObjects, err := r.store.List(ctx, DataPrefix)
-	if err != nil {
-		return CheckReport{}, fmt.Errorf("repo: list data: %w", err)
-	}
-	slices.SortFunc(dataObjects, func(a, b blobstore.Info) int {
-		return cmp.Compare(a.Key, b.Key)
-	})
 	report.DataBlobs = len(dataObjects)
 	for _, obj := range dataObjects {
 		size, err := lookupSize(ctx, r.store, obj)
