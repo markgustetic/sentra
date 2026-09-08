@@ -262,3 +262,51 @@ func TestCreateSnapshot_ReleasesLockOnError(t *testing.T) {
 		t.Error("lock blob still exists after CreateSnapshot error; defer release didn't fire")
 	}
 }
+
+// cancelAfterFirstChunkStore cancels the caller's context the moment
+// the first data/ chunk lands. It models an operator hitting esc/quit
+// (or any op cancellation) partway through a backup: every later
+// store call on that ctx fails with context.Canceled.
+type cancelAfterFirstChunkStore struct {
+	blobstore.Store
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (s *cancelAfterFirstChunkStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	err := s.Store.PutIfAbsent(ctx, key, r)
+	if err == nil && strings.HasPrefix(key, DataPrefix) {
+		s.once.Do(s.cancel)
+	}
+	return err
+}
+
+// TestCreateSnapshot_CancelledCtxStillReleasesLock: the lock must not
+// be orphaned when the operation's ctx is cancelled mid-flight. The
+// release path reads the holder back before deleting (fail-closed);
+// if it ran on the cancelled ctx that read would fail, the release
+// would decline, and meta/lock would sit there until an operator
+// deleted it by hand — every later backup reporting ErrRepoLocked
+// against a process that no longer exists.
+func TestCreateSnapshot_CancelledCtxStillReleasesLock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &cancelAfterFirstChunkStore{Store: blobstore.NewMemory(), cancel: cancel}
+	r, err := Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer r.Close()
+
+	root := t.TempDir()
+	if err := putFile(root, "a.txt", "some content"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateSnapshot on a cancelled ctx: got %v, want context.Canceled", err)
+	}
+	if _, err := store.Stat(context.Background(), lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("meta/lock still present after a cancelled CreateSnapshot (stat err=%v); release ran on the cancelled ctx", err)
+	}
+}

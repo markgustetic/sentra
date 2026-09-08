@@ -30,6 +30,12 @@ import (
 //     and delete by hand.
 const lockKey = "meta/lock"
 
+// lockReleaseTimeout bounds releaseLock's detached context (see the
+// function comment). Generous for a GET + DELETE of a few hundred
+// bytes; short enough that a cancelled operation on a hung endpoint
+// does not hold the process open indefinitely.
+const lockReleaseTimeout = 30 * time.Second
+
 // ErrRepoLocked is returned by acquireLock when the lock blob is
 // already taken. Callers can errors.Is against the sentinel; the
 // returned error message also names the holder so the operator
@@ -113,10 +119,25 @@ func acquireLock(ctx context.Context, store blobstore.Store, op string) (*lockIn
 // transport errors are logged at warn level so an operator running
 // with --log-level=info can spot a stuck lock that needs manual
 // recovery.
+//
+// The release runs on a context detached from the caller's
+// cancellation. Every lock holder releases from a defer, and the
+// commonest reason to reach that defer early is that ctx was
+// cancelled (TUI esc/quit, a signal, a parent op giving up). On the
+// cancelled ctx the read-back below fails, the fail-closed rule
+// declines to delete, and meta/lock is orphaned until an operator
+// removes it by hand — every later backup reporting ErrRepoLocked
+// against a process that no longer exists. Detaching keeps the
+// fail-closed rule intact (an unreadable holder is still never
+// deleted) while giving the release a real chance to run; the
+// deadline bounds how long a cancelled operation lingers on a
+// hung endpoint.
 func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 	if info == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockReleaseTimeout)
+	defer cancel()
 	current := readLockHolder(ctx, store)
 	if current == "" {
 		// The current holder could not be read — either the lock is
