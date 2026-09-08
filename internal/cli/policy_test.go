@@ -91,6 +91,8 @@ func TestPolicyAddRemove_KeepEnvOverridesOutOfFile(t *testing.T) {
 func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "test-bucket"
 	writePolicyConfigFile(t, dir, &cfg)
@@ -117,7 +119,7 @@ func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	p := got.Policies["home"]
-	if len(p.Paths) != 1 || p.Paths[0] != "~/Documents" {
+	if len(p.Paths) != 1 || p.Paths[0] != filepath.Join(home, "Documents") {
 		t.Fatalf("paths: %+v", p.Paths)
 	}
 	if len(p.Tags) != 2 || p.Tags[0] != "home" || p.Tags[1] != "daily" {

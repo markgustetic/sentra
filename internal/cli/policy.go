@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -182,8 +183,20 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	if err != nil {
 		return fmt.Errorf("parse schedule: %w", err)
 	}
+	// Persist absolute paths. This is the one moment the cwd and home
+	// are the operator's own; the timer that later runs this policy
+	// starts in `/` (launchd), where a stored "." is the root filesystem
+	// and a stored "~/x" is a literal directory named "~".
+	paths := make([]string, 0, len(flags.paths))
+	for _, raw := range flags.paths {
+		abs, err := policycfg.ResolvePath(raw)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, abs)
+	}
 	p := config.PolicyConfig{
-		Paths:    append([]string(nil), flags.paths...),
+		Paths:    paths,
 		Tags:     append([]string(nil), flags.tags...),
 		Schedule: schedule,
 		AfterBackup: config.PolicyAfterBackup{
@@ -387,7 +400,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 				return err
 			}
 		}
-		if err := runPolicyStages(cmd, deps, cfg, name, p, r); err != nil {
+		if err := runPolicyStages(cmd, deps, cfgPath, cfg, name, p, r); err != nil {
 			return err
 		}
 		if p.Hooks.After != "" {
@@ -487,8 +500,11 @@ func openPolicyRepo(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config) (*r
 
 // runPolicyStages takes the snapshots and runs the post-backup check
 // and prune. r may be an already-open repo (from the --if-due check);
-// nil opens one here and closes it on return.
-func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) error {
+// nil opens one here and closes it on return. cfgPath anchors any
+// relative path still in the config: `policy add` has stored absolute
+// paths since paths were first resolved, but a hand-edited or older
+// sentra.yaml may say `paths: [src]`, and under a timer the cwd is `/`.
+func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) error {
 	if r == nil {
 		opened, err := openPolicyRepo(cmd, deps, cfg)
 		if err != nil {
@@ -508,7 +524,15 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, na
 
 	snapshots := make([]repo.SnapshotInfo, 0, len(p.Paths))
 	tag := policySnapshotTag(name, p.Tags)
-	for _, path := range p.Paths {
+	cfgDir, err := filepath.Abs(filepath.Dir(cfgPath))
+	if err != nil {
+		return fmt.Errorf("locate config dir: %w", err)
+	}
+	for _, stored := range p.Paths {
+		path, err := policycfg.ResolvePathFrom(stored, cfgDir)
+		if err != nil {
+			return err
+		}
 		snap, err := r.CreateSnapshot(cmd.Context(), path, repo.SnapshotOptions{
 			Tag:    tag,
 			Walker: walkerOpts,

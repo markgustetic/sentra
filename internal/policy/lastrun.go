@@ -1,25 +1,10 @@
 package policy
 
 import (
-	"path/filepath"
 	"strings"
 
 	"github.com/markgustetic/sentra/internal/repo"
 )
-
-// NormalizePath resolves a policy path the way the walker records
-// snapshot roots (filepath.Abs + Clean), expanding a leading ~ against
-// home, so policy paths and SnapshotInfo.Root compare equal.
-func NormalizePath(p, home string) string {
-	if p == "~" || strings.HasPrefix(p, "~/") {
-		p = filepath.Join(home, strings.TrimPrefix(strings.TrimPrefix(p, "~"), "/"))
-	}
-	abs, err := filepath.Abs(p)
-	if err != nil {
-		return filepath.Clean(p)
-	}
-	return filepath.Clean(abs)
-}
 
 // HasPolicyTag reports whether the space-joined tag string carries the
 // exact token "policy:<name>" — token equality, not substring, so

@@ -134,9 +134,17 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   post-backup check/prune preferences, but must never include passphrases,
   key material, AWS credentials, or other secrets. `sentra policy run` should
   reuse existing repo snapshot/check/prune primitives instead of duplicating
-  storage logic. `policy remove` uninstalls the policy's OS timer when
-  present — deactivates it, then removes the files (best-effort, warning on
-  failure) — an installed timer for a deleted policy can only fail.
+  storage logic. **Policy paths are stored absolute.** `policy add` resolves
+  every `--path` through `policy.ResolvePath` (`~` → home, relative → the
+  operator's cwd, cleaned) before persisting, and `Validate` rejects a path
+  that cannot resolve. A timer-launched run has no cwd the operator chose
+  (launchd starts jobs in `/`), so `policy run` resolves each stored path
+  again with `policy.ResolvePathFrom`, anchoring any relative path that a
+  hand-edited or pre-resolution `sentra.yaml` still carries to the config
+  file's directory — never the process cwd. `policy remove` uninstalls the
+  policy's OS timer when present — deactivates it, then removes the files
+  (best-effort, warning on failure) — an installed timer for a deleted
+  policy can only fail.
 - `sentra schedule` installs user-level OS scheduler entries for named
   policies. It generates launchd/systemd files that invoke `sentra policy
   run`; do not introduce a resident Sentra daemon or write secrets into
