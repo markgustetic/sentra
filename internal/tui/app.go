@@ -1087,19 +1087,28 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Backup's tag field and Password used to trap the keyboard entirely, with
 	// ctrl+c (which quits the app) the only way out. Startup gates keep esc —
 	// the wizard uses it to restart, and there is no rail to return to.
+	//
+	// The focused view is asked FIRST, before the running-op fallback. The
+	// views that launch an op consume esc in their running stage and emit
+	// cancelOpMsg themselves, so asking them first still cancels; asking the
+	// op guard first instead meant that with a backup running in the
+	// background, esc in Snapshots' detail, the Schedules form or the Diff
+	// picker cancelled the backup rather than closing what was on screen.
 	if msg.Type == tea.KeyEsc && !m.inStartupGate() && m.focus == focusContent {
 		switch {
+		case m.contentConsumesEscape():
+			// The view means something by esc itself — close a detail, step back
+			// a wizard stage, cancel its own op. Let it handle the key (fall
+			// through below).
 		case m.opRunning != "":
-			// esc cancels the running op in place — no confirm. The only guarded
-			// action is quit; everything else steps back cheaply. ctrl+c still
-			// force-quits if the operator wants out entirely.
+			// Nothing on screen wants esc: cancel the running op in place — no
+			// confirm. The only guarded action is quit; everything else steps
+			// back cheaply. ctrl+c still force-quits if the operator wants out
+			// entirely.
 			if m.opCancel != nil {
 				m.opCancel()
 			}
 			return m, nil
-		case m.contentConsumesEscape():
-			// The view means something by esc itself — close a detail, step back
-			// a wizard stage. Let it handle the key (fall through below).
 		default:
 			m.focus = focusSidebar
 			return m, nil

@@ -1999,25 +1999,55 @@ func TestApp_EscFromReadOnlyScreenReturnsToRail(t *testing.T) {
 }
 
 // Escaping a running operation cancels it immediately — no confirm modal.
+// Both routes to the cancel are pinned: the launching view consumes esc in
+// its running stage and emits cancelOpMsg itself, and a view with no use for
+// esc (the plain snapshots list) falls through to the shell's own cancel.
 func TestApp_EscDuringRunningOpCancelsImmediately(t *testing.T) {
-	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup")
-	// Simulate a running backup: the view is in its running stage and the App
-	// holds the op guard with a cancel hook we can observe.
-	bv := app.views[app.active].model.(BackupView)
-	bv.stage = backupRunning
-	app.views[app.active].model = bv
-	app.opRunning = "backup"
-	canceled := false
-	app.opCancel = func() { canceled = true }
+	t.Run("launching view", func(t *testing.T) {
+		app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup")
+		// Simulate a running backup: the view is in its running stage and the
+		// App holds the op guard with a cancel hook we can observe.
+		bv := app.views[app.active].model.(BackupView)
+		bv.stage = backupRunning
+		app.views[app.active].model = bv
+		app.opRunning = "backup"
+		canceled := false
+		app.opCancel = func() { canceled = true }
 
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	app = m.(App)
-	if len(app.modals) != 0 {
-		t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
-	}
-	if !canceled {
-		t.Error("esc during a running op must cancel it immediately")
-	}
+		m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		app = m.(App)
+		if len(app.modals) != 0 {
+			t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
+		}
+		for _, msg := range execCmds(t, cmd) { // the view's own cancelOpMsg
+			m, _ = app.Update(msg)
+			app = m.(App)
+		}
+		if !canceled {
+			t.Error("esc during a running op must cancel it immediately")
+		}
+	})
+	t.Run("view with no use for esc", func(t *testing.T) {
+		app := focusView(t, sizedApp(t, newFlowRepo(t)), "snapshots")
+		if app.contentConsumesEscape() {
+			t.Fatal("precondition: the snapshots list must not consume esc")
+		}
+		app.opRunning = "backup"
+		canceled := false
+		app.opCancel = func() { canceled = true }
+
+		m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		app = m.(App)
+		if len(app.modals) != 0 {
+			t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
+		}
+		if !canceled {
+			t.Error("esc during a running op must cancel it immediately")
+		}
+		if app.focus != focusContent {
+			t.Error("esc that cancelled an op must not also leave the view")
+		}
+	})
 }
 
 // TestApp_DataViewsRefreshAfterBackup locks the wiring the per-view reload
@@ -2657,5 +2687,76 @@ func TestApp_DownOnTheRescanRowStaysInTheWizard(t *testing.T) {
 
 	if app.active != activeBefore || app.focus != focusContent {
 		t.Fatalf("↓ on the rescan row left the wizard: active=%q focus=%v", app.views[app.active].id, app.focus)
+	}
+}
+
+// TestApp_EscWithOpRunningAsksTheFocusedViewFirst pins the routing RULE for
+// esc while an operation runs: the focused view is asked first, and only when
+// nothing on screen means something by esc does the shell fall back to
+// cancelling the op. The bug this catches: a backup running in the background
+// while the operator browsed Snapshots' detail — esc there cancelled the
+// backup instead of closing the detail, because the op-running branch sat
+// ABOVE the consumes-escape branch. Every escape-consuming view shares the
+// route, so the table sweeps more than one.
+func TestApp_EscWithOpRunningAsksTheFocusedViewFirst(t *testing.T) {
+	cases := []struct {
+		name  string
+		view  string
+		arm   func(t *testing.T, app *App) // put the view in an esc-consuming stage
+		still func(t *testing.T, app App) bool
+	}{
+		{
+			name: "snapshots detail",
+			view: "snapshots",
+			arm: func(t *testing.T, app *App) {
+				sv := app.views[app.active].model.(Snapshots)
+				sv.detailOpen = true
+				app.views[app.active].model = sv
+			},
+			still: func(t *testing.T, app App) bool {
+				return app.views[app.active].model.(Snapshots).detailOpen
+			},
+		},
+		{
+			name: "diff second picker",
+			view: "diff",
+			arm: func(t *testing.T, app *App) {
+				dv := app.views[app.active].model.(Diff)
+				dv.stage = diffPickB
+				app.views[app.active].model = dv
+			},
+			still: func(t *testing.T, app App) bool {
+				return app.views[app.active].model.(Diff).stage == diffPickB
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := focusView(t, sizedApp(t, newFlowRepo(t)), tc.view)
+			tc.arm(t, &app)
+			if !app.contentConsumesEscape() {
+				t.Fatal("precondition: the armed view must consume esc")
+			}
+			app.opRunning = "backup"
+			canceled := false
+			app.opCancel = func() { canceled = true }
+
+			m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			app = m.(App)
+			for _, msg := range execCmds(t, cmd) {
+				if _, ok := msg.(cancelOpMsg); ok {
+					t.Fatal("a view that consumes esc must not route it into a cancel")
+				}
+			}
+			if canceled {
+				t.Fatal("esc on a view that consumes it must not cancel the running op")
+			}
+			if app.opRunning != "backup" {
+				t.Fatalf("op guard = %q, want the backup still running", app.opRunning)
+			}
+			if tc.still(t, app) {
+				t.Fatal("the view never saw esc: its esc-consuming stage is still open")
+			}
+		})
 	}
 }
