@@ -2,6 +2,7 @@ package config
 
 import (
 	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -324,6 +325,116 @@ func TestWrite_PolicyNamesRoundTripUntyped(t *testing.T) {
 	}
 	if len(got.Policies) != len(names) {
 		t.Errorf("policy count = %d, want %d: %v", len(got.Policies), len(names), policyNames(got.Policies))
+	}
+}
+
+// TestWrite_LeavesNoTempFileBehind proves a completed Write leaves exactly
+// the config file in its directory — the temp file the atomic replace stages
+// through must be renamed away, not abandoned beside sentra.yaml where the
+// next `ls ~/.config/sentra` would find a stray `.sentra-*.tmp`.
+func TestWrite_LeavesNoTempFileBehind(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	cfg := Defaults()
+	cfg.Repo.S3.Bucket = "b"
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("Write: %v", err)
+	}
+	if err := Write(path, &cfg); err != nil {
+		t.Fatalf("second Write over existing file: %v", err)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "sentra.yaml" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Fatalf("config dir holds %v, want only sentra.yaml", names)
+	}
+	got, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if string(got) != string(Render(&cfg)) {
+		t.Errorf("file content is not the complete render:\n%s", got)
+	}
+}
+
+// TestWriteAtomic_FailedWriteLeavesPreviousFileIntact is the crash-safety
+// rule behind Write: the target is replaced only by a fully written temp
+// file, so an interrupted write — here a writer that fails midway — can
+// never leave a truncated or empty sentra.yaml. An empty file is the worst
+// case: Load parses it as bucket "" while ConfigExists stays true, so the
+// next launch lands on the connect gate with the bucket and every policy
+// gone. The failure must also clean up its temp file.
+func TestWriteAtomic_FailedWriteLeavesPreviousFileIntact(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	before := []byte("repo:\n  s3:\n    bucket: \"real-bucket\"\n")
+	if err := os.WriteFile(path, before, 0o600); err != nil {
+		t.Fatal(err)
+	}
+
+	boom := errors.New("disk full")
+	err := writeAtomic(path, func(w io.Writer) error {
+		if _, err := io.WriteString(w, "repo:\n  s3:\n"); err != nil {
+			return err
+		}
+		return boom
+	})
+	if !errors.Is(err, boom) {
+		t.Fatalf("writeAtomic error = %v, want %v", err, boom)
+	}
+
+	after, err := os.ReadFile(path)
+	if err != nil {
+		t.Fatalf("read target after failed write: %v", err)
+	}
+	if string(after) != string(before) {
+		t.Errorf("a failed write disturbed the target:\nbefore:\n%s\nafter:\n%s", before, after)
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("failed write left temp files behind: %v", names)
+	}
+}
+
+// TestWriteAtomic_FailedRenameCleansUp covers the other failure leg: the temp
+// file was fully written but could not be renamed into place (here because
+// the target is a directory). The temp file must not be abandoned.
+func TestWriteAtomic_FailedRenameCleansUp(t *testing.T) {
+	dir := t.TempDir()
+	path := filepath.Join(dir, "sentra.yaml")
+	if err := os.Mkdir(path, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	err := writeAtomic(path, func(w io.Writer) error {
+		_, err := io.WriteString(w, "repo: {}\n")
+		return err
+	})
+	if err == nil {
+		t.Fatal("writeAtomic over a directory succeeded, want an error")
+	}
+	entries, err := os.ReadDir(dir)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(entries) != 1 || entries[0].Name() != "sentra.yaml" {
+		names := make([]string, 0, len(entries))
+		for _, e := range entries {
+			names = append(names, e.Name())
+		}
+		t.Errorf("failed rename left temp files behind: %v", names)
 	}
 }
 

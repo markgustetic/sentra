@@ -2,6 +2,7 @@ package config
 
 import (
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -179,6 +180,12 @@ func writeYAMLStringList(b *strings.Builder, key string, values []string) {
 //
 // To change one field of an existing file, use Update. Passing a Config from
 // Load to Write silently persists that process's SENTRA_* overrides.
+//
+// The replacement is atomic (temp file + rename, see writeAtomic): a crash
+// mid-write must never leave a truncated sentra.yaml, because an empty file
+// still counts as configured (ConfigExists) yet loads as bucket "" — the next
+// launch lands on the connect gate with the bucket, profile and every policy
+// gone, and nothing on screen says why.
 func Write(path string, cfg *Config) error {
 	// The user-level fallback path (~/.config/sentra/sentra.yaml) may be
 	// the first thing ever written there; create the directory rather
@@ -186,8 +193,53 @@ func Write(path string, cfg *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir %s: %w", filepath.Dir(path), err)
 	}
-	if err := os.WriteFile(path, Render(cfg), 0o600); err != nil {
-		return fmt.Errorf("write %s: %w", path, err)
+	body := Render(cfg)
+	return writeAtomic(path, func(w io.Writer) error {
+		_, err := w.Write(body)
+		return err
+	})
+}
+
+// writeAtomic streams write's output into a 0o600 temp file beside path,
+// fsyncs it, and renames it over path, so readers only ever observe the old
+// file or the complete new one. Every failure leg removes the temp file: a
+// stray `.sentra-*.tmp` beside the config would otherwise outlive the crash
+// it was meant to protect against. The temp file lives in path's directory
+// because rename is atomic only within one filesystem. Same shape as the
+// credentials-file writer in internal/setup.
+func writeAtomic(path string, write func(w io.Writer) error) error {
+	dir := filepath.Dir(path)
+	tmp, err := os.CreateTemp(dir, ".sentra-*.tmp")
+	if err != nil {
+		return fmt.Errorf("create temp config file in %s: %w", dir, err)
+	}
+	tmpPath := tmp.Name()
+	fail := func(step string, err error) error {
+		_ = tmp.Close()
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("%s %s: %w", step, path, err)
+	}
+	if err := write(tmp); err != nil {
+		return fail("write", err)
+	}
+	// CreateTemp already opens 0o600, but chmod pins it against an umask or
+	// platform that decides otherwise; the file names the bucket and region.
+	if err := tmp.Chmod(0o600); err != nil {
+		return fail("chmod", err)
+	}
+	// Sync before rename: on a power loss, an unsynced rename can land the
+	// new name on zero-length content — exactly the empty file this exists
+	// to prevent.
+	if err := tmp.Sync(); err != nil {
+		return fail("sync", err)
+	}
+	if err := tmp.Close(); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("close %s: %w", path, err)
+	}
+	if err := os.Rename(tmpPath, path); err != nil {
+		_ = os.Remove(tmpPath)
+		return fmt.Errorf("replace %s: %w", path, err)
 	}
 	return nil
 }
