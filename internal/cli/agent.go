@@ -11,7 +11,7 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
-	"github.com/markgustetic/sentra/internal/repo"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/ui"
 	"github.com/markgustetic/sentra/internal/walker"
 )
@@ -163,16 +163,17 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 
 	registry := heuristics.NewRegistry(deps.Heuristics...)
 
+	// Pins included, so the retention heuristic counts a pinned
+	// snapshot as kept — the same answer the prune action will give.
+	retention, err := policycfg.RetentionFromConfig(cmd.Context(), r, cfg)
+	if err != nil {
+		return err
+	}
 	agentCfg := agent.Config{
 		MaxFindingsToLLM: cfg.Agent.MaxFindingsToLLM,
 		Model:            cfg.Agent.Model,
 		InputConfig: heuristics.InputConfig{
-			Retention: repo.RetentionPolicy{
-				KeepLast:    cfg.Retention.KeepLast,
-				KeepDaily:   cfg.Retention.KeepDaily,
-				KeepWeekly:  cfg.Retention.KeepWeekly,
-				KeepMonthly: cfg.Retention.KeepMonthly,
-			},
+			Retention: retention,
 		},
 		LocalOnly:  flags.localOnly || flags.noLLM,
 		Categories: flags.categories,

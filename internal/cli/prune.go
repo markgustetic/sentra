@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -12,6 +13,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -144,12 +146,11 @@ func runPrune(cmd *cobra.Command, deps PruneDeps, flags *pruneFlags) error {
 	defer crypto.Zeroize(pass)
 	defer r.Close()
 
-	policy := buildRetentionPolicy(cfg, flags)
-	// Pins keep snapshots unconditionally, with an explicit reason in
-	// the --explain output.
-	policy.Pinned, err = r.Pins(cmd.Context())
+	// Pins ride along from RetentionFromConfig and keep snapshots
+	// unconditionally, with an explicit reason in the --explain output.
+	policy, err := buildRetentionPolicy(cmd.Context(), r, cfg, flags)
 	if err != nil {
-		return fmt.Errorf("load pins: %w", err)
+		return err
 	}
 
 	snaps, err := r.ListSnapshots(cmd.Context())
@@ -431,13 +432,12 @@ func writeRetentionExplanation(w io.Writer, decisions []repo.RetentionDecision) 
 // buildRetentionPolicy starts from the config's retention block and
 // overlays explicit flag values. A flag the user did NOT pass leaves
 // the corresponding config value alone; an explicitly-passed flag
-// (even one set to 0) overrides.
-func buildRetentionPolicy(cfg *config.Config, flags *pruneFlags) repo.RetentionPolicy {
-	policy := repo.RetentionPolicy{
-		KeepLast:    cfg.Retention.KeepLast,
-		KeepDaily:   cfg.Retention.KeepDaily,
-		KeepWeekly:  cfg.Retention.KeepWeekly,
-		KeepMonthly: cfg.Retention.KeepMonthly,
+// (even one set to 0) overrides. The pin set comes from the repo via
+// policycfg.RetentionFromConfig; no flag can unpin.
+func buildRetentionPolicy(ctx context.Context, r *repo.Repo, cfg *config.Config, flags *pruneFlags) (repo.RetentionPolicy, error) {
+	policy, err := policycfg.RetentionFromConfig(ctx, r, cfg)
+	if err != nil {
+		return repo.RetentionPolicy{}, err
 	}
 	if flags.keepLastSet {
 		policy.KeepLast = flags.keepLast
@@ -451,7 +451,7 @@ func buildRetentionPolicy(cfg *config.Config, flags *pruneFlags) repo.RetentionP
 	if flags.keepMonthlySet {
 		policy.KeepMonthly = flags.keepMonthly
 	}
-	return policy
+	return policy, nil
 }
 
 // (HuhConfirm now lives in confirm.go alongside the other two

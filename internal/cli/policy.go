@@ -592,11 +592,11 @@ func runPolicyPrune(cmd *cobra.Command, out io.Writer, r *repo.Repo, cfg *config
 	if err != nil {
 		return fmt.Errorf("list snapshots: %w", err)
 	}
-	policy := repo.RetentionPolicy{
-		KeepLast:    cfg.Retention.KeepLast,
-		KeepDaily:   cfg.Retention.KeepDaily,
-		KeepWeekly:  cfg.Retention.KeepWeekly,
-		KeepMonthly: cfg.Retention.KeepMonthly,
+	// Pins included: a pinned snapshot planned as a drop would surface
+	// as ErrSnapshotPinned below and fail an unattended run.
+	policy, err := policycfg.RetentionFromConfig(cmd.Context(), r, cfg)
+	if err != nil {
+		return err
 	}
 	decisions := repo.PlanRetentionExplain(snaps, policy)
 	keep, drop := splitRetentionDecisions(decisions)
