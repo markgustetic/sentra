@@ -22,11 +22,11 @@ func main() {
 	configureRootLogging(root, rootFlags)
 	addProductionCommands(root, rootFlags, version, commit)
 
-	if err := root.Execute(); err != nil {
-		// cobra prints the error itself when SilenceErrors is false; we
-		// just need to propagate the non-zero exit so scripts can detect
-		// failure.
-		os.Exit(1)
+	// Every command runs under a signal-cancelled context (see
+	// signalContext) so deferred cleanup — the repo lock above all —
+	// gets to run on SIGINT/SIGTERM.
+	if code := execute(root, os.Exit); code != 0 {
+		os.Exit(code)
 	}
 }
 
