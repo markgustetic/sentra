@@ -9,7 +9,6 @@
 package crypto
 
 import (
-	"errors"
 	"fmt"
 
 	"golang.org/x/crypto/argon2"
@@ -50,6 +49,23 @@ func DefaultKDFParams() KDFParams {
 // to single-digit KiB, not to enforce best practice.
 const MinMemoryKiB uint32 = 4 * 1024
 
+// MaxMemoryKiB, MaxTime, and MaxThreads are the ceilings Validate
+// enforces. They are denial-of-service bounds on an UNTRUSTED config,
+// not tuning guidance: repo.Open must derive the KEK from the on-disk
+// params before it can check the config MAC (the MAC key derives from
+// the KEK), so anyone with bucket write access could otherwise plant a
+// Memory of 16 GiB and OOM-kill every client, or a Time in the
+// millions and hang it, before ErrConfigTampered was ever reachable.
+// Each ceiling is therefore something any client machine can honor in
+// bounded time: 1 GiB of memory, 64 passes over it, 64 lanes.
+// DefaultKDFParams (64 MiB, 3 passes, 4 lanes) sits far inside all
+// three, so a future default bump has headroom without moving them.
+const (
+	MaxMemoryKiB uint32 = 1 << 20 // 1 GiB
+	MaxTime      uint32 = 64
+	MaxThreads   uint8  = 64
+)
+
 // DeriveKEK runs Argon2id over (passphrase, salt) using p and returns
 // the resulting key. The output length is p.KeyLen.
 func DeriveKEK(passphrase, salt []byte, p KDFParams) []byte {
@@ -57,21 +73,22 @@ func DeriveKEK(passphrase, salt []byte, p KDFParams) []byte {
 }
 
 // Validate checks that the parameters are within sane bounds. Loaded
-// configs are run through this to prevent a corrupted on-disk config
-// from triggering pathological allocations.
+// configs are run through this before DeriveKEK so a corrupted or
+// tampered on-disk config can neither trivialize brute-force (floors)
+// nor turn the KDF into a memory bomb or an endless loop (ceilings).
 func (p KDFParams) Validate() error {
-	if p.Time == 0 {
-		return errors.New("crypto: KDFParams.Time must be > 0")
+	if p.Time == 0 || p.Time > MaxTime {
+		return fmt.Errorf("crypto: KDFParams.Time out of range: %d (must be 1..%d)", p.Time, MaxTime)
 	}
-	if p.Threads == 0 {
-		return errors.New("crypto: KDFParams.Threads must be > 0")
+	if p.Threads == 0 || p.Threads > MaxThreads {
+		return fmt.Errorf("crypto: KDFParams.Threads out of range: %d (must be 1..%d)", p.Threads, MaxThreads)
 	}
 	if p.KeyLen != 32 {
 		return fmt.Errorf("crypto: KDFParams.KeyLen must be 32, got %d", p.KeyLen)
 	}
-	if p.Memory < MinMemoryKiB || p.Memory > 1<<24 { // floor 4 MiB, ceiling 16 GiB
+	if p.Memory < MinMemoryKiB || p.Memory > MaxMemoryKiB {
 		return fmt.Errorf("crypto: KDFParams.Memory out of range: %d KiB (must be %d..%d)",
-			p.Memory, MinMemoryKiB, uint32(1<<24))
+			p.Memory, MinMemoryKiB, MaxMemoryKiB)
 	}
 	return nil
 }
