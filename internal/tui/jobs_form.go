@@ -352,9 +352,9 @@ func (v JobsView) finishSave(msg jobSavedMsg) (tea.Model, tea.Cmd) {
 		v.notice = "save failed: " + msg.err.Error()
 		return v, nil
 	}
-	v.reload()
+	probe := v.reload()
 	v.notice = msg.notice
-	return v, nil
+	return v, probe
 }
 
 // syncTimerAfterSave reconciles the OS timer after a save that overwrote

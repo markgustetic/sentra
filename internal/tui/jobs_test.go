@@ -124,7 +124,7 @@ func TestJobs_InstalledRowComputesNextRun(t *testing.T) {
 	if err := scheduler.Install(map[string]string{paths.Files[0]: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	v.reload()
+	v = probeTimers(t, v)
 	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	out := sized.(JobsView).View()
 	// jobsNow is Mar 10 14:30; daily@03:00 -> next run Mar 11 03:00. The

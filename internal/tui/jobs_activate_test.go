@@ -71,12 +71,16 @@ func installAlphaFiles(t *testing.T, v JobsView, path string) scheduler.Paths {
 }
 
 // confirmTimerOp runs the confirm for id through the view, runs the
-// guarded op it emits the way the App would, and feeds the resulting
-// jobTimerMsg back, returning the reloaded view.
+// guarded op it emits the way the App would, feeds the resulting
+// jobTimerMsg back, and settles the reload's timer probe, returning the
+// reloaded view.
 func confirmTimerOp(t *testing.T, v JobsView, id string) JobsView {
 	t.Helper()
 	m, cmd := v.Update(confirmedMsg{id: id})
-	m2, _ := runGuardedOp(t, m, cmd)
+	m2, probe := runGuardedOp(t, m, cmd)
+	if probe != nil {
+		m2, _ = m2.Update(probe())
+	}
 	return m2.(JobsView)
 }
 
@@ -247,9 +251,9 @@ func TestJobs_TimerColumnReflectsOSState(t *testing.T) {
 		t.Run(tc.name, func(t *testing.T) {
 			f := &fakeSchedRunner{fail: tc.fail}
 			v.deps.SchedulerRunner = f.run
-			v.reload()
+			v := probeTimers(t, v)
 			if !f.ran(print) {
-				t.Fatalf("reload must ask launchd, ran %q", f.calls)
+				t.Fatalf("the reload's probe must ask launchd, ran %q", f.calls)
 			}
 			sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 			out := sized.(JobsView).View()
@@ -273,7 +277,7 @@ func TestJobs_TimerColumnUnknownWhenOSCannotBeAsked(t *testing.T) {
 	v.deps.SchedulerRunner = func(context.Context, string, ...string) ([]byte, error) {
 		return nil, os.ErrNotExist // launchctl missing: not an exit status
 	}
-	v.reload()
+	v = probeTimers(t, v)
 	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	out := sized.(JobsView).View()
 	if strings.Contains(out, "inactive") || !strings.Contains(out, "installed") || !strings.Contains(out, "Mar 11 03:00") {
@@ -288,7 +292,7 @@ func TestJobs_ReloadDoesNotQueryOSWithoutFiles(t *testing.T) {
 	deps.SchedulerRunner = f.run
 	v := newJobsForTest(t, deps)
 	v.osOverride = "darwin"
-	v.reload()
+	v = probeTimers(t, v)
 	if len(f.calls) != 0 {
 		t.Fatalf("reload with no files must not shell out, ran %q", f.calls)
 	}

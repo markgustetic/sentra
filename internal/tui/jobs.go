@@ -167,6 +167,12 @@ type JobsView struct {
 	exeOverride  string
 	now          func() time.Time
 	homeDir      func() (string, error)
+
+	// probeGen counts reloads so a late jobsTimerStatusMsg from a
+	// superseded probe is dropped; probeTimeout overrides
+	// jobsProbeTimeout (zero = default) so a test can prove the deadline.
+	probeGen     int
+	probeTimeout time.Duration
 }
 
 func NewJobsView(deps Deps) JobsView {
@@ -253,25 +259,60 @@ func (v JobsView) jobsHome() string {
 	return home
 }
 
+// jobsProbeTimeout bounds one reload's timer probe across every installed
+// job. scheduler.Active execs launchctl/systemctl with its own per-call
+// timeout; the deadline here is what keeps a wedged user bus from pinning
+// the probe goroutine for the life of the session.
+const jobsProbeTimeout = 30 * time.Second
+
+// timerStatus is the OS scheduler's answer for one installed timer:
+// known=false means the question could not be asked (no user bus, no
+// launchctl, the probe deadline) — rendered as plain "installed", never
+// as "inactive".
+type timerStatus struct {
+	active bool
+	known  bool
+}
+
+// jobsTimerStatusMsg carries a finished timer probe back to the view. gen
+// echoes the reload that launched it, so a slow probe from a superseded
+// reload (the operator pressed R, a save resolved) is dropped rather than
+// overwriting the newer rows.
+type jobsTimerStatusMsg struct {
+	gen    int
+	status map[string]timerStatus
+}
+
 // reload rebuilds rows from the on-disk config (falling back to
 // deps.Config when no path is configured — bare test fixtures), re-stats
 // each policy's timer files, and recomputes next/last run. Called at
-// construction, after every action, and on R.
-func (v *JobsView) reload() {
+// construction, on every show, after every action, and on R.
+//
+// It does only cheap, local work itself — a config read and a stat per
+// policy — and returns a cmd that asks the OS scheduler whether each
+// installed timer is loaded (see probeTimersCmd). That probe used to run
+// inline here, one launchctl/systemctl exec per installed job with a 15s
+// timeout each, and the rail's live preview delivers viewShownMsg every
+// time the operator scrolls past Schedules: the whole TUI stalled on
+// each pass. Until the probe answers, an installed row renders the
+// on-disk fact ("installed") and keeps its next run; the
+// jobsTimerStatusMsg then settles it to active/inactive/unknown. The
+// returned cmd is nil when nothing is installed.
+func (v *JobsView) reload() tea.Cmd {
 	var policies map[string]config.PolicyConfig
 	switch {
 	case v.deps.ConfigPath != "":
 		cfg, err := config.Load(v.deps.ConfigPath)
 		if err != nil {
 			v.loadErr = err.Error()
-			return
+			return nil
 		}
 		policies = cfg.Policies
 	case v.deps.Config != nil:
 		policies = v.deps.Config.Policies
 	default:
 		v.loadErr = "no config file configured"
-		return
+		return nil
 	}
 	v.loadErr = ""
 	v.policies = policies
@@ -284,7 +325,7 @@ func (v *JobsView) reload() {
 	home := v.jobsHome()
 	nowT := v.now()
 	rows := make([]jobRow, 0, len(v.names))
-	tblRows := make([]table.Row, 0, len(v.names))
+	var probe []string
 	for _, name := range v.names {
 		p := policies[name]
 		norm := policycfg.NormalizeSchedule(p.Schedule)
@@ -298,17 +339,12 @@ func (v *JobsView) reload() {
 				if installed, sErr := scheduler.Installed(paths); sErr == nil {
 					row.installed = installed
 				}
-				if row.installed {
-					active, aErr := scheduler.Active(ctxOrBackground(v.deps.Ctx), paths, v.deps.SchedulerRunner)
-					row.active, row.activeKnown = active, aErr == nil
-				}
+			}
+			if row.installed {
+				probe = append(probe, name)
 			}
 		}
-		// A next run is a promise the OS will fire the timer: only for a
-		// loaded one, or one whose state we could not check.
-		if row.installed && (row.active || !row.activeKnown) {
-			row.next, row.nextOK = policycfg.NextRun(p.Schedule, nowT)
-		}
+		row.next, row.nextOK = jobNextRun(row, p.Schedule, nowT)
 		abs := make([]string, 0, len(p.Paths))
 		for _, path := range p.Paths {
 			abs = append(abs, policycfg.NormalizePath(path, home))
@@ -317,11 +353,36 @@ func (v *JobsView) reload() {
 			row.lastID, row.lastAt = last.ID, last.CreatedAt
 		}
 		rows = append(rows, row)
-		tblRows = append(tblRows, table.Row{
-			name, row.spec, jobTimerLabel(row), jobNextLabel(row), jobLastLabel(row, nowT),
-		})
 	}
 	v.rows = rows
+	v.setTableRows(nowT)
+	// Every reload supersedes the probe before it, answered or not.
+	v.probeGen++
+	if len(probe) == 0 {
+		return nil
+	}
+	return v.probeTimersCmd(v.probeGen, probe)
+}
+
+// jobNextRun computes a row's next run. A next run is a promise the OS
+// will fire the timer: only for a loaded one, or one whose state is not
+// (yet) known.
+func jobNextRun(row jobRow, schedule config.PolicySchedule, now time.Time) (time.Time, bool) {
+	if row.installed && (row.active || !row.activeKnown) {
+		return policycfg.NextRun(schedule, now)
+	}
+	return time.Time{}, false
+}
+
+// setTableRows re-renders v.rows into the table, keeping the cursor on a
+// valid row across a shrink.
+func (v *JobsView) setTableRows(now time.Time) {
+	tblRows := make([]table.Row, 0, len(v.rows))
+	for _, row := range v.rows {
+		tblRows = append(tblRows, table.Row{
+			row.name, row.spec, jobTimerLabel(row), jobNextLabel(row), jobLastLabel(row, now),
+		})
+	}
 	cursor := v.tbl.Cursor()
 	v.tbl.SetRows(tblRows)
 	if cursor >= len(tblRows) {
@@ -331,6 +392,49 @@ func (v *JobsView) reload() {
 		cursor = 0
 	}
 	v.tbl.SetCursor(cursor)
+}
+
+// probeTimersCmd asks the OS scheduler, off the UI goroutine, whether
+// each named installed timer is loaded, and delivers the answers as one
+// jobsTimerStatusMsg tagged with gen. The whole probe shares one
+// deadline: a job whose query times out reads as unknown, not inactive.
+func (v JobsView) probeTimersCmd(gen int, names []string) tea.Cmd {
+	goos, home := v.osOverride, v.homeOverride
+	parent, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
+	timeout := v.probeTimeout
+	if timeout <= 0 {
+		timeout = jobsProbeTimeout
+	}
+	return func() tea.Msg {
+		ctx, cancel := context.WithTimeout(parent, timeout)
+		defer cancel()
+		status := make(map[string]timerStatus, len(names))
+		for _, name := range names {
+			paths, err := scheduler.PathsFor(goos, home, name)
+			if err != nil {
+				continue
+			}
+			active, aErr := scheduler.Active(ctx, paths, runner)
+			status[name] = timerStatus{active: active, known: aErr == nil}
+		}
+		return jobsTimerStatusMsg{gen: gen, status: status}
+	}
+}
+
+// applyTimerStatus folds a probe's answers into the rows and re-renders
+// the table. Rows the probe did not cover (uninstalled since, or a
+// PathsFor failure) keep their pending state.
+func (v *JobsView) applyTimerStatus(msg jobsTimerStatusMsg) {
+	nowT := v.now()
+	for i := range v.rows {
+		st, ok := msg.status[v.rows[i].name]
+		if !ok {
+			continue
+		}
+		v.rows[i].active, v.rows[i].activeKnown = st.active, st.known
+		v.rows[i].next, v.rows[i].nextOK = jobNextRun(v.rows[i], v.policies[v.rows[i].name].Schedule, nowT)
+	}
+	v.setTableRows(nowT)
 }
 
 func jobTimerLabel(r jobRow) string {
@@ -405,13 +509,20 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			return v, nil
 		}
 
+	case jobsTimerStatusMsg:
+		if msg.gen != v.probeGen {
+			return v, nil
+		}
+		v.applyTimerStatus(msg)
+		return v, nil
+
 	case jobTimerMsg:
 		v.leaveBusy()
 		v.notice = msg.notice
 		if msg.err != nil {
 			v.notice = msg.err.Error()
 		}
-		v.reload()
+		probe := v.reload()
 		// A delete (or any other timer/policy op) resolving for the job
 		// that was on screen in detail would otherwise leave a ghost
 		// page: viewDetail rendering a zero-value summary over the
@@ -431,7 +542,7 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			v.detailErr = nil
 			v.detailLoading = false
 		}
-		return v, nil
+		return v, probe
 
 	case jobDetailMsg:
 		// Stale-result guard: drop a load the operator has since
@@ -471,8 +582,8 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case policyRunDoneMsg:
 		v.stage = jobsRunDone
 		v.result = msg
-		v.reload()
-		return v, nil
+		probe := v.reload()
+		return v, probe
 
 	case jobSavedMsg:
 		return v.finishSave(msg)
@@ -518,8 +629,8 @@ func (v JobsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// shift the rows under a table the operator is about to return
 		// to. TestJobs_ShownReloadsFromDisk holds the line.
 		if v.stage != jobsForm {
-			v.reload()
-			return v, nil
+			probe := v.reload()
+			return v, probe
 		}
 		cmd := v.form.refocus()
 		return v, cmd
@@ -580,8 +691,8 @@ func (v JobsView) handleListKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		switch msg.Runes[0] {
 		case 'R':
 			v.notice = ""
-			v.reload()
-			return v, nil
+			probe := v.reload()
+			return v, probe
 		case 'a':
 			v.stage = jobsForm
 			v.editName = ""
