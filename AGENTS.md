@@ -200,7 +200,21 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - Snapshot manifests are format v2: entries carry Kind/LinkTarget so symlinks
   (never followed) and directories (modes, empty dirs) round-trip. Loaders
   must refuse manifests newer than they understand. `Stats.Files` counts
-  regular files only.
+  regular files only. A loader also refuses a manifest whose embedded ID
+  differs from its key (`ErrManifestIDMismatch`): GC aborts before reaping,
+  `check` reports it as a manifest issue.
+- The backup root is canonicalised by `repo.ResolveRoot` — absolute,
+  cleaned, symlinks resolved, and it must be a directory (`ErrRootNotDir`).
+  `Manifest.Root` records the RESOLVED path, so a linked and a real spelling
+  of one directory share a retention group; anything that compares a
+  configured path against `SnapshotInfo.Root` must resolve the same way.
+  The incremental scan confirms each reused chunk still exists (one Stat per
+  unique chunk per snapshot) and re-reads the file when one is gone.
+- `sentra sync` never deletes a snapshot or chunk on the destination; the one
+  thing it removes is the mirror's derived `meta/snapshots` index, after
+  copying a manifest that index cannot know about, so the next listing on the
+  mirror rebuilds it. A `ListSnapshots` fan-out persists its rebuilt index only
+  if it can take the repo lock without waiting.
 - Snapshot references: everywhere a snapshot ID is accepted, "latest", a
   unique prefix, and a unique suffix resolve via `ResolveSnapshotID`;
   ambiguity is refused with candidates named, never first-match.
