@@ -75,6 +75,16 @@ type Options struct {
 	// keep their exact historical behavior; snapshot capture opts in
 	// for filesystem fidelity.
 	IncludeNonRegular bool
+
+	// OnSkip is told about every subtree the walk dropped because its
+	// directory listing was denied (fs.ErrPermission — TCC-protected
+	// folders under ~/Library on macOS are the everyday case). The
+	// walk continues without that subtree rather than failing the
+	// whole backup over one folder, but a skipped subtree is data the
+	// operator did not get, so it is never hidden: nil means the
+	// caller chose silence, not that nothing happened. Called from the
+	// producer goroutine; must be safe to call concurrently with fn.
+	OnSkip func(path string, err error)
 }
 
 // defaultIgnoreFile is the filename used when Options.IgnoreFile is
@@ -95,6 +105,11 @@ const cachedirSignature = "Signature: 8a477f597d28d172789f06886806bc55"
 // Walk returns the first non-nil error from fn, or any I/O error from
 // the walk itself. ctx cancellation is respected: a cancel during the
 // walk surfaces as ctx.Err() (typically context.Canceled).
+//
+// Two failures are deliberately not errors, because on a real machine
+// they happen on every run: an entry that vanishes between readdir and
+// stat is dropped, and a subdirectory (never the root) whose listing is
+// denied is skipped as a subtree and reported through Options.OnSkip.
 //
 // Symlinks are not followed (treated as non-regular and silently
 // skipped). Future: symlink policy.
@@ -139,9 +154,17 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 				rel = filepath.ToSlash(rel)
 				info, err := os.Lstat(absPath)
 				if err != nil {
-					// File can vanish between WalkDir and Lstat
-					// on a live tree; report the error rather
-					// than silently dropping the entry.
+					// A file can vanish between the producer's
+					// readdir and this Lstat; a live tree does it
+					// constantly (build outputs, editor swap
+					// files). It is not there to back up, so drop
+					// it like a vanished symlink or dir — failing
+					// the whole walk over it made every backup of
+					// a busy directory a coin toss. Any other
+					// Lstat failure is still real and fatal.
+					if errors.Is(err, fs.ErrNotExist) {
+						continue
+					}
 					return fmt.Errorf("walker: lstat %q: %w", absPath, err)
 				}
 				// Belt-and-braces: WalkDir.d.Type already filters
@@ -175,6 +198,22 @@ func Walk(ctx context.Context, root string, opts Options, fn func(Entry) error) 
 
 		walkErr := filepath.WalkDir(root, func(path string, d fs.DirEntry, err error) error {
 			if err != nil {
+				// WalkDir reports a failed ReadDir by calling back
+				// a second time on the same directory with the
+				// error. A denied listing below the root is a
+				// subtree the process is simply not allowed to see
+				// (macOS TCC guards ~/Library/Mail and friends this
+				// way); skipping it keeps the rest of the backup
+				// while OnSkip keeps the operator informed. The
+				// root itself stays fatal — with nothing left to
+				// walk, "success" would be an empty snapshot — and
+				// every other producer error is still real.
+				if path != root && d != nil && d.IsDir() && errors.Is(err, fs.ErrPermission) {
+					if opts.OnSkip != nil {
+						opts.OnSkip(path, err)
+					}
+					return fs.SkipDir
+				}
 				return err
 			}
 			// Honor cancellation between directory steps.

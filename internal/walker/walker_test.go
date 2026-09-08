@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"io/fs"
 	"os"
 	"path/filepath"
 	"reflect"
@@ -566,5 +567,158 @@ func TestWalk_CachedirTagNeverSkipsRoot(t *testing.T) {
 	want := []string{"CACHEDIR.TAG", "real.txt"}
 	if !reflect.DeepEqual(got, want) {
 		t.Errorf("got %v, want %v (root must be walked; tagged child skipped)", got, want)
+	}
+}
+
+// TestWalk_VanishedFileIsSkipped pins the rule that a regular file
+// which disappears between the producer's readdir and the worker's
+// Lstat is dropped, not fatal: a live tree (build outputs, editor
+// swap files, browser caches) does this constantly, and one such
+// race must not abort a whole backup. Determinism without a hook:
+// WalkDir reads a directory's full listing before its first
+// callback, and with Concurrency 1 the single worker Lstats entries
+// strictly in order, so deleting "b" from inside fn("a") guarantees
+// "b"'s Lstat runs after the delete.
+func TestWalk_VanishedFileIsSkipped(t *testing.T) {
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a"), "a")
+	writeFile(t, filepath.Join(root, "b"), "b")
+
+	var (
+		mu  sync.Mutex
+		got []string
+	)
+	fn := func(e Entry) error {
+		mu.Lock()
+		defer mu.Unlock()
+		got = append(got, e.RelPath)
+		if e.RelPath == "a" {
+			if err := os.Remove(filepath.Join(root, "b")); err != nil {
+				return err
+			}
+		}
+		return nil
+	}
+	if err := Walk(context.Background(), root, Options{Concurrency: 1}, fn); err != nil {
+		t.Fatalf("Walk: vanished file must be skipped, got %v", err)
+	}
+	if want := []string{"a"}; !reflect.DeepEqual(got, want) {
+		t.Errorf("got %v, want %v", got, want)
+	}
+}
+
+// skipUnlessChmodDenies guards the EPERM tests: root ignores mode
+// bits, so a chmod-000 directory is still readable and the walk
+// would (correctly) not skip anything.
+func skipUnlessChmodDenies(t *testing.T) {
+	t.Helper()
+	if runtime.GOOS == "windows" {
+		t.Skip("chmod permission denial is not modeled on windows")
+	}
+	if os.Geteuid() == 0 {
+		t.Skip("running as root; chmod cannot deny access")
+	}
+}
+
+// mkdirLocked creates dir with the given mode and restores 0o755 at
+// cleanup so t.TempDir can remove it.
+func mkdirLocked(t *testing.T, dir string, mode os.FileMode) {
+	t.Helper()
+	if err := os.Chmod(dir, mode); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { _ = os.Chmod(dir, 0o755) })
+}
+
+// TestWalk_UnreadableSubdirIsSkippedAndReported pins the rule for a
+// subdirectory whose ReadDir is denied (TCC-protected dirs under
+// ~/Library on macOS are the real-world case): the subtree is
+// skipped, the walk continues, and OnSkip is told exactly which path
+// and why so a surface can show it. Everything outside the locked
+// directory must still be emitted — the point is that one protected
+// folder does not cost the operator the whole backup.
+func TestWalk_UnreadableSubdirIsSkippedAndReported(t *testing.T) {
+	skipUnlessChmodDenies(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "ok.txt"), "ok")
+	writeFile(t, filepath.Join(root, "after", "z.txt"), "z")
+	locked := filepath.Join(root, "locked")
+	writeFile(t, filepath.Join(locked, "secret.txt"), "s")
+	mkdirLocked(t, locked, 0)
+
+	var (
+		mu    sync.Mutex
+		skips []string
+		errs  []error
+	)
+	fn, get := collectPaths()
+	opts := Options{
+		IncludeNonRegular: true,
+		OnSkip: func(path string, err error) {
+			mu.Lock()
+			defer mu.Unlock()
+			skips = append(skips, path)
+			errs = append(errs, err)
+		},
+	}
+	if err := Walk(context.Background(), root, opts, fn); err != nil {
+		t.Fatalf("Walk: unreadable subdir must be skipped, got %v", err)
+	}
+
+	got := get()
+	slices.Sort(got)
+	// "locked" itself is emitted as a KindDir: its metadata was
+	// readable and the entry is honest; only its contents are gone.
+	want := []string{"after", "after/z.txt", "locked", "ok.txt"}
+	if !reflect.DeepEqual(got, want) {
+		t.Errorf("emitted %v, want %v", got, want)
+	}
+	if want := []string{locked}; !reflect.DeepEqual(skips, want) {
+		t.Fatalf("OnSkip paths %v, want %v", skips, want)
+	}
+	if !errors.Is(errs[0], fs.ErrPermission) {
+		t.Errorf("OnSkip err %v, want fs.ErrPermission", errs[0])
+	}
+}
+
+// TestWalk_UnreadableSubdirWithoutOnSkip: nil OnSkip means silent,
+// not a nil-func panic and not a fatal walk.
+func TestWalk_UnreadableSubdirWithoutOnSkip(t *testing.T) {
+	skipUnlessChmodDenies(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "ok.txt"), "ok")
+	locked := filepath.Join(root, "locked")
+	writeFile(t, filepath.Join(locked, "secret.txt"), "s")
+	mkdirLocked(t, locked, 0)
+
+	fn, get := collectPaths()
+	if err := Walk(context.Background(), root, Options{}, fn); err != nil {
+		t.Fatalf("Walk: %v", err)
+	}
+	if want := []string{"ok.txt"}; !reflect.DeepEqual(get(), want) {
+		t.Errorf("got %v, want %v", get(), want)
+	}
+}
+
+// TestWalk_UnreadableRootIsFatal: the skip rule is for subtrees only.
+// A root whose listing is denied has nothing to fall back to, and an
+// empty successful walk would be the silent-empty-backup bug in a new
+// costume. Mode 0o300 keeps the root searchable (so the ignore-file
+// lookup gets a clean not-exist) while denying ReadDir, which is the
+// exact failure the producer callback sees.
+func TestWalk_UnreadableRootIsFatal(t *testing.T) {
+	skipUnlessChmodDenies(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "ok.txt"), "ok")
+	mkdirLocked(t, root, 0o300)
+
+	skipped := false
+	opts := Options{OnSkip: func(string, error) { skipped = true }}
+	err := Walk(context.Background(), root, opts, func(Entry) error { return nil })
+	if !errors.Is(err, fs.ErrPermission) {
+		t.Fatalf("Walk err = %v, want fs.ErrPermission", err)
+	}
+	if skipped {
+		t.Error("OnSkip fired for the root; the root must be fatal, not skipped")
 	}
 }
