@@ -2,9 +2,13 @@ package repo
 
 import (
 	"context"
+	"errors"
+	"path/filepath"
+	"strings"
 	"testing"
 	"time"
 
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/crypto"
 )
 
@@ -17,6 +21,60 @@ func TestListSnapshots_Empty(t *testing.T) {
 	}
 	if len(infos) != 0 {
 		t.Fatalf("expected empty list, got %d entries", len(infos))
+	}
+}
+
+// TestListSnapshots_RebuildSkipsIndexWriteWhileLocked: the fallback
+// path's opportunistic index write is a read-modify-write of
+// meta/snapshots with no lock, racing the append a concurrent
+// CreateSnapshot makes under the lock — a stale rebuild landing last
+// erased the new entry. The rebuilt index is persisted only when the
+// repo lock can be taken without waiting; while it is held, the list
+// is still served (from manifests) and nothing is written. Once the
+// lock is free, the next listing persists the index as before.
+func TestListSnapshots_RebuildSkipsIndexWriteWhileLocked(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "alpha")
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	// Force the fallback path.
+	if err := store.Delete(ctx, snapshotIndexKey); err != nil {
+		t.Fatal(err)
+	}
+
+	held, err := acquireLock(ctx, store, "snapshot")
+	if err != nil {
+		t.Fatal(err)
+	}
+	infos, err := r.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatalf("ListSnapshots under a held lock must still answer: %v", err)
+	}
+	if len(infos) != 1 || infos[0].ID != snap.ID {
+		t.Errorf("list under held lock: got %+v, want the one snapshot", infos)
+	}
+	if _, err := store.Stat(ctx, snapshotIndexKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Errorf("index written while another operation held the lock (stat err=%v)", err)
+	}
+	// The listing must not have disturbed the holder's lock.
+	if !strings.Contains(readLockHolder(ctx, store), held.UUID) {
+		t.Errorf("ListSnapshots disturbed a lock it did not own: %s", readLockHolder(ctx, store))
+	}
+	releaseLock(ctx, store, held)
+
+	if _, err := r.ListSnapshots(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Stat(ctx, snapshotIndexKey); err != nil {
+		t.Errorf("index not persisted once the lock was free: %v", err)
+	}
+	// And the rebuild released the lock it took.
+	if _, err := store.Stat(ctx, lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Errorf("ListSnapshots left the lock behind (stat err=%v)", err)
 	}
 }
 
