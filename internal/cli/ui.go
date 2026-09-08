@@ -258,7 +258,11 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
 		// Reconfiguring from Settings reaches the same wizard as `sentra setup`,
-		// so the flag has to follow the dashboard launch too.
+		// so the flag has to follow the dashboard launch too: without it the
+		// wizard never warned that completing overwrites the config that
+		// launched it. The dashboard only ever launches over an existing
+		// config, but the probe's answer is the source of truth, not the branch.
+		Reconfigure:    st.ConfigExists,
 		PassphraseFile: passphraseFile,
 		ShowSplash:     showSplash,
 		Version:        deps.Version,

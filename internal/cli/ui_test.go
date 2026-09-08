@@ -526,7 +526,11 @@ func TestRunUI_SetupRoutingMatrix(t *testing.T) {
 		{"first run, forced", false, false, true, "setup", false},
 		{"configured and locked", true, false, false, "unlock", false},
 		{"configured and locked, forced", true, false, true, "setup", true},
-		{"configured and unlocked", true, true, false, "", false},
+		// The dashboard launch carries Reconfigure too: Settings' "Re-run
+		// setup" (and the chat's open_view("setup")) reach the same wizard
+		// as `sentra setup`, and it must warn that completing overwrites the
+		// config that launched it.
+		{"configured and unlocked", true, true, false, "", true},
 		{"configured and unlocked, forced", true, true, true, "setup", true},
 	}
 
