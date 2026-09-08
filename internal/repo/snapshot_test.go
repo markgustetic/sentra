@@ -510,6 +510,95 @@ func TestCreateSnapshot_RootMustBeDirectory(t *testing.T) {
 	}
 }
 
+// copyBlobKey copies one blob's bytes over another key in the store —
+// the shape of an out-of-band `aws s3 cp` mistake.
+func copyBlobKey(t *testing.T, store blobstore.Store, from, to string) {
+	t.Helper()
+	ctx := context.Background()
+	rc, err := store.Get(ctx, from)
+	if err != nil {
+		t.Fatalf("get %s: %v", from, err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, to, bytes.NewReader(body)); err != nil {
+		t.Fatalf("put %s: %v", to, err)
+	}
+}
+
+// TestLoadSnapshot_ManifestIDMismatch: a manifest copied over another
+// snapshot's key decrypts and decodes fine, but describes a different
+// snapshot. Without the ID check `restore B` silently restored A's
+// tree; GC computed B's live set from A's chunks and reaped B's real
+// ones. The mismatch is a sentinel so every loader aborts on it:
+// GC must reap nothing, and check must report it as a manifest issue.
+func TestLoadSnapshot_ManifestIDMismatch(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	rootA := t.TempDir()
+	writeFile(t, filepath.Join(rootA, "a.txt"), strings.Repeat("alpha-content-", 200))
+	snapA, err := r.CreateSnapshot(ctx, rootA, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootB := t.TempDir()
+	writeFile(t, filepath.Join(rootB, "b.txt"), strings.Repeat("bravo-content-", 200))
+	snapB, err := r.CreateSnapshot(ctx, rootB, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobsBefore, err := store.List(ctx, DataPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	copyBlobKey(t, store, snapshotPrefix+snapA.ID, snapshotPrefix+snapB.ID)
+
+	_, err = r.LoadSnapshot(ctx, snapB.ID)
+	if !errors.Is(err, ErrManifestIDMismatch) {
+		t.Fatalf("LoadSnapshot(B) with A's manifest under its key: got %v, want ErrManifestIDMismatch", err)
+	}
+	for _, id := range []string{snapA.ID, snapB.ID} {
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("error should name both ids; missing %s in %q", id, err)
+		}
+	}
+
+	// GC aborts rather than reaping B's chunks as orphans.
+	if _, err := r.GC(ctx, nil); !errors.Is(err, ErrManifestIDMismatch) {
+		t.Fatalf("GC over a mismatched manifest: got %v, want ErrManifestIDMismatch", err)
+	}
+	blobsAfter, err := store.List(ctx, DataPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blobsAfter) != len(blobsBefore) {
+		t.Fatalf("GC reaped %d blob(s) despite a mismatched manifest", len(blobsBefore)-len(blobsAfter))
+	}
+
+	// check surfaces it as a manifest issue on B's key.
+	report, err := r.Check(ctx, CheckOptions{})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	var found bool
+	for _, issue := range report.ManifestIssues {
+		if issue.SnapshotID == snapB.ID && strings.Contains(issue.Error, ErrManifestIDMismatch.Error()) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("check did not report the mismatched manifest: %+v", report.ManifestIssues)
+	}
+	if report.Healthy() {
+		t.Error("check reported a repo with a mismatched manifest as healthy")
+	}
+}
+
 func TestLoadSnapshot_Missing(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)

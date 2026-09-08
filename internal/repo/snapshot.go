@@ -89,6 +89,13 @@ type SnapshotInfo struct {
 // other than a directory (a regular file, or a symlink to one).
 var ErrRootNotDir = errors.New("repo: backup root is not a directory")
 
+// ErrManifestIDMismatch is returned by LoadSnapshot when the manifest
+// stored under snapshots/<id> declares a different ID — a manifest
+// copied over another key out of band. Every loader aborts on it:
+// restore would otherwise silently restore the wrong tree, and GC
+// would compute the wrong live set and reap the real one's chunks.
+var ErrManifestIDMismatch = errors.New("repo: manifest id does not match its key")
+
 // ResolveRoot turns an operator-supplied backup root into the
 // canonical path a snapshot records as Manifest.Root: absolute,
 // cleaned, symlinks resolved, and confirmed to be a directory.
@@ -361,6 +368,15 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if m.Version > ManifestVersion {
 		return Manifest{}, fmt.Errorf("repo: manifest %q is format v%d, newer than this binary supports (v%d) — upgrade sentra",
 			id, m.Version, ManifestVersion)
+	}
+	// The key is the caller's claim about which snapshot this is; the
+	// body is the manifest's own. Decrypting proves the bytes are ours,
+	// not that they belong under this key — a manifest copied over
+	// another key passes every check above. Callers (restore, GC,
+	// check, list) key everything off the id they asked for, so the
+	// two must agree.
+	if m.ID != id {
+		return Manifest{}, fmt.Errorf("%w: key snapshots/%s holds manifest %q", ErrManifestIDMismatch, id, m.ID)
 	}
 	return m, nil
 }
