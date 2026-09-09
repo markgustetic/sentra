@@ -217,19 +217,23 @@ func ValidateBackupUserProfile(name string) error {
 // Credentials.HasKeys() first), so a key written under that name would
 // make every tool using the profile authenticate as the least-privilege
 // backup user, and the operator's own identity would be unreachable under
-// the name they know it by.
-var ErrBackupUserProfileIsSession = errors.New("backup user profile must differ from the profile setup signs in with")
+// the name they know it by. The text carries that reason: on a machine
+// with a [profile sentra] this is the refusal the default path meets, and
+// a bare "must differ" reads as a rule to work around rather than a trap
+// to avoid.
+var ErrBackupUserProfileIsSession = errors.New("a static key there would shadow that sign-in for every tool using it")
 
 // ValidateBackupUserProfileFor is ValidateBackupUserProfile plus the one
 // rule that needs the plan: the name must not be sessionProfile. Both
 // drivers and the engine call this form so the refusal is the same
 // wherever the operator meets it.
 func ValidateBackupUserProfileFor(name, sessionProfile string) error {
+	name = strings.TrimSpace(name)
 	if err := ValidateBackupUserProfile(name); err != nil {
 		return err
 	}
-	if strings.TrimSpace(name) == strings.TrimSpace(sessionProfile) {
-		return fmt.Errorf("%w: %q", ErrBackupUserProfileIsSession, strings.TrimSpace(name))
+	if name == strings.TrimSpace(sessionProfile) {
+		return fmt.Errorf("backup user profile %q is the profile setup signs in with; %w", name, ErrBackupUserProfileIsSession)
 	}
 	return nil
 }
@@ -237,17 +241,16 @@ func ValidateBackupUserProfileFor(name, sessionProfile string) error {
 // DefaultBackupUserProfileFor is DefaultBackupUserProfile made safe for the
 // plan at hand: when the session profile is itself called "sentra" — this
 // is common, since DefaultPlan prefers a [profile sentra] from ~/.aws/config
-// — the default steps aside to "sentra-backup" (and keeps stepping until it
-// differs) rather than failing the happy path with the collision it exists
-// to prevent. Pure, so the review line and the engine can agree on the name
-// before anything runs.
+// — the default steps aside to "sentra-backup" rather than failing the
+// happy path with the collision it exists to prevent. One step is enough:
+// the session profile is a single name, so it cannot equal both. Pure, so
+// the review line and the engine can agree on the name before anything
+// runs.
 func DefaultBackupUserProfileFor(sessionProfile string) string {
-	session := strings.TrimSpace(sessionProfile)
-	profile := DefaultBackupUserProfile
-	for profile == session {
-		profile += "-backup"
+	if strings.TrimSpace(sessionProfile) == DefaultBackupUserProfile {
+		return DefaultBackupUserProfile + "-backup"
 	}
-	return profile
+	return DefaultBackupUserProfile
 }
 
 // ResolveBackupUserProfile is the single reading of Plan.BackupUserProfile:

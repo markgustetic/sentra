@@ -38,7 +38,9 @@ type Plan struct {
 	// Ignored for existing-credentials and skip (see ShouldProvisionBackupUser).
 	ProvisionBackupUser bool
 	// BackupUserProfile is the ~/.aws/credentials section for the minted
-	// key; empty means DefaultBackupUserProfile.
+	// key; empty means the plan-derived default, read only through
+	// ResolveBackupUserProfile so it steps aside from the session profile
+	// the same way on the review screen and in the credentials file.
 	BackupUserProfile string
 
 	// ProvisionedBackupUserProfile names the ~/.aws/credentials section an
