@@ -2237,15 +2237,93 @@ func TestSetupWizard_BackupUserToggleDefaultsPerMethod(t *testing.T) {
 	}
 }
 
-func TestSetupWizard_BackupUserWiresPlanWithDefaultProfile(t *testing.T) {
+// setupAtActionsWithSession is setupAtActions on a machine whose environment
+// names session as the AWS profile to sign in with (blank for none). The
+// AWS CLI config file is pointed at a path that does not exist so the probe
+// cannot fall back to the developer's real ~/.aws/config — this machine's
+// has a [profile sentra], the very collision these tests are about.
+func setupAtActionsWithSession(t *testing.T, session string) SetupWizardView {
+	t.Helper()
+	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "missing-aws-config"))
+	t.Setenv("AWS_PROFILE", session)
+	t.Setenv("AWS_DEFAULT_PROFILE", "")
 	v := setupAtActions(t)
+	if got := v.plan.Config.Repo.S3.Profile; got != session {
+		t.Fatalf("precondition: session profile = %q, want %q", got, session)
+	}
+	return v
+}
+
+// A blank profile field must resolve to the plan-derived default, not the
+// constant: the constant is "sentra", and a machine whose sign-in profile
+// is itself called sentra (DefaultPlan prefers exactly that name from
+// ~/.aws/config) would otherwise ask the engine for the one name it refuses
+// — so the default path would never create the backup user. The row's
+// placeholder is the same derived name, so what the operator sees blank
+// resolving to is what the credentials file gets.
+func TestSetupWizard_BackupUserBlankProfileDerivesFromSession(t *testing.T) {
+	tests := []struct {
+		session string
+		want    string
+	}{
+		{"", "sentra"},
+		{"work", "sentra"},
+		{"sentra", "sentra-backup"},
+	}
+	for _, tc := range tests {
+		t.Run("session="+tc.session, func(t *testing.T) {
+			v := setupAtActionsWithSession(t, tc.session)
+			if line := wizardLine(t, v.View(), "profile:"); !strings.Contains(line, tc.want) {
+				t.Fatalf("profile row must show the derived default %q as its placeholder, got %q", tc.want, line)
+			}
+			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+			v = m.(SetupWizardView)
+			if !v.plan.ProvisionBackupUser {
+				t.Fatal("login + default toggle must set plan.ProvisionBackupUser")
+			}
+			got := setup.ResolveBackupUserProfile(&v.plan)
+			if got != tc.want {
+				t.Fatalf("blank field with session %q resolves to %q, want %q", tc.session, got, tc.want)
+			}
+			if err := setup.ValidateBackupUserProfileFor(got, v.plan.Config.Repo.S3.Profile); err != nil {
+				t.Fatalf("the wizard's default must pass the engine's own gate: %v", err)
+			}
+		})
+	}
+}
+
+// Typing the session profile's own name is refused where the operator can
+// fix it: inline on the actions stage, with the reason, the value kept for
+// editing, and the cursor on the field — the same rule the engine applies,
+// met here instead of as a warning after provisioning silently skipped.
+func TestSetupWizard_BackupUserProfileEqualToSessionRefusedInline(t *testing.T) {
+	v := setupAtActionsWithSession(t, "sentra")
+	for v.actionCursor != actionRowProfile {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SetupWizardView)
+	}
+	for _, r := range "sentra" {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(SetupWizardView)
+	}
 	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v = m.(SetupWizardView)
-	if !v.plan.ProvisionBackupUser {
-		t.Fatal("login + default toggle must set plan.ProvisionBackupUser")
+	if v.stage != stageActions {
+		t.Fatalf("the session profile's name must be refused on the actions stage, got %v", v.stage)
 	}
-	if v.plan.BackupUserProfile != setup.DefaultBackupUserProfile {
-		t.Fatalf("plan.BackupUserProfile = %q, want %q", v.plan.BackupUserProfile, setup.DefaultBackupUserProfile)
+	for _, want := range []string{`"sentra"`, "signs in with"} {
+		if !strings.Contains(v.notice, want) {
+			t.Fatalf("refusal must name the profile and the reason, notice=%q lacks %q", v.notice, want)
+		}
+	}
+	if !strings.Contains(v.View(), v.notice) {
+		t.Fatalf("the refusal must be shown inline on the stage:\n%s", v.View())
+	}
+	if got := v.backupProfile.Value(); got != "sentra" {
+		t.Fatalf("the refused value must stay in the input for the operator to edit, got %q", got)
+	}
+	if !v.backupProfile.Focused() {
+		t.Fatal("the refusal must leave the cursor on the profile field")
 	}
 }
 

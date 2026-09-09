@@ -282,7 +282,12 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 	backupProfile := textinput.New()
 	backupProfile.Prompt = ""
 	backupProfile.Width = 24
-	backupProfile.Placeholder = setup.DefaultBackupUserProfile
+	// The placeholder is what blank resolves to, so it is derived from the
+	// session profile the same way the engine derives it — never the bare
+	// constant, which on a machine signing in as [profile sentra] names the
+	// one section the engine refuses. commitDetails refreshes it once the
+	// operator has settled the profile field.
+	backupProfile.Placeholder = setup.DefaultBackupUserProfileFor(plan.Config.Repo.S3.Profile)
 
 	v := SetupWizardView{
 		deps:              deps,
@@ -1111,6 +1116,9 @@ func (v SetupWizardView) commitDetails() (tea.Model, tea.Cmd) {
 		v.plan.Config.Repo.S3.EndpointURL = strings.TrimSpace(v.fields[setupFieldEndpoint].Value())
 	}
 	setup.NormalizeConfig(&v.plan.Config)
+	// The session profile is now known, so the backup-user row can show what
+	// a blank field will resolve to (see the constructor).
+	v.backupProfile.Placeholder = setup.DefaultBackupUserProfileFor(v.plan.Config.Repo.S3.Profile)
 
 	if v.plan.Backend == setup.BackendAWS && v.printIAM {
 		v.iamText = renderIAMPolicy(bucket, v.plan.Config.Repo.S3.Prefix)
@@ -1199,18 +1207,26 @@ func (v SetupWizardView) advanceFromActions() (tea.Model, tea.Cmd) {
 	v.plan.InitRepo = v.initRepo
 	v.plan.PrepareAWS = true
 	v.plan.ProvisionBackupUser = v.backupUserOffered() && v.backupUser
+	// A blank field stays blank: the plan's single reading of it
+	// (setup.ResolveBackupUserProfile) derives a default that steps aside
+	// from the session profile, so the review line, the placeholder and the
+	// credentials file all agree. Substituting the constant here once handed
+	// the engine "sentra" on a machine signing in as [profile sentra] — the
+	// one name it refuses — and the default path never created the user.
 	v.plan.BackupUserProfile = ""
 	if v.plan.ProvisionBackupUser {
 		profile := strings.TrimSpace(v.backupProfile.Value())
-		if profile == "" {
-			profile = setup.DefaultBackupUserProfile
-		}
-		if err := setup.ValidateBackupUserProfile(profile); err != nil {
-			// Stay here with the input focused: the profile is the only thing
-			// the operator can fix, so put the cursor on it.
-			v.notice = err.Error()
-			v.actionCursor = actionRowProfile
-			return v.syncProfileFocus()
+		if profile != "" {
+			if err := setup.ValidateBackupUserProfileFor(profile, v.plan.Config.Repo.S3.Profile); err != nil {
+				// Stay here with the input focused: the profile is the only
+				// thing the operator can fix, so put the cursor on it. The
+				// session-name collision is refused here, on the field,
+				// rather than as the post-provisioning warning the engine
+				// would otherwise issue.
+				v.notice = err.Error()
+				v.actionCursor = actionRowProfile
+				return v.syncProfileFocus()
+			}
 		}
 		v.plan.BackupUserProfile = profile
 	}
