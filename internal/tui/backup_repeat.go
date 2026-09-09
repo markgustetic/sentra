@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"os"
 	"strings"
 
 	tea "github.com/charmbracelet/bubbletea"
@@ -157,8 +158,13 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
 		}
+		// The stored entry may predate symlink-resolved roots (an older
+		// build wrote /tmp/docs where the wizard now holds
+		// /private/tmp/docs), so compare it through the same resolver
+		// rather than as a raw string.
+		home, _ := os.UserHomeDir()
 		if existing, exists := cfg.Policies[name]; exists &&
-			(len(existing.Paths) != 1 || existing.Paths[0] != root) {
+			(len(existing.Paths) != 1 || policycfg.NormalizePath(existing.Paths[0], home) != root) {
 			return fmt.Errorf("policy %q already backs up %s", name, strings.Join(existing.Paths, ", "))
 		}
 		p := cfg.Policies[name] // zero value when new; hooks survive when reused

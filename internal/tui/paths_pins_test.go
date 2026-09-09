@@ -357,3 +357,41 @@ func TestBackupWizard_EmptyChatDirStaysRefused(t *testing.T) {
 		t.Fatalf("empty dir: stage=%v pending=%q, want Location with nothing pending", got.stage, got.pending)
 	}
 }
+
+// TestBackupWizard_InstallRepeatMatchesExistingPathBySpelling: a policy
+// stored by an older build carries the unresolved spelling of its root
+// (/tmp/docs), while the wizard now resolves symlinks (/private/tmp/docs).
+// The reuse check must compare the stored entry through the same
+// resolver, or the operator is told the policy "already backs up" the very
+// directory they picked.
+func TestBackupWizard_InstallRepeatMatchesExistingPathBySpelling(t *testing.T) {
+	v, cfgPath, _ := repeatFixture(t)
+	real := filepath.Join(realTempDir(t), "docs")
+	if err := os.MkdirAll(real, 0o755); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(realTempDir(t), "docs-link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Fatal(err)
+	}
+	err := config.Update(cfgPath, func(cfg *config.Config) error {
+		if cfg.Policies == nil {
+			cfg.Policies = map[string]config.PolicyConfig{}
+		}
+		cfg.Policies["docs"] = config.PolicyConfig{Paths: []string{link}, Schedule: config.PolicySchedule{Cadence: "daily", At: "02:00"}}
+		return nil
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := v.installRepeat(context.Background(), real, "docs", config.PolicySchedule{Cadence: "daily", At: "03:00"}, ""); err != nil {
+		t.Fatalf("installRepeat refused the same directory under its resolved spelling: %v", err)
+	}
+	onDisk, err := config.Load(cfgPath)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if got := onDisk.Policies["docs"].Paths; len(got) != 1 || got[0] != real {
+		t.Fatalf("stored root = %v, want %s", got, real)
+	}
+}
