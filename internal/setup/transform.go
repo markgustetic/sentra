@@ -223,8 +223,9 @@ func validateBackupUserProfileName(name string) error {
 // the name they know it by. The text carries that reason: on a machine
 // with a [profile sentra] this is the refusal the default path meets, and
 // a bare "must differ" reads as a rule to work around rather than a trap
-// to avoid.
-var ErrBackupUserProfileIsSession = errors.New("a static key there would shadow that sign-in for every tool using it")
+// to avoid. It is a whole sentence on its own — errors.Is callers may
+// print it bare — and the wrap adds only the name.
+var ErrBackupUserProfileIsSession = errors.New("backup user profile is the profile setup signs in with; a static key under it would shadow that sign-in for every tool using the profile")
 
 // ValidateBackupUserProfileFor is the package's only exported profile-name
 // gate: the section-name rules plus the one that needs the plan — the name
@@ -237,7 +238,7 @@ func ValidateBackupUserProfileFor(name, sessionProfile string) error {
 		return err
 	}
 	if name == strings.TrimSpace(sessionProfile) {
-		return fmt.Errorf("backup user profile %q is the profile setup signs in with; %w", name, ErrBackupUserProfileIsSession)
+		return fmt.Errorf("%q: %w", name, ErrBackupUserProfileIsSession)
 	}
 	return nil
 }
