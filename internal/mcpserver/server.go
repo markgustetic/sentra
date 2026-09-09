@@ -22,7 +22,6 @@ import (
 	"crypto/rand"
 	"encoding/hex"
 	"fmt"
-	"os"
 	"sort"
 	"strings"
 	"sync"
@@ -395,15 +394,20 @@ type planBackupIn struct {
 }
 
 func (s *Server) planBackup(_ context.Context, _ *mcp.CallToolRequest, in planBackupIn) (*mcp.CallToolResult, planOut, error) {
-	info, err := os.Stat(in.Path)
-	if err != nil || !info.IsDir() {
-		return nil, planOut{}, fmt.Errorf("not a readable directory: %s", in.Path)
+	// Resolve exactly the way CreateSnapshot will record Manifest.Root, so
+	// the path the human confirms is the path the snapshot names: through a
+	// symlink (or /tmp on macOS) a raw Stat would show /tmp/x while the
+	// manifest said /private/tmp/x. ResolveRoot also refuses a file or a
+	// missing path with the same errors the CLI and TUI show.
+	root, err := repo.ResolveRoot(in.Path)
+	if err != nil {
+		return nil, planOut{}, fmt.Errorf("not a readable directory: %w", err)
 	}
-	out, err := s.storePlan(pendingPlan{kind: planBackup, path: in.Path, tag: in.Tag})
+	out, err := s.storePlan(pendingPlan{kind: planBackup, path: root, tag: in.Tag})
 	if err != nil {
 		return nil, planOut{}, err
 	}
-	out.Summary = fmt.Sprintf("back up %s (tag %q) into this repository", in.Path, in.Tag)
+	out.Summary = fmt.Sprintf("back up %s (tag %q) into this repository", root, in.Tag)
 	return nil, out, nil
 }
 

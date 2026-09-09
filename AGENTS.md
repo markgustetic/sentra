@@ -389,7 +389,9 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   file names and sizes — never file contents and never secret values.
   Mutations are two-phase because MCP has no interactive confirm:
   `plan_backup` / `plan_restore` change nothing and return a human-readable
-  plan plus a single-use token (10-minute TTL, bound to its own kind — a
+  plan plus a single-use token (`plan_backup` names the symlink-resolved
+  root `confirm_backup` will record as `Manifest.Root`, so the reviewed
+  path and the recorded one never differ) (10-minute TTL, bound to its own kind — a
   backup token cannot confirm a restore); only the matching `confirm_*`
   call carrying that token executes. A token is consumed on use, success
   or failure. `confirm_backup` walks with the same resolved `backup.*`
