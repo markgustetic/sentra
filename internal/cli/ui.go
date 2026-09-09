@@ -204,10 +204,15 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 			SetupEffects:            setupEffectsForLaunch(deps),
 			PassphraseFile:          passphraseFile,
 			InitialView:             initial,
-			Reconfigure:             forceSetup && st.ConfigExists,
-			ShowSplash:              showSplash,
-			Version:                 deps.Version,
-			Commit:                  deps.Commit,
+			// Whenever a config exists, not only under forceSetup: an
+			// unlock/connect launch still reaches Settings' "Re-run
+			// setup" once past the gate, and repoReadyMsg rebuilds the
+			// views from these Deps without revisiting the flag, so a
+			// false here sent that wizard out with no overwrite warning.
+			Reconfigure: st.ConfigExists,
+			ShowSplash:  showSplash,
+			Version:     deps.Version,
+			Commit:      deps.Commit,
 		})
 		if deps.Run == nil {
 			return fmt.Errorf("ui: no Run hook configured")

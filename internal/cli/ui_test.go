@@ -524,7 +524,13 @@ func TestRunUI_SetupRoutingMatrix(t *testing.T) {
 	}{
 		{"first run", false, false, false, "setup", false},
 		{"first run, forced", false, false, true, "setup", false},
-		{"configured and locked", true, false, false, "unlock", false},
+		// A gate launch (unlock/connect) carries Reconfigure whenever a
+		// config exists: the session can still reach Settings' "Re-run
+		// setup" after unlocking, and repoReadyMsg rebuilds the views from
+		// the launch Deps without touching the flag — so a false here meant
+		// that wizard opened with no overwrite warning. forceSetup is about
+		// WHERE the session starts, not whether a file is at stake.
+		{"configured and locked", true, false, false, "unlock", true},
 		{"configured and locked, forced", true, false, true, "setup", true},
 		// The dashboard launch carries Reconfigure too: Settings' "Re-run
 		// setup" (and the chat's open_view("setup")) reach the same wizard
