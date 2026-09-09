@@ -806,6 +806,23 @@ func TestAgentScan_BudgetExhausted_Error(t *testing.T) {
 	}
 }
 
+// TestAgentScan_NegativeMaxToolCallsIsAnError: agent.Config.Validate
+// refuses a negative MaxToolCalls, but the flag path only copied the
+// value when > 0, so `--max-tool-calls -1` was silently the default
+// budget. A typo that means "no budget" to the operator must fail
+// loudly, not run ten tool calls.
+func TestAgentScan_NegativeMaxToolCallsIsAnError(t *testing.T) {
+	deps, _, _, out := agentFixture(t, nil, nil)
+	cmd := NewAgent(deps)
+	cmd.SetOut(out)
+	cmd.SetErr(io.Discard)
+	cmd.SetArgs([]string{"scan", "--max-tool-calls", "-1"})
+	err := cmd.Execute()
+	if err == nil || !strings.Contains(err.Error(), "max-tool-calls") {
+		t.Fatalf("err = %v; want a refusal naming --max-tool-calls", err)
+	}
+}
+
 // TestAgentScan_PassesRetentionConfigToHeuristics verifies the CLI
 // threads sentra.yaml's retention policy into the agent orchestrator.
 // Without that wiring, the retention_drift heuristic silently no-ops

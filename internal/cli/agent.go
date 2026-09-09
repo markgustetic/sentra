@@ -178,6 +178,12 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 		Categories: flags.categories,
 	}
 	agentCfg.Walker = policycfg.BackupWalkerOptions(cfg)
+	// Zero means "the agent default" (Config.Defaults fills it); negative
+	// is refused here, as agent.Config.Validate refuses it from the
+	// config file — swallowing it would silently run the default budget.
+	if flags.maxToolCalls < 0 {
+		return fmt.Errorf("--max-tool-calls must not be negative (got %d)", flags.maxToolCalls)
+	}
 	if flags.maxToolCalls > 0 {
 		agentCfg.MaxToolCalls = flags.maxToolCalls
 	}
