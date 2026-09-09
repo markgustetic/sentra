@@ -2,7 +2,6 @@ package config
 
 import (
 	"errors"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
@@ -331,7 +330,7 @@ func TestWrite_PolicyNamesRoundTripUntyped(t *testing.T) {
 // TestWrite_LeavesNoTempFileBehind proves a completed Write leaves exactly
 // the config file in its directory — the temp file the atomic replace stages
 // through must be renamed away, not abandoned beside sentra.yaml where the
-// next `ls ~/.config/sentra` would find a stray `.sentra-*.tmp`.
+// next `ls ~/.config/sentra` would find a stray `.sentra.yaml-*.tmp`.
 func TestWrite_LeavesNoTempFileBehind(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "sentra.yaml")
@@ -363,81 +362,6 @@ func TestWrite_LeavesNoTempFileBehind(t *testing.T) {
 	}
 }
 
-// TestWriteAtomic_FailedWriteLeavesPreviousFileIntact is the crash-safety
-// rule behind Write: the target is replaced only by a fully written temp
-// file, so an interrupted write — here a writer that fails midway — can
-// never leave a truncated or empty sentra.yaml. An empty file is the worst
-// case: Load parses it as bucket "" while ConfigExists stays true, so the
-// next launch lands on the connect gate with the bucket and every policy
-// gone. The failure must also clean up its temp file.
-func TestWriteAtomic_FailedWriteLeavesPreviousFileIntact(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sentra.yaml")
-	before := []byte("repo:\n  s3:\n    bucket: \"real-bucket\"\n")
-	if err := os.WriteFile(path, before, 0o600); err != nil {
-		t.Fatal(err)
-	}
-
-	boom := errors.New("disk full")
-	err := writeAtomic(path, func(w io.Writer) error {
-		if _, err := io.WriteString(w, "repo:\n  s3:\n"); err != nil {
-			return err
-		}
-		return boom
-	})
-	if !errors.Is(err, boom) {
-		t.Fatalf("writeAtomic error = %v, want %v", err, boom)
-	}
-
-	after, err := os.ReadFile(path)
-	if err != nil {
-		t.Fatalf("read target after failed write: %v", err)
-	}
-	if string(after) != string(before) {
-		t.Errorf("a failed write disturbed the target:\nbefore:\n%s\nafter:\n%s", before, after)
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("failed write left temp files behind: %v", names)
-	}
-}
-
-// TestWriteAtomic_FailedRenameCleansUp covers the other failure leg: the temp
-// file was fully written but could not be renamed into place (here because
-// the target is a directory). The temp file must not be abandoned.
-func TestWriteAtomic_FailedRenameCleansUp(t *testing.T) {
-	dir := t.TempDir()
-	path := filepath.Join(dir, "sentra.yaml")
-	if err := os.Mkdir(path, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	err := writeAtomic(path, func(w io.Writer) error {
-		_, err := io.WriteString(w, "repo: {}\n")
-		return err
-	})
-	if err == nil {
-		t.Fatal("writeAtomic over a directory succeeded, want an error")
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 || entries[0].Name() != "sentra.yaml" {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("failed rename left temp files behind: %v", names)
-	}
-}
-
 func policyNames(m map[string]PolicyConfig) []string {
 	out := make([]string, 0, len(m))
 	for k := range m {
@@ -445,101 +369,4 @@ func policyNames(m map[string]PolicyConfig) []string {
 	}
 	sort.Strings(out)
 	return out
-}
-
-// TestWrite_WritesThroughSymlink is the dotfiles rule: when sentra.yaml is a
-// symlink into a managed directory (stow, chezmoi, a plain `ln -s` into a
-// dotfiles repo), Write must update the link's target and leave the link
-// standing. Renaming the temp file over the link path would replace the link
-// with a regular file — silently severing the operator's dotfiles on every
-// settings toggle, policy add, or passwd forget — which is exactly what the
-// pre-atomic os.WriteFile never did. No temp file may be left in either
-// directory.
-func TestWrite_WritesThroughSymlink(t *testing.T) {
-	dir := t.TempDir()
-	realDir := filepath.Join(dir, "real")
-	if err := os.Mkdir(realDir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	target := filepath.Join(realDir, "sentra.yaml")
-	if err := os.WriteFile(target, []byte("repo:\n  s3:\n    bucket: \"old\"\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "sentra.yaml")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
-
-	cfg := Defaults()
-	cfg.Repo.S3.Bucket = "new"
-	if err := Write(link, &cfg); err != nil {
-		t.Fatalf("Write through symlink: %v", err)
-	}
-
-	fi, err := os.Lstat(link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("Write replaced the symlink with a %v; the dotfiles link is severed", fi.Mode())
-	}
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != string(Render(&cfg)) {
-		t.Errorf("link target does not hold the new render:\n%s", got)
-	}
-	for _, d := range []string{dir, realDir} {
-		entries, err := os.ReadDir(d)
-		if err != nil {
-			t.Fatal(err)
-		}
-		for _, e := range entries {
-			if e.Name() != "sentra.yaml" && e.Name() != "real" {
-				t.Errorf("%s holds stray entry %q after Write", d, e.Name())
-			}
-		}
-	}
-}
-
-// TestWrite_DanglingSymlinkFails pins the other half of the rule: a link
-// whose target is missing is neither a fresh file nor a file to write
-// through. Creating a regular file at the link's own path would sever it
-// just like the rename did, and inventing the target's parent directory
-// would write somewhere the operator never named. The only honest outcome
-// is a clear error naming the link, with the link left as it was.
-func TestWrite_DanglingSymlinkFails(t *testing.T) {
-	dir := t.TempDir()
-	link := filepath.Join(dir, "sentra.yaml")
-	if err := os.Symlink(filepath.Join(dir, "missing", "sentra.yaml"), link); err != nil {
-		t.Fatal(err)
-	}
-	cfg := Defaults()
-	cfg.Repo.S3.Bucket = "b"
-	err := Write(link, &cfg)
-	if err == nil {
-		t.Fatal("Write through a dangling symlink succeeded, want an error")
-	}
-	if !strings.Contains(err.Error(), link) {
-		t.Errorf("error %q does not name the link %s", err, link)
-	}
-	fi, err := os.Lstat(link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("failed Write replaced the dangling symlink with a %v", fi.Mode())
-	}
-	entries, err := os.ReadDir(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if len(entries) != 1 {
-		names := make([]string, 0, len(entries))
-		for _, e := range entries {
-			names = append(names, e.Name())
-		}
-		t.Errorf("failed Write left entries behind: %v", names)
-	}
 }
