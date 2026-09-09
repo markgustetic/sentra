@@ -136,7 +136,7 @@ func (c Config) Validate() error {
 		return fmt.Errorf("%w: max_findings_to_llm must be >= 0, got %d", ErrInvalidConfig, c.MaxFindingsToLLM)
 	}
 	if c.MaxToolCalls < 0 {
-		return fmt.Errorf("%w: max_tool_calls must be >= 0, got %d", ErrInvalidConfig, c.MaxToolCalls)
+		return fmt.Errorf("%w: MaxToolCalls (--max-tool-calls) must be >= 0, got %d", ErrInvalidConfig, c.MaxToolCalls)
 	}
 	return nil
 }

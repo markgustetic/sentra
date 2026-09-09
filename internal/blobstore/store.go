@@ -87,7 +87,7 @@ type Store interface {
 	// value answers "is the key populated?" — not "did *this call*
 	// populate it?". A caller that must tell "I won" from "I already
 	// wrote it" reads the object back and checks it is theirs, which
-	// is what the repo lock does with its owner UUID. Content-
+	// is what the repo lock must do with its owner UUID. Content-
 	// addressed chunk writers never need the distinction: an
 	// existing object under the same key is byte-identical, so
 	// ErrAlreadyExists is their dedup success path.

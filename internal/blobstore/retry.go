@@ -324,9 +324,9 @@ func (r *RetryStore) List(ctx context.Context, prefix string) ([]Info, error) {
 // whose response was lost makes the retry see its own object and
 // report ErrAlreadyExists — is harmless here. For a content-addressed
 // chunk that answer IS the dedup success path. For the advisory lock
-// key, the caller already reads the object back to confirm ownership
-// (a lock holder recognizes its own UUID), so it never has to trust
-// PutIfAbsent to distinguish "I won" from "I already wrote it".
+// key, the caller must read the object back and recognize its own
+// UUID (acquireLock does this), so it never relies on PutIfAbsent to
+// distinguish winning from having already written.
 // ErrAlreadyExists itself is terminal (IsRetryable says no), so a
 // deduplicated chunk costs one round trip, not a backoff cycle.
 func (r *RetryStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
