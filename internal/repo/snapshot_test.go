@@ -398,6 +398,207 @@ func TestCreateSnapshot_EmptyDir(t *testing.T) {
 	}
 }
 
+// TestCreateSnapshot_SymlinkedRootCapturesTarget: `sentra backup
+// ~/Dropbox` where ~/Dropbox is a symlink must back up the directory
+// behind the link. filepath.WalkDir does not descend a root that is
+// itself a symlink, so an unresolved root produced a zero-file
+// snapshot holding a single "." symlink entry and exit 0 — a backup
+// that looked successful and restored nothing.
+//
+// The manifest records the RESOLVED root: retention groups by Root,
+// and the linked and real spellings of one directory must land in one
+// group rather than pruning each other's dailies.
+func TestCreateSnapshot_SymlinkedRootCapturesTarget(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writeFile(t, filepath.Join(real, "a.txt"), "alpha")
+	writeFile(t, filepath.Join(real, "sub", "b.txt"), "bravo")
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	snap, err := r.CreateSnapshot(ctx, link, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot via symlinked root: %v", err)
+	}
+	if snap.Stats.Files != 2 {
+		t.Errorf("Stats.Files: got %d, want 2 (the walk must descend the link's target)", snap.Stats.Files)
+	}
+	wantRoot, err := filepath.EvalSymlinks(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if snap.Root != wantRoot {
+		t.Errorf("Root: got %q, want the resolved directory %q", snap.Root, wantRoot)
+	}
+	// Both spellings are one retention group: a second backup through
+	// the real path is the linked one's incremental parent.
+	snap2, err := r.CreateSnapshot(ctx, real, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("snapshot via real root: %v", err)
+	}
+	if snap2.Root != snap.Root {
+		t.Errorf("Root differs between spellings: %q vs %q", snap2.Root, snap.Root)
+	}
+	if snap2.Stats.NewBytes != 0 {
+		t.Errorf("real-path re-backup uploaded %d new bytes; the symlinked snapshot should have been its parent", snap2.Stats.NewBytes)
+	}
+}
+
+// TestPlanSnapshot_SymlinkedRootMatchesDirectBackup: the plan path
+// (backup → review → apply) is the second way a snapshot's Root gets
+// settled. It must canonicalise identically, or a plan-driven backup
+// of a linked directory sees zero files and lands in a different
+// retention group from a direct backup of the same tree.
+func TestPlanSnapshot_SymlinkedRootMatchesDirectBackup(t *testing.T) {
+	ctx := context.Background()
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writeFile(t, filepath.Join(real, "a.txt"), "alpha")
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	plan, err := PlanSnapshot(ctx, link, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("plan via symlinked root: %v", err)
+	}
+	wantRoot, err := ResolveRoot(real)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if plan.Root != wantRoot {
+		t.Errorf("plan.Root: got %q, want %q", plan.Root, wantRoot)
+	}
+	if len(plan.Files) != 1 {
+		t.Errorf("plan.Files: got %d, want 1", len(plan.Files))
+	}
+}
+
+// TestCreateSnapshot_RootMustBeDirectory: a root that resolves to
+// anything but a directory is refused up front. WalkDir on a file
+// yields one "." entry and exit 0 — the same silent-nothing failure
+// as the symlinked root, so both are closed by one check.
+func TestCreateSnapshot_RootMustBeDirectory(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	base := t.TempDir()
+	file := filepath.Join(base, "file.txt")
+	writeFile(t, file, "not a directory")
+	link := filepath.Join(base, "link-to-file")
+	if err := os.Symlink(file, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	for _, root := range []string{file, link} {
+		if _, err := r.CreateSnapshot(ctx, root, SnapshotOptions{}); !errors.Is(err, ErrRootNotDir) {
+			t.Errorf("CreateSnapshot(%q): got %v, want ErrRootNotDir", root, err)
+		}
+		// Refused before any write: no manifest, and the lock released.
+		if entries, _ := store.List(ctx, snapshotPrefix); len(entries) != 0 {
+			t.Errorf("CreateSnapshot(%q) wrote %d manifest(s) for a non-directory root", root, len(entries))
+		}
+		if _, err := store.Stat(ctx, lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+			t.Errorf("CreateSnapshot(%q) left the lock behind (err=%v)", root, err)
+		}
+	}
+}
+
+// copyBlobKey copies one blob's bytes over another key in the store —
+// the shape of an out-of-band `aws s3 cp` mistake.
+func copyBlobKey(t *testing.T, store blobstore.Store, from, to string) {
+	t.Helper()
+	ctx := context.Background()
+	rc, err := store.Get(ctx, from)
+	if err != nil {
+		t.Fatalf("get %s: %v", from, err)
+	}
+	defer rc.Close()
+	body, err := io.ReadAll(rc)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Put(ctx, to, bytes.NewReader(body)); err != nil {
+		t.Fatalf("put %s: %v", to, err)
+	}
+}
+
+// TestLoadSnapshot_ManifestIDMismatch: a manifest copied over another
+// snapshot's key decrypts and decodes fine, but describes a different
+// snapshot. Without the ID check `restore B` silently restored A's
+// tree; GC computed B's live set from A's chunks and reaped B's real
+// ones. The mismatch is a sentinel so every loader aborts on it:
+// GC must reap nothing, and check must report it as a manifest issue.
+func TestLoadSnapshot_ManifestIDMismatch(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+
+	rootA := t.TempDir()
+	writeFile(t, filepath.Join(rootA, "a.txt"), strings.Repeat("alpha-content-", 200))
+	snapA, err := r.CreateSnapshot(ctx, rootA, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	rootB := t.TempDir()
+	writeFile(t, filepath.Join(rootB, "b.txt"), strings.Repeat("bravo-content-", 200))
+	snapB, err := r.CreateSnapshot(ctx, rootB, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	blobsBefore, err := store.List(ctx, DataPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	copyBlobKey(t, store, snapshotPrefix+snapA.ID, snapshotPrefix+snapB.ID)
+
+	_, err = r.LoadSnapshot(ctx, snapB.ID)
+	if !errors.Is(err, ErrManifestIDMismatch) {
+		t.Fatalf("LoadSnapshot(B) with A's manifest under its key: got %v, want ErrManifestIDMismatch", err)
+	}
+	for _, id := range []string{snapA.ID, snapB.ID} {
+		if !strings.Contains(err.Error(), id) {
+			t.Errorf("error should name both ids; missing %s in %q", id, err)
+		}
+	}
+
+	// GC aborts rather than reaping B's chunks as orphans.
+	if _, err := r.GC(ctx, nil); !errors.Is(err, ErrManifestIDMismatch) {
+		t.Fatalf("GC over a mismatched manifest: got %v, want ErrManifestIDMismatch", err)
+	}
+	blobsAfter, err := store.List(ctx, DataPrefix)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(blobsAfter) != len(blobsBefore) {
+		t.Fatalf("GC reaped %d blob(s) despite a mismatched manifest", len(blobsBefore)-len(blobsAfter))
+	}
+
+	// check surfaces it as a manifest issue on B's key.
+	report, err := r.Check(ctx, CheckOptions{})
+	if err != nil {
+		t.Fatalf("check: %v", err)
+	}
+	var found bool
+	for _, issue := range report.ManifestIssues {
+		if issue.SnapshotID == snapB.ID && strings.Contains(issue.Error, ErrManifestIDMismatch.Error()) {
+			found = true
+		}
+	}
+	if !found {
+		t.Errorf("check did not report the mismatched manifest: %+v", report.ManifestIssues)
+	}
+	if report.Healthy() {
+		t.Error("check reported a repo with a mismatched manifest as healthy")
+	}
+}
+
 func TestLoadSnapshot_Missing(t *testing.T) {
 	ctx := context.Background()
 	r, _ := newTestRepo(t)

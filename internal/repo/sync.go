@@ -102,7 +102,10 @@ type SyncStats struct {
 }
 
 // SyncTo copies every snapshot, chunk, and (on InitDest) the config
-// from r to dest. Additive: never deletes anything on dest.
+// from r to dest. Additive: never deletes a snapshot or chunk on
+// dest. The one thing it removes is dest's derived meta/snapshots
+// index, and only after copying a manifest that index cannot know
+// about (see the end of the function).
 //
 // Lock contract: dest acquires meta/lock for the duration of the
 // sync; source is untouched at the lock level. This matches
@@ -267,6 +270,27 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	stats.CopiedBlobs += manCopied
 	stats.CopiedBytes += manBytes
 	stats.SkippedBlobs += manSkipped
+
+	// Dest's meta/snapshots index knows nothing about the manifests
+	// just copied, and ListSnapshots trusts a present index without
+	// question — so a mirror that was listed once would hide every
+	// snapshot synced after that listing. Discard the index rather
+	// than append to it: SyncTo holds a raw Store, not an open Repo,
+	// and "index absent → rebuild from manifests on the next listing"
+	// is the self-heal path CreateSnapshot already relies on, so the
+	// one rebuild implementation stays the sole owner of the format.
+	// Done under the dest lock still held above, so a concurrent
+	// dest-side CreateSnapshot cannot be mid-append. Skipped when no
+	// manifest moved (nothing new, dry run) so an unchanged mirror
+	// keeps its O(1) listing. Runs BEFORE the phase's error is
+	// returned: a manifest that landed before the failure is on dest
+	// for good (sync never rolls back), and must not stay hidden.
+	if manCopied > 0 && !opts.DryRun {
+		if derr := dest.Delete(ctx, snapshotIndexKey); derr != nil && !errors.Is(derr, blobstore.ErrNotFound) {
+			stats.Elapsed = time.Since(start)
+			return stats, errors.Join(err, fmt.Errorf("repo: sync invalidate dest index: %w", derr))
+		}
+	}
 	if err != nil {
 		stats.Elapsed = time.Since(start)
 		return stats, fmt.Errorf("repo: sync snapshots/: %w", err)

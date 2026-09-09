@@ -9,9 +9,11 @@ import (
 	"fmt"
 	"io"
 	"log/slog"
+	"os"
 	"path/filepath"
 	"regexp"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -84,6 +86,54 @@ type SnapshotInfo struct {
 	Stats SnapshotStats
 }
 
+// ErrRootNotDir is returned when a backup root resolves to something
+// other than a directory (a regular file, or a symlink to one).
+var ErrRootNotDir = errors.New("repo: backup root is not a directory")
+
+// ErrManifestIDMismatch is returned by LoadSnapshot when the manifest
+// stored under snapshots/<id> declares a different ID — a manifest
+// copied over another key out of band. Every loader aborts on it:
+// restore would otherwise silently restore the wrong tree, and GC
+// would compute the wrong live set and reap the real one's chunks.
+var ErrManifestIDMismatch = errors.New("repo: manifest id does not match its key")
+
+// ResolveRoot turns an operator-supplied backup root into the
+// canonical path a snapshot records as Manifest.Root: absolute,
+// cleaned, symlinks resolved, and confirmed to be a directory.
+//
+// Resolving symlinks is what makes `sentra backup ~/Dropbox` work
+// when ~/Dropbox is a link: filepath.WalkDir does not descend a root
+// that is itself a symlink, so the unresolved path walked to a
+// single "." symlink entry — a zero-file snapshot with exit 0. The
+// RESOLVED path is the one recorded because retention groups by
+// Root: the linked and the real spelling of one directory must land
+// in one group, or each spelling prunes the other's dailies. The
+// directory check closes the sibling failure (a file root walks to
+// one "." file entry) without a generic zero-entry guard, which
+// would wrongly refuse the legitimate backup of an empty directory.
+//
+// Exported so every surface that compares a configured path against
+// SnapshotInfo.Root (policy last-run, the Schedules view) can
+// normalise the same way.
+func ResolveRoot(root string) (string, error) {
+	absRoot, err := filepath.Abs(root)
+	if err != nil {
+		return "", fmt.Errorf("repo: abs root: %w", err)
+	}
+	resolved, err := filepath.EvalSymlinks(filepath.Clean(absRoot))
+	if err != nil {
+		return "", fmt.Errorf("repo: resolve root %q: %w", absRoot, err)
+	}
+	fi, err := os.Stat(resolved)
+	if err != nil {
+		return "", fmt.Errorf("repo: stat root %q: %w", resolved, err)
+	}
+	if !fi.IsDir() {
+		return "", fmt.Errorf("%w: %q", ErrRootNotDir, absRoot)
+	}
+	return resolved, nil
+}
+
 // snapshotPrefix is the blobstore key prefix under which manifests
 // live. Used by both CreateSnapshot (write) and ListSnapshots (read).
 const snapshotPrefix = "snapshots/"
@@ -112,6 +162,14 @@ const DataPrefix = "data/"
 // count zero — they didn't move bytes). A nil reporter is treated as
 // a NopReporter so call sites stay free of nil checks.
 func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOptions) (SnapshotInfo, error) {
+	// Resolve before taking the lock: a bad root is refused without
+	// a lock round trip, and the resolved path is what the parent
+	// lookup and the manifest both key on.
+	absRoot, err := ResolveRoot(root)
+	if err != nil {
+		return SnapshotInfo{}, err
+	}
+
 	// Acquire the repo-wide advisory lock so a concurrent GC can't
 	// see this snapshot's chunks land while it's deciding what to
 	// delete. The lock is released on every exit path (success and
@@ -141,12 +199,6 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 		reporter = progress.NopReporter{}
 	}
 
-	absRoot, err := filepath.Abs(root)
-	if err != nil {
-		return SnapshotInfo{}, fmt.Errorf("repo: abs root: %w", err)
-	}
-	absRoot = filepath.Clean(absRoot)
-
 	// Resolve walker options once: zero-value SnapshotOptions.Walker
 	// preserves the previous hardcoded ExcludeCaches=true behaviour;
 	// non-zero values flow through untouched (this is how the CLI
@@ -168,16 +220,21 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// Incremental scan: files whose size AND mtime match the newest
 	// prior snapshot of the same root reuse that snapshot's chunk
 	// list without being opened — re-backups of a quiet tree read
-	// ~zero bytes. Safe under the repo lock held above: GC can't run
-	// concurrently, and every chunk a present manifest references is
-	// live by the GC invariant, so reused chunk lists always point at
-	// existing blobs. The mtime check is equality on the lstat
-	// timestamp; content rewritten without the mtime moving is the
-	// classic blind spot, covered by ForceRescan.
+	// ~zero bytes. The repo lock held above keeps GC from reaping a
+	// referenced chunk, but nothing stops an out-of-band delete (an
+	// operator, a bucket lifecycle rule), and a reused list would
+	// carry that dangling reference into every later snapshot — the
+	// file intact on disk, unrestorable forever. So reuse confirms
+	// each chunk still exists (one Stat per unique chunk per
+	// snapshot, see reusedChunkProbe) and re-reads the file when one
+	// is gone. The mtime check is equality on the lstat timestamp;
+	// content rewritten without the mtime moving is the classic
+	// blind spot, covered by ForceRescan.
 	var parent map[string]FileEntry
 	if !opts.ForceRescan {
 		parent = r.parentFileEntries(ctx, absRoot)
 	}
+	probe := &reusedChunkProbe{store: r.store}
 
 	// Single-walk progress: as each file is discovered, add its
 	// plaintext size to the running total and update reporter.Total.
@@ -202,17 +259,26 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 			reporter.Total(estimated.Add(e.Size))
 
 			if pe, ok := parent[e.RelPath]; ok && pe.Size == e.Size && pe.MTime.Equal(e.MTime) {
-				// Unchanged since the parent: reuse its chunks, but
-				// record the CURRENT mode — a chmod doesn't move the
-				// mtime and must not go stale in the new manifest.
-				state.add(FileEntry{
-					Path:   e.RelPath,
-					Size:   e.Size,
-					Mode:   e.Mode,
-					MTime:  e.MTime,
-					Chunks: pe.Chunks,
-				}, 0)
-				return nil
+				present, err := probe.allPresent(ctx, pe.Chunks)
+				if err != nil {
+					return err
+				}
+				if present {
+					// Unchanged since the parent: reuse its chunks,
+					// but record the CURRENT mode — a chmod doesn't
+					// move the mtime and must not go stale in the
+					// new manifest.
+					state.add(FileEntry{
+						Path:   e.RelPath,
+						Size:   e.Size,
+						Mode:   e.Mode,
+						MTime:  e.MTime,
+						Chunks: pe.Chunks,
+					}, 0)
+					return nil
+				}
+				// A chunk vanished out of band: fall through and
+				// read the file as if it had changed.
 			}
 
 			fe, newBytes, err := r.captureFile(ctx, repoKey, e, reporter)
@@ -232,6 +298,52 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	}
 
 	return r.finishSnapshot(ctx, repoKey, absRoot, opts.Tag, state)
+}
+
+// reusedChunkProbe confirms, once per snapshot, that a chunk the
+// incremental scan wants to reuse still exists in the store. Walker
+// workers call it concurrently, so it bounds the cost the way
+// captureFile's dedup Stat is bounded — by the walker's pool — and
+// adds single-flight per hash: two unchanged files sharing a chunk
+// (or two workers racing on one) produce exactly one Stat. Results
+// are cached for the run, present or absent; a transient transport
+// error is cached too, because the snapshot aborts on it anyway.
+type reusedChunkProbe struct {
+	store blobstore.Store
+	seen  sync.Map // hex hash → *chunkProbeResult
+}
+
+type chunkProbeResult struct {
+	once    sync.Once
+	present bool
+	err     error
+}
+
+// allPresent reports whether every chunk in hashes exists. ErrNotFound
+// is an answer (false), not an error; anything else aborts the caller.
+func (p *reusedChunkProbe) allPresent(ctx context.Context, hashes []string) (bool, error) {
+	for _, h := range hashes {
+		v, _ := p.seen.LoadOrStore(h, &chunkProbeResult{})
+		res := v.(*chunkProbeResult)
+		res.once.Do(func() {
+			_, err := p.store.Stat(ctx, ChunkKey(h))
+			switch {
+			case err == nil:
+				res.present = true
+			case errors.Is(err, blobstore.ErrNotFound):
+				res.present = false
+			default:
+				res.err = fmt.Errorf("repo: stat reused chunk %s: %w", ChunkKey(h), err)
+			}
+		})
+		if res.err != nil {
+			return false, res.err
+		}
+		if !res.present {
+			return false, nil
+		}
+	}
+	return true, nil
 }
 
 // parentFileEntries returns the regular-file entries of the newest
@@ -317,6 +429,15 @@ func (r *Repo) LoadSnapshot(ctx context.Context, id string) (Manifest, error) {
 	if m.Version > ManifestVersion {
 		return Manifest{}, fmt.Errorf("repo: manifest %q is format v%d, newer than this binary supports (v%d) — upgrade sentra",
 			id, m.Version, ManifestVersion)
+	}
+	// The key is the caller's claim about which snapshot this is; the
+	// body is the manifest's own. Decrypting proves the bytes are ours,
+	// not that they belong under this key — a manifest copied over
+	// another key passes every check above. Callers (restore, GC,
+	// check, list) key everything off the id they asked for, so the
+	// two must agree.
+	if m.ID != id {
+		return Manifest{}, fmt.Errorf("%w: key snapshots/%s holds manifest %q", ErrManifestIDMismatch, id, m.ID)
 	}
 	return m, nil
 }

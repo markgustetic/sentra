@@ -262,3 +262,97 @@ func TestCreateSnapshot_ReleasesLockOnError(t *testing.T) {
 		t.Error("lock blob still exists after CreateSnapshot error; defer release didn't fire")
 	}
 }
+
+// lostResponseStore models a PutIfAbsent whose first attempt committed
+// but whose response never arrived: the SDK retries, the retry sees
+// the object it just wrote, and the caller is handed ErrAlreadyExists
+// for a write that succeeded. The object lands; the error lies.
+type lostResponseStore struct {
+	blobstore.Store
+}
+
+func (s *lostResponseStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	if err := s.Store.PutIfAbsent(ctx, key, r); err != nil {
+		return err
+	}
+	if key == lockKey {
+		return blobstore.ErrAlreadyExists
+	}
+	return nil
+}
+
+// TestAcquireLock_OwnUUIDAfterLostResponseIsSuccess: when the lock
+// blob already holds the UUID this call generated, the write went
+// through and the acquire succeeded — reporting ErrRepoLocked would
+// name the process as its own blocker and strand a lock only it can
+// release. Ownership is decided by reading the holder back, not by
+// the PutIfAbsent result alone.
+func TestAcquireLock_OwnUUIDAfterLostResponseIsSuccess(t *testing.T) {
+	ctx := context.Background()
+	store := &lostResponseStore{Store: blobstore.NewMemory()}
+
+	info, err := acquireLock(ctx, store, "snapshot")
+	if err != nil {
+		t.Fatalf("acquireLock after a lost response: got %v, want success", err)
+	}
+	if !strings.Contains(readLockHolder(ctx, store), info.UUID) {
+		t.Fatalf("lock blob does not carry the returned UUID %s: %s", info.UUID, readLockHolder(ctx, store))
+	}
+	// The lock is genuinely held: a foreign acquire is refused.
+	if _, err := acquireLock(ctx, store.Store, "other"); !errors.Is(err, ErrRepoLocked) {
+		t.Fatalf("foreign acquire: got %v, want ErrRepoLocked", err)
+	}
+	// And the returned info releases it.
+	releaseLock(ctx, store, info)
+	if _, err := store.Stat(ctx, lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("lock still present after release (err=%v)", err)
+	}
+}
+
+// cancelAfterFirstChunkStore cancels the caller's context the moment
+// the first data/ chunk lands. It models an operator hitting esc/quit
+// (or any op cancellation) partway through a backup: every later
+// store call on that ctx fails with context.Canceled.
+type cancelAfterFirstChunkStore struct {
+	blobstore.Store
+	cancel context.CancelFunc
+	once   sync.Once
+}
+
+func (s *cancelAfterFirstChunkStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	err := s.Store.PutIfAbsent(ctx, key, r)
+	if err == nil && strings.HasPrefix(key, DataPrefix) {
+		s.once.Do(s.cancel)
+	}
+	return err
+}
+
+// TestCreateSnapshot_CancelledCtxStillReleasesLock: the lock must not
+// be orphaned when the operation's ctx is cancelled mid-flight. The
+// release path reads the holder back before deleting (fail-closed);
+// if it ran on the cancelled ctx that read would fail, the release
+// would decline, and meta/lock would sit there until an operator
+// deleted it by hand — every later backup reporting ErrRepoLocked
+// against a process that no longer exists.
+func TestCreateSnapshot_CancelledCtxStillReleasesLock(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &cancelAfterFirstChunkStore{Store: blobstore.NewMemory(), cancel: cancel}
+	r, err := Init(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatalf("init: %v", err)
+	}
+	defer r.Close()
+
+	root := t.TempDir()
+	if err := putFile(root, "a.txt", "some content"); err != nil {
+		t.Fatal(err)
+	}
+	_, err = r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("CreateSnapshot on a cancelled ctx: got %v, want context.Canceled", err)
+	}
+	if _, err := store.Stat(context.Background(), lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("meta/lock still present after a cancelled CreateSnapshot (stat err=%v); release ran on the cancelled ctx", err)
+	}
+}

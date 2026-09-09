@@ -30,6 +30,12 @@ import (
 //     and delete by hand.
 const lockKey = "meta/lock"
 
+// lockReleaseTimeout bounds releaseLock's detached context (see the
+// function comment). Generous for a GET + DELETE of a few hundred
+// bytes; short enough that a cancelled operation on a hung endpoint
+// does not hold the process open indefinitely.
+const lockReleaseTimeout = 30 * time.Second
+
 // ErrRepoLocked is returned by acquireLock when the lock blob is
 // already taken. Callers can errors.Is against the sentinel; the
 // returned error message also names the holder so the operator
@@ -90,11 +96,23 @@ func acquireLock(ctx context.Context, store blobstore.Store, op string) (*lockIn
 	err = store.PutIfAbsent(ctx, lockKey, bytes.NewReader(body))
 	if err != nil {
 		if errors.Is(err, blobstore.ErrAlreadyExists) {
-			// Best-effort: read the existing lock so the operator
-			// sees who's holding it. A read failure here is non-
-			// fatal — we still surface ErrRepoLocked to the caller.
-			holder := readLockHolder(ctx, store)
-			return nil, fmt.Errorf("%w%s", ErrRepoLocked, holder)
+			// ErrAlreadyExists does not by itself mean someone else
+			// holds the lock. A PutIfAbsent whose first attempt
+			// committed but lost its response is retried by the S3
+			// SDK (and by RetryStore); the retry sees the object we
+			// just wrote and reports 412. Ownership is therefore
+			// decided by reading the holder back: our own UUID in
+			// the blob means the write went through and the acquire
+			// succeeded. Treating it as a conflict would name this
+			// process as its own blocker and strand a lock only it
+			// could release.
+			current, readErr := readLockInfo(ctx, store)
+			if readErr == nil && current.UUID == uuid {
+				return info, nil
+			}
+			// A read failure here is non-fatal — we still surface
+			// ErrRepoLocked, just without the diagnostic suffix.
+			return nil, fmt.Errorf("%w%s", ErrRepoLocked, formatLockHolder(current))
 		}
 		return nil, fmt.Errorf("repo: acquire lock: %w", err)
 	}
@@ -113,10 +131,25 @@ func acquireLock(ctx context.Context, store blobstore.Store, op string) (*lockIn
 // transport errors are logged at warn level so an operator running
 // with --log-level=info can spot a stuck lock that needs manual
 // recovery.
+//
+// The release runs on a context detached from the caller's
+// cancellation. Every lock holder releases from a defer, and the
+// commonest reason to reach that defer early is that ctx was
+// cancelled (TUI esc/quit, a signal, a parent op giving up). On the
+// cancelled ctx the read-back below fails, the fail-closed rule
+// declines to delete, and meta/lock is orphaned until an operator
+// removes it by hand — every later backup reporting ErrRepoLocked
+// against a process that no longer exists. Detaching keeps the
+// fail-closed rule intact (an unreadable holder is still never
+// deleted) while giving the release a real chance to run; the
+// deadline bounds how long a cancelled operation lingers on a
+// hung endpoint.
 func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 	if info == nil {
 		return
 	}
+	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockReleaseTimeout)
+	defer cancel()
 	current := readLockHolder(ctx, store)
 	if current == "" {
 		// The current holder could not be read — either the lock is
@@ -159,26 +192,46 @@ func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 	}
 }
 
-// readLockHolder loads and decodes the lock blob (if any) into a
-// human-readable suffix like " (held by host=foo pid=123 op=gc
-// since 2026-...)" suitable for tacking onto the ErrRepoLocked
-// error. Returns "" on any failure — the caller still surfaces
-// ErrRepoLocked, just without the diagnostic detail.
-func readLockHolder(ctx context.Context, s blobstore.Store) string {
+// readLockInfo loads and decodes the current lock blob. Any failure —
+// absent, unreadable, or undecodable — comes back as an error with a
+// nil info, so callers that need to CONFIRM ownership (acquire's
+// retry check, release's fail-closed check) cannot mistake a bad
+// read for a known holder.
+func readLockInfo(ctx context.Context, s blobstore.Store) (*lockInfo, error) {
 	rc, err := s.Get(ctx, lockKey)
 	if err != nil {
-		return ""
+		return nil, err
 	}
 	defer rc.Close()
 	var info lockInfo
-	dec := json.NewDecoder(rc)
-	if err := dec.Decode(&info); err != nil {
+	if err := json.NewDecoder(rc).Decode(&info); err != nil {
+		return nil, fmt.Errorf("decode lock blob: %w", err)
+	}
+	return &info, nil
+}
+
+// formatLockHolder renders a decoded holder as the human-readable
+// suffix tacked onto ErrRepoLocked, like " (held by host=foo pid=123
+// op=gc since 2026-...)". A nil holder renders as "" so the caller
+// still surfaces ErrRepoLocked, just without the diagnostic detail.
+func formatLockHolder(info *lockInfo) string {
+	if info == nil {
 		return ""
 	}
 	return fmt.Sprintf(" (held by host=%q pid=%d op=%q since %s, uuid=%s)",
 		info.Host, info.PID, info.Operation,
 		info.StartedAt.Format(time.RFC3339),
 		info.UUID)
+}
+
+// readLockHolder is readLockInfo + formatLockHolder: "" on any
+// failure. releaseLock keys its fail-closed decision off that "".
+func readLockHolder(ctx context.Context, s blobstore.Store) string {
+	info, err := readLockInfo(ctx, s)
+	if err != nil {
+		return ""
+	}
+	return formatLockHolder(info)
 }
 
 // newLockUUID returns a 16-byte random hex string. Used for the

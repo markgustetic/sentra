@@ -2,6 +2,7 @@ package repo
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -23,7 +24,9 @@ import (
 // unreadable (corrupt blob, version mismatch), ListSnapshots falls
 // back to manifest fan-out — load each snapshots/<id> blob individually.
 // On a successful fallback, the index is opportunistically rebuilt so
-// the next call is fast.
+// the next call is fast — but only when the repo lock is free (see the
+// write site); a held lock means the list is served and the write is
+// left to the lock holder.
 func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	repoKey, err := r.keyOrErr()
 	if err != nil {
@@ -55,6 +58,29 @@ func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	}
 	// Best-effort write of the rebuilt index so the next call is fast.
 	// A write failure is non-fatal — we already have the answer.
+	//
+	// The write happens only under the repo lock, taken without
+	// waiting. An unlocked write is a read-modify-write of
+	// meta/snapshots racing whichever mutation holds the lock: a
+	// CreateSnapshot appending its entry could lose to this rebuild
+	// landing last, erasing the newest snapshot from the index until
+	// the next fan-out. When the lock is held the list is served as
+	// usual and the write is skipped — the holder (often this very
+	// process: CreateSnapshot lists under its own lock to find the
+	// incremental parent) will leave the index in whatever state its
+	// own operation dictates.
+	held, lerr := acquireLock(ctx, r.store, "index-rebuild")
+	if lerr != nil {
+		level := slog.LevelWarn
+		if errors.Is(lerr, ErrRepoLocked) {
+			level = slog.LevelDebug
+		}
+		slog.LogAttrs(ctx, level,
+			"skipping snapshot index rebuild: repo lock unavailable",
+			slog.String("error", lerr.Error()))
+		return out, nil
+	}
+	defer releaseLock(ctx, r.store, held)
 	if werr := r.saveSnapshotIndex(ctx, repoKey, &snapshotIndex{Entries: out}); werr != nil {
 		slog.LogAttrs(ctx, slog.LevelWarn,
 			"failed to write snapshot index after rebuild",

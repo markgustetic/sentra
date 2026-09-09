@@ -64,11 +64,13 @@ type BackupPlanFile struct {
 // not require an opened repo because it performs no encryption or
 // blobstore writes.
 func PlanSnapshot(ctx context.Context, root string, opts SnapshotOptions) (BackupPlan, error) {
-	absRoot, err := filepath.Abs(root)
+	// Same canonical root as CreateSnapshot: a plan-driven snapshot of
+	// a symlinked root must walk the same tree and land in the same
+	// retention group as a direct backup of it.
+	absRoot, err := ResolveRoot(root)
 	if err != nil {
-		return BackupPlan{}, fmt.Errorf("repo: abs root: %w", err)
+		return BackupPlan{}, err
 	}
-	absRoot = filepath.Clean(absRoot)
 
 	walkerOpts := resolveWalkerOptions(opts.Walker)
 	plan := BackupPlan{
