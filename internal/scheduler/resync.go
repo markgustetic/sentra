@@ -3,10 +3,66 @@ package scheduler
 import (
 	"context"
 	"fmt"
+	"path/filepath"
 
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 )
+
+// target resolves the trio every timer write needs — the OS-specific
+// file paths, the absolute sentra executable, and the ABSOLUTE config
+// path — from the raw seams both surfaces hold (goos/home/exe overrides
+// for tests, "" for production defaults). One prelude, so the CLI and
+// the TUI cannot drift on which of the three they remember to resolve:
+// a relative cfgPath rendered into a plist is a timer that runs
+// `--config sentra.yaml` from `/` and finds nothing.
+func target(goos, home, exeOverride, cfgPath, name string) (Paths, string, string, error) {
+	paths, err := PathsFor(goos, home, name)
+	if err != nil {
+		return Paths{}, "", "", err
+	}
+	exe, err := Executable(exeOverride)
+	if err != nil {
+		return Paths{}, "", "", err
+	}
+	absCfg, err := filepath.Abs(cfgPath)
+	if err != nil {
+		return Paths{}, "", "", fmt.Errorf("resolve config path: %w", err)
+	}
+	return paths, exe, absCfg, nil
+}
+
+// InstallFor renders, writes, and loads the timer for policy name from
+// the raw seams (see target). Writing the files alone waits for the
+// next login (launchd) or forever (an un-enabled systemd timer), so the
+// job is activated in the same call; on an activation failure the files
+// stay in place and the error names the command to finish with, which
+// the callers show rather than promising a repeat they cannot keep.
+func InstallFor(ctx context.Context, goos, home, exeOverride, cfgPath, name string, schedule config.PolicySchedule, run Runner) error {
+	paths, exe, absCfg, err := target(goos, home, exeOverride, cfgPath, name)
+	if err != nil {
+		return err
+	}
+	files, err := Render(paths, exe, absCfg, name, schedule)
+	if err != nil {
+		return err
+	}
+	if err := Install(files); err != nil {
+		return err
+	}
+	return Activate(ctx, paths, run)
+}
+
+// ResyncFor is Resync from the raw seams (see target): the CLI's
+// `policy add --replace` and the TUI's job edit both call this so the
+// prelude lives once.
+func ResyncFor(ctx context.Context, goos, home, exeOverride, cfgPath, name string, schedule config.PolicySchedule, run Runner) (SyncOutcome, error) {
+	paths, exe, absCfg, err := target(goos, home, exeOverride, cfgPath, name)
+	if err != nil {
+		return SyncSkipped, err
+	}
+	return Resync(ctx, paths, exe, absCfg, schedule, run)
+}
 
 // SyncOutcome is what Resync did to an installed timer.
 type SyncOutcome int

@@ -397,25 +397,10 @@ func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 	exeOverride := v.exeOverride
 	runner := v.deps.SchedulerRunner
 	run := func(ctx context.Context) tea.Msg {
-		paths, err := scheduler.PathsFor(goos, home, name)
-		if err != nil {
-			return jobTimerMsg{err: err}
-		}
-		exe, err := scheduler.Executable(exeOverride)
-		if err != nil {
-			return jobTimerMsg{err: err}
-		}
-		files, err := scheduler.Render(paths, exe, cfgPath, name, p.Schedule)
-		if err != nil {
-			return jobTimerMsg{err: err}
-		}
-		if err := scheduler.Install(files); err != nil {
-			return jobTimerMsg{err: err}
-		}
 		// Files alone wait for the next login (launchd) or forever
-		// (systemd): load them now. On failure the files stay and the
-		// error carries the command to run by hand.
-		if err := scheduler.Activate(ctx, paths, runner); err != nil {
+		// (systemd): InstallFor loads them too. On failure the files stay
+		// and the error carries the command to run by hand.
+		if err := scheduler.InstallFor(ctx, goos, home, exeOverride, cfgPath, name, p.Schedule, runner); err != nil {
 			return jobTimerMsg{err: err}
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("installed timer for %q; now active", name)}

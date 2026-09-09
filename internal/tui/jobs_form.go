@@ -383,41 +383,16 @@ func (v JobsView) syncTimerAfterSave(ctx context.Context, name, oldSpec string, 
 	if newSpec == oldSpec {
 		return "", nil
 	}
-	paths, err := scheduler.PathsFor(v.osOverride, v.homeOverride, name)
+	outcome, err := scheduler.ResyncFor(ctx, v.osOverride, v.homeOverride, v.exeOverride, v.deps.ConfigPath, name, p.Schedule, v.deps.SchedulerRunner)
 	if err != nil {
 		return "", err
 	}
-	installed, err := scheduler.Installed(paths)
-	if err != nil || !installed {
-		return "", err
-	}
-	runner := v.deps.SchedulerRunner
-	if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
-		// Unload before removing the files, or the OS keeps firing the
-		// old cadence until logout.
-		if err := scheduler.Deactivate(ctx, paths, runner); err != nil {
-			return "", err
-		}
-		if err := scheduler.Uninstall(paths); err != nil {
-			return "", err
-		}
+	switch outcome {
+	case scheduler.SyncUninstalled:
 		return "timer uninstalled (schedule is now manual)", nil
+	case scheduler.SyncReinstalled:
+		return "timer reinstalled for " + newSpec, nil
+	default:
+		return "", nil
 	}
-	exe, err := scheduler.Executable(v.exeOverride)
-	if err != nil {
-		return "", err
-	}
-	files, err := scheduler.Render(paths, exe, v.deps.ConfigPath, name, p.Schedule)
-	if err != nil {
-		return "", err
-	}
-	if err := scheduler.Install(files); err != nil {
-		return "", err
-	}
-	// launchd keeps running the OLD plist until the label is bootstrapped
-	// again; systemd needs a daemon-reload to see the new OnCalendar.
-	if err := scheduler.Activate(ctx, paths, runner); err != nil {
-		return "", err
-	}
-	return "timer reinstalled for " + newSpec, nil
 }

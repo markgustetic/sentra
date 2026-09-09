@@ -3,12 +3,71 @@ package scheduler
 import (
 	"context"
 	"os"
+	"path/filepath"
 	"strings"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 )
+
+// TestResyncFor_ResolvesTargetLikeInstallFor: the two surfaces used to
+// spell the PathsFor + Executable + Abs(cfgPath) prelude by hand before
+// every timer write, and a relative config path slipped through one of
+// them into the plist. Both helpers resolve the target once, the same
+// way: an installed timer is re-rendered with the ABSOLUTE config path
+// and the given executable, and a fresh install lands the same files.
+func TestResyncFor_ResolvesTargetLikeInstallFor(t *testing.T) {
+	daily := config.PolicySchedule{Cadence: policycfg.CadenceDaily, At: "03:00"}
+	hourly := config.PolicySchedule{Cadence: policycfg.CadenceHourly}
+	home := t.TempDir()
+	t.Chdir(t.TempDir())
+	cwd, err := os.Getwd()
+	if err != nil {
+		t.Fatal(err)
+	}
+	wantCfg := filepath.Join(cwd, "sentra.yaml")
+
+	run := &fakeRunner{}
+	if err := InstallFor(context.Background(), "darwin", home, "/opt/sentra", "sentra.yaml", "home", daily, run.run); err != nil {
+		t.Fatalf("InstallFor: %v", err)
+	}
+	paths, err := PathsFor("darwin", home, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	raw, err := os.ReadFile(paths.Files[0]) //nolint:gosec // test-owned path
+	if err != nil {
+		t.Fatalf("InstallFor wrote no plist: %v", err)
+	}
+	for _, want := range []string{wantCfg, "/opt/sentra", "<key>Hour</key>"} {
+		if !strings.Contains(string(raw), want) {
+			t.Errorf("installed plist lacks %q:\n%s", want, raw)
+		}
+	}
+	if joined := strings.Join(run.calls, "\n"); !strings.Contains(joined, "launchctl bootstrap") {
+		t.Errorf("InstallFor never bootstrapped the job; calls:\n%s", joined)
+	}
+
+	run = &fakeRunner{}
+	got, err := ResyncFor(context.Background(), "darwin", home, "/opt/sentra", "sentra.yaml", "home", hourly, run.run)
+	if err != nil {
+		t.Fatalf("ResyncFor: %v", err)
+	}
+	if got != SyncReinstalled {
+		t.Fatalf("outcome: got %v, want %v", got, SyncReinstalled)
+	}
+	raw, err = os.ReadFile(paths.Files[0]) //nolint:gosec // test-owned path
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !strings.Contains(string(raw), wantCfg) || !strings.Contains(string(raw), "<key>Minute</key>") {
+		t.Errorf("resynced plist not re-rendered with the absolute config path and the new cadence:\n%s", raw)
+	}
+	if got, err := ResyncFor(context.Background(), "plan9", home, "/opt/sentra", "sentra.yaml", "home", hourly, run.run); err == nil || got != SyncSkipped {
+		t.Errorf("unsupported OS: got %v, %v; want SyncSkipped with an error", got, err)
+	}
+}
 
 // TestResync pins the rule for a schedule edit against an installed
 // timer: not installed → nothing touched; edited to manual → the OS job
