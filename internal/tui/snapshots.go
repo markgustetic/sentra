@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"sort"
 	"strings"
+	"sync"
 	"time"
 
 	"github.com/atotto/clipboard"
@@ -201,49 +202,70 @@ func NewSnapshotsWithLoader(deps Deps, loader detailLoader) Snapshots {
 	return s
 }
 
-// snapshotPreload is the App's ONE shared snapshot-list load, handed to every
-// view that needs the list at construction (dashboard, snapshots, diff, restore,
-// prune) so they don't each hit the store — five ListSnapshots at launch became
-// one. Both the slice and the error are carried so callers keep their own error
-// handling (prune surfaces it; diff/restore/snapshots fall back to empty).
+// snapshotPreload is the App's ONE shared snapshot-list cache. NewApp fills it
+// once and hands the pointer to every view that needs the list at construction
+// (dashboard, snapshots, diff, restore, prune, jobs) so they don't each hit the
+// store — five ListSnapshots at launch became one. It then stays LIVE: the App
+// refreshes it from every snapshotsReloadedMsg (see App.Update), so a consumer
+// that rebuilds from Deps mid-session — restore's "another" reset, prune's
+// "again", a fresh Diff, the chat's list_snapshots tool — sees what the
+// snapshots view shows, not what was true at launch. Both the slice and the
+// error are carried so callers keep their own error handling (prune surfaces
+// it; diff/restore/snapshots fall back to empty).
+//
+// The mutex is for the chat: its turn runs on its own goroutine and reads the
+// cache through initialSnapshots while the UI goroutine may be refreshing it.
 type snapshotPreload struct {
+	mu    sync.Mutex
 	snaps []repo.SnapshotInfo
 	err   error
 }
 
-// initialSnapshots returns the App's shared preload if one was set (the common
+// get returns the cached list under ListSnapshots' (snaps, err) contract.
+func (p *snapshotPreload) get() ([]repo.SnapshotInfo, error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	return p.snaps, p.err
+}
+
+// set replaces the cache with a fresh load's result, error included: a
+// reload that failed must not leave the previous list posing as current.
+func (p *snapshotPreload) set(snaps []repo.SnapshotInfo, err error) {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	p.snaps, p.err = snaps, err
+}
+
+// initialSnapshots returns the App's shared cache if one was set (the common
 // path — the shell always sets it), else a fresh bounded load. It mirrors
-// ListSnapshots' (snaps, err) contract. Used only at view construction; the
-// refresh-after-op paths reload fresh so they never serve a stale preload.
+// ListSnapshots' (snaps, err) contract. Despite the name it is safe at any
+// point in the session, not just construction: the cache is refreshed on every
+// reload, so a view rebuilt from Deps after an op reads the current list.
 func initialSnapshots(deps Deps) ([]repo.SnapshotInfo, error) {
 	if deps.preload != nil {
-		return deps.preload.snaps, deps.preload.err
+		return deps.preload.get()
 	}
+	return listSnapshots(deps)
+}
+
+// listSnapshots is the fresh, bounded load behind both the launch cache and
+// the post-op reload. A nil Repo (Deps{} in tests, or a shell built before
+// unlock) yields nil rather than panicking, so callers need no guard of their
+// own. The parent context comes from deps.Ctx (App-scoped) so a quick quit
+// cancels the load.
+func listSnapshots(deps Deps) ([]repo.SnapshotInfo, error) {
 	if deps.Repo == nil {
 		return nil, nil
 	}
-	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 20*time.Second)
+	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), hydrateTimeout)
 	defer cancel()
 	return deps.Repo.ListSnapshots(ctx)
 }
 
-// loadSnapshotsBestEffort wraps repo.ListSnapshots with a timeout
-// and an error-swallow so a slow blobstore can't block construction.
-// Failures yield a nil slice; the view then renders the empty-state.
-//
-// A nil Repo (Deps{} in tests, or a shell built before unlock) yields
-// nil rather than panicking, so callers — the constructor and the
-// op-completion reload in Update — need no guard of their own.
-//
-// The 10s timeout is per-call; the parent context comes from
-// deps.Ctx (App-scoped) so a quick quit cancels the load.
+// loadSnapshotsBestEffort is listSnapshots with the error swallowed: failures
+// yield a nil slice and the view renders its empty state.
 func loadSnapshotsBestEffort(deps Deps) []repo.SnapshotInfo {
-	if deps.Repo == nil {
-		return nil
-	}
-	ctx, cancel := context.WithTimeout(ctxOrBackground(deps.Ctx), 10*time.Second)
-	defer cancel()
-	snaps, err := deps.Repo.ListSnapshots(ctx)
+	snaps, err := listSnapshots(deps)
 	if err != nil {
 		return nil
 	}
@@ -462,9 +484,14 @@ func (s Snapshots) togglePinSelected() (tea.Model, tea.Cmd) {
 
 // snapshotsReloadedMsg carries the post-op refresh (snapshot list +
 // pin set) back to the view, keeping the blobstore reads off the UI
-// goroutine.
+// goroutine. The App also sees it on the way through and refreshes the
+// shared snapshot cache from it (see snapshotPreload), so err travels
+// too: the cache keeps ListSnapshots' contract, and a failed reload must
+// not leave the previous list posing as current. snaps is nil when err
+// is set, so this view's own handling is unchanged.
 type snapshotsReloadedMsg struct {
 	snaps []repo.SnapshotInfo
+	err   error
 	pins  map[string]struct{}
 }
 
@@ -605,8 +632,13 @@ func (s Snapshots) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	if _, ok := msg.(opResultMsg); ok {
 		deps := s.deps
 		return s, func() tea.Msg {
+			snaps, err := listSnapshots(deps)
+			if err != nil {
+				snaps = nil // the view renders its empty state, as before
+			}
 			return snapshotsReloadedMsg{
-				snaps: loadSnapshotsBestEffort(deps),
+				snaps: snaps,
+				err:   err,
 				pins:  loadPinsBestEffort(deps),
 			}
 		}

@@ -160,9 +160,12 @@ type Deps struct {
 	Version string
 	Commit  string
 
-	// preload is the App's one shared snapshot-list load, set by NewApp before
-	// it constructs the views (see initialSnapshots). nil in tests that build a
-	// view directly, which then load fresh — unchanged behavior.
+	// preload is the App's one shared snapshot-list cache, set by NewApp before
+	// it constructs the views and refreshed by the App on every
+	// snapshotsReloadedMsg (see snapshotPreload / initialSnapshots). The
+	// pointer is shared with every view's Deps copy, so a view rebuilt from
+	// Deps mid-session reads the current list. nil in tests that build a view
+	// directly, which then load fresh — unchanged behavior.
 	preload *snapshotPreload
 }
 
@@ -243,6 +246,13 @@ type App struct {
 	// focused border, and the active nav item.
 	animFrame int
 
+	// animGen identifies the chrome tick chain this App owns. Init arms a
+	// chain tagged with it; a tick tagged otherwise is dropped in Update.
+	// repoReadyMsg's rebuilt App takes the next generation so the gate-era
+	// chain, whose next tick is still in flight when unlock lands, dies out
+	// instead of running alongside the one the rebuilt Init starts.
+	animGen int
+
 	width  int
 	height int
 
@@ -292,14 +302,14 @@ func NewApp(deps Deps) App {
 	deps.Ctx = ctx
 
 	// One shared snapshot-list load for every view that needs the list at
-	// construction (dashboard, snapshots, diff, restore, prune) — five separate
-	// ListSnapshots at launch collapse into one. Bounded so a slow store can't
-	// stall startup; each view still falls back gracefully on error.
+	// construction (dashboard, snapshots, diff, restore, prune, jobs) — five
+	// separate ListSnapshots at launch collapse into one. Bounded so a slow
+	// store can't stall startup; each view still falls back gracefully on
+	// error. The cache stays live from here: App.Update refreshes it on every
+	// snapshotsReloadedMsg.
 	if deps.Repo != nil && deps.preload == nil {
-		loadCtx, loadCancel := context.WithTimeout(ctx, 20*time.Second)
 		var pre snapshotPreload
-		pre.snaps, pre.err = deps.Repo.ListSnapshots(loadCtx)
-		loadCancel()
+		pre.snaps, pre.err = listSnapshots(deps)
 		deps.preload = &pre
 	}
 
@@ -455,7 +465,7 @@ func (m App) Init() tea.Cmd {
 	// Kick the ambient chrome-animation clock. It re-arms itself each frame (see
 	// uiFrameMsg in Update), so this single tick keeps the shell breathing for
 	// the whole session.
-	cmds = append(cmds, uiTick())
+	cmds = append(cmds, uiTick(m.animGen))
 	// Tell the launch view it is on screen (see showActiveMsg). This — not a
 	// view's Init — is where a text field's cursor starts blinking: a view
 	// the operator never opens must never run a blink chain, so no view's
@@ -555,11 +565,17 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		return m, nil
 
 	case uiFrameMsg:
+		// A tick from a chain this App no longer owns (the pre-unlock shell's,
+		// see animGen) must neither advance the frame nor re-arm, or the
+		// session runs two chains.
+		if msg.gen != m.animGen {
+			return m, nil
+		}
 		// Advance the ambient chrome clock and re-arm. This runs for the whole
 		// session (chrome is hidden behind the splash/overlays but the counter
 		// keeps ticking, so the breathe is already in motion when they clear).
 		m.animFrame++
-		return m, uiTick()
+		return m, uiTick(m.animGen)
 
 	case repoReadyMsg:
 		// Rebuild the whole shell against the unlocked repo. Reusing NewApp
@@ -580,6 +596,10 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// time and eat the user's next keystroke dismissing it.
 		nd.ShowSplash = false
 		rebuilt := NewApp(nd)
+		// The rebuilt Init below arms a fresh chrome tick chain while this
+		// shell's next tick is still in flight; a new generation lets that
+		// old tick be dropped rather than re-armed into a second chain.
+		rebuilt.animGen = m.animGen + 1
 		if m.width > 0 {
 			sized, _ := rebuilt.Update(tea.WindowSizeMsg{Width: m.width, Height: m.height})
 			rebuilt = sized.(App)
@@ -804,6 +824,18 @@ func (m App) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		m.views[m.active].model, viewCmd = m.views[m.active].model.Update(msg)
 		cmds = append(cmds, viewCmd)
 		return m, tea.Batch(cmds...)
+
+	case snapshotsReloadedMsg:
+		// The snapshots view's post-op reload is the ONE fresh ListSnapshots
+		// per op (the shared-load rule, launch and after). Refresh the shared
+		// cache from it before the broadcast so every consumer that reads the
+		// list through Deps — the jobs view's Last-run column, restore's and
+		// prune's resets, a fresh Diff, the chat's list_snapshots tool — sees
+		// this reload rather than the launch-time list for the whole session.
+		if m.deps.preload != nil {
+			m.deps.preload.set(msg.snaps, msg.err)
+		}
+		return m.broadcast(msg)
 
 	case tea.KeyMsg:
 		return m.routeKey(msg)
@@ -1087,19 +1119,28 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	// Backup's tag field and Password used to trap the keyboard entirely, with
 	// ctrl+c (which quits the app) the only way out. Startup gates keep esc —
 	// the wizard uses it to restart, and there is no rail to return to.
+	//
+	// The focused view is asked FIRST, before the running-op fallback. The
+	// views that launch an op consume esc in their running stage and emit
+	// cancelOpMsg themselves, so asking them first still cancels; asking the
+	// op guard first instead meant that with a backup running in the
+	// background, esc in Snapshots' detail, the Schedules form or the Diff
+	// picker cancelled the backup rather than closing what was on screen.
 	if msg.Type == tea.KeyEsc && !m.inStartupGate() && m.focus == focusContent {
 		switch {
+		case m.contentConsumesEscape():
+			// The view means something by esc itself — close a detail, step back
+			// a wizard stage, cancel its own op. Let it handle the key (fall
+			// through below).
 		case m.opRunning != "":
-			// esc cancels the running op in place — no confirm. The only guarded
-			// action is quit; everything else steps back cheaply. ctrl+c still
-			// force-quits if the operator wants out entirely.
+			// Nothing on screen wants esc: cancel the running op in place — no
+			// confirm. The only guarded action is quit; everything else steps
+			// back cheaply. ctrl+c still force-quits if the operator wants out
+			// entirely.
 			if m.opCancel != nil {
 				m.opCancel()
 			}
 			return m, nil
-		case m.contentConsumesEscape():
-			// The view means something by esc itself — close a detail, step back
-			// a wizard stage. Let it handle the key (fall through below).
 		default:
 			m.focus = focusSidebar
 			return m, nil

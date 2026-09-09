@@ -34,8 +34,14 @@ type ChatOverlay struct {
 	busy    bool   // one in-flight turn at a time
 	partial string // streamed tokens of the in-flight reply
 	cancel  context.CancelFunc
-	width   int
-	height  int
+	// turn identifies the turn the overlay currently owns. send and Cancel
+	// both advance it, so an event from an earlier turn's goroutine — still
+	// winding down after esc — carries a stale turn and is dropped (see
+	// Update). Without the id, the cancelled turn's ctx.Canceled done event
+	// cleared busy and cancel for whatever turn had since started.
+	turn   int
+	width  int
+	height int
 }
 
 // chatEventMsg is the turn goroutine's channel into the update loop:
@@ -48,6 +54,7 @@ type chatEventMsg struct {
 	intents []tea.Msg
 	err     error
 	events  chan chatEventMsg // re-arm handle; nil once done
+	turn    int               // the turn that produced it; stamped by listenChat
 }
 
 // chatBackupMsg is the start_backup intent: the App routes it to the
@@ -123,12 +130,19 @@ func chatTools() []llm.Tool {
 func (c ChatOverlay) Update(msg tea.Msg) (ChatOverlay, tea.Cmd) {
 	switch msg := msg.(type) {
 	case chatEventMsg:
+		if msg.turn != c.turn {
+			// A turn the overlay has since cancelled or replaced. Keep
+			// draining its channel so the goroutine can finish and the
+			// channel close, but let nothing it says reach the screen or
+			// the busy/cancel state that now belongs to the current turn.
+			return c, listenChat(msg.events, msg.turn)
+		}
 		if msg.token != "" {
 			c.partial += msg.token
-			return c, listenChat(msg.events)
+			return c, listenChat(msg.events, msg.turn)
 		}
 		if !msg.done {
-			return c, listenChat(msg.events)
+			return c, listenChat(msg.events, msg.turn)
 		}
 		c.busy = false
 		c.partial = ""
@@ -184,12 +198,15 @@ func (c ChatOverlay) send() (ChatOverlay, tea.Cmd) {
 
 	ctx, cancel := context.WithCancel(ctxOrBackground(c.deps.Ctx))
 	c.cancel = cancel
+	c.turn++
 	events := make(chan chatEventMsg, 64)
 	go runChatTurn(ctx, c.deps, append([]llm.Message(nil), c.history...), events)
-	return c, listenChat(events)
+	return c, listenChat(events, c.turn)
 }
 
-func listenChat(events chan chatEventMsg) tea.Cmd {
+// listenChat waits for the next event of one turn and stamps it with that
+// turn's id, so Update can tell a live turn's events from a cancelled one's.
+func listenChat(events chan chatEventMsg, turn int) tea.Cmd {
 	if events == nil {
 		return nil
 	}
@@ -199,6 +216,7 @@ func listenChat(events chan chatEventMsg) tea.Cmd {
 			return nil
 		}
 		ev.events = events
+		ev.turn = turn
 		return ev
 	}
 }
@@ -311,13 +329,17 @@ func runChatTool(ctx context.Context, deps Deps, call llm.ToolCall) (string, tea
 	}
 }
 
-// Cancel aborts an in-flight turn (esc while streaming).
+// Cancel aborts an in-flight turn (esc while streaming) and disowns it: the
+// turn id advances so the goroutine's remaining events — at least its
+// ctx.Canceled done event — are dropped rather than applied to whatever
+// turn the operator starts next.
 func (c ChatOverlay) Cancel() ChatOverlay {
 	if c.cancel != nil {
 		c.cancel()
 		c.cancel = nil
 		c.busy = false
 		c.partial = ""
+		c.turn++
 		c.transcript = append(c.transcript, ui.Muted.Render("(cancelled)"))
 	}
 	return c

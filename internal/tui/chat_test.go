@@ -345,3 +345,110 @@ func TestApp_ChatReopenReArmsBlink(t *testing.T) {
 		t.Fatal("the chat's blink chain did not re-arm on reopen — Init replayed a stale, single-use cmd")
 	}
 }
+
+// TestChatOverlay_CancelledTurnEventsAreDisowned pins turn identity: once a
+// turn is cancelled, nothing its goroutine still emits may touch the overlay.
+// Without it, the cancelled turn's done event (ctx.Canceled) arrived through
+// the still-armed listener and the handler unconditionally cleared busy and
+// cancel — dropping the NEW turn's cancel func (esc could no longer stop it),
+// appending the old turn's stray tokens under the new reply, and letting a
+// third send start while the second was still running.
+func TestChatOverlay_CancelledTurnEventsAreDisowned(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel() // releases whichever turn is still blocked at the end
+	deps := launchDeps()
+	deps.Ctx = ctx
+	deps.Provider = blockingProvider{}
+	c := NewChatOverlay(deps)
+
+	c.input.SetValue("first")
+	c, _ = c.send()
+	old := c.turn
+	c = c.Cancel()
+	c.input.SetValue("second")
+	c, _ = c.send()
+	if !c.busy || c.cancel == nil {
+		t.Fatal("precondition: the second turn is in flight")
+	}
+	if c.turn == old {
+		t.Fatal("a new turn must not share the cancelled turn's identity")
+	}
+
+	// The cancelled turn's goroutine is still winding down: a straggling
+	// token and its ctx.Canceled done event both arrive tagged with the OLD
+	// turn. Neither may touch the overlay.
+	c, _ = c.Update(chatEventMsg{token: "stale", turn: old})
+	if strings.Contains(c.partial, "stale") {
+		t.Fatalf("a cancelled turn's token must not stream under the new reply: %q", c.partial)
+	}
+	c, _ = c.Update(chatEventMsg{done: true, err: context.Canceled, turn: old})
+	if !c.busy {
+		t.Fatal("the old turn's done event must not clear busy — the new turn is still running")
+	}
+	if c.cancel == nil {
+		t.Fatal("the old turn's done event must not drop the new turn's cancel: esc could no longer stop it")
+	}
+	for _, line := range c.transcript {
+		if strings.Contains(line, "error:") {
+			t.Fatalf("the old turn's error must not be rendered as the new turn's: %q", line)
+		}
+	}
+	// A third send while the second runs must still be refused.
+	c.input.SetValue("third")
+	before := len(c.history)
+	c, _ = c.send()
+	if len(c.history) != before {
+		t.Fatal("a send must be refused while a turn is in flight")
+	}
+
+	// The CURRENT turn's done event still lands.
+	c, _ = c.Update(chatEventMsg{done: true, text: "two", turn: c.turn})
+	if c.busy || c.cancel != nil {
+		t.Fatal("the current turn's done event must clear busy and cancel")
+	}
+	if last := c.transcript[len(c.transcript)-1]; last != "two" {
+		t.Fatalf("current turn's reply missing, transcript ends with %q", last)
+	}
+}
+
+// blockingProvider never answers: Generate waits for ctx to be cancelled
+// and returns its error, so a turn stays in flight for exactly as long as
+// the test wants it to.
+type blockingProvider struct{}
+
+func (blockingProvider) Generate(ctx context.Context, _ string, _ []llm.Message, _ []llm.Tool, _ chan<- string) ([]llm.ToolCall, string, error) {
+	<-ctx.Done()
+	return nil, "", ctx.Err()
+}
+
+// The list_snapshots tool answers from the shell's shared snapshot cache, so
+// a snapshot taken this session must be in its answer once the shell has
+// reloaded — the tool used to serve the launch-time list all session.
+func TestChat_ListSnapshotsSeesReloadedList(t *testing.T) {
+	r := newFlowRepo(t)
+	p := &llm.FakeProvider{Steps: []llm.FakeStep{
+		{ToolCalls: []llm.ToolCall{{ID: "t1", Name: "list_snapshots", Input: map[string]any{}}}},
+		{Text: "done"},
+	}}
+	app := NewApp(Deps{Repo: r, RepoName: "x", Provider: p})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+
+	seedTaggedSnaps(t, r, "fresh")
+	app = reloadAfterOp(t, app)
+	want, err := r.ListSnapshots(context.Background())
+	if err != nil || len(want) != 1 {
+		t.Fatalf("precondition: one fresh snapshot, got %d %v", len(want), err)
+	}
+
+	m, _ = app.Update(tea.KeyMsg{Type: tea.KeyCtrlA})
+	app, cmd := typeAndSend(t, m.(App), "list my snapshots")
+	_, _ = drainTurn(t, app, cmd)
+	if len(p.Calls) != 2 {
+		t.Fatalf("expected 2 provider rounds, got %d", len(p.Calls))
+	}
+	last := p.Calls[1].Msgs[len(p.Calls[1].Msgs)-1]
+	if last.ToolResult == nil || !strings.Contains(last.ToolResult.Content, want[0].ID) {
+		t.Fatalf("list_snapshots must answer from the reloaded list (want %s): %+v", want[0].ID, last)
+	}
+}

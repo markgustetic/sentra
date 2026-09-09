@@ -1999,25 +1999,55 @@ func TestApp_EscFromReadOnlyScreenReturnsToRail(t *testing.T) {
 }
 
 // Escaping a running operation cancels it immediately — no confirm modal.
+// Both routes to the cancel are pinned: the launching view consumes esc in
+// its running stage and emits cancelOpMsg itself, and a view with no use for
+// esc (the plain snapshots list) falls through to the shell's own cancel.
 func TestApp_EscDuringRunningOpCancelsImmediately(t *testing.T) {
-	app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup")
-	// Simulate a running backup: the view is in its running stage and the App
-	// holds the op guard with a cancel hook we can observe.
-	bv := app.views[app.active].model.(BackupView)
-	bv.stage = backupRunning
-	app.views[app.active].model = bv
-	app.opRunning = "backup"
-	canceled := false
-	app.opCancel = func() { canceled = true }
+	t.Run("launching view", func(t *testing.T) {
+		app := focusView(t, sizedApp(t, newFlowRepo(t)), "backup")
+		// Simulate a running backup: the view is in its running stage and the
+		// App holds the op guard with a cancel hook we can observe.
+		bv := app.views[app.active].model.(BackupView)
+		bv.stage = backupRunning
+		app.views[app.active].model = bv
+		app.opRunning = "backup"
+		canceled := false
+		app.opCancel = func() { canceled = true }
 
-	m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
-	app = m.(App)
-	if len(app.modals) != 0 {
-		t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
-	}
-	if !canceled {
-		t.Error("esc during a running op must cancel it immediately")
-	}
+		m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		app = m.(App)
+		if len(app.modals) != 0 {
+			t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
+		}
+		for _, msg := range execCmds(t, cmd) { // the view's own cancelOpMsg
+			m, _ = app.Update(msg)
+			app = m.(App)
+		}
+		if !canceled {
+			t.Error("esc during a running op must cancel it immediately")
+		}
+	})
+	t.Run("view with no use for esc", func(t *testing.T) {
+		app := focusView(t, sizedApp(t, newFlowRepo(t)), "snapshots")
+		if app.contentConsumesEscape() {
+			t.Fatal("precondition: the snapshots list must not consume esc")
+		}
+		app.opRunning = "backup"
+		canceled := false
+		app.opCancel = func() { canceled = true }
+
+		m, _ := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+		app = m.(App)
+		if len(app.modals) != 0 {
+			t.Errorf("esc during a running op must not pop a modal, modals=%d", len(app.modals))
+		}
+		if !canceled {
+			t.Error("esc during a running op must cancel it immediately")
+		}
+		if app.focus != focusContent {
+			t.Error("esc that cancelled an op must not also leave the view")
+		}
+	})
 }
 
 // TestApp_DataViewsRefreshAfterBackup locks the wiring the per-view reload
@@ -2657,5 +2687,152 @@ func TestApp_DownOnTheRescanRowStaysInTheWizard(t *testing.T) {
 
 	if app.active != activeBefore || app.focus != focusContent {
 		t.Fatalf("↓ on the rescan row left the wizard: active=%q focus=%v", app.views[app.active].id, app.focus)
+	}
+}
+
+// TestApp_EscWithOpRunningAsksTheFocusedViewFirst pins the routing RULE for
+// esc while an operation runs: the focused view is asked first, and only when
+// nothing on screen means something by esc does the shell fall back to
+// cancelling the op. The bug this catches: a backup running in the background
+// while the operator browsed Snapshots' detail — esc there cancelled the
+// backup instead of closing the detail, because the op-running branch sat
+// ABOVE the consumes-escape branch. Every escape-consuming view shares the
+// route, so the table sweeps more than one.
+func TestApp_EscWithOpRunningAsksTheFocusedViewFirst(t *testing.T) {
+	cases := []struct {
+		name  string
+		view  string
+		arm   func(t *testing.T, app *App) // put the view in an esc-consuming stage
+		still func(t *testing.T, app App) bool
+	}{
+		{
+			name: "snapshots detail",
+			view: "snapshots",
+			arm: func(t *testing.T, app *App) {
+				sv := app.views[app.active].model.(Snapshots)
+				sv.detailOpen = true
+				app.views[app.active].model = sv
+			},
+			still: func(t *testing.T, app App) bool {
+				return app.views[app.active].model.(Snapshots).detailOpen
+			},
+		},
+		{
+			name: "diff second picker",
+			view: "diff",
+			arm: func(t *testing.T, app *App) {
+				dv := app.views[app.active].model.(Diff)
+				dv.stage = diffPickB
+				app.views[app.active].model = dv
+			},
+			still: func(t *testing.T, app App) bool {
+				return app.views[app.active].model.(Diff).stage == diffPickB
+			},
+		},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			app := focusView(t, sizedApp(t, newFlowRepo(t)), tc.view)
+			tc.arm(t, &app)
+			if !app.contentConsumesEscape() {
+				t.Fatal("precondition: the armed view must consume esc")
+			}
+			app.opRunning = "backup"
+			canceled := false
+			app.opCancel = func() { canceled = true }
+
+			m, cmd := app.Update(tea.KeyMsg{Type: tea.KeyEsc})
+			app = m.(App)
+			for _, msg := range execCmds(t, cmd) {
+				if _, ok := msg.(cancelOpMsg); ok {
+					t.Fatal("a view that consumes esc must not route it into a cancel")
+				}
+			}
+			if canceled {
+				t.Fatal("esc on a view that consumes it must not cancel the running op")
+			}
+			if app.opRunning != "backup" {
+				t.Fatalf("op guard = %q, want the backup still running", app.opRunning)
+			}
+			if tc.still(t, app) {
+				t.Fatal("the view never saw esc: its esc-consuming stage is still open")
+			}
+		})
+	}
+}
+
+// settledTicks runs every leaf of cmd concurrently and returns the chrome
+// ticks (uiFrameMsg) that arrive within a short window. Leaves are timers
+// of very different lengths — uiTick fires at uiFrameInterval, the
+// dashboard's refresh at 30s — so running them in sequence would wait out
+// the longest; the ones that do not fire in time are simply not counted.
+func settledTicks(t *testing.T, cmd tea.Cmd) []uiFrameMsg {
+	t.Helper()
+	if cmd == nil {
+		return nil
+	}
+	results := make(chan tea.Msg, 64)
+	run := func(c tea.Cmd) { go func() { results <- c() }() }
+	pending := 1
+	run(cmd)
+	var ticks []uiFrameMsg
+	deadline := time.After(6 * uiFrameInterval)
+	for pending > 0 {
+		select {
+		case msg := <-results:
+			pending--
+			switch m := msg.(type) {
+			case tea.BatchMsg:
+				for _, sub := range m {
+					if sub != nil {
+						pending++
+						run(sub)
+					}
+				}
+			case uiFrameMsg:
+				ticks = append(ticks, m)
+			}
+		case <-deadline:
+			return ticks
+		}
+	}
+	return ticks
+}
+
+// TestApp_RepoReadyKeepsOneChromeTickChain: unlocking rebuilds the shell and
+// runs the rebuilt Init, which arms a fresh chrome tick — while the gate-era
+// chain's next tick is still in flight. Both used to be accepted and both
+// re-armed, so the session ran two chains (twice the repaint rate) from
+// unlock onward. Pumping the outstanding old tick plus everything the rebuilt
+// Init armed must leave exactly one chain alive. splashFrameMsg is guarded
+// the same way (a stale tick must not resurrect the splash).
+func TestApp_RepoReadyKeepsOneChromeTickChain(t *testing.T) {
+	r := newFlowRepo(t)
+	cfg := config.Defaults()
+	app := NewApp(Deps{RepoName: "x", InitialView: "unlock"})
+	sized, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = sized.(App)
+	// The gate-era chain: the tick its launch Init armed, exactly as the
+	// runtime would deliver it after unlock lands.
+	oldTick := settledTicks(t, app.Init())
+	if len(oldTick) != 1 {
+		t.Fatalf("precondition: the launch Init arms one chrome tick, got %d", len(oldTick))
+	}
+
+	m, initCmd := app.Update(repoReadyMsg{repo: r, config: &cfg})
+	app = m.(App)
+	pending := append(oldTick, settledTicks(t, initCmd)...)
+	if len(pending) != 2 {
+		t.Fatalf("precondition: one old tick + one from the rebuilt Init, got %d", len(pending))
+	}
+
+	rearmed := 0
+	for _, tick := range pending {
+		m, cmd := app.Update(tick)
+		app = m.(App)
+		rearmed += len(settledTicks(t, cmd))
+	}
+	if rearmed != 1 {
+		t.Fatalf("re-armed chrome ticks after unlock = %d, want exactly 1 chain", rearmed)
 	}
 }

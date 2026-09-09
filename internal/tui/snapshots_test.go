@@ -579,3 +579,50 @@ func TestSnapshots_OpReloadIsAsync(t *testing.T) {
 		t.Fatalf("applying the reload message should refresh the list, got %d snapshots", len(s.snaps))
 	}
 }
+
+// reloadAfterOp completes a fake op through the shell and pumps the reloads
+// it triggers (the snapshots view's snapshotsReloadedMsg among them), the
+// way TestApp_DataViewsRefreshAfterBackup does.
+func reloadAfterOp(t *testing.T, app App) App {
+	t.Helper()
+	m, cmd := app.Update(backupDoneMsg{})
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	return app
+}
+
+// TestApp_SharedSnapshotLoadIsLive pins the RULE behind every launch-time
+// consumer of the shared load: it is a cache the shell refreshes on every
+// snapshot reload, not a snapshot of launch. The consumers that rebuild from
+// Deps mid-session — restore's "another" reset, diff, prune's "again", the
+// chat's list_snapshots — read it through initialSnapshots, so a stale cache
+// made all of them act on launch-time data for the whole session.
+func TestApp_SharedSnapshotLoadIsLive(t *testing.T) {
+	r := newFlowRepo(t)
+	app := NewApp(Deps{Repo: r, RepoName: "x"})
+	m, _ := app.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
+	app = m.(App)
+	if snaps, _ := initialSnapshots(app.Deps()); len(snaps) != 0 {
+		t.Fatalf("precondition: launched on an empty repo, cache holds %d", len(snaps))
+	}
+
+	seedTaggedSnaps(t, r, "fresh") // a backup lands this session
+	app = reloadAfterOp(t, app)
+
+	snaps, err := initialSnapshots(app.Deps())
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("shared load after reload = %d snapshots, %v; want the fresh one", len(snaps), err)
+	}
+	// The rebuild paths read the same cache.
+	rv := app.views[indexOf(app, "restore")].model.(RestoreView)
+	reset, _ := rv.resetTo()
+	if got := len(reset.(RestoreView).snaps); got != 1 {
+		t.Errorf("restore 'another' reset sees %d snapshots, want 1", got)
+	}
+	if got := len(NewDiff(app.Deps()).snaps); got != 1 {
+		t.Errorf("a diff rebuilt from Deps sees %d snapshots, want 1", got)
+	}
+}
