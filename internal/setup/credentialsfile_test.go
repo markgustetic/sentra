@@ -119,6 +119,61 @@ func TestWriteAWSCredentialsProfile(t *testing.T) {
 	}
 }
 
+// TestWriteAWSCredentialsProfile_WritesThroughSymlink is the dotfiles rule
+// applied to ~/.aws/credentials: operators keep it in a managed directory
+// behind a symlink just as they keep sentra.yaml, and renaming the temp
+// file over the link would swap the link for a regular file — the AWS CLI
+// would keep working while the dotfiles repo silently stopped seeing the
+// file. The write must land in the link's target and leave the link
+// standing, with no temp file in either directory.
+func TestWriteAWSCredentialsProfile_WritesThroughSymlink(t *testing.T) {
+	dir := t.TempDir()
+	realDir := filepath.Join(dir, "dotfiles")
+	if err := os.Mkdir(realDir, 0o700); err != nil {
+		t.Fatal(err)
+	}
+	target := filepath.Join(realDir, "credentials")
+	existing := "[work]\naws_access_key_id = AKIAWORK\n"
+	if err := os.WriteFile(target, []byte(existing), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	link := filepath.Join(dir, "credentials")
+	if err := os.Symlink(target, link); err != nil {
+		t.Fatal(err)
+	}
+
+	if err := WriteAWSCredentialsProfile(link, "sentra", testKeyID, testSecret); err != nil {
+		t.Fatalf("WriteAWSCredentialsProfile through symlink: %v", err)
+	}
+
+	fi, err := os.Lstat(link)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if fi.Mode()&os.ModeSymlink == 0 {
+		t.Errorf("write replaced the symlink with a %v; the dotfiles link is severed", fi.Mode())
+	}
+	got, err := os.ReadFile(target)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := existing + "\n[sentra]\naws_access_key_id = " + testKeyID + "\naws_secret_access_key = " + testSecret + "\n"
+	if string(got) != want {
+		t.Errorf("link target content mismatch\n--- got\n%s\n--- want\n%s", got, want)
+	}
+	for _, d := range []string{dir, realDir} {
+		entries, err := os.ReadDir(d)
+		if err != nil {
+			t.Fatal(err)
+		}
+		for _, e := range entries {
+			if strings.Contains(e.Name(), ".tmp") {
+				t.Errorf("%s holds a temp file after the write: %s", d, e.Name())
+			}
+		}
+	}
+}
+
 func TestCheckAWSCredentialsProfileFree(t *testing.T) {
 	dir := t.TempDir()
 	path := filepath.Join(dir, "credentials")

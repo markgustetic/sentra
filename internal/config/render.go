@@ -1,13 +1,13 @@
 package config
 
 import (
-	"errors"
 	"fmt"
-	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"github.com/markgustetic/sentra/internal/atomicfile"
 )
 
 // defaultAgentProvider / defaultAgentModel are the documented agent
@@ -182,11 +182,14 @@ func writeYAMLStringList(b *strings.Builder, key string, values []string) {
 // To change one field of an existing file, use Update. Passing a Config from
 // Load to Write silently persists that process's SENTRA_* overrides.
 //
-// The replacement is atomic (temp file + rename, see writeAtomic): a crash
-// mid-write must never leave a truncated sentra.yaml, because an empty file
-// still counts as configured (ConfigExists) yet loads as bucket "" — the next
-// launch lands on the connect gate with the bucket, profile and every policy
-// gone, and nothing on screen says why.
+// The replacement is atomic and written through a symlinked path
+// (atomicfile.Write): a crash mid-write must never leave a truncated
+// sentra.yaml, because an empty file still counts as configured
+// (ConfigExists) yet loads as bucket "" — the next launch lands on the
+// connect gate with the bucket, profile and every policy gone, and nothing
+// on screen says why. And a sentra.yaml kept in a dotfiles repo behind a
+// symlink must stay a symlink across every settings toggle, policy add or
+// passwd forget.
 func Write(path string, cfg *Config) error {
 	// The user-level fallback path (~/.config/sentra/sentra.yaml) may be
 	// the first thing ever written there; create the directory rather
@@ -194,99 +197,7 @@ func Write(path string, cfg *Config) error {
 	if err := os.MkdirAll(filepath.Dir(path), 0o700); err != nil {
 		return fmt.Errorf("create config dir %s: %w", filepath.Dir(path), err)
 	}
-	body := Render(cfg)
-	return writeAtomic(path, func(w io.Writer) error {
-		_, err := w.Write(body)
-		return err
-	})
-}
-
-// writeAtomic streams write's output into a 0o600 temp file beside path,
-// fsyncs it, and renames it over path, so readers only ever observe the old
-// file or the complete new one. Every failure leg removes the temp file: a
-// stray `.sentra-*.tmp` beside the config would otherwise outlive the crash
-// it was meant to protect against. The temp file lives in the target's
-// directory because rename is atomic only within one filesystem. Same shape
-// as the credentials-file writer in internal/setup.
-//
-// write is a callback rather than a finished []byte so a test can fail
-// midway through the write and prove the previous file survives; Write
-// itself just hands over the completed render.
-//
-// A symlinked path is written through, not replaced. Operators keep
-// sentra.yaml in a dotfiles repo behind a symlink (stow, chezmoi, `ln -s`),
-// and renaming the temp file over the link would swap the link for a
-// regular file — severing the dotfiles on every settings toggle, policy add
-// or passwd forget, which the plain os.WriteFile this replaced never did.
-// So when path is a symlink it is resolved with EvalSymlinks and the
-// resolved file is what gets staged beside and renamed over. A dangling
-// link is an error rather than a fresh file: creating a regular file at the
-// link's path is the same severing, and inventing the target's directory
-// writes where nobody asked. A path that does not exist at all stays as
-// given, so a fresh config lands exactly where the operator named it.
-func writeAtomic(path string, write func(w io.Writer) error) error {
-	target, err := resolveWriteTarget(path)
-	if err != nil {
-		return err
-	}
-	dir := filepath.Dir(target)
-	tmp, err := os.CreateTemp(dir, ".sentra-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp config file in %s: %w", dir, err)
-	}
-	tmpPath := tmp.Name()
-	fail := func(step string, err error) error {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("%s %s: %w", step, path, err)
-	}
-	if err := write(tmp); err != nil {
-		return fail("write", err)
-	}
-	// CreateTemp already opens 0o600 and a umask can only clear bits from
-	// that, so this is belt and braces: restore 0o600 explicitly in case a
-	// platform's CreateTemp decides otherwise; the file names the bucket
-	// and region.
-	if err := tmp.Chmod(0o600); err != nil {
-		return fail("chmod", err)
-	}
-	// Sync before rename: on a power loss, an unsynced rename can land the
-	// new name on zero-length content — exactly the empty file this exists
-	// to prevent.
-	if err := tmp.Sync(); err != nil {
-		return fail("sync", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close %s: %w", path, err)
-	}
-	if err := os.Rename(tmpPath, target); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	return nil
-}
-
-// resolveWriteTarget returns the file writeAtomic should stage beside and
-// rename over: path itself unless path is a symlink, in which case the
-// fully resolved target. See writeAtomic for why a link is written through
-// and why a dangling one fails instead of being overwritten.
-func resolveWriteTarget(path string) (string, error) {
-	fi, err := os.Lstat(path)
-	if err != nil {
-		if errors.Is(err, os.ErrNotExist) {
-			return path, nil
-		}
-		return "", fmt.Errorf("stat %s: %w", path, err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		return path, nil
-	}
-	target, err := filepath.EvalSymlinks(path)
-	if err != nil {
-		return "", fmt.Errorf("resolve symlink %s: %w", path, err)
-	}
-	return target, nil
+	return atomicfile.Write(path, Render(cfg), 0o600)
 }
 
 // Update applies mutate to the config as it exists on disk and writes the
