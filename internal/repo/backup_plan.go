@@ -83,7 +83,12 @@ func PlanSnapshot(ctx context.Context, root string, opts SnapshotOptions) (Backu
 		Files:     make([]BackupPlanFile, 0),
 	}
 
-	entries, err := collectPlanEntries(ctx, absRoot, plan.Options.toWalkerOptions())
+	// The plan file is JSON, so a callback cannot ride in plan.Options;
+	// re-attach the caller's for this walk (either seat, see
+	// chainSkips) or `backup plan` would drop a denied folder without
+	// a word, and the operator would review a plan short of it.
+	entries, err := collectPlanEntries(ctx, absRoot,
+		plan.Options.toWalkerOptions(chainSkips(opts.OnSkip, walkerOpts.OnSkip)))
 	if err != nil {
 		return BackupPlan{}, err
 	}
@@ -104,7 +109,13 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 	if err := validateBackupPlanShape(plan); err != nil {
 		return SnapshotInfo{}, err
 	}
-	entries, err := validatePlanAgainstDisk(ctx, plan)
+	// Apply walks the tree twice — drift validation here, then the
+	// dirs/symlinks pass below — and both cross the same denied
+	// subtrees. Only this walk counts and reports them, so the
+	// operator hears about a folder once and the stats say 1, not 2.
+	state := &snapState{}
+	entries, err := validatePlanAgainstDisk(ctx, plan,
+		state.countSkips(chainSkips(opts.OnSkip, opts.Walker.OnSkip)))
 	if err != nil {
 		return SnapshotInfo{}, err
 	}
@@ -133,7 +144,6 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 	}
 	reporter.Total(plan.Stats.Bytes)
 
-	state := &snapState{}
 	for _, e := range entries {
 		if err := ctx.Err(); err != nil {
 			return SnapshotInfo{}, err
@@ -153,8 +163,9 @@ func (r *Repo) CreateSnapshotFromPlan(ctx context.Context, plan BackupPlan, opts
 	// (what gets read and uploaded). Dirs and symlinks upload nothing,
 	// so re-walking them here keeps apply-created snapshots at the
 	// same tree fidelity as direct backups without changing what the
-	// operator reviewed.
-	wopts := plan.Options.toWalkerOptions()
+	// operator reviewed. No OnSkip: the validation walk above already
+	// reported every denied subtree this one will cross.
+	wopts := plan.Options.toWalkerOptions(nil)
 	wopts.IncludeNonRegular = true
 	if err := walker.Walk(ctx, plan.Root, wopts, func(e walker.Entry) error {
 		if e.Kind == walker.KindFile {
@@ -180,7 +191,11 @@ func backupPlanOptionsFromWalker(opts walker.Options) BackupPlanOptions {
 	}
 }
 
-func (o BackupPlanOptions) toWalkerOptions() walker.Options {
+// toWalkerOptions rebuilds walker options from the reviewed subset.
+// onSkip is a parameter because the plan is a JSON file and cannot
+// carry a callback: every walk that starts from a plan has to be
+// handed its listener explicitly, or it walks deaf.
+func (o BackupPlanOptions) toWalkerOptions(onSkip func(string, error)) walker.Options {
 	ignoreFile := o.IgnoreFile
 	if ignoreFile == "" {
 		ignoreFile = ".sentraignore"
@@ -188,6 +203,7 @@ func (o BackupPlanOptions) toWalkerOptions() walker.Options {
 	return walker.Options{
 		IgnoreFile:    ignoreFile,
 		ExcludeCaches: o.ExcludeCaches,
+		OnSkip:        onSkip,
 	}
 }
 
@@ -258,8 +274,8 @@ func validateBackupPlanShape(plan BackupPlan) error {
 	return nil
 }
 
-func validatePlanAgainstDisk(ctx context.Context, plan BackupPlan) ([]walker.Entry, error) {
-	current, err := collectPlanEntries(ctx, plan.Root, plan.Options.toWalkerOptions())
+func validatePlanAgainstDisk(ctx context.Context, plan BackupPlan, onSkip func(string, error)) ([]walker.Entry, error) {
+	current, err := collectPlanEntries(ctx, plan.Root, plan.Options.toWalkerOptions(onSkip))
 	if err != nil {
 		return nil, err
 	}

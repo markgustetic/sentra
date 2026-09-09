@@ -124,6 +124,7 @@ func (r *Repo) finishSnapshot(
 		Files:    state.fileCount(),
 		Bytes:    state.totalBytes(),
 		NewBytes: state.newBytes(),
+		Skipped:  state.skipCount(),
 	}
 
 	id, err := newSnapshotID(time.Now().UTC())
@@ -215,6 +216,29 @@ type snapState struct {
 	bytes    int64
 	uploaded int64
 	files    int
+	skipped  int
+}
+
+// countSkips returns the walker.Options.OnSkip to install for one
+// walk: it records every denied subtree in the stats, then forwards
+// to the caller's callback (nil when nobody is listening). The count
+// lives on the state rather than in a closure-local so finishSnapshot
+// reads it the way it reads every other stat.
+func (s *snapState) countSkips(forward func(string, error)) func(string, error) {
+	return func(path string, err error) {
+		s.mu.Lock()
+		s.skipped++
+		s.mu.Unlock()
+		if forward != nil {
+			forward(path, err)
+		}
+	}
+}
+
+func (s *snapState) skipCount() int {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.skipped
 }
 
 // add records a captured entry and the size of the new (uploaded)

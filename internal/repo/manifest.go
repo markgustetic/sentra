@@ -85,6 +85,14 @@ type SnapshotStats struct {
 	// snapshot do not contribute. Useful for "how big was this delta?"
 	// questions in the UI.
 	NewBytes int64 `json:"new_bytes"`
+	// Skipped is the number of subtrees the walk dropped because their
+	// directory listing was denied (TCC-protected folders under
+	// ~/Library on macOS). The snapshot succeeded without them, so the
+	// count travels with the stats: a backup that omitted a folder
+	// must say so in every summary, not only on the terminal that
+	// happened to be attached when it ran. omitempty keeps manifests
+	// from before the field byte-identical on re-encode.
+	Skipped int `json:"skipped,omitempty"`
 }
 
 // Manifest is the snapshot's file tree and metadata. JSON-encoded then

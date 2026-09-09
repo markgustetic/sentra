@@ -63,6 +63,10 @@ type snapshotJSONRow struct {
 	Files     int       `json:"files"`
 	Bytes     int64     `json:"bytes"`
 	NewBytes  int64     `json:"new_bytes"`
+	// Skipped is always emitted, zero included: a consumer deciding
+	// whether a backup was complete should not have to treat an
+	// absent key as "none" and a missing field as the same thing.
+	Skipped int `json:"skipped"`
 }
 
 // runSnapshots is the body of `sentra snapshots`.
@@ -106,6 +110,7 @@ func writeSnapshotsJSON(w io.Writer, snaps []repo.SnapshotInfo) error {
 			Files:     s.Stats.Files,
 			Bytes:     s.Stats.Bytes,
 			NewBytes:  s.Stats.NewBytes,
+			Skipped:   s.Stats.Skipped,
 		})
 	}
 	enc := json.NewEncoder(w)

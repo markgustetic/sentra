@@ -5,6 +5,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"io/fs"
 	"os"
 	"sync"
 	"time"
@@ -153,7 +154,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 	// state. Stop+drain on completion so the final newline lands
 	// after the bar's last frame, not in the middle of it.
 	progress := ui.NewByteProgress(0)
-	stop := startProgressPainter(stderr, progress)
+	painter := startProgressPainter(stderr, progress)
 
 	// Plumb cfg.Backup.* into the walker options so sentra.yaml's
 	// ignore_file / exclude_caches keys actually drive behaviour. We
@@ -168,13 +169,17 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 	}
 	normalizeBackupWalkerOptions(&walkerOpts)
 
+	// Skipped folders are told as they happen, on stderr beside the
+	// bar — under --json too, since stdout must stay one JSON
+	// document — and counted again in the summary.
 	snap, snapErr := r.CreateSnapshot(cmd.Context(), path, repo.SnapshotOptions{
 		Tag:         tag,
 		Progress:    progress,
 		Walker:      walkerOpts,
 		ForceRescan: rescan,
+		OnSkip:      func(p string, err error) { painter.note(skipLine(p, err)) },
 	})
-	stop()
+	painter.stop()
 	if snapErr != nil {
 		return fmt.Errorf("snapshot: %w", snapErr)
 	}
@@ -190,6 +195,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 			Files:     snap.Stats.Files,
 			Bytes:     snap.Stats.Bytes,
 			NewBytes:  snap.Stats.NewBytes,
+			Skipped:   snap.Stats.Skipped,
 		}); err != nil {
 			return fmt.Errorf("encode json: %w", err)
 		}
@@ -201,7 +207,17 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 	fmt.Fprintf(stdout, "  files:     %d\n", snap.Stats.Files)
 	fmt.Fprintf(stdout, "  bytes:     %s (%d)\n", ui.FormatBytes(snap.Stats.Bytes), snap.Stats.Bytes)
 	fmt.Fprintf(stdout, "  uploaded:  %s (%d new)\n", ui.FormatBytes(snap.Stats.NewBytes), snap.Stats.NewBytes)
+	writeSkippedLine(stdout, snap.Stats.Skipped)
 	return nil
+}
+
+// writeSkippedLine appends the summary's skip count. It is a warning,
+// so it appears only when there is one: a "skipped: 0" on every clean
+// run would train the eye to ignore the line that matters.
+func writeSkippedLine(w io.Writer, skipped int) {
+	if skipped > 0 {
+		fmt.Fprintf(w, "  skipped:   %d\n", skipped)
+	}
 }
 
 func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outPath string) error {
@@ -224,9 +240,14 @@ func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outP
 	}
 	normalizeBackupWalkerOptions(&walkerOpts)
 
+	// No progress bar here, so skip lines go straight to stderr; the
+	// reviewer must learn a folder is missing from the plan before
+	// approving it.
+	stderr := cmdStderr(cmd, deps.Stderr)
 	plan, err := repo.PlanSnapshot(cmd.Context(), path, repo.SnapshotOptions{
 		Tag:    tag,
 		Walker: walkerOpts,
+		OnSkip: func(p string, err error) { fmt.Fprintln(stderr, skipLine(p, err)) },
 	})
 	if err != nil {
 		return fmt.Errorf("plan backup: %w", err)
@@ -291,9 +312,12 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	}
 
 	progress := ui.NewByteProgress(0)
-	stop := startProgressPainter(stderr, progress)
-	snap, snapErr := r.CreateSnapshotFromPlan(cmd.Context(), plan, repo.SnapshotOptions{Progress: progress})
-	stop()
+	painter := startProgressPainter(stderr, progress)
+	snap, snapErr := r.CreateSnapshotFromPlan(cmd.Context(), plan, repo.SnapshotOptions{
+		Progress: progress,
+		OnSkip:   func(p string, err error) { painter.note(skipLine(p, err)) },
+	})
+	painter.stop()
 	if snapErr != nil {
 		return fmt.Errorf("apply backup plan: %w", snapErr)
 	}
@@ -306,6 +330,7 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	fmt.Fprintf(stdout, "  files:     %d\n", snap.Stats.Files)
 	fmt.Fprintf(stdout, "  bytes:     %s (%d)\n", ui.FormatBytes(snap.Stats.Bytes), snap.Stats.Bytes)
 	fmt.Fprintf(stdout, "  uploaded:  %s (%d new)\n", ui.FormatBytes(snap.Stats.NewBytes), snap.Stats.NewBytes)
+	writeSkippedLine(stdout, snap.Stats.Skipped)
 	return nil
 }
 
@@ -328,33 +353,81 @@ func normalizeBackupWalkerOptions(opts *walker.Options) {
 // itself in place. The terminal must support carriage returns —
 // every supported sentra environment (xterm, mac Terminal, iTerm2,
 // Windows Terminal) does.
-func startProgressPainter(w io.Writer, p *ui.ByteProgress) func() {
-	stop := make(chan struct{})
-	var wg sync.WaitGroup
-	wg.Add(1)
+func startProgressPainter(w io.Writer, p *ui.ByteProgress) *progressPainter {
+	pp := &progressPainter{w: w, p: p, stopCh: make(chan struct{})}
+	pp.wg.Add(1)
 	go func() {
-		defer wg.Done()
+		defer pp.wg.Done()
 		ticker := time.NewTicker(progressTickInterval)
 		defer ticker.Stop()
 		for {
 			select {
-			case <-stop:
+			case <-pp.stopCh:
 				return
 			case <-ticker.C:
 				// \r returns the cursor to the start of the line; the
 				// next frame overwrites the previous one. We don't
 				// clear-to-EOL because the rendered string includes
 				// the entire line.
+				pp.mu.Lock()
 				fmt.Fprintf(w, "\r%s", p.Render())
+				pp.mu.Unlock()
 			}
 		}
 	}()
-	return func() {
-		close(stop)
-		wg.Wait()
-		// One final frame so completed runs end at 100% rather than
-		// at whatever the last tick caught. The trailing newline
-		// terminates the in-place rewrite cleanly.
-		fmt.Fprintf(w, "\r%s\n", p.Render())
+	return pp
+}
+
+// progressPainter owns the stderr line the bar repaints in place. Every
+// write to that stream goes through its mutex: the walk reports skipped
+// folders from its own goroutine while the ticker paints, and two
+// unsynchronised writers would interleave a half-drawn frame with the
+// message (and race on a test's bytes.Buffer).
+type progressPainter struct {
+	w      io.Writer
+	p      *ui.ByteProgress
+	mu     sync.Mutex
+	stopCh chan struct{}
+	wg     sync.WaitGroup
+}
+
+// note prints one line above the bar. \r moves to the start of the
+// bar's line so the message overwrites it, and the newline leaves the
+// cursor on a fresh line for the next frame — the bar re-appears
+// under the message on the next tick, and messages stack in order.
+func (pp *progressPainter) note(line string) {
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	// The bar never clears to end of line because every frame has the
+	// same width; a note is usually narrower than the frame it replaces,
+	// so it must erase the tail itself or the bar's remainder survives to
+	// the right of the message.
+	fmt.Fprintf(pp.w, "\r\x1b[K%s\n", line)
+}
+
+// stop ends the repaint loop and paints one final frame so completed
+// runs end at 100% rather than at whatever the last tick caught. The
+// trailing newline terminates the in-place rewrite cleanly.
+func (pp *progressPainter) stop() {
+	close(pp.stopCh)
+	pp.wg.Wait()
+	pp.mu.Lock()
+	defer pp.mu.Unlock()
+	fmt.Fprintf(pp.w, "\r%s\n", pp.p.Render())
+}
+
+// skipLine is the one spelling of a dropped subtree across `backup`,
+// `backup plan/apply`, and `policy run`, so an operator grepping a
+// timer's log and one watching a terminal look for the same words.
+// The walker only skips on a denied listing today; the fallback keeps
+// the line truthful should that ever widen.
+func skipLine(path string, err error) string {
+	reason := "permission denied"
+	switch {
+	case err == nil:
+		reason = "skipped"
+	case !errors.Is(err, fs.ErrPermission):
+		reason = err.Error()
 	}
+	return "skipped " + path + ": " + reason
 }

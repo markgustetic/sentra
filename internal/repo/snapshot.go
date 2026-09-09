@@ -52,10 +52,21 @@ type SnapshotOptions struct {
 	// which the walker treats as ".sentraignore"). See
 	// defaultWalkerOptions for the canonical zero-value handling.
 	Walker walker.Options
+
+	// OnSkip hears about every subtree the walk dropped because its
+	// listing was denied (see walker.Options.OnSkip). It is the seat
+	// the CLI and TUI use to print "skipped <path>" while the backup
+	// runs; the count also lands in SnapshotStats.Skipped whether or
+	// not a callback is set, so a denied folder is never omitted in
+	// silence. Called from the walk's producer goroutine, possibly
+	// while worker callbacks are running — keep it cheap and
+	// concurrency-safe against whatever else the caller touches.
+	// Walker.OnSkip, if also set, still fires.
+	OnSkip func(path string, err error)
 }
 
 // resolveWalkerOptions returns the user-provided walker options if
-// any field has been set; otherwise the legacy defaults
+// any tunable has been set; otherwise the legacy defaults
 // ({ExcludeCaches: true}, which preserves pre-config behaviour).
 //
 // Detection: "zero value" means Concurrency==0, IgnoreFile=="", and
@@ -65,11 +76,37 @@ type SnapshotOptions struct {
 // and the explicit ExcludeCaches=false is honored. The repo's own
 // tests that don't care just use SnapshotOptions{} and get the
 // legacy behaviour for free.
+//
+// OnSkip is not a tunable and is carried through either way: it does
+// not change what the walk yields, only who hears about a denied
+// subtree, and a callback silently dropped by the defaulting is a
+// backup that omits a folder without telling anyone.
 func resolveWalkerOptions(opts walker.Options) walker.Options {
 	if opts.Concurrency == 0 && opts.IgnoreFile == "" && !opts.ExcludeCaches {
-		return walker.Options{ExcludeCaches: true}
+		return walker.Options{ExcludeCaches: true, OnSkip: opts.OnSkip}
 	}
 	return opts
+}
+
+// chainSkips joins the callbacks a caller may have wired into either
+// seat (SnapshotOptions.OnSkip, Walker.OnSkip) into one walker
+// callback. Nil seats are dropped, and no seats yields nil so the
+// walker's own nil check stays meaningful.
+func chainSkips(fns ...func(string, error)) func(string, error) {
+	var live []func(string, error)
+	for _, fn := range fns {
+		if fn != nil {
+			live = append(live, fn)
+		}
+	}
+	if len(live) == 0 {
+		return nil
+	}
+	return func(path string, err error) {
+		for _, fn := range live {
+			fn(path, err)
+		}
+	}
 }
 
 // SnapshotInfo is the lightweight summary returned by CreateSnapshot
@@ -216,6 +253,10 @@ func (r *Repo) CreateSnapshot(ctx context.Context, root string, opts SnapshotOpt
 	// two goroutines independently chunk identical content, the
 	// second Stat will already see the blob the first one Put.
 	state := &snapState{}
+	// Every denied subtree is counted into the stats before the
+	// caller hears of it, so the manifest records the omission even
+	// when nobody wired a callback.
+	walkerOpts.OnSkip = state.countSkips(chainSkips(opts.OnSkip, walkerOpts.OnSkip))
 
 	// Incremental scan: files whose size AND mtime match the newest
 	// prior snapshot of the same root reuse that snapshot's chunk

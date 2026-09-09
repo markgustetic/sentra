@@ -127,6 +127,23 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   access/settings, and repo health, but must not create buckets, change bucket
   settings, initialize repos, or write config.
 - `sentra check` is the shared integrity surface for CLI and TUI operations.
+- **A skipped folder is never silent.** The walker drops a subdirectory
+  whose listing is denied (`fs.ErrPermission`; TCC-protected folders under
+  `~/Library` on macOS) and keeps going, so the snapshot succeeds short of
+  it. Every surface that takes a snapshot must say so: `SnapshotOptions.OnSkip`
+  is the seat the CLI and TUI wire (`resolveWalkerOptions` carries a
+  `Walker.OnSkip` through its zero-value defaulting, and plan-driven walks
+  re-attach it from `SnapshotOptions` because the JSON plan cannot hold a
+  callback), and `SnapshotStats.Skipped` records the count in the manifest
+  whether or not anyone listened. `backup` / `backup plan` / `backup apply`
+  print `skipped <path>: permission denied` on stderr as it happens (beside
+  the progress bar, and under `--json` too so stdout stays one document);
+  `policy run` prints the same line to its log; `--json` rows, the TUI
+  backup and job-run done screens, and `confirm_backup` carry the count.
+  Human summaries show the count only when it is non-zero — it is a
+  warning — while JSON always emits it. A new snapshot-taking surface
+  must wire `OnSkip` or show `Stats.Skipped`; the walker's silent default
+  is for library callers, not operators.
 - Config rewrites must not persist env overrides. `config.Load` returns the
   *resolved* config (sentra.yaml + `SENTRA_*` overlay); rendering that back to
   disk would make a transient override permanent. To change a field of an
