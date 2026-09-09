@@ -59,7 +59,9 @@ func writeFrom(path string, perm os.FileMode, write func(w io.Writer) error) err
 	dir := filepath.Dir(target)
 	tmp, err := os.CreateTemp(dir, "."+filepath.Base(target)+"-*.tmp")
 	if err != nil {
-		return fmt.Errorf("create temp file in %s: %w", dir, err)
+		// Name both: the caller knows path, but through a symlink the
+		// directory that refused the temp file can sit in another tree.
+		return fmt.Errorf("create temp file for %s in %s: %w", path, dir, err)
 	}
 	tmpPath := tmp.Name()
 	fail := func(step string, err error) error {

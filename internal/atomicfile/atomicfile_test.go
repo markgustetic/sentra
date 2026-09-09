@@ -137,10 +137,20 @@ func TestWrite_FailedRenameCleansUp(t *testing.T) {
 // TestWrite_MissingDirFails pins that Write does not invent the target's
 // parent: creating directories is the caller's decision (config creates
 // ~/.config/sentra private; a typo'd path must not gain a directory).
+// The error names both the file the caller asked for and the directory
+// the temp file could not be created in: through a symlink the two can
+// sit in different trees, and the caller only knows the first.
 func TestWrite_MissingDirFails(t *testing.T) {
 	path := filepath.Join(t.TempDir(), "missing", "target")
-	if err := Write(path, []byte("body\n"), 0o600); err == nil {
+	err := Write(path, []byte("body\n"), 0o600)
+	if err == nil {
 		t.Fatal("Write into a missing directory succeeded, want an error")
+	}
+	if !strings.Contains(err.Error(), path) {
+		t.Errorf("error %q does not name the target %s", err, path)
+	}
+	if !strings.Contains(err.Error(), filepath.Dir(path)) {
+		t.Errorf("error %q does not name the directory %s", err, filepath.Dir(path))
 	}
 	if _, err := os.Lstat(filepath.Dir(path)); !errors.Is(err, os.ErrNotExist) {
 		t.Errorf("Write created the missing parent directory (lstat err = %v)", err)
