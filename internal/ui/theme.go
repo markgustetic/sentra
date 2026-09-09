@@ -224,7 +224,9 @@ func TableStyles() table.Styles {
 // marker its Selected style emitted, and every other line — header and
 // rule included — is indented by TableGutter so the columns stay aligned.
 // Callers use this in place of t.View(); through the raw View the cursor
-// row sits two cells right of every other row.
+// row sits two cells right of every other row. A table rendered through
+// it must never have SetWidth applied — the gutter would be truncated
+// off the cursor row; budget the columns to the pane instead.
 func TableView(t table.Model) string {
 	lines := strings.Split(t.View(), "\n")
 	for i, line := range lines {

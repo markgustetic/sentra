@@ -141,9 +141,19 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			KeepMonthly: deps.Config.Retention.KeepMonthly,
 		}
 	}
+	// Resolve the stored paths now, on the UI goroutine; a tilde with no
+	// home is a run failure (reported through the ordinary done message,
+	// failure hooks included), never a snapshot of <cwd>/docs under the
+	// policy's tag.
 	paths := make([]string, 0, len(p.Paths))
+	var pathErr error
 	for _, path := range p.Paths {
-		paths = append(paths, policycfg.NormalizePath(path, home))
+		abs, err := expandPath(path, home)
+		if err != nil {
+			pathErr = err
+			break
+		}
+		paths = append(paths, abs)
 	}
 	tag := policyRunTag(name, p.Tags)
 	doCheck := p.AfterBackup.Check
@@ -161,6 +171,9 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			var hookOut bytes.Buffer
 			count := 0
 			runErr := func() error {
+				if pathErr != nil {
+					return pathErr
+				}
 				if hooks.Before != "" {
 					if err := policycfg.RunHook(ctx, &hookOut, "before", hooks.Before); err != nil {
 						return err

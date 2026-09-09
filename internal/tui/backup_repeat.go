@@ -38,6 +38,12 @@ func (repeatInstalledMsg) opResult() {}
 // TUI with no esc. Under the guard it is serialized with every other
 // mutation, cancellable, and drawn with a spinner. Leaving Confirm blurs
 // the tag: nothing renders it on the Installing stage.
+//
+// root is resolved ONCE here and the same value goes to both the op and
+// the result: installRepeat resolving on its own would let the path on
+// disk and the in-memory mirror finishRepeatInstall applies diverge. A
+// refused root (a tilde with no home) never reaches the guard — it is
+// the result the confirm stage shows.
 func (v BackupView) startRepeatInstall(root, name string, schedule config.PolicySchedule, tag string) (tea.Model, tea.Cmd) {
 	v.confirm.blur()
 	v.stage = backupInstalling
@@ -47,10 +53,14 @@ func (v BackupView) startRepeatInstall(root, name string, schedule config.Policy
 	if tag = strings.TrimSpace(tag); tag != "" {
 		tags = []string{tag}
 	}
+	root, rootErr := absPath(root)
 	install := v.installRepeat
 	start := startOpMsg{
 		name: repeatInstallOpName,
 		run: func(ctx context.Context) tea.Msg {
+			if rootErr != nil {
+				return repeatInstalledMsg{name: name, err: rootErr}
+			}
 			err := install(ctx, root, name, schedule, tag)
 			return repeatInstalledMsg{root: root, name: name, schedule: schedule, tags: tags, err: err}
 		},
@@ -130,14 +140,19 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 	}
 	// The picker hands over absolute directories; the chat intent may
 	// not. Resolve before the collision check and the write, so the
-	// policy the timer runs names the directory that was confirmed.
-	root = absPath(root)
+	// policy the timer runs names the directory that was confirmed
+	// (idempotent on the already-resolved root startRepeatInstall
+	// passes). A tilde with no home is an error, never a cwd guess.
+	root, err := absPath(root)
+	if err != nil {
+		return err
+	}
 	schedule = policycfg.NormalizeSchedule(schedule)
 	var tags []string
 	if tag = strings.TrimSpace(tag); tag != "" {
 		tags = []string{tag}
 	}
-	err := config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
+	err = config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
 		}

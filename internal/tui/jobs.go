@@ -347,7 +347,7 @@ func (v *JobsView) reload() tea.Cmd {
 		row.next, row.nextOK = jobNextRun(row, p.Schedule, nowT)
 		abs := make([]string, 0, len(p.Paths))
 		for _, path := range p.Paths {
-			abs = append(abs, policycfg.NormalizePath(path, home))
+			abs = append(abs, expandPathOrRaw(path, home))
 		}
 		if last, ok := policycfg.LastRun(name, abs, v.snaps); ok {
 			row.lastID, row.lastAt = last.ID, last.CreatedAt
@@ -784,7 +784,7 @@ func (v *JobsView) openDetail() tea.Cmd {
 	if v.detailPathIdx >= len(p.Paths) {
 		return nil
 	}
-	pathAbs := policycfg.NormalizePath(p.Paths[v.detailPathIdx], v.jobsHome())
+	pathAbs := expandPathOrRaw(p.Paths[v.detailPathIdx], v.jobsHome())
 	snap, ok := newestJobSnapshot(v.detailName, pathAbs, v.snaps)
 	if !ok {
 		return nil

@@ -217,7 +217,11 @@ func (v SettingsView) forgetKeyring() (tea.Model, tea.Cmd) {
 		v.err = "keyring access is not wired in this build"
 		return v, nil
 	}
-	del, cfg, path := v.deps.DeleteKeyringPassphrase, v.deps.Config, v.deps.ConfigPath
+	// The op runs on its own goroutine while every view keeps reading
+	// deps.Config; hand it a shallow copy so it never reads the shared
+	// struct mid-write (the result's apply mutates it on the UI side).
+	cfgCopy := *v.deps.Config
+	del, cfg, path := v.deps.DeleteKeyringPassphrase, &cfgCopy, v.deps.ConfigPath
 	return v.startOp(settingsForgetOpName, func(context.Context) tea.Msg {
 		if _, err := del(cfg); err != nil {
 			return settingsSavedMsg{op: settingsForgetOpName, err: fmt.Errorf("keyring delete failed: %w", err)}

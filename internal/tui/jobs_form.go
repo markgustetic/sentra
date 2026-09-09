@@ -285,9 +285,17 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 	// stored raw and fail under the timer, whose cwd and HOME are not
 	// this shell's. Resolved against the view's home seam so the stored
 	// path is the one the drill-in and last-run lookups already compute.
+	// A tilde with no home is refused inline (see expandPath): the save
+	// must not persist a cwd guess the timer would then back up.
 	home := v.jobsHome()
 	for i, path := range p.Paths {
-		p.Paths[i] = policycfg.NormalizePath(path, home)
+		abs, err := expandPath(path, home)
+		if err != nil {
+			v.stage = jobsForm
+			v.form.err = err.Error()
+			return v, nil
+		}
+		p.Paths[i] = abs
 	}
 	editing := v.editName != ""
 	cfgPath := v.deps.ConfigPath
