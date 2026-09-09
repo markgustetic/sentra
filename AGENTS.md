@@ -142,8 +142,12 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   reuse existing repo snapshot/check/prune primitives instead of duplicating
   storage logic. **Policy paths are stored absolute.** `policy add` resolves
   every `--path` through `policy.ResolvePath` (`~` → home, relative → the
-  operator's cwd, cleaned) before persisting, and `Validate` rejects a path
-  that cannot resolve. A timer-launched run has no cwd the operator chose
+  operator's cwd, then `repo.ResolveRoot`'s form: cleaned, symlinks
+  resolved) before persisting, and `Validate` rejects a path that cannot
+  resolve or that exists as a non-directory. A path that does not exist yet
+  resolves its longest existing prefix and keeps the rest as spelled, so the
+  stored string is the root a later snapshot of it records. A
+  timer-launched run has no cwd the operator chose
   (launchd starts jobs in `/`), so `policy run` resolves each stored path
   again with `policy.ResolvePathFrom`, anchoring any relative path that a
   hand-edited or pre-resolution `sentra.yaml` still carries to the config

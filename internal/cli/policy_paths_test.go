@@ -28,7 +28,7 @@ func TestPolicyAdd_PersistsAbsolutePaths(t *testing.T) {
 	// Symlink-resolved: os.Getwd answers /private/var for a /var TMPDIR.
 	dir := realPath(t, t.TempDir())
 	chDir(t, dir)
-	home := t.TempDir()
+	home := realPath(t, t.TempDir())
 	t.Setenv("HOME", home)
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "test-bucket"
@@ -106,8 +106,10 @@ func writeSourceFile(t *testing.T, dir, body string) {
 	}
 }
 
-// realPath resolves symlinks so a cwd-derived path (os.Getwd reports
-// /private/var for a /var TMPDIR on macOS) compares equal to its origin.
+// realPath resolves symlinks so an expectation compares equal to what
+// the code records: os.Getwd reports /private/var for a /var TMPDIR on
+// macOS, and repo.ResolveRoot (which policy paths and snapshot roots
+// both go through) answers the same.
 func realPath(t *testing.T, p string) string {
 	t.Helper()
 	resolved, err := filepath.EvalSymlinks(p)
@@ -142,7 +144,9 @@ func TestPolicyRun_ResolvesTildePath(t *testing.T) {
 	chDir(t, cfgDir)
 	home := t.TempDir()
 	t.Setenv("HOME", home)
-	src := filepath.Join(home, "x")
+	// The snapshot records repo.ResolveRoot's form of the root: the
+	// policy path must resolve to the same string (see realPath).
+	src := filepath.Join(realPath(t, home), "x")
 	writeSourceFile(t, src, "alpha")
 	deps, store := policyPathFixture(t, cfgDir, "~/x")
 
@@ -166,7 +170,7 @@ func TestPolicyRun_RelativePathAnchorsToConfigDir(t *testing.T) {
 	// A decoy "src" in the cwd: a cwd-relative resolution would find it
 	// and the run would succeed against the wrong tree.
 	writeSourceFile(t, filepath.Join(elsewhere, "src"), "decoy")
-	want := filepath.Join(cfgDir, "src")
+	want := filepath.Join(realPath(t, cfgDir), "src")
 	writeSourceFile(t, want, "alpha")
 	deps, store := policyPathFixture(t, cfgDir, "src")
 
@@ -186,7 +190,7 @@ func TestPolicyRun_RelativePathAnchorsToConfigDir(t *testing.T) {
 // timer backs up every time. From a foreign cwd, a prior snapshot
 // rooted at <cfgDir>/src must satisfy --if-due.
 func TestPolicyRun_IfDue_LastRunLookupAnchorsToConfigDir(t *testing.T) {
-	cfgDir := t.TempDir()
+	cfgDir := realPath(t, t.TempDir())
 	chDir(t, t.TempDir())
 	src := filepath.Join(cfgDir, "src")
 	writeSourceFile(t, src, "alpha")
