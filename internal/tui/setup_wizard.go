@@ -1436,7 +1436,13 @@ func (v SetupWizardView) View() string {
 	case stageActions:
 		b.WriteString(v.wizardHeader())
 		if v.notice != "" {
-			fmt.Fprintf(&b, "%s\n\n", ui.Warn.Render(v.notice))
+			// The session-profile refusal is a full sentence with its
+			// reason (130+ cells); wrapped at the view's width so the
+			// terminal does not hard-wrap it mid-word. Width(0) — before
+			// the first WindowSizeMsg — leaves it unwrapped. The plain
+			// text is wrapped and styled in one go: wrapping an
+			// already-styled string would embed a reset mid-line.
+			fmt.Fprintf(&b, "%s\n\n", ui.Warn.Width(v.width).Render(v.notice))
 		}
 		fmt.Fprintf(&b, "%s\n", ui.SelectRow(v.actionCursor == actionRowAuth,
 			"AWS sign-in: "+setupAuthMethodLabel(setupAuthOrder[v.authCursor])))
