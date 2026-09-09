@@ -918,6 +918,10 @@ func (v JobsView) View() string {
 		} else {
 			b.WriteString(ui.Success.Render("Job run complete"))
 			fmt.Fprintf(&b, "\n\n  job        %s\n  snapshots  %d", v.result.name, v.result.snapshots)
+			// A warning line, so only when there is one to give.
+			if v.result.skipped > 0 {
+				fmt.Fprintf(&b, "\n  skipped    %d", v.result.skipped)
+			}
 		}
 		fmt.Fprintf(&b, "\n\n%s", ui.ActionLine("return to the job list", ""))
 		return b.String()

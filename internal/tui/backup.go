@@ -587,6 +587,13 @@ func (v BackupView) View() string {
 			fmt.Fprintf(&b, "\n\n  snapshot  %s\n  files     %d\n  bytes     %s\n  new       %s",
 				info.ID, info.Stats.Files,
 				ui.FormatBytes(info.Stats.Bytes), ui.FormatBytes(info.Stats.NewBytes))
+			// Folders the walk dropped for a denied listing. The
+			// snapshot succeeded without them, so this line is the
+			// only place the operator learns it is short; it is a
+			// warning, shown only when there is one to give.
+			if info.Stats.Skipped > 0 {
+				fmt.Fprintf(&b, "\n  skipped   %d", info.Stats.Skipped)
+			}
 		}
 		if v.installedName != "" {
 			line := fmt.Sprintf("policy %q installed", v.installedName)

@@ -101,7 +101,12 @@ type policyRunState struct {
 type policyRunDoneMsg struct {
 	name      string
 	snapshots int
-	err       error
+	// skipped sums SnapshotStats.Skipped across the policy's paths: the
+	// folders the walk dropped for a denied listing. A job run has no
+	// terminal to print each one to as it happens, so the count on the
+	// done screen is how an operator learns a snapshot is short.
+	skipped int
+	err     error
 }
 
 func (policyRunDoneMsg) opResult() {}
@@ -169,7 +174,7 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			// hook would back up different data. Hook output goes to a
 			// buffer whose tail rides along on failure.
 			var hookOut bytes.Buffer
-			count := 0
+			count, skipped := 0, 0
 			runErr := func() error {
 				if pathErr != nil {
 					return pathErr
@@ -180,14 +185,16 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 					}
 				}
 				for _, path := range paths {
-					if _, err := r.CreateSnapshot(ctx, path, repo.SnapshotOptions{
+					info, err := r.CreateSnapshot(ctx, path, repo.SnapshotOptions{
 						Tag:      tag,
 						Progress: reporter,
 						Walker:   wopts,
-					}); err != nil {
+					})
+					if err != nil {
 						return fmt.Errorf("snapshot %s: %w", path, err)
 					}
 					count++
+					skipped += info.Stats.Skipped
 				}
 				if doCheck {
 					report, err := r.Check(ctx, repo.CheckOptions{StaleLockAfter: 24 * time.Hour})
@@ -216,9 +223,9 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			}()
 			if runErr != nil {
 				policycfg.FireFailureHooks(ctx, &hookOut, name, hooks, runErr)
-				return policyRunDoneMsg{name: name, snapshots: count, err: runErr}
+				return policyRunDoneMsg{name: name, snapshots: count, skipped: skipped, err: runErr}
 			}
-			return policyRunDoneMsg{name: name, snapshots: count}
+			return policyRunDoneMsg{name: name, snapshots: count, skipped: skipped}
 		},
 	}
 }
