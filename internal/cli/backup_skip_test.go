@@ -14,6 +14,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/ui"
 )
 
 // denySubdir creates root/<name> holding one file and chmods the
@@ -235,5 +236,26 @@ func TestPolicyRun_ReportsDeniedSubdir(t *testing.T) {
 	}
 	if !strings.Contains(got, "1 files, 1 skipped") {
 		t.Errorf("snapshot line should carry the skip count:\n%s", got)
+	}
+}
+
+// A note printed between bar frames must erase the frame it replaces:
+// frames never clear to end of line (they are all the same width), so a
+// narrower note would otherwise leave the bar's tail beside the message.
+func TestProgressPainter_NoteClearsTheFrame(t *testing.T) {
+	var buf bytes.Buffer
+	pp := startProgressPainter(&buf, ui.NewByteProgress(100))
+	pp.note("skipped /x: permission denied")
+	pp.stop()
+	if !strings.Contains(buf.String(), "\r\x1b[Kskipped /x: permission denied\n") {
+		t.Fatalf("note did not clear to end of line before printing:\n%q", buf.String())
+	}
+}
+
+// skipLine must never dereference a nil error; the walker always passes
+// one today, but the line's own contract says the reason may widen.
+func TestSkipLine_NilError(t *testing.T) {
+	if got := skipLine("/x", nil); got != "skipped /x: skipped" {
+		t.Fatalf("skipLine(nil) = %q", got)
 	}
 }

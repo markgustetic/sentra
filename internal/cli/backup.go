@@ -398,7 +398,11 @@ type progressPainter struct {
 func (pp *progressPainter) note(line string) {
 	pp.mu.Lock()
 	defer pp.mu.Unlock()
-	fmt.Fprintf(pp.w, "\r%s\n", line)
+	// The bar never clears to end of line because every frame has the
+	// same width; a note is usually narrower than the frame it replaces,
+	// so it must erase the tail itself or the bar's remainder survives to
+	// the right of the message.
+	fmt.Fprintf(pp.w, "\r\x1b[K%s\n", line)
 }
 
 // stop ends the repaint loop and paints one final frame so completed
@@ -419,7 +423,10 @@ func (pp *progressPainter) stop() {
 // the line truthful should that ever widen.
 func skipLine(path string, err error) string {
 	reason := "permission denied"
-	if !errors.Is(err, fs.ErrPermission) {
+	switch {
+	case err == nil:
+		reason = "skipped"
+	case !errors.Is(err, fs.ErrPermission):
 		reason = err.Error()
 	}
 	return "skipped " + path + ": " + reason
