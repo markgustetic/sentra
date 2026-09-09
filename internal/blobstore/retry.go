@@ -76,8 +76,8 @@ func DefaultRetryPolicy() RetryPolicy {
 // Get and List can be retried but only on the *initial* request — once
 // the underlying Store returned a body, errors during read are the
 // caller's to handle (we can't replay an HTTP stream we've already
-// committed to passing through). Put buffers the body so the retry can
-// replay it from memory; this is fine for sentra's chunk sizes.
+// committed to passing through). Put and PutIfAbsent replay the body
+// on every attempt (see bufferedRetry).
 type RetryStore struct {
 	inner  Store
 	policy RetryPolicy
@@ -276,16 +276,43 @@ func retryResult[T any](r *RetryStore, ctx context.Context, op func() (T, error)
 // --- Store implementation: each method delegates to the inner store
 // through the retry helper. ---
 
-// Put buffers body once so the retry loop can replay it; sentra's
-// blob bodies are bounded by the chunker's max chunk size, so this
-// stays well within memory budget.
-func (r *RetryStore) Put(ctx context.Context, key string, body io.Reader) error {
+// bufferedRetry runs a body-carrying write through the retry policy
+// with the body replayed whole on every attempt — a failed attempt
+// has usually drained the reader (the request went out; the reply
+// was a SlowDown), and an unbuffered pass-through would hand the next
+// attempt an exhausted reader and land an empty object under a
+// content-addressed key.
+//
+// A *bytes.Reader is rewound in place rather than copied: every
+// sealed chunk and manifest the repo writes is already a whole
+// []byte handed over that way, and buffering it again would double
+// the memory held per in-flight chunk across the walker's pool. The
+// rewind is to offset zero — the reader is taken as the whole body,
+// so callers hand over a fresh one. Anything else is read once into
+// memory; sentra's bodies are bounded by the chunker's max chunk
+// size, so that stays well within budget.
+func (r *RetryStore) bufferedRetry(ctx context.Context, key string, body io.Reader, write func(io.Reader) error) error {
+	if br, ok := body.(*bytes.Reader); ok {
+		return r.retry(ctx, func() error {
+			if _, err := br.Seek(0, io.SeekStart); err != nil {
+				return fmt.Errorf("blobstore/retry: rewind body for %q: %w", key, err)
+			}
+			return write(br)
+		})
+	}
 	raw, err := io.ReadAll(body)
 	if err != nil {
 		return fmt.Errorf("blobstore/retry: buffer body for %q: %w", key, err)
 	}
 	return r.retry(ctx, func() error {
-		return r.inner.Put(ctx, key, bytes.NewReader(raw))
+		return write(bytes.NewReader(raw))
+	})
+}
+
+// Put replays body per attempt; see bufferedRetry.
+func (r *RetryStore) Put(ctx context.Context, key string, body io.Reader) error {
+	return r.bufferedRetry(ctx, key, body, func(b io.Reader) error {
+		return r.inner.Put(ctx, key, b)
 	})
 }
 
@@ -314,8 +341,8 @@ func (r *RetryStore) List(ctx context.Context, prefix string) ([]Info, error) {
 	return retryResult(r, ctx, func() ([]Info, error) { return r.inner.List(ctx, prefix) })
 }
 
-// PutIfAbsent retries exactly like Put: the body is buffered once and
-// replayed per attempt. Every chunk upload goes through this method,
+// PutIfAbsent retries exactly like Put: the body is replayed per
+// attempt (bufferedRetry). Every chunk upload goes through this method,
 // so without the outer policy a SlowDown burst that exhausts the SDK's
 // own retries would abort a whole backup while the manifest Put next
 // to it sailed through.
@@ -330,12 +357,8 @@ func (r *RetryStore) List(ctx context.Context, prefix string) ([]Info, error) {
 // ErrAlreadyExists itself is terminal (IsRetryable says no), so a
 // deduplicated chunk costs one round trip, not a backoff cycle.
 func (r *RetryStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
-	raw, err := io.ReadAll(body)
-	if err != nil {
-		return fmt.Errorf("blobstore/retry: buffer body for %q: %w", key, err)
-	}
-	return r.retry(ctx, func() error {
-		return r.inner.PutIfAbsent(ctx, key, bytes.NewReader(raw))
+	return r.bufferedRetry(ctx, key, body, func(b io.Reader) error {
+		return r.inner.PutIfAbsent(ctx, key, b)
 	})
 }
 

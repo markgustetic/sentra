@@ -687,6 +687,66 @@ func TestSyncTo_PartialManifestPhaseStillInvalidatesDestIndex(t *testing.T) {
 	}
 }
 
+// errInjectedManifestPut and errInjectedIndexDelete are the two
+// failures TestSyncTo_PartialManifestPhaseAndIndexDeleteFailure joins,
+// as sentinels so the test can prove both survive the join.
+var (
+	errInjectedManifestPut = errors.New("injected manifest put failure")
+	errInjectedIndexDelete = errors.New("injected index delete failure")
+)
+
+// failManifestThenIndexDeleteStore is failSecondManifestPutStore with
+// the follow-up index invalidation failing too, so SyncTo has to report
+// both errors at once.
+type failManifestThenIndexDeleteStore struct {
+	blobstore.Store
+	manifestPuts atomic.Int32
+}
+
+func (s *failManifestThenIndexDeleteStore) Put(ctx context.Context, key string, r io.Reader) error {
+	if strings.HasPrefix(key, snapshotPrefix) && s.manifestPuts.Add(1) > 1 {
+		return errInjectedManifestPut
+	}
+	return s.Store.Put(ctx, key, r)
+}
+
+func (s *failManifestThenIndexDeleteStore) Delete(ctx context.Context, key string) error {
+	if key == snapshotIndexKey {
+		return errInjectedIndexDelete
+	}
+	return s.Store.Delete(ctx, key)
+}
+
+// TestSyncTo_PartialManifestPhaseAndIndexDeleteFailure: when the
+// manifest phase fails AND the stale-index invalidation that follows
+// fails, both errors are reported, and the phase error carries the
+// same "sync snapshots/" wrapping it gets on its own — the joined
+// message is the only thing the operator sees, and a bare "injected
+// put failure" next to "invalidate dest index" does not say which
+// phase was interrupted.
+func TestSyncTo_PartialManifestPhaseAndIndexDeleteFailure(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstMem := twoRepos(t)
+	seedSourceWithSnapshot(t, src, "first")
+	if _, err := src.SyncTo(ctx, dstMem, SyncOptions{InitDest: true}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	seedSourceWithSnapshot(t, src, "second")
+	seedSourceWithSnapshot(t, src, "third")
+
+	failing := &failManifestThenIndexDeleteStore{Store: dstMem}
+	_, err := src.SyncTo(ctx, failing, SyncOptions{})
+	if err == nil {
+		t.Fatal("test setup: the manifest phase was meant to fail")
+	}
+	if !errors.Is(err, errInjectedManifestPut) || !errors.Is(err, errInjectedIndexDelete) {
+		t.Errorf("SyncTo error %v does not carry both the phase and the invalidation failure", err)
+	}
+	if !strings.Contains(err.Error(), "sync snapshots/") {
+		t.Errorf("SyncTo error %q does not name the interrupted phase", err)
+	}
+}
+
 // TestSyncTo_DryRunMakesNoWrites confirms DryRun=true is read-only:
 // returns realistic stats but the destination is byte-identical
 // before and after.

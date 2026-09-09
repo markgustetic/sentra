@@ -57,7 +57,13 @@ const MinMemoryKiB uint32 = 4 * 1024
 // Memory of 16 GiB and OOM-kill every client, or a Time in the
 // millions and hang it, before ErrConfigTampered was ever reachable.
 // Each ceiling is therefore something any client machine can honor in
-// bounded time: 1 GiB of memory, 64 passes over it, 64 lanes.
+// bounded time: 1 GiB of memory, 64 passes over it, 64 lanes. The
+// worst case they admit — all three at the ceiling — is 64 passes
+// over 1 GiB, roughly 64 GiB of memory traffic, which Argon2id
+// finishes on the order of a minute on a laptop: an annoyance, not a
+// hang, and the process still needs only the 1 GiB. Lanes do not add
+// to that cost; they only split each pass across threads, so
+// MaxThreads bounds goroutine count rather than time or memory.
 // DefaultKDFParams (64 MiB, 3 passes, 4 lanes) sits far inside all
 // three, so a future default bump has headroom without moving them.
 const (

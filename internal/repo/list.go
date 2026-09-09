@@ -2,7 +2,6 @@ package repo
 
 import (
 	"context"
-	"errors"
 	"fmt"
 	"log/slog"
 	"slices"
@@ -69,13 +68,16 @@ func (r *Repo) ListSnapshots(ctx context.Context) ([]SnapshotInfo, error) {
 	// process: CreateSnapshot lists under its own lock to find the
 	// incremental parent) will leave the index in whatever state its
 	// own operation dictates.
+	//
+	// Any acquire failure is a debug event, not just ErrRepoLocked:
+	// the lock is as best-effort as the write it guards. A listing
+	// under read-only credentials (a restore-only profile, the
+	// recovery-kit reader) can never take it, and a warning on every
+	// listing would nag about a write that was never going to happen
+	// while the listing itself succeeded.
 	held, lerr := acquireLock(ctx, r.store, "index-rebuild")
 	if lerr != nil {
-		level := slog.LevelWarn
-		if errors.Is(lerr, ErrRepoLocked) {
-			level = slog.LevelDebug
-		}
-		slog.LogAttrs(ctx, level,
+		slog.LogAttrs(ctx, slog.LevelDebug,
 			"skipping snapshot index rebuild: repo lock unavailable",
 			slog.String("error", lerr.Error()))
 		return out, nil

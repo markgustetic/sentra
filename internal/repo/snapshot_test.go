@@ -497,8 +497,21 @@ func TestCreateSnapshot_RootMustBeDirectory(t *testing.T) {
 	}
 
 	for _, root := range []string{file, link} {
-		if _, err := r.CreateSnapshot(ctx, root, SnapshotOptions{}); !errors.Is(err, ErrRootNotDir) {
+		_, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+		if !errors.Is(err, ErrRootNotDir) {
 			t.Errorf("CreateSnapshot(%q): got %v, want ErrRootNotDir", root, err)
+		}
+		// The message names the path as given (absolute) and, when a
+		// link or an aliased mount made it land somewhere else, the
+		// path that was actually judged — an operator who typed the
+		// link has no other way to see what it pointed at.
+		abs, _ := filepath.Abs(root)
+		resolved, _ := filepath.EvalSymlinks(abs)
+		if !strings.Contains(err.Error(), abs) {
+			t.Errorf("CreateSnapshot(%q) error %q does not name the given path %s", root, err, abs)
+		}
+		if resolved != abs && !strings.Contains(err.Error(), resolved) {
+			t.Errorf("CreateSnapshot(%q) error %q does not name the resolved path %s", root, err, resolved)
 		}
 		// Refused before any write: no manifest, and the lock released.
 		if entries, _ := store.List(ctx, snapshotPrefix); len(entries) != 0 {

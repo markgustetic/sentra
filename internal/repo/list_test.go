@@ -1,8 +1,11 @@
 package repo
 
 import (
+	"bytes"
 	"context"
 	"errors"
+	"io"
+	"log/slog"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -75,6 +78,66 @@ func TestListSnapshots_RebuildSkipsIndexWriteWhileLocked(t *testing.T) {
 	// And the rebuild released the lock it took.
 	if _, err := store.Stat(ctx, lockKey); !errors.Is(err, blobstore.ErrNotFound) {
 		t.Errorf("ListSnapshots left the lock behind (stat err=%v)", err)
+	}
+}
+
+// lockWriteDeniedStore refuses to write the lock blob the way a
+// read-only credential does (an AccessDenied on the PUT), while every
+// other operation goes through.
+type lockWriteDeniedStore struct {
+	blobstore.Store
+}
+
+func (s *lockWriteDeniedStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	if key == lockKey {
+		return errors.New("AccessDenied: injected read-only credential")
+	}
+	return s.Store.PutIfAbsent(ctx, key, r)
+}
+
+// TestListSnapshots_RebuildLockFailureLogsAtDebug: the index write
+// after a rebuild is best-effort, and so is the lock it needs. A
+// listing under read-only credentials (the recovery-kit reader, a
+// restore-only profile) cannot take the lock at all, and warning on
+// every listing would nag an operator about a write that was never
+// going to happen — the listing itself succeeded. Any acquire failure
+// here, not only ErrRepoLocked, is a debug event.
+func TestListSnapshots_RebuildLockFailureLogsAtDebug(t *testing.T) {
+	ctx := context.Background()
+	r, store := newTestRepo(t)
+	root := t.TempDir()
+	writeFile(t, filepath.Join(root, "a.txt"), "alpha")
+	snap, err := r.CreateSnapshot(ctx, root, SnapshotOptions{})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if err := store.Delete(ctx, snapshotIndexKey); err != nil { // force the rebuild
+		t.Fatal(err)
+	}
+	r.store = &lockWriteDeniedStore{Store: store}
+
+	var logs bytes.Buffer
+	prev := slog.Default()
+	slog.SetDefault(slog.New(slog.NewTextHandler(&logs, &slog.HandlerOptions{Level: slog.LevelDebug})))
+	t.Cleanup(func() { slog.SetDefault(prev) })
+
+	infos, err := r.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatalf("ListSnapshots with the lock write denied must still answer: %v", err)
+	}
+	if len(infos) != 1 || infos[0].ID != snap.ID {
+		t.Errorf("list: got %+v, want the one snapshot", infos)
+	}
+	for _, line := range strings.Split(logs.String(), "\n") {
+		if !strings.Contains(line, "repo lock unavailable") {
+			continue
+		}
+		if !strings.Contains(line, "level=DEBUG") {
+			t.Errorf("skipped index rebuild logged above debug: %s", line)
+		}
+	}
+	if !strings.Contains(logs.String(), "repo lock unavailable") {
+		t.Error("skipped index rebuild was not logged at all")
 	}
 }
 

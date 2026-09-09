@@ -285,6 +285,11 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	// keeps its O(1) listing. Runs BEFORE the phase's error is
 	// returned: a manifest that landed before the failure is on dest
 	// for good (sync never rolls back), and must not stay hidden.
+	// Wrapped up front so the phase error names its phase whether it
+	// is returned alone or joined with an invalidation failure below.
+	if err != nil {
+		err = fmt.Errorf("repo: sync snapshots/: %w", err)
+	}
 	if manCopied > 0 && !opts.DryRun {
 		if derr := dest.Delete(ctx, snapshotIndexKey); derr != nil && !errors.Is(derr, blobstore.ErrNotFound) {
 			stats.Elapsed = time.Since(start)
@@ -293,7 +298,7 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	}
 	if err != nil {
 		stats.Elapsed = time.Since(start)
-		return stats, fmt.Errorf("repo: sync snapshots/: %w", err)
+		return stats, err
 	}
 
 	stats.Elapsed = time.Since(start)
