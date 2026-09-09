@@ -3,6 +3,8 @@ package cli
 import (
 	"os"
 	"testing"
+
+	"github.com/markgustetic/sentra/internal/repo"
 )
 
 // TestMain clears ambient non-interactive passphrase sources before any test
@@ -41,6 +43,10 @@ import (
 // its trap. Tests that deliberately exercise discovery still override
 // this with their own t.Setenv, which restores this value when they end.
 func TestMain(m *testing.M) {
+	// Every repo these tests init pays Argon2id at least twice; see
+	// repo.UseFastKDFForTests for why the cheap params are safe here.
+	repo.UseFastKDFForTests()
+
 	_ = os.Unsetenv("SENTRA_PASSPHRASE")
 	_ = os.Unsetenv("SENTRA_PASSPHRASE_FILE")
 

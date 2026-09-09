@@ -3,6 +3,8 @@ package tui
 import (
 	"os"
 	"testing"
+
+	"github.com/markgustetic/sentra/internal/repo"
 )
 
 // TestMain clears ambient non-interactive passphrase sources before any test
@@ -26,6 +28,10 @@ import (
 // so this does not conflict with tests exercising the "source resolves" path
 // (e.g. TestSetupWizard_NonInteractivePassphraseSkipsEntryStage).
 func TestMain(m *testing.M) {
+	// Every repo these tests init pays Argon2id at least twice; see
+	// repo.UseFastKDFForTests for why the cheap params are safe here.
+	repo.UseFastKDFForTests()
+
 	_ = os.Unsetenv("SENTRA_PASSPHRASE")
 	_ = os.Unsetenv("SENTRA_PASSPHRASE_FILE")
 	// Neutralize the dir picker's home lookup for the same reason as the

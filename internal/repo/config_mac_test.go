@@ -80,8 +80,13 @@ func TestOpen_RejectsTamperedKDFParams(t *testing.T) {
 	if err := json.Unmarshal(raw, &cfg); err != nil {
 		t.Fatalf("unmarshal: %v", err)
 	}
+	// Any Memory that differs from the recorded one and still passes
+	// Validate is a tamper. Under the test suite's fast KDF the recorded
+	// value already sits AT the floor, so "set it to the floor" would be a
+	// no-op that proves nothing; double it instead (the ceiling is far
+	// above), which is a tamper whichever params Init recorded.
 	originalMemory := cfg.KDF.Memory
-	cfg.KDF.Memory = 4096 // floor; passes Validate but is much weaker
+	cfg.KDF.Memory = originalMemory * 2
 	tampered, _ := json.Marshal(&cfg)
 	if err := store.Put(ctx, configKey, bytes.NewReader(tampered)); err != nil {
 		t.Fatalf("put: %v", err)

@@ -104,7 +104,7 @@ func Init(ctx context.Context, s blobstore.Store, passphrase []byte) (*Repo, err
 		return nil, fmt.Errorf("repo: repo key: %w", err)
 	}
 
-	kdf := crypto.DefaultKDFParams()
+	kdf := initKDF()
 	kek := crypto.DeriveKEK(passphrase, salt, kdf)
 	// The KEK is as sensitive as the repo key (it wraps it and signs the
 	// config); wipe it from memory on return, mirroring the repoKey

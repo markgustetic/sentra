@@ -172,6 +172,12 @@ below both.
 - **TDD.** Write the failing test first, watch it fail for the right reason, then
   implement the minimum to pass. Repo-layer tests use the in-memory blobstore
   (`newTestRepo`); tests are table-driven where it fits.
+- **Every test package that inits a repo calls `repo.UseFastKDFForTests()`
+  in its `TestMain`.** Init otherwise records the production Argon2id params
+  (3 passes over 64 MiB), which cost about a second per derivation under
+  `-race` and once made the macOS CI job take 12 minutes. The hook panics
+  outside a test binary; the params it records still pass `Validate`, so
+  tamper tests must differ from the recorded value rather than set the floor.
 - **Doc comments explain _why_** — rationale and failure modes, not just what.
   Match the surrounding density.
 - **Errors** are sentinels wrapped with `%w`; callers branch with `errors.Is`.
