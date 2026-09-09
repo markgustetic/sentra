@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/key"
 	"github.com/charmbracelet/bubbles/progress"
+	"github.com/charmbracelet/bubbles/spinner"
 	tea "github.com/charmbracelet/bubbletea"
 	"github.com/charmbracelet/lipgloss"
 
@@ -20,13 +21,17 @@ import (
 	"github.com/markgustetic/sentra/internal/walker"
 )
 
-// backupStage is the wizard's position: three configure steps, then the run.
+// backupStage is the wizard's position: three configure steps, then the
+// run. backupInstalling sits between Confirm and running for a scheduled
+// backup: the policy + OS timer install is its own guarded op (config
+// write, then launchctl/systemctl), and the run starts only once it lands.
 type backupStage int
 
 const (
 	backupLocation backupStage = iota
 	backupSchedule
 	backupConfirm
+	backupInstalling
 	backupRunning
 	backupDone
 )
@@ -68,6 +73,7 @@ type BackupView struct {
 
 	reporter *opReporter
 	bar      progress.Model
+	spin     spinner.Model // the Installing stage's spinner
 	result   backupDoneMsg
 	width    int
 	height   int
@@ -80,12 +86,15 @@ func NewBackupView(deps Deps) BackupView {
 	if err != nil {
 		start = ""
 	}
+	spin := spinner.New()
+	spin.Spinner = spinner.Dot
 	return BackupView{
 		deps:    deps,
 		picker:  newDirPicker(start),
 		confirm: newConfirmControls(),
 		now:     time.Now,
 		bar:     progress.New(progress.WithDefaultGradient()),
+		spin:    spin,
 	}
 }
 
@@ -158,7 +167,7 @@ func (v BackupView) ShortHelp() []key.Binding {
 			key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "start")),
 			key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "back")),
 		}
-	case backupRunning:
+	case backupRunning, backupInstalling:
 		return []key.Binding{key.NewBinding(key.WithKeys("esc"), key.WithHelp("esc", "cancel"))}
 	case backupDone:
 		keys := []key.Binding{key.NewBinding(key.WithKeys("enter"), key.WithHelp("⏎", "again"))}
@@ -204,13 +213,27 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case opRejectedMsg:
 		// Our start was refused; return to Confirm (not Location — the
 		// operator's choices stand) with the tag re-focused for the retry.
-		if v.stage == backupRunning && msg.name == "backup" {
+		// The schedule install is refused the same way: nothing was
+		// written, so Confirm is exactly where the operator left off.
+		if (v.stage == backupRunning && msg.name == "backup") ||
+			(v.stage == backupInstalling && msg.name == repeatInstallOpName) {
 			v.stage = backupConfirm
 			v.notice = "another operation is in progress — try again when it finishes"
 			cmd := v.confirm.refocus()
 			return v, cmd
 		}
 		return v, nil
+
+	case repeatInstalledMsg:
+		return v.finishRepeatInstall(msg)
+
+	case spinner.TickMsg:
+		if v.stage != backupInstalling {
+			return v, nil
+		}
+		var cmd tea.Cmd
+		v.spin, cmd = v.spin.Update(msg)
+		return v, cmd
 
 	case opTickMsg:
 		if v.stage == backupRunning {
@@ -225,8 +248,22 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		if v.stage == backupRunning || v.stage == backupDone {
 			return v, nil
 		}
+		// Resolve "~/x" or a relative dir before it becomes pending: the
+		// summary, the policy the schedule step installs, and the snapshot
+		// root must all name the same absolute directory. An empty dir
+		// stays empty — filepath.Abs("") is the cwd, which checkDir would
+		// happily accept as the intent's directory — and a tilde with no
+		// home is refused outright (absPath), since a cwd that happens to
+		// hold a same-named directory would pass checkDir too.
 		dir := strings.TrimSpace(msg.dir)
-		if !v.checkDir(dir) {
+		var dirErr error
+		if dir != "" {
+			dir, dirErr = absPath(dir)
+		}
+		if dirErr != nil {
+			v.pathErr = dirErr.Error()
+		}
+		if dirErr != nil || !v.checkDir(dir) {
 			// Drop back to Location with the error, blurring whatever the
 			// step we were on owned: a field left focused on a stage that
 			// never renders it keeps its blink chain rescheduling and makes
@@ -365,6 +402,11 @@ func (v BackupView) handleKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 		if msg.Type == tea.KeyEsc {
 			return v, func() tea.Msg { return cancelOpMsg{} }
 		}
+		return v, nil
+
+	case backupInstalling:
+		// The shell's esc cancels the running op; nothing else applies
+		// until the install resolves.
 		return v, nil
 
 	case backupDone:
@@ -558,6 +600,11 @@ func (v BackupView) View() string {
 			secondary = "s scheduled backups"
 		}
 		fmt.Fprintf(&b, "\n\n%s", v.actionLine("run another backup", secondary))
+
+	case backupInstalling:
+		b.WriteString(v.header(3, "Confirm"))
+		fmt.Fprintf(&b, "\n%s", v.confirmSummary())
+		fmt.Fprintf(&b, "\n%s %s", v.spin.View(), ui.Primary.Render("Installing the schedule…"))
 
 	case backupSchedule:
 		b.WriteString(v.header(2, "Schedule"))

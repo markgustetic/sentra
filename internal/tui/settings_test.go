@@ -160,7 +160,8 @@ func TestSettings_ToggleSplashPersists(t *testing.T) {
 	v, path, cfg := settingsWithConfig(t)
 	v = cursorTo(v, entryToggleSplash)
 
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = runGuardedOp(t, m, cmd)
 	v = m.(SettingsView)
 
 	if !cfg.UI.HideSplash {
@@ -205,7 +206,8 @@ func TestSettings_ToggleSplashKeepsEnvOverridesOutOfFile(t *testing.T) {
 	}
 
 	v := cursorTo(NewSettingsView(Deps{Config: resolved, ConfigPath: path}), entryToggleSplash)
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = runGuardedOp(t, m, cmd)
 	v = m.(SettingsView)
 
 	body, err := os.ReadFile(path)
@@ -259,7 +261,8 @@ func TestSettings_ToggleSplashNegatesResolvedState(t *testing.T) {
 		t.Fatalf("precondition: env override should render the splash as off:\n%s", v.View())
 	}
 
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = runGuardedOp(t, m, cmd)
 	v = m.(SettingsView)
 
 	if resolved.UI.HideSplash {
@@ -302,7 +305,8 @@ func TestSettings_ToggleSplashWriteErrorKeepsMemory(t *testing.T) {
 	bad := filepath.Join(dir, "sentra.yaml")
 	v := cursorTo(NewSettingsView(Deps{Config: cfg, ConfigPath: bad}), entryToggleSplash)
 
-	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	m, _ = runGuardedOp(t, m, cmd)
 	v = m.(SettingsView)
 
 	if cfg.UI.HideSplash {
@@ -370,7 +374,8 @@ func TestSettings_ForgetKeyringEntry(t *testing.T) {
 		t.Fatalf("expected pushModalMsg, got %#v", cmd())
 	}
 
-	m, _ = v.Update(confirmedMsg{id: settingsForgetConfirmID})
+	m, cmd = v.Update(confirmedMsg{id: settingsForgetConfirmID})
+	m, _ = runGuardedOp(t, m, cmd)
 	v = m.(SettingsView)
 	if !deleted {
 		t.Error("confirm must call the keyring delete seam")

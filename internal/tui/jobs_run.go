@@ -33,11 +33,56 @@ const (
 	jobDeleteConfirmID    = "job-delete"
 )
 
-// jobTimerMsg carries an install/uninstall/delete filesystem result.
-// Deliberately NOT an opResult: timer files never touch the repo lock.
+// jobTimerMsg carries an install/uninstall/delete result. It is an
+// opResult even though timer files never touch the repo lock: the work
+// behind it execs launchctl/systemctl (15s per call, up to a minute
+// across bootout/bootstrap/fallback), so it runs under the App's one-op
+// guard — serialized, cancellable with esc, and off the UI goroutine —
+// and the guard clears on this message.
 type jobTimerMsg struct {
 	notice string
 	err    error
+}
+
+func (jobTimerMsg) opResult() {}
+
+// Op names for the guarded config/timer mutations, distinct from
+// "job-run" so an opRejectedMsg bounces exactly the flow that was
+// refused.
+const (
+	jobInstallOpName   = "job-install"
+	jobUninstallOpName = "job-uninstall"
+	jobDeleteOpName    = "job-delete"
+	jobSaveOpName      = "job-save"
+)
+
+// startBusyOp enters the jobsBusy stage for a config/timer mutation and
+// hands run to the App's one-op guard. The form's fields are blurred
+// because nothing renders them on the busy stage; the result handlers
+// (jobTimerMsg / jobSavedMsg) and the opRejectedMsg bounce leave the
+// stage through leaveBusy. The spinner's tick is batched with the start
+// the way backup batches its first opTickMsg: bubbletea only redraws on
+// messages, so without the seed the spinner would never move.
+func (v JobsView) startBusyOp(op, label string, run func(ctx context.Context) tea.Msg) (tea.Model, tea.Cmd) {
+	v.stage = jobsBusy
+	v.busyOp = op
+	v.busyLabel = label
+	v.notice = ""
+	v.form.blurAll()
+	start := startOpMsg{name: op, run: run}
+	return v, tea.Batch(func() tea.Msg { return start }, v.spin.Tick)
+}
+
+// leaveBusy returns the view to its list once the busy op has resolved
+// (or was refused). A no-op off the busy stage, so a jobTimerMsg
+// broadcast while the operator is elsewhere never yanks them to the list.
+func (v *JobsView) leaveBusy() {
+	if v.stage != jobsBusy {
+		return
+	}
+	v.stage = jobsList
+	v.busyOp = ""
+	v.busyLabel = ""
 }
 
 // policyRunState tracks the in-flight run for the running-stage View().
@@ -68,7 +113,18 @@ func (policyRunDoneMsg) opResult() {}
 // only caller now (opName "job-run"), left as a parameter because a
 // second run-taking view once shared this function ("policy-run", the
 // deleted PoliciesView).
-func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter) startOpMsg {
+//
+// home resolves the policy's paths the way the timer's `policy run`
+// must: "~/docs" or a relative dir stored by an older form save reached
+// CreateSnapshot raw and failed, so every path is normalized here at run
+// time as well as at persist time.
+//
+// The retention prune plans around the repo's pin set, loaded inside the
+// op (it is a blobstore read). Without it a pinned snapshot beyond
+// keep_last was planned for deletion, DeleteSnapshot refused it at the
+// choke point, and every run of the job failed — the prune view already
+// loads pins; the job run must too.
+func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter, home string) startOpMsg {
 	r := deps.Repo
 	var wopts walker.Options
 	var retention repo.RetentionPolicy
@@ -85,7 +141,20 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			KeepMonthly: deps.Config.Retention.KeepMonthly,
 		}
 	}
-	paths := append([]string(nil), p.Paths...)
+	// Resolve the stored paths now, on the UI goroutine; a tilde with no
+	// home is a run failure (reported through the ordinary done message,
+	// failure hooks included), never a snapshot of <cwd>/docs under the
+	// policy's tag.
+	paths := make([]string, 0, len(p.Paths))
+	var pathErr error
+	for _, path := range p.Paths {
+		abs, err := expandPath(path, home)
+		if err != nil {
+			pathErr = err
+			break
+		}
+		paths = append(paths, abs)
+	}
 	tag := policyRunTag(name, p.Tags)
 	doCheck := p.AfterBackup.Check
 	pruneMode := policyPruneModeOrOff(p.AfterBackup.Prune)
@@ -102,6 +171,9 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			var hookOut bytes.Buffer
 			count := 0
 			runErr := func() error {
+				if pathErr != nil {
+					return pathErr
+				}
 				if hooks.Before != "" {
 					if err := policycfg.RunHook(ctx, &hookOut, "before", hooks.Before); err != nil {
 						return err
@@ -125,6 +197,12 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 					if !report.Healthy() {
 						return errors.New("post-backup check found integrity issues")
 					}
+				}
+				// Pins keep snapshots unconditionally; a load failure
+				// degrades to planning without them, and the prune step
+				// then skips the refusal rather than failing the run.
+				if pins, err := r.Pins(ctx); err == nil {
+					retention.Pinned = pins
 				}
 				if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
 					return err
@@ -192,7 +270,12 @@ func runPolicyRetentionPrune(ctx context.Context, r *repo.Repo, policy repo.Rete
 		return errors.New("policy prune would drop every snapshot; refusing automatic apply")
 	}
 	for _, id := range drop {
-		if err := r.DeleteSnapshot(ctx, id); err != nil && !errors.Is(err, blobstore.ErrNotFound) {
+		// Already gone is fine, and so is a pin placed between planning
+		// and deleting: the choke point refused it, the snapshot stays,
+		// and GC computes its live set from what is present, so nothing
+		// of it is reaped. Neither is a reason to fail an unattended run.
+		if err := r.DeleteSnapshot(ctx, id); err != nil &&
+			!errors.Is(err, blobstore.ErrNotFound) && !errors.Is(err, repo.ErrSnapshotPinned) {
 			return fmt.Errorf("delete snapshot %s: %w", id, err)
 		}
 	}
@@ -280,15 +363,16 @@ func (v JobsView) startRun() (tea.Model, tea.Cmd) {
 	v.run = policyRunState{reporter: reporter, name: name}
 	v.stage = jobsRunning
 
+	home := v.jobsHome()
 	return v, tea.Batch(func() tea.Msg {
-		return buildPolicyRunOp(v.deps, "job-run", name, p, reporter)
+		return buildPolicyRunOp(v.deps, "job-run", name, p, reporter, home)
 	}, opTick())
 }
 
-// runTimerInstall renders and writes the selected job's scheduler files in a
-// quick tea.Cmd — a port of ScheduleView.runInstall. Rejects a manual
-// cadence (mirrors the CLI) and folds any render/write error into the
-// returned jobTimerMsg.
+// runTimerInstall renders, writes, and activates the selected job's
+// scheduler files under the one-op guard. A manual cadence is refused up
+// front (mirrors the CLI) without taking the guard — there is nothing to
+// run; any render/write/activate error rides back in the jobTimerMsg.
 func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 	row, ok := v.currentJob()
 	if !ok {
@@ -297,14 +381,15 @@ func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 	name := row.name
 	cfgPath := v.deps.ConfigPath
 	p := v.policies[name]
+	if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
+		v.notice = fmt.Sprintf("job %q has a manual schedule; set a cadence before installing", name)
+		return v, nil
+	}
 	goos := v.osOverride
 	home := v.homeOverride
 	exeOverride := v.exeOverride
-	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
-	run := func() tea.Msg {
-		if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
-			return jobTimerMsg{err: fmt.Errorf("job %q has a manual schedule; set a cadence before installing", name)}
-		}
+	runner := v.deps.SchedulerRunner
+	run := func(ctx context.Context) tea.Msg {
 		paths, err := scheduler.PathsFor(goos, home, name)
 		if err != nil {
 			return jobTimerMsg{err: err}
@@ -328,11 +413,11 @@ func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("installed timer for %q; now active", name)}
 	}
-	return v, run
+	return v.startBusyOp(jobInstallOpName, fmt.Sprintf("Installing timer for %q…", name), run)
 }
 
-// runTimerUninstall removes the selected job's scheduler files in a quick
-// tea.Cmd — a port of ScheduleView.runUninstall.
+// runTimerUninstall unloads and removes the selected job's scheduler
+// files under the one-op guard.
 func (v JobsView) runTimerUninstall() (tea.Model, tea.Cmd) {
 	row, ok := v.currentJob()
 	if !ok {
@@ -341,8 +426,8 @@ func (v JobsView) runTimerUninstall() (tea.Model, tea.Cmd) {
 	name := row.name
 	goos := v.osOverride
 	home := v.homeOverride
-	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
-	run := func() tea.Msg {
+	runner := v.deps.SchedulerRunner
+	run := func(ctx context.Context) tea.Msg {
 		paths, err := scheduler.PathsFor(goos, home, name)
 		if err != nil {
 			return jobTimerMsg{err: err}
@@ -359,7 +444,7 @@ func (v JobsView) runTimerUninstall() (tea.Model, tea.Cmd) {
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("removed timer for %q", name)}
 	}
-	return v, run
+	return v.startBusyOp(jobUninstallOpName, fmt.Sprintf("Removing timer for %q…", name), run)
 }
 
 // runDelete removes the selected job: the policy leaves sentra.yaml
@@ -368,7 +453,8 @@ func (v JobsView) runTimerUninstall() (tea.Model, tea.Cmd) {
 // briefly, never a timer-less zombie policy the table would still show.
 // Snapshots are deliberately untouched: data deletion belongs to
 // retention/prune, not a config view. Uninstall tolerates absent files,
-// so it runs unconditionally.
+// so it runs unconditionally. Runs under the one-op guard like the
+// other timer mutations.
 func (v JobsView) runDelete() (tea.Model, tea.Cmd) {
 	row, ok := v.currentJob()
 	if !ok {
@@ -377,8 +463,8 @@ func (v JobsView) runDelete() (tea.Model, tea.Cmd) {
 	name := row.name
 	cfgPath := v.deps.ConfigPath
 	goos, home := v.osOverride, v.homeOverride
-	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
-	run := func() tea.Msg {
+	runner := v.deps.SchedulerRunner
+	run := func(ctx context.Context) tea.Msg {
 		if err := config.Update(cfgPath, func(cfg *config.Config) error {
 			delete(cfg.Policies, name)
 			return nil
@@ -400,5 +486,5 @@ func (v JobsView) runDelete() (tea.Model, tea.Cmd) {
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("deleted %q — policy and timer removed; snapshots kept", name)}
 	}
-	return v, run
+	return v.startBusyOp(jobDeleteOpName, fmt.Sprintf("Deleting job %q…", name), run)
 }

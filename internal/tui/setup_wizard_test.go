@@ -13,6 +13,7 @@ import (
 	"unicode/utf8"
 
 	"github.com/charmbracelet/bubbles/cursor"
+	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -2497,5 +2498,51 @@ func TestSetupWizard_ProfileRowFocusSchedulesBlink(t *testing.T) {
 	}
 	if offCmd != nil {
 		t.Fatal("leaving the profile row blurs its input — no blink to schedule")
+	}
+}
+
+// TestSetupWizard_LeavingAStageBlursItsFields walks the AWS path forward
+// and asserts, at every stage, that exactly the fields the stage owns are
+// focused. Before the Update wrapper blurred off-stage fields, the bucket
+// input stayed focused from details all the way to review: a blink chain
+// nothing rendered, and a Focused() that lied to every guard.
+func TestSetupWizard_LeavingAStageBlursItsFields(t *testing.T) {
+	focused := func(v SetupWizardView) int {
+		n := 0
+		wizardFields(v, func(f *textinput.Model) {
+			if f.Focused() {
+				n++
+			}
+		})
+		return n
+	}
+	v := setupAtDetails(t, 0)
+	if n := focused(v); n != 1 {
+		t.Fatalf("details: %d focused fields, want 1 (bucket)", n)
+	}
+	v = setupTypeField(v, "my-bucket")
+	m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.stage != stageActions {
+		t.Fatalf("stage = %v, want actions", v.stage)
+	}
+	if n := focused(v); n != 0 {
+		t.Fatalf("actions, cursor on the auth row: %d focused fields, want 0", n)
+	}
+	v = setupAtPassphrase(t)
+	if n := focused(v); n != 1 || !v.newPass.Focused() {
+		t.Fatalf("passphrase: %d focused fields, newPass=%v; want exactly newPass", n, v.newPass.Focused())
+	}
+	v = setupAtReview(t)
+	if n := focused(v); n != 0 {
+		t.Fatalf("review: %d focused fields, want 0", n)
+	}
+	// And backwards: esc from passphrase to actions re-syncs the profile
+	// row (blurred, cursor on auth) and leaves nothing else lit.
+	v = setupAtPassphrase(t)
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEsc})
+	v = m.(SetupWizardView)
+	if v.stage != stageActions || focused(v) != 0 {
+		t.Fatalf("esc back to actions: stage=%v focused=%d, want actions with 0", v.stage, focused(v))
 	}
 }

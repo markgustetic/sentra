@@ -50,7 +50,7 @@ func NewDiff(deps Deps) Diff {
 	// Ideal widths until the first WindowSizeMsg; Update re-sizes columns
 	// to the interior the App forwards so the table fits the content panel.
 	d.tbl = table.New(table.WithColumns(snapshotPickerColumns(pickerIdealWidth, false)),
-		table.WithRows(rows), table.WithFocused(true))
+		table.WithRows(rows), table.WithFocused(true), table.WithStyles(ui.TableStyles()))
 	return d
 }
 
@@ -94,7 +94,7 @@ func (d Diff) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 
 	case tea.WindowSizeMsg:
 		d.width = msg.Width
-		d.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(d.width), false))
+		d.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(d.width)-ui.TableGutter, false))
 		d.tbl.SetHeight(max(msg.Height-8, 3))
 		return d, nil
 	case tea.KeyMsg:
@@ -164,9 +164,9 @@ func (d Diff) View() string {
 	}
 	switch d.stage {
 	case diffPickA:
-		return ui.Primary.Render("Diff: choose the FIRST snapshot") + "\n\n" + d.tbl.View()
+		return ui.Primary.Render("Diff: choose the FIRST snapshot") + "\n\n" + ui.TableView(d.tbl)
 	case diffPickB:
-		return ui.Primary.Render("Diff "+d.idA+" → choose the SECOND snapshot") + "\n\n" + d.tbl.View()
+		return ui.Primary.Render("Diff "+d.idA+" → choose the SECOND snapshot") + "\n\n" + ui.TableView(d.tbl)
 	default:
 		return d.renderResult()
 	}

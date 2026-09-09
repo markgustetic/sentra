@@ -1,6 +1,7 @@
 package tui
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"strings"
@@ -240,12 +241,25 @@ func (v JobsView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 	return v, cmd
 }
 
-// saveForm rebuilds + revalidates the form, writes the policy into
-// sentra.yaml, and reloads. Config-only: no repo lock, no op guard — a port
+// jobSavedMsg is the guard-clearing result of a job-save op. exists
+// reports that replace=false met an existing name, so the caller pushes
+// the replace confirm with the form intact; err covers a bad on-disk base
+// or a failed write; notice is the human line for the list on success.
+type jobSavedMsg struct {
+	name   string
+	exists bool
+	notice string
+	err    error
+}
+
+func (jobSavedMsg) opResult() {}
+
+// saveForm rebuilds + revalidates the form, then writes the policy into
+// sentra.yaml and reconciles the OS timer under the one-op guard — a port
 // of PoliciesView.addFromForm, shared by both JobsView's ADD and EDIT
-// confirms. replace=false refuses an existing name (pushing the replace
-// confirm); replace=true overwrites while carrying the existing policy's
-// config-authored Hooks forward, matching `policy add --replace`.
+// confirms. replace=false refuses an existing name (the result pushes the
+// replace confirm); replace=true overwrites while carrying the existing
+// policy's config-authored Hooks forward, matching `policy add --replace`.
 //
 // Edit mode always calls this with replace=true: the job being edited
 // already exists under this name (the name field is read-only, so it can't
@@ -256,6 +270,10 @@ func (v JobsView) updateForm(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 // captured from the on-disk policy before the overwrite; without that, a
 // replace-via-add would leave an installed timer firing on the old
 // cadence while sentra.yaml says the new one.
+//
+// Validation stays synchronous (it is pure) so a bad entry never takes
+// the guard; everything that touches disk or execs launchctl/systemctl
+// runs inside the op.
 func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 	name, p, err := v.form.build()
 	if err != nil {
@@ -263,62 +281,96 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 		v.form.err = err.Error()
 		return v, nil
 	}
-	editing := v.editName != ""
-	var oldSpec string
-	var replaced bool
-	// config.Update rewrites against the on-disk sentra.yaml, so saving a
-	// job can't persist this process's SENTRA_* overrides into repo.s3.
-	err = config.Update(v.deps.ConfigPath, func(cfg *config.Config) error {
-		if cfg.Policies == nil {
-			cfg.Policies = map[string]config.PolicyConfig{}
+	// Persist absolute paths: "~/docs" or "rel/dir" as typed would be
+	// stored raw and fail under the timer, whose cwd and HOME are not
+	// this shell's. Resolved against the view's home seam so the stored
+	// path is the one the drill-in and last-run lookups already compute.
+	// A tilde with no home is refused inline (see expandPath): the save
+	// must not persist a cwd guess the timer would then back up.
+	home := v.jobsHome()
+	for i, path := range p.Paths {
+		abs, err := expandPath(path, home)
+		if err != nil {
+			v.stage = jobsForm
+			v.form.err = err.Error()
+			return v, nil
 		}
-		if existing, exists := cfg.Policies[name]; exists {
-			if !replace {
-				return errPolicyExists
-			}
-			oldSpec = policycfg.FormatScheduleSpec(existing.Schedule)
-			replaced = true
-			p.Hooks = existing.Hooks
-		}
-		cfg.Policies[name] = p
-		return nil
-	})
-	if errors.Is(err, errPolicyExists) {
-		body := fmt.Sprintf("Job %q already exists.\nReplace it? Config-authored hooks are preserved.", name)
-		modal := NewConfirmModal("Replace job", body, jobReplaceConfirmID, 80, 24)
-		return v, func() tea.Msg { return pushModalMsg{modal: modal} }
+		p.Paths[i] = abs
 	}
-	if err != nil {
-		// Covers both a bad on-disk base and a failed write; the wrapped
-		// error names which.
-		v.notice = "save failed: " + err.Error()
-		v.stage = jobsList
-		v.editName = ""
-		v.form.blurAll()
+	editing := v.editName != ""
+	cfgPath := v.deps.ConfigPath
+	sync := v.syncTimerAfterSave
+	run := func(ctx context.Context) tea.Msg {
+		var oldSpec string
+		var replaced bool
+		// config.Update rewrites against the on-disk sentra.yaml, so saving a
+		// job can't persist this process's SENTRA_* overrides into repo.s3.
+		err := config.Update(cfgPath, func(cfg *config.Config) error {
+			if cfg.Policies == nil {
+				cfg.Policies = map[string]config.PolicyConfig{}
+			}
+			if existing, exists := cfg.Policies[name]; exists {
+				if !replace {
+					return errPolicyExists
+				}
+				oldSpec = policycfg.FormatScheduleSpec(existing.Schedule)
+				replaced = true
+				p.Hooks = existing.Hooks
+			}
+			cfg.Policies[name] = p
+			return nil
+		})
+		if errors.Is(err, errPolicyExists) {
+			return jobSavedMsg{name: name, exists: true}
+		}
+		if err != nil {
+			// Covers both a bad on-disk base and a failed write; the
+			// wrapped error names which.
+			return jobSavedMsg{name: name, err: err}
+		}
+		notice := fmt.Sprintf("added %q", name)
+		switch {
+		case editing:
+			notice = fmt.Sprintf("saved %q", name)
+		case replaced:
+			notice = fmt.Sprintf("replaced %q", name)
+		}
+		if editing || replaced {
+			syncNotice, syncErr := sync(ctx, name, oldSpec, p)
+			switch {
+			case syncErr != nil:
+				notice = syncErr.Error()
+			case syncNotice != "":
+				notice = syncNotice
+			}
+		}
+		return jobSavedMsg{name: name, notice: notice}
+	}
+	return v.startBusyOp(jobSaveOpName, fmt.Sprintf("Saving job %q…", name), run)
+}
+
+// finishSave consumes the job-save result: an existing name reopens the
+// form and pushes the replace confirm (whose confirmedMsg re-enters
+// saveForm with replace=true against the same form), a failure lands on
+// the list with the error as its notice, and success lands on the list
+// reloaded with the save's notice.
+func (v JobsView) finishSave(msg jobSavedMsg) (tea.Model, tea.Cmd) {
+	v.leaveBusy()
+	if msg.exists {
+		v.stage = jobsForm
+		cmd := v.form.refocus()
+		body := fmt.Sprintf("Job %q already exists.\nReplace it? Config-authored hooks are preserved.", msg.name)
+		modal := NewConfirmModal("Replace job", body, jobReplaceConfirmID, 80, 24)
+		return v, tea.Batch(cmd, func() tea.Msg { return pushModalMsg{modal: modal} })
+	}
+	v.editName = ""
+	if msg.err != nil {
+		v.notice = "save failed: " + msg.err.Error()
 		return v, nil
 	}
-	v.stage = jobsList
-	v.editName = ""
-	v.form.blurAll()
-	notice := fmt.Sprintf("added %q", name)
-	switch {
-	case editing:
-		notice = fmt.Sprintf("saved %q", name)
-	case replaced:
-		notice = fmt.Sprintf("replaced %q", name)
-	}
-	if editing || replaced {
-		syncNotice, syncErr := v.syncTimerAfterSave(name, oldSpec, p)
-		switch {
-		case syncErr != nil:
-			notice = syncErr.Error()
-		case syncNotice != "":
-			notice = syncNotice
-		}
-	}
-	v.reload()
-	v.notice = notice
-	return v, nil
+	probe := v.reload()
+	v.notice = msg.notice
+	return v, probe
 }
 
 // syncTimerAfterSave reconciles the OS timer after a save that overwrote
@@ -326,7 +378,7 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 // unchanged spec -> nothing; new cadence manual -> uninstall (a manual
 // job must not keep firing on the old cadence); otherwise re-render +
 // reinstall. Returns a human notice.
-func (v JobsView) syncTimerAfterSave(name, oldSpec string, p config.PolicyConfig) (string, error) {
+func (v JobsView) syncTimerAfterSave(ctx context.Context, name, oldSpec string, p config.PolicyConfig) (string, error) {
 	newSpec := policycfg.FormatScheduleSpec(p.Schedule)
 	if newSpec == oldSpec {
 		return "", nil
@@ -339,7 +391,7 @@ func (v JobsView) syncTimerAfterSave(name, oldSpec string, p config.PolicyConfig
 	if err != nil || !installed {
 		return "", err
 	}
-	ctx, runner := ctxOrBackground(v.deps.Ctx), v.deps.SchedulerRunner
+	runner := v.deps.SchedulerRunner
 	if policycfg.NormalizeSchedule(p.Schedule).Cadence == policycfg.CadenceManual {
 		// Unload before removing the files, or the OS keeps firing the
 		// old cadence until logout.

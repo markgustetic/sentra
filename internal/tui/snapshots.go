@@ -14,7 +14,6 @@ import (
 	"github.com/charmbracelet/bubbles/table"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
-	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
@@ -293,17 +292,17 @@ func newSnapshotsTable(rows []table.Row) table.Model {
 		{Title: "Files", Width: 8},
 		{Title: "Bytes", Width: 10},
 	}
-	t := table.New(
+	// ui.TableStyles is the one place a table is styled: its Selected
+	// style carries the "▍" glyph that ui.TableView aligns into a gutter.
+	// A local colour-only Selected here once left the cursor row invisible
+	// under NO_COLOR and untestable under the Ascii profile.
+	return table.New(
 		table.WithColumns(cols),
 		table.WithRows(rows),
 		table.WithFocused(true),
 		table.WithHeight(10),
+		table.WithStyles(ui.TableStyles()),
 	)
-	st := table.DefaultStyles()
-	st.Header = st.Header.Foreground(lipgloss.Color("#7C3AED")).Bold(true)
-	st.Selected = st.Selected.Foreground(lipgloss.Color("#FFFFFF")).Background(lipgloss.Color("#7C3AED"))
-	t.SetStyles(st)
-	return t
 }
 
 // SetSnapshots replaces the model's full snapshot list and rebuilds the visible
@@ -676,7 +675,7 @@ func (s Snapshots) View() string {
 			ui.Subtle.Render("filter: "+s.filter.Value())
 	}
 	footer := ui.ActionLine("view this snapshot", "↑↓ move · s sort · / filter · y copy id · p pin · esc back")
-	return s.tbl.View() + "\n" + status + "\n" + footer + "\n"
+	return ui.TableView(s.tbl) + "\n" + status + "\n" + footer + "\n"
 }
 
 // viewDetail renders the manifest file tree as a vertical list with

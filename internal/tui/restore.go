@@ -91,7 +91,7 @@ func NewRestoreView(deps Deps) RestoreView {
 	// Ideal widths until the first WindowSizeMsg; Update re-sizes columns
 	// to the interior the App forwards so the table fits the content panel.
 	v.tbl = table.New(table.WithColumns(snapshotPickerColumns(pickerIdealWidth, true)),
-		table.WithRows(rows), table.WithFocused(true))
+		table.WithRows(rows), table.WithFocused(true), table.WithStyles(ui.TableStyles()))
 	return v
 }
 
@@ -187,7 +187,7 @@ func (v RestoreView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		v.width = msg.Width
 		v.height = msg.Height
 		v.bar.Width = min(msg.Width-8, 60)
-		v.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(v.width), true))
+		v.tbl.SetColumns(snapshotPickerColumns(pickerContentWidth(v.width)-ui.TableGutter, true))
 		v.tbl.SetHeight(max(msg.Height-8, 3))
 		return v, nil
 	case restoreDoneMsg:
@@ -389,7 +389,7 @@ func (v RestoreView) View() string {
 	switch v.stage {
 	case restorePick:
 		b.WriteString(ui.Primary.Render("Restore: choose a snapshot"))
-		fmt.Fprintf(&b, "\n\n%s", v.tbl.View())
+		fmt.Fprintf(&b, "\n\n%s", ui.TableView(v.tbl))
 	case restoreDest:
 		b.WriteString(ui.Primary.Render("Restore " + v.snapID))
 		fmt.Fprintf(&b, "\n\n%s\n%s", boxedField(v.dest), boxedField(v.scope))

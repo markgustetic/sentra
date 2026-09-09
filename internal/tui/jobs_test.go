@@ -124,7 +124,7 @@ func TestJobs_InstalledRowComputesNextRun(t *testing.T) {
 	if err := scheduler.Install(map[string]string{paths.Files[0]: "x"}); err != nil {
 		t.Fatal(err)
 	}
-	v.reload()
+	v = probeTimers(t, v)
 	sized, _ := v.Update(tea.WindowSizeMsg{Width: 100, Height: 30})
 	out := sized.(JobsView).View()
 	// jobsNow is Mar 10 14:30; daily@03:00 -> next run Mar 11 03:00. The
@@ -168,8 +168,7 @@ func TestJobs_InstallThenUninstallTimer(t *testing.T) {
 	}
 	_ = push
 	m, cmd := v2.Update(confirmedMsg{id: jobInstallConfirmID})
-	res := cmd() // filesystem-only tea.Cmd, runs inline
-	m2, _ := m.(JobsView).Update(res)
+	m2, _ := runGuardedOp(t, m, cmd)
 	v3 := m2.(JobsView)
 	paths, _ := scheduler.PathsFor("darwin", v3.homeOverride, "alpha")
 	if installed, _ := scheduler.Installed(paths); !installed {
@@ -184,7 +183,7 @@ func TestJobs_InstallThenUninstallTimer(t *testing.T) {
 		t.Fatal("u must push the uninstall confirm modal")
 	}
 	m, cmd = v4.Update(confirmedMsg{id: jobUninstallConfirmID})
-	m2, _ = m.(JobsView).Update(cmd())
+	m2, _ = runGuardedOp(t, m, cmd)
 	if installed, _ := scheduler.Installed(paths); installed {
 		t.Fatal("confirm must remove the timer files")
 	}
@@ -197,11 +196,13 @@ func TestJobs_InstallRejectsManual(t *testing.T) {
 	deps, _ := jobsDeps(t)
 	v := newJobsForTest(t, deps)
 	v.tbl.SetCursor(1) // beta (manual)
+	// Refused up front: there is nothing to run, so no op is taken.
 	m, cmd := v.Update(confirmedMsg{id: jobInstallConfirmID})
-	res := cmd()
-	m2, _ := m.(JobsView).Update(res)
-	if !strings.Contains(m2.(JobsView).notice, "manual") {
-		t.Fatalf("manual install must be refused with a notice, got %q", m2.(JobsView).notice)
+	if cmd != nil {
+		t.Fatal("a manual job must be refused without starting an op")
+	}
+	if !strings.Contains(m.(JobsView).notice, "manual") {
+		t.Fatalf("manual install must be refused with a notice, got %q", m.(JobsView).notice)
 	}
 }
 
@@ -265,12 +266,7 @@ func TestJobs_EditPrefillsAndSavesWithTimerReinstall(t *testing.T) {
 		t.Fatal("enter must push the edit confirm")
 	}
 	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
-	if cmd != nil {
-		if res := cmd(); res != nil {
-			m2m, _ := m2.(JobsView).Update(res)
-			m2 = m2m
-		}
-	}
+	m2, _ = runGuardedOp(t, m2, cmd)
 	v3 := m2.(JobsView)
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -306,11 +302,10 @@ func TestJobs_EditToManualUninstallsTimer(t *testing.T) {
 	v2, _ := pressJobsKey(v, 'e')
 	v2.form.schedule.SetValue("manual")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	// saveForm runs synchronously (config write + timer sync) and, for an
-	// edit confirm, always returns a nil cmd — there is nothing async to
-	// chain here. The assertion below reads disk state, not the returned
-	// view, so both results are discarded.
-	m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	// The assertion below reads disk state, so the returned view is
+	// discarded once the guarded save has run.
+	m, cmd := m.(JobsView).Update(confirmedMsg{id: jobEditConfirmID})
+	runGuardedOp(t, m, cmd)
 	if installed, _ := scheduler.Installed(paths); installed {
 		t.Fatal("editing an installed job to manual must uninstall its timer")
 	}
@@ -346,15 +341,22 @@ func TestJobs_ReplaceViaAddResyncsTimer(t *testing.T) {
 	v2.form.schedule.SetValue("daily@09:00")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobAddConfirmID})
-	if cmd == nil {
-		t.Fatal("duplicate name must push the replace confirm")
+	// The duplicate check runs inside the guarded save against the on-disk
+	// map; its result reopens the form and pushes the replace confirm.
+	m2, cmd = runGuardedOp(t, m2, cmd)
+	var pushed bool
+	for _, msg := range execCmds(t, cmd) {
+		if _, ok := msg.(pushModalMsg); ok {
+			pushed = true
+		}
 	}
-	if _, ok := cmd().(pushModalMsg); !ok {
-		t.Fatalf("duplicate name must push the replace confirm, got %#v", cmd())
+	if !pushed || m2.(JobsView).stage != jobsForm {
+		t.Fatalf("duplicate name must reopen the form and push the replace confirm (stage=%v)", m2.(JobsView).stage)
 	}
 	// The replace confirm's side effects (config write + timer sync) run
-	// synchronously; the assertions below read disk state.
-	m2.(JobsView).Update(confirmedMsg{id: jobReplaceConfirmID})
+	// under the guard; the assertions below read disk state.
+	m3, cmd := m2.(JobsView).Update(confirmedMsg{id: jobReplaceConfirmID})
+	runGuardedOp(t, m3, cmd)
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -386,7 +388,8 @@ func TestJobs_AddFormStillWorks(t *testing.T) {
 	v2.form.path.SetValue("/data/gamma")
 	v2.form.schedule.SetValue("weekly@mon:04:00")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
-	m2, _ := m.(JobsView).Update(confirmedMsg{id: jobAddConfirmID})
+	m2, cmd := m.(JobsView).Update(confirmedMsg{id: jobAddConfirmID})
+	runGuardedOp(t, m2, cmd)
 	cfg, err := config.Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -394,7 +397,6 @@ func TestJobs_AddFormStillWorks(t *testing.T) {
 	if _, ok := cfg.Policies["gamma"]; !ok {
 		t.Fatal("add must persist the new policy")
 	}
-	_ = m2
 }
 
 // Scheduled backups is a rail destination now — directly under Backup, so
@@ -432,7 +434,7 @@ func TestJobs_DeleteRemovesPolicyAndTimer(t *testing.T) {
 	}
 	_ = push
 	m, cmd := v2.Update(confirmedMsg{id: jobDeleteConfirmID})
-	m2, _ := m.(JobsView).Update(cmd())
+	m2, _ := runGuardedOp(t, m, cmd)
 	v3 := m2.(JobsView)
 
 	cfg, err := config.Load(path)
@@ -645,9 +647,7 @@ func TestJobs_DrillInDeleteFromDetailReturnsToList(t *testing.T) {
 		t.Fatal("d in detail must push the delete confirm")
 	}
 	m2, cmd := v3.Update(confirmedMsg{id: jobDeleteConfirmID})
-	v4 := m2.(JobsView)
-	res := cmd() // the delete op's tea.Cmd — filesystem-only, runs inline
-	m3, _ := v4.Update(res)
+	m3, _ := runGuardedOp(t, m2, cmd)
 	v5 := m3.(JobsView)
 
 	if v5.stage != jobsList {
@@ -910,7 +910,8 @@ func TestJobs_FormReplaceGuardPreservesHooks(t *testing.T) {
 	v2.form.path.SetValue("/data/alpha-new")
 	m, _ := v2.Update(tea.KeyMsg{Type: tea.KeyEnter})
 	v3 := m.(JobsView)
-	m2, _ := v3.Update(confirmedMsg{id: jobAddConfirmID})
+	m2, cmd := v3.Update(confirmedMsg{id: jobAddConfirmID})
+	m2, _ = runGuardedOp(t, m2, cmd) // the duplicate check; pushes the replace confirm
 	v4 := m2.(JobsView)
 
 	// The write must NOT have happened yet — a replace confirm is up.
@@ -924,7 +925,8 @@ func TestJobs_FormReplaceGuardPreservesHooks(t *testing.T) {
 
 	// The replace confirm's side effect is the config write; the returned
 	// view is never inspected again.
-	v4.Update(confirmedMsg{id: jobReplaceConfirmID})
+	m5, cmd := v4.Update(confirmedMsg{id: jobReplaceConfirmID})
+	runGuardedOp(t, m5, cmd)
 	cfg, err = config.Load(path)
 	if err != nil {
 		t.Fatal(err)
@@ -1003,7 +1005,8 @@ func TestJobs_FormFullFieldSet(t *testing.T) {
 	// The confirm's side effect is the config write, which is what the
 	// rest of this test asserts against — the returned view is never
 	// inspected again.
-	v2.Update(confirmedMsg{id: jobAddConfirmID})
+	m, cmd := v2.Update(confirmedMsg{id: jobAddConfirmID})
+	runGuardedOp(t, m, cmd)
 
 	cfg, err := config.Load(path)
 	if err != nil {
@@ -1338,7 +1341,15 @@ func TestJobs_LeavingTheFormBlursItsFields(t *testing.T) {
 		v.form.schedule.SetValue("daily@09:00")
 		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyEnter}) // pushes the add confirm
 		v = m.(JobsView)
-		m, _ = v.Update(confirmedMsg{id: jobAddConfirmID})
+		m, cmd := v.Update(confirmedMsg{id: jobAddConfirmID})
+		v = m.(JobsView)
+		if v.stage != jobsBusy {
+			t.Fatalf("stage = %v, want jobsBusy while the save runs", v.stage)
+		}
+		if jobsFormAnyFocused(v) {
+			t.Error("the busy stage renders no field — the save must blur them on the way out")
+		}
+		m, _ = runGuardedOp(t, v, cmd)
 		v = m.(JobsView)
 		if v.stage != jobsList {
 			t.Fatalf("stage = %v, want jobsList after a confirmed save (notice=%q err=%q)", v.stage, v.notice, v.form.err)

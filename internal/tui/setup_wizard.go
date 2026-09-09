@@ -261,7 +261,12 @@ func NewSetupWizardView(deps Deps) SetupWizardView {
 		ti.SetValue(values[i])
 		fields[i] = ti
 	}
-	fields[setupFieldBucket].Focus()
+	// Nothing is focused here: the wizard lands on the fieldless backend
+	// stage, and advanceFromBackend focuses the bucket on the way into
+	// details. A construction-time focus would leave a field lit for a
+	// stage the operator has not reached — and, since Settings' "Re-run
+	// setup" makes this an ordinary switched-to view, a focused field on a
+	// view that is not even on screen.
 
 	newPass := textinput.New()
 	newPass.Prompt = "pass>    "
@@ -388,11 +393,82 @@ func (v SetupWizardView) ShortHelp() []key.Binding {
 func (v SetupWizardView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 	before := v.stage
 	model, cmd := v.updateInner(msg)
-	if nv, ok := model.(SetupWizardView); ok && nv.stage > before {
-		nv.history = append(nv.history, before)
-		return nv, cmd
+	nv, ok := model.(SetupWizardView)
+	if !ok {
+		return model, cmd
 	}
-	return model, cmd
+	if nv.stage != before {
+		// Leaving a stage blurs its fields. Every transition site focuses
+		// what the NEW stage owns; none of them un-focused what the old
+		// one owned, so the bucket field stayed focused all the way to
+		// review — a chain nothing rendered, and a Focused() that lied to
+		// every guard. One choke point over the stage change, not a blur
+		// per site, so a new transition cannot forget it.
+		nv.blurOffStage()
+	}
+	if nv.stage > before {
+		nv.history = append(nv.history, before)
+	}
+	return nv, cmd
+}
+
+// blurOffStage blurs every text input the current stage does not own,
+// leaving the stage's own field(s) exactly as the transition set them.
+func (v *SetupWizardView) blurOffStage() {
+	if v.stage != stageDetails {
+		for i := range v.fields {
+			v.fields[i].Blur()
+		}
+	}
+	if v.stage != stageActions {
+		v.backupProfile.Blur()
+	}
+	if v.stage != stagePassphrase {
+		v.newPass.Blur()
+		v.confirmPass.Blur()
+	}
+}
+
+// blurAll blurs every text input the wizard has. viewHiddenMsg uses it:
+// off screen, nothing renders a field, so a focused one would keep its
+// blink chain rescheduling for nothing and make Focused() lie.
+func (v *SetupWizardView) blurAll() {
+	for i := range v.fields {
+		v.fields[i].Blur()
+	}
+	v.backupProfile.Blur()
+	v.newPass.Blur()
+	v.confirmPass.Blur()
+}
+
+// refocusStage focuses the one field the current stage owns and returns
+// Focus()'s own blink cmd — nil on a stage that owns none (backend, IAM
+// preview, review, provision, done, error) or when the stage's cursor is
+// parked on a toggle rather than an input. viewShownMsg and goBack route
+// through here so the stage's cursor and the fields' Focused() agree.
+func (v *SetupWizardView) refocusStage() tea.Cmd {
+	switch v.stage {
+	case stageDetails:
+		if v.fieldCursor < v.detailFieldCount() {
+			return v.focusOnlyField(v.fieldCursor)
+		}
+		for i := range v.fields {
+			v.fields[i].Blur()
+		}
+		return nil
+	case stageActions:
+		var cmd tea.Cmd
+		*v, cmd = v.syncProfileFocus()
+		return cmd
+	case stagePassphrase:
+		if v.focusConf {
+			v.newPass.Blur()
+			return v.confirmPass.Focus()
+		}
+		v.confirmPass.Blur()
+		return v.newPass.Focus()
+	}
+	return nil
 }
 
 func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
@@ -400,6 +476,16 @@ func (v SetupWizardView) updateInner(msg tea.Msg) (tea.Model, tea.Cmd) {
 	case tea.WindowSizeMsg:
 		v.width = msg.Width
 		v.height = msg.Height
+		return v, nil
+	case viewShownMsg:
+		// On screen: re-focus whatever the current stage owns and restart
+		// its blink. On first run the wizard is the launch view and lands
+		// here from App.Init's showActiveMsg on the fieldless backend
+		// stage; from Settings it is an ordinary switched-to view.
+		cmd := v.refocusStage()
+		return v, cmd
+	case viewHiddenMsg:
+		v.blurAll()
 		return v, nil
 	case cursor.BlinkMsg:
 		// Forward the tick to whichever input currently holds focus so the
@@ -598,17 +684,12 @@ func (v SetupWizardView) goBack() (SetupWizardView, tea.Cmd) {
 	v.passErr = ""
 	// Re-establishing focus is a real focus transition, so it carries the
 	// blink cmd back to the caller the same way a forward step does.
-	var cmd tea.Cmd
-	switch v.stage {
-	case stageDetails:
-		cmd = v.focusOnlyField(v.fieldCursor)
-	case stagePassphrase:
+	if v.stage == stagePassphrase {
 		crypto.Zeroize(v.pass)
 		v.pass = nil
 		v.focusConf = false
-		v.confirmPass.Blur()
-		cmd = v.newPass.Focus()
 	}
+	cmd := v.refocusStage()
 	return v, cmd
 }
 

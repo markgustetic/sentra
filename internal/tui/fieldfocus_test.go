@@ -8,6 +8,8 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+
+	"github.com/markgustetic/sentra/internal/config"
 )
 
 // assertBlinkCmd fails t unless cmd (possibly a batch) yields at least
@@ -127,6 +129,26 @@ type fieldOwner struct {
 	// copy, so a test can mutate (Blur, BlinkSpeed) or inspect (Focused)
 	// the fields of a value-typed model in one place.
 	fields func(m tea.Model, do func(f *textinput.Model)) tea.Model
+	// noBox marks the setup wizard, whose rows already carry ui.SelectRow's
+	// glyph: its fields take the blink but never the frame, so the box
+	// tests assert zero frames in both states instead of one-then-zero.
+	noBox bool
+}
+
+// wizardFields is the setup wizard's field accessor: the five details
+// inputs, the backup-user profile, and the two passphrase fields. The
+// details slice is cloned first so a test that blurs the copy leaves the
+// original's backing array alone.
+func wizardFields(m tea.Model, do func(*textinput.Model)) tea.Model {
+	v := m.(SetupWizardView)
+	v.fields = append([]textinput.Model(nil), v.fields...)
+	for i := range v.fields {
+		do(&v.fields[i])
+	}
+	do(&v.backupProfile)
+	do(&v.newPass)
+	do(&v.confirmPass)
+	return v
 }
 
 func fieldOwners() []fieldOwner {
@@ -233,6 +255,20 @@ func fieldOwners() []fieldOwner {
 			},
 		},
 		{
+			name:    "setup, details stage on the bucket field",
+			id:      "setup",
+			focused: func(t *testing.T) tea.Model { return setupAtDetails(t, 0) },
+			fields:  wizardFields,
+			noBox:   true,
+		},
+		{
+			name:    "setup, passphrase stage on the new field",
+			id:      "setup",
+			focused: func(t *testing.T) tea.Model { return setupAtPassphrase(t) },
+			fields:  wizardFields,
+			noBox:   true,
+		},
+		{
 			name: "jobs",
 			focused: func(t *testing.T) tea.Model {
 				deps, _ := jobsDeps(t)
@@ -295,6 +331,12 @@ func TestFieldBox_FollowsFocusedNotStage(t *testing.T) {
 	for _, fo := range fieldOwners() {
 		t.Run(fo.name, func(t *testing.T) {
 			focused := fo.focused(t)
+			if fo.noBox {
+				if got := boxCount(focused.View()); got != 0 {
+					t.Fatalf("a glyph-marked view must never frame a field, got %d box(es):\n%s", got, focused.View())
+				}
+				return
+			}
 			if got := boxCount(focused.View()); got != 1 {
 				t.Fatalf("focused field: boxCount = %d, want exactly 1:\n%s", got, focused.View())
 			}
@@ -385,6 +427,13 @@ func TestFieldFocus_ShownFocusesNothingOutsideAFieldStage(t *testing.T) {
 			deps, _ := jobsDeps(t)
 			return newJobsForTest(t, deps)
 		}},
+		{"setup, backend stage", func(t *testing.T) tea.Model {
+			t.Setenv("SENTRA_PASSPHRASE", "")
+			return NewSetupWizardView(Deps{Config: &config.Config{}})
+		}},
+		{"setup, review stage", func(t *testing.T) tea.Model {
+			return setupAtReview(t)
+		}},
 	}
 	for _, tc := range cases {
 		t.Run(tc.name, func(t *testing.T) {
@@ -419,13 +468,20 @@ func shown[V tea.Model](t *testing.T, v V) V {
 // only source of focus. Otherwise a view the operator never opens sits with
 // a focused field (Focused() lying off screen) and, when App.Init batched
 // every view's Init, ran a perpetual blink chain for it from launch. Only
-// the three views that used to focus at construction are listed — the rest
-// never did.
+// the views that used to focus at construction are listed — the rest
+// never did. The wizard's constructor focused its bucket field for the
+// details stage the operator had not reached yet; Settings' "Re-run
+// setup" makes it an ordinary switched-to view, so it must obey the rule
+// like the rest.
 func TestFieldFocus_ConstructionFocusesNothing(t *testing.T) {
 	built := map[string]func(t *testing.T) tea.Model{
 		"unlock":   func(t *testing.T) tea.Model { return NewUnlockView(unlockDeps(t, "hunter2")) },
 		"password": func(t *testing.T) tea.Model { return NewPasswordView(Deps{Repo: newFlowRepo(t)}) },
 		"sync":     func(t *testing.T) tea.Model { return NewSyncView(Deps{Repo: newFlowRepo(t)}) },
+		"setup, details stage on the bucket field": func(t *testing.T) tea.Model {
+			t.Setenv("SENTRA_PASSPHRASE", "")
+			return NewSetupWizardView(Deps{Config: &config.Config{}})
+		},
 	}
 	for _, fo := range fieldOwners() {
 		build, ok := built[fo.name]
