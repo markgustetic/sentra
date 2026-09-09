@@ -1,6 +1,7 @@
 package cli
 
 import (
+	"errors"
 	"fmt"
 	"io"
 	"path/filepath"
@@ -105,25 +106,18 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 	if err != nil {
 		return err
 	}
-	paths, err := scheduler.PathsFor(scheduleOS(deps), home, name)
-	if err != nil {
+	// Render, write, and load through the one path the TUI's wizard and
+	// jobs view take, so the surfaces cannot drift on what a timer file
+	// contains. Files alone do nothing until launchd/systemd loads them
+	// (at the next login, or never for a systemd timer that was not
+	// enabled), so InstallFor activates too. Only an activation failure
+	// reaches the report below: the files are on disk, the error names
+	// the command to finish with, and the exit stays non-zero.
+	paths, err := scheduler.InstallFor(cmd.Context(), scheduleOS(deps), home, scheduleExe(deps), absConfig, name, p.Schedule, deps.Runner)
+	var actErr *scheduler.ActivationError
+	if err != nil && !errors.As(err, &actErr) {
 		return err
 	}
-	exe, err := scheduler.Executable(scheduleExe(deps))
-	if err != nil {
-		return err
-	}
-	files, err := scheduler.Render(paths, exe, absConfig, name, p.Schedule)
-	if err != nil {
-		return err
-	}
-	if err := scheduler.Install(files); err != nil {
-		return err
-	}
-	// Files alone do nothing until launchd/systemd loads them (at the next
-	// login, or never for a systemd timer that was not enabled). Activate
-	// now; on failure the files stay and the error names the command.
-	actErr := scheduler.Activate(cmd.Context(), paths, deps.Runner)
 
 	out := scheduleStdout(cmd, deps)
 	fmt.Fprintln(out, ui.Success.Render("Schedule installed"))
@@ -134,7 +128,7 @@ func runScheduleInstall(cmd *cobra.Command, deps ScheduleDeps, cfgPath, name str
 	}
 	if actErr != nil {
 		fmt.Fprintln(out, "  timer:    not active")
-		return actErr
+		return err
 	}
 	fmt.Fprintln(out, "  timer:    active")
 	return nil

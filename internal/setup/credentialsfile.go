@@ -58,10 +58,11 @@ func CheckAWSCredentialsProfileFree(path, profile string) error {
 // them ahead of the profile's SSO / role / credential_process settings — so
 // writing the key would silently retarget every tool that uses the profile
 // at the backup user. Sentra never edits ~/.aws/config, so the only safe
-// answer is a different name. The wrap names the section and the file; the
-// sentinel carries the reason, so the operator reads a trap to avoid rather
-// than a name clash to resolve by editing the config file.
-var ErrConfigProfileExists = errors.New("a static key under that name would shadow its settings")
+// answer is a different name. The sentinel is a whole sentence carrying
+// the reason — errors.Is callers may print it bare — so the operator reads
+// a trap to avoid rather than a name clash to resolve by editing the config
+// file; the wrap adds only the section and the file it was found in.
+var ErrConfigProfileExists = errors.New("profile is already defined in the AWS config file; a static key under its name would shadow its settings")
 
 // CheckAWSConfigProfileFree refuses a backup profile whose [profile NAME]
 // section exists in the AWS CLI config at path. It is the config-file half
@@ -82,7 +83,7 @@ func CheckAWSConfigProfileFree(path, profile string) error {
 	// empty [profile NAME] is still a definition — and still one the SDK
 	// would merge the key into.
 	if _, defined := cfg[AWSProfileSection(profile)]; defined {
-		return fmt.Errorf("[profile %s] is defined in %s; %w", profile, path, ErrConfigProfileExists)
+		return fmt.Errorf("[profile %s] in %s: %w", profile, path, ErrConfigProfileExists)
 	}
 	return nil
 }

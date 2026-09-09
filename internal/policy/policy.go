@@ -46,7 +46,9 @@ func Validate(name string, p config.PolicyConfig) error {
 			return fmt.Errorf("policy %q path %d must not be empty", name, i+1)
 		}
 		// A path that cannot resolve now cannot resolve at 03:00 either;
-		// refusing here keeps a timer from failing every fire.
+		// refusing here keeps a timer from failing every fire. Only a
+		// tilde path consults HOME, so a stripped environment (a timer's,
+		// a CI runner's) cannot fail validation of an absolute path.
 		if _, err := ResolvePath(path); err != nil {
 			return fmt.Errorf("policy %q path %d: %w", name, i+1, err)
 		}

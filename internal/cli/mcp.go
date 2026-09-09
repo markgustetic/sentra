@@ -6,7 +6,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/crypto"
 	"github.com/markgustetic/sentra/internal/mcpserver"
-	"github.com/markgustetic/sentra/internal/walker"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 )
 
 // MCPDeps wires `sentra mcp`. PassphraseFile mirrors the launch probe: a
@@ -69,13 +69,6 @@ func runMCP(cmd *cobra.Command, deps MCPDeps, cfgPath string) error {
 	// The server never sees sentra.yaml, so resolve backup.* into walker
 	// options here, the same way `sentra backup` does — an MCP-confirmed
 	// backup must walk exactly what the keyboard-driven one would.
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-		Concurrency:   cfg.Backup.Concurrency,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
-
-	srv := mcpserver.New(r, mcpserver.Options{Version: deps.Version, Walker: walkerOpts})
+	srv := mcpserver.New(r, mcpserver.Options{Version: deps.Version, Walker: policycfg.BackupWalkerOptions(cfg)})
 	return srv.Run(cmd.Context(), &mcp.StdioTransport{})
 }

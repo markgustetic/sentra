@@ -39,7 +39,7 @@ func TestSignalContext_FirstSignalCancelsSecondForcesExit(t *testing.T) {
 	for _, sig := range []syscall.Signal{syscall.SIGINT, syscall.SIGTERM} {
 		t.Run(sig.String(), func(t *testing.T) {
 			exited := make(chan int, 1)
-			ctx, stop := signalContext(context.Background(), func(code int) { exited <- code })
+			ctx, stop, _ := signalContext(context.Background(), func(code int) { exited <- code })
 			defer stop()
 
 			selfSignal(t, sig)
@@ -68,7 +68,7 @@ func TestSignalContext_FirstSignalCancelsSecondForcesExit(t *testing.T) {
 // later signal (the registration is released).
 func TestSignalContext_StopReleasesWithoutExit(t *testing.T) {
 	exited := make(chan int, 1)
-	ctx, stop := signalContext(context.Background(), func(code int) { exited <- code })
+	ctx, stop, _ := signalContext(context.Background(), func(code int) { exited <- code })
 	stop()
 	awaitDone(t, ctx)
 	select {
@@ -100,8 +100,8 @@ func TestExecute_SignalReachesCommandContext(t *testing.T) {
 	})
 	root.SetArgs([]string{"wait"})
 	exited := make(chan int, 1)
-	if code := execute(root, func(code int) { exited <- code }); code != 0 {
-		t.Fatalf("execute exit code: got %d, want 0", code)
+	if code := execute(root, func(code int) { exited <- code }); code != 128+int(syscall.SIGINT) {
+		t.Fatalf("execute exit code: got %d, want %d", code, 128+int(syscall.SIGINT))
 	}
 	if !errors.Is(got, context.Canceled) {
 		t.Fatalf("command context: got %v, want context.Canceled", got)
@@ -110,5 +110,46 @@ func TestExecute_SignalReachesCommandContext(t *testing.T) {
 	case code := <-exited:
 		t.Fatalf("a single signal must not force-exit (got %d)", code)
 	default:
+	}
+}
+
+// TestExecute_ExitCodeTellsInterruptedFromFailed pins the status a
+// supervisor reads: a run the operator (or launchd at logout) cut short
+// with a signal exits 128+signum whichever way the command returned —
+// nil after a graceful unwind, or the context error it hit mid-S3-call —
+// while a run that failed on its own exits 1 and a clean one 0. Without
+// the distinction a SIGTERM'd `policy run` and a bucket outage both
+// read as "failed", and the timer's log is the only way to tell.
+func TestExecute_ExitCodeTellsInterruptedFromFailed(t *testing.T) {
+	cases := []struct {
+		name   string
+		signal syscall.Signal // 0: no signal
+		ret    func(ctx context.Context) error
+		want   int
+	}{
+		{"clean", 0, func(context.Context) error { return nil }, 0},
+		{"failed", 0, func(context.Context) error { return errors.New("boom") }, 1},
+		{"SIGINT, graceful nil", syscall.SIGINT, func(context.Context) error { return nil }, 130},
+		{"SIGINT, returns ctx.Err", syscall.SIGINT, func(ctx context.Context) error { return ctx.Err() }, 130},
+		{"SIGTERM, unrelated error", syscall.SIGTERM, func(context.Context) error { return errors.New("boom") }, 143},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			root := &cobra.Command{Use: "sentra", SilenceUsage: true, SilenceErrors: true}
+			root.AddCommand(&cobra.Command{
+				Use: "job",
+				RunE: func(cmd *cobra.Command, _ []string) error {
+					if tc.signal != 0 {
+						selfSignal(t, tc.signal)
+						awaitDone(t, cmd.Context())
+					}
+					return tc.ret(cmd.Context())
+				},
+			})
+			root.SetArgs([]string{"job"})
+			if code := execute(root, func(int) {}); code != tc.want {
+				t.Fatalf("exit code: got %d, want %d", code, tc.want)
+			}
+		})
 	}
 }

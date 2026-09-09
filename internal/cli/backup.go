@@ -14,9 +14,9 @@ import (
 
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // BackupDeps wires the side-effecting pieces of `sentra backup`.
@@ -156,18 +156,7 @@ func runBackup(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath string, r
 	progress := ui.NewByteProgress(0)
 	painter := startProgressPainter(stderr, progress)
 
-	// Plumb cfg.Backup.* into the walker options so sentra.yaml's
-	// ignore_file / exclude_caches keys actually drive behaviour. We
-	// always pass IgnoreFile (defaulted by config.Defaults to
-	// ".sentraignore") so the resulting Options is non-zero — that
-	// way a user's explicit ExcludeCaches=false in YAML is honored
-	// rather than falling back to the legacy default.
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-		Concurrency:   cfg.Backup.Concurrency,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
+	walkerOpts := policycfg.BackupWalkerOptions(cfg)
 
 	// Skipped folders are told as they happen, on stderr beside the
 	// bar — under --json too, since stdout must stay one JSON
@@ -233,12 +222,7 @@ func runBackupPlan(cmd *cobra.Command, deps BackupDeps, path, tag, cfgPath, outP
 	if err != nil {
 		return fmt.Errorf("load config: %w", err)
 	}
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-		Concurrency:   cfg.Backup.Concurrency,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
+	walkerOpts := policycfg.BackupWalkerOptions(cfg)
 
 	// No progress bar here, so skip lines go straight to stderr; the
 	// reviewer must learn a folder is missing from the plan before
@@ -332,16 +316,6 @@ func runBackupApply(cmd *cobra.Command, deps BackupDeps, planPath, cfgPath strin
 	fmt.Fprintf(stdout, "  uploaded:  %s (%d new)\n", ui.FormatBytes(snap.Stats.NewBytes), snap.Stats.NewBytes)
 	writeSkippedLine(stdout, snap.Stats.Skipped)
 	return nil
-}
-
-func normalizeBackupWalkerOptions(opts *walker.Options) {
-	if opts.IgnoreFile == "" {
-		// Defensive: a config file with `backup:` and `ignore_file: ""`
-		// would otherwise produce a zero Options that the repo treats
-		// as "use legacy default". Force a non-empty value so the
-		// user's intent (whatever they set ExcludeCaches to) wins.
-		opts.IgnoreFile = ".sentraignore"
-	}
 }
 
 // startProgressPainter spins up a goroutine that periodically writes

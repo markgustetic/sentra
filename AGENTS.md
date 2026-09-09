@@ -163,7 +163,10 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   resolved) before persisting, and `Validate` rejects a path that cannot
   resolve or that exists as a non-directory. A path that does not exist yet
   resolves its longest existing prefix and keeps the rest as spelled, so the
-  stored string is the root a later snapshot of it records. A
+  stored string is the root a later snapshot of it records; a dangling
+  symlink at or above the path is refused (`policy.ErrDanglingSymlink`),
+  since storing the link's spelling would stop matching the moment its
+  target appears. A
   timer-launched run has no cwd the operator chose
   (launchd starts jobs in `/`), so `policy run` resolves each stored path
   again with `policy.ResolvePathFrom`, anchoring any relative path that a
@@ -279,6 +282,19 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   pinned snapshot (reason "pinned") and `DeleteSnapshot` — the choke point
   for prune, the TUI, and the agent's prune action — refuses with
   `ErrSnapshotPinned`. Pinning a nonexistent snapshot is an error.
+- A retention plan is never computed without the pin set. Every planner
+  builds its policy through `policycfg.RetentionFromConfig`, which loads
+  `meta/pins` first; if that read fails, the CLI's `prune`/`policy run`,
+  the TUI's job run (`policyRunDoneMsg` carries the error, nothing is
+  deleted, failure hooks fire), and the TUI prune view (a load error, no
+  drop list) all fail closed rather than plan around an empty set — a plan
+  blind to pins would drop a pinned snapshot on paper and then either fail
+  at the choke point or silently skip it. The one tolerance is at delete
+  time: a pin placed *between* planning and deleting reaches
+  `DeleteSnapshot`'s `ErrSnapshotPinned`, and the automatic prune skips
+  that snapshot the way it skips one already gone (GC's live set comes
+  from what is present, so nothing of it is reaped). Refusal is tolerated;
+  ignorance is not.
 - Retention groups by source root (restic-style group-then-apply): each
   backed-up directory gets the policy's full budget. Never regress to flat
   global bucketing — multiple sources in one repo would prune each other.

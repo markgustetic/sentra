@@ -14,6 +14,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/spf13/cobra"
+
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
@@ -48,6 +50,20 @@ func testPolicyDeps(t *testing.T) (PolicyDeps, *fakeSchedRunner) {
 		HomeDir:  func() (string, error) { return home, nil },
 		Runner:   runner.run,
 	}, runner
+}
+
+// newTestPolicyCmd is NewPolicy over testPolicyDeps with stdout captured.
+// Every policy subcommand test builds its command here rather than from a
+// zero-value PolicyDeps: `remove` and `add --replace` reach the scheduler
+// through deps.HomeDir and deps.Runner, and with both nil they fall back
+// to the real home and the real launchctl — so a test named "home" would
+// bootout and delete ~/Library/LaunchAgents/com.sentra.home.plist if the
+// developer happened to have one.
+func newTestPolicyCmd(t *testing.T, out io.Writer) *cobra.Command {
+	t.Helper()
+	deps, _ := testPolicyDeps(t)
+	deps.Stdout = out
+	return NewPolicy(deps)
 }
 
 // TestTestPolicyDeps_NeverReachesARealHome pins the constructor's
@@ -90,7 +106,7 @@ func TestPolicyAddRemove_KeepEnvOverridesOutOfFile(t *testing.T) {
 	runPolicyCmd := func(t *testing.T, args ...string) {
 		t.Helper()
 		out := &bytes.Buffer{}
-		cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+		cmd := newTestPolicyCmd(t, out)
 		cmd.SetOut(out)
 		cmd.SetErr(io.Discard)
 		cmd.SetArgs(args)
@@ -142,7 +158,7 @@ func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	cmd := newTestPolicyCmd(t, out)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{
@@ -197,7 +213,7 @@ func TestPolicyListAndShow(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	cmd := newTestPolicyCmd(t, out)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"list"})
@@ -209,7 +225,7 @@ func TestPolicyListAndShow(t *testing.T) {
 	}
 
 	out.Reset()
-	cmd = NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	cmd = newTestPolicyCmd(t, out)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"show", "home"})
@@ -233,7 +249,7 @@ func TestPolicyRemove_DeletesPolicy(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	cmd := newTestPolicyCmd(t, out)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"remove", "home"})
@@ -492,7 +508,7 @@ func TestPolicyAdd_ReplacePreservesHooks(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	cmd := newTestPolicyCmd(t, out)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"add", "nightly", "--path", "/new", "--schedule", "manual", "--replace"})

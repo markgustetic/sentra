@@ -422,6 +422,13 @@ func TestValidateBackupUserProfileFor_SessionRefusalExplainsWhy(t *testing.T) {
 			t.Fatalf("refusal %q lacks %q", err.Error(), want)
 		}
 	}
+	// The sentinel alone must already say all of that: an errors.Is
+	// caller may print it bare, and the wrap adds only the name.
+	for _, want := range []string{"backup user profile", "signs in with", "shadow", "every tool"} {
+		if !strings.Contains(ErrBackupUserProfileIsSession.Error(), want) {
+			t.Fatalf("bare sentinel %q lacks %q", ErrBackupUserProfileIsSession, want)
+		}
+	}
 }
 
 // ResolveBackupUserProfile is the one place blank means "the default", and

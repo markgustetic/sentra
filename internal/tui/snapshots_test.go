@@ -580,18 +580,26 @@ func TestSnapshots_OpReloadIsAsync(t *testing.T) {
 	}
 }
 
-// reloadAfterOp completes a fake op through the shell and pumps the reloads
-// it triggers (the snapshots view's snapshotsReloadedMsg among them), the
-// way TestApp_DataViewsRefreshAfterBackup does.
-func reloadAfterOp(t *testing.T, app App) App {
-	t.Helper()
-	m, cmd := app.Update(backupDoneMsg{})
-	app = m.(App)
-	for _, msg := range execCmds(t, cmd) {
-		m, _ = app.Update(msg)
-		app = m.(App)
+// TestSnapshotPreload_GetHandsOutACopy: the chat's turn reads the cache
+// from its own goroutine while the UI goroutine sorts and filters the
+// snapshots view in place. Handing out the backing slice made those
+// in-place edits visible across the lock — a data race the mutex could
+// not see, since both sides held their own reference. get returns a
+// copy, so a caller may reorder or trim what it got without touching
+// the cache, and a later set never mutates a slice a caller still holds.
+func TestSnapshotPreload_GetHandsOutACopy(t *testing.T) {
+	p := &snapshotPreload{}
+	p.set([]repo.SnapshotInfo{{ID: "a"}, {ID: "b"}}, nil)
+	got, _ := p.get()
+	got[0].ID = "mutated"
+	got = got[:1]
+	again, _ := p.get()
+	if len(again) != 2 || again[0].ID != "a" || again[1].ID != "b" {
+		t.Fatalf("cache changed through a caller's slice: %+v", again)
 	}
-	return app
+	if &got[0] == &again[0] {
+		t.Fatal("get returned the backing array twice; each call must copy")
+	}
 }
 
 // TestApp_SharedSnapshotLoadIsLive pins the RULE behind every launch-time

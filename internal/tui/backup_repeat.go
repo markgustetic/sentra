@@ -54,7 +54,7 @@ func (v BackupView) startRepeatInstall(root, name string, schedule config.Policy
 	if tag = strings.TrimSpace(tag); tag != "" {
 		tags = []string{tag}
 	}
-	root, rootErr := absPath(root)
+	root, rootErr := policycfg.ResolvePath(root)
 	install := v.installRepeat
 	start := startOpMsg{
 		name: repeatInstallOpName,
@@ -144,7 +144,7 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 	// policy the timer runs names the directory that was confirmed
 	// (idempotent on the already-resolved root startRepeatInstall
 	// passes). A tilde with no home is an error, never a cwd guess.
-	root, err := absPath(root)
+	root, err := policycfg.ResolvePath(root)
 	if err != nil {
 		return err
 	}
@@ -171,27 +171,11 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 	if err != nil {
 		return err
 	}
-	paths, err := scheduler.PathsFor(v.schedGOOS, v.schedHome, name)
-	if err != nil {
-		return err
-	}
-	exe, err := scheduler.Executable(v.schedExe)
-	if err != nil {
-		return err
-	}
-	files, err := scheduler.Render(paths, exe, v.deps.ConfigPath, name, schedule)
-	if err != nil {
-		return err
-	}
-	if err := scheduler.Install(files); err != nil {
-		return err
-	}
-	// Load it now: the files alone wait for the next login (launchd) or
-	// never fire (an un-enabled systemd timer). A failure leaves the
-	// policy and files in place and names the command; the wizard shows
-	// it instead of starting a run it cannot promise to repeat.
-	if err := scheduler.Activate(ctx, paths, v.deps.SchedulerRunner); err != nil {
-		return err
-	}
-	return nil
+	// Render, write, and load in one call: the files alone wait for the
+	// next login (launchd) or never fire (an un-enabled systemd timer). A
+	// failure leaves the policy and files in place and names the command;
+	// the wizard shows it instead of starting a run it cannot promise to
+	// repeat.
+	_, err = scheduler.InstallFor(ctx, v.schedGOOS, v.schedHome, v.schedExe, v.deps.ConfigPath, name, schedule, v.deps.SchedulerRunner)
+	return err
 }

@@ -16,9 +16,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/config"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // backupStage is the wizard's position: three configure steps, then the
@@ -253,12 +253,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// root must all name the same absolute directory. An empty dir
 		// stays empty — filepath.Abs("") is the cwd, which checkDir would
 		// happily accept as the intent's directory — and a tilde with no
-		// home is refused outright (absPath), since a cwd that happens to
-		// hold a same-named directory would pass checkDir too.
+		// home is refused outright (policycfg.ResolvePath), since a cwd
+		// that happens to hold a same-named directory would pass checkDir
+		// too.
 		dir := strings.TrimSpace(msg.dir)
 		var dirErr error
 		if dir != "" {
-			dir, dirErr = absPath(dir)
+			dir, dirErr = policycfg.ResolvePath(dir)
 		}
 		if dirErr != nil {
 			v.pathErr = dirErr.Error()
@@ -501,14 +502,7 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	v.confirm.blur()
 	r := v.deps.Repo
 	reporter := v.reporter
-	var wopts walker.Options
-	if v.deps.Config != nil {
-		wopts = walker.Options{
-			IgnoreFile:    v.deps.Config.Backup.IgnoreFile,
-			ExcludeCaches: v.deps.Config.Backup.ExcludeCaches,
-			Concurrency:   v.deps.Config.Backup.Concurrency,
-		}
-	}
+	wopts := policycfg.BackupWalkerOptions(v.deps.Config)
 	start := startOpMsg{
 		name: "backup",
 		run: func(ctx context.Context) tea.Msg {

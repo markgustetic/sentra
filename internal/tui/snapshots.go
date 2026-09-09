@@ -221,10 +221,17 @@ type snapshotPreload struct {
 }
 
 // get returns the cached list under ListSnapshots' (snaps, err) contract.
+// It hands out a COPY: the snapshots view sorts and filters its list in
+// place on the UI goroutine while the chat's turn reads the cache from
+// its own, and a shared backing array would carry those edits across the
+// lock — a race the mutex cannot see once both sides hold a reference.
 func (p *snapshotPreload) get() ([]repo.SnapshotInfo, error) {
 	p.mu.Lock()
 	defer p.mu.Unlock()
-	return p.snaps, p.err
+	if p.snaps == nil {
+		return nil, p.err
+	}
+	return append([]repo.SnapshotInfo(nil), p.snaps...), p.err
 }
 
 // set replaces the cache with a fresh load's result, error included: a
@@ -251,7 +258,10 @@ func initialSnapshots(deps Deps) ([]repo.SnapshotInfo, error) {
 // the post-op reload. A nil Repo (Deps{} in tests, or a shell built before
 // unlock) yields nil rather than panicking, so callers need no guard of their
 // own. The parent context comes from deps.Ctx (App-scoped) so a quick quit
-// cancels the load.
+// cancels the load. The bound is hydrateTimeout (20s), shared with the
+// other synchronous metadata reads; the best-effort post-op reload once
+// had its own 10s, which a cold S3 listing of a large repo could miss and
+// leave the views showing the pre-op list.
 func listSnapshots(deps Deps) ([]repo.SnapshotInfo, error) {
 	if deps.Repo == nil {
 		return nil, nil

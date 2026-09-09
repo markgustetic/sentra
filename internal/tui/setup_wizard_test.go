@@ -15,6 +15,7 @@ import (
 	"github.com/charmbracelet/bubbles/cursor"
 	"github.com/charmbracelet/bubbles/textinput"
 	tea "github.com/charmbracelet/bubbletea"
+	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -2244,14 +2245,69 @@ func TestSetupWizard_BackupUserToggleDefaultsPerMethod(t *testing.T) {
 // has a [profile sentra], the very collision these tests are about.
 func setupAtActionsWithSession(t *testing.T, session string) SetupWizardView {
 	t.Helper()
-	t.Setenv("AWS_CONFIG_FILE", filepath.Join(t.TempDir(), "missing-aws-config"))
+	// Full isolation first (no ~/.aws, no ambient AWS_* — this machine has
+	// a real [profile sentra]), then only the session profile on top.
+	hermeticAWS(t)
 	t.Setenv("AWS_PROFILE", session)
-	t.Setenv("AWS_DEFAULT_PROFILE", "")
 	v := setupAtActions(t)
 	if got := v.plan.Config.Repo.S3.Profile; got != session {
 		t.Fatalf("precondition: session profile = %q, want %q", got, session)
 	}
 	return v
+}
+
+// descendToActionRow presses ↓ until the cursor rests on row, going
+// through Update so the row's focus side effects (the profile input's
+// Focus and its blink cmd) happen as they would for an operator; the last
+// ↓'s cmd is returned for the blink assertions. Bounded by the row count:
+// a row the stage is not offering (backupUserOffered false hides the
+// profile row) must fail the test, not spin it forever.
+func descendToActionRow(t *testing.T, v SetupWizardView, row int) (SetupWizardView, tea.Cmd) {
+	t.Helper()
+	var cmd tea.Cmd
+	for presses := 0; v.actionCursor != row; presses++ {
+		if presses >= actionRowCount {
+			t.Fatalf("action row %d unreachable after %d presses (cursor at %d)", row, presses, v.actionCursor)
+		}
+		var m tea.Model
+		m, cmd = v.Update(tea.KeyMsg{Type: tea.KeyDown})
+		v = m.(SetupWizardView)
+	}
+	return v, cmd
+}
+
+// TestSetupWizard_ActionsNoticeWrapsToWidth: the session-profile refusal
+// is a 130-plus-character sentence, and the actions stage printed it on
+// one line, which the terminal then hard-wrapped mid-word or clipped.
+// The notice wraps at the view's width like the rest of the stage.
+func TestSetupWizard_ActionsNoticeWrapsToWidth(t *testing.T) {
+	v := setupAtActionsWithSession(t, "sentra")
+	m, _ := v.Update(tea.WindowSizeMsg{Width: 60, Height: 40})
+	v = m.(SetupWizardView)
+	v, _ = descendToActionRow(t, v, actionRowProfile)
+	for _, r := range "sentra" {
+		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
+		v = m.(SetupWizardView)
+	}
+	m, _ = v.Update(tea.KeyMsg{Type: tea.KeyEnter})
+	v = m.(SetupWizardView)
+	if v.notice == "" || len(v.notice) <= 60 {
+		t.Fatalf("precondition: want a refusal longer than the width, got %q", v.notice)
+	}
+	view := v.View()
+	if strings.Contains(view, v.notice) {
+		t.Fatalf("notice rendered on one line wider than the view:\n%s", view)
+	}
+	for _, line := range strings.Split(view, "\n") {
+		if strings.Contains(line, "shadow") && lipgloss.Width(line) > 60 {
+			t.Fatalf("notice line wider than the view (%d > 60): %q", lipgloss.Width(line), line)
+		}
+	}
+	for _, word := range strings.Fields(v.notice) {
+		if !strings.Contains(view, word) {
+			t.Fatalf("wrapped notice lost %q:\n%s", word, view)
+		}
+	}
 }
 
 // A blank profile field must resolve to the plan-derived default, not the
@@ -2298,10 +2354,7 @@ func TestSetupWizard_BackupUserBlankProfileDerivesFromSession(t *testing.T) {
 // met here instead of as a warning after provisioning silently skipped.
 func TestSetupWizard_BackupUserProfileEqualToSessionRefusedInline(t *testing.T) {
 	v := setupAtActionsWithSession(t, "sentra")
-	for v.actionCursor != actionRowProfile {
-		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
-		v = m.(SetupWizardView)
-	}
+	v, _ = descendToActionRow(t, v, actionRowProfile)
 	for _, r := range "sentra" {
 		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyRunes, Runes: []rune{r}})
 		v = m.(SetupWizardView)
@@ -2316,8 +2369,13 @@ func TestSetupWizard_BackupUserProfileEqualToSessionRefusedInline(t *testing.T) 
 			t.Fatalf("refusal must name the profile and the reason, notice=%q lacks %q", v.notice, want)
 		}
 	}
-	if !strings.Contains(v.View(), v.notice) {
-		t.Fatalf("the refusal must be shown inline on the stage:\n%s", v.View())
+	// Word by word: the stage wraps the notice at its width (see
+	// TestSetupWizard_ActionsNoticeWrapsToWidth), so the one-line form
+	// need not appear verbatim.
+	for _, word := range strings.Fields(v.notice) {
+		if !strings.Contains(v.View(), word) {
+			t.Fatalf("the refusal must be shown inline on the stage (missing %q):\n%s", word, v.View())
+		}
 	}
 	if got := v.backupProfile.Value(); got != "sentra" {
 		t.Fatalf("the refused value must stay in the input for the operator to edit, got %q", got)
@@ -2344,10 +2402,7 @@ func TestSetupWizard_BackupUserToggleOffClearsPlan(t *testing.T) {
 
 func TestSetupWizard_BackupUserProfileRowCapturesTextAndValidates(t *testing.T) {
 	v := setupAtActions(t)
-	for v.actionCursor != actionRowProfile {
-		m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
-		v = m.(SetupWizardView)
-	}
+	v, _ = descendToActionRow(t, v, actionRowProfile)
 	if !v.CapturesText() {
 		t.Fatal("the focused profile row must capture text so digits and 'q' reach the input")
 	}
@@ -2518,10 +2573,7 @@ func TestSetupWizard_RoutesBlinkTicksPerStage(t *testing.T) {
 	})
 	t.Run("actions profile row", func(t *testing.T) {
 		v := setupAtActions(t)
-		for v.actionCursor != actionRowProfile {
-			m, _ := v.Update(tea.KeyMsg{Type: tea.KeyDown})
-			v = m.(SetupWizardView)
-		}
+		v, _ = descendToActionRow(t, v, actionRowProfile)
 		v.backupProfile.Cursor.BlinkSpeed = time.Millisecond
 		tick := v.backupProfile.Cursor.BlinkCmd()
 		if _, cmd := v.Update(tick()); cmd == nil {
@@ -2562,12 +2614,7 @@ func TestSetupWizard_ProfileRowFocusSchedulesBlink(t *testing.T) {
 	v := setupAtActions(t)
 	v.backupProfile.Cursor.BlinkSpeed = time.Millisecond
 
-	var cmd tea.Cmd
-	for v.actionCursor != actionRowProfile {
-		var m tea.Model
-		m, cmd = v.Update(tea.KeyMsg{Type: tea.KeyDown})
-		v = m.(SetupWizardView)
-	}
+	v, cmd := descendToActionRow(t, v, actionRowProfile)
 	assertBlinkCmd(t, cmd)
 
 	m, offCmd := v.Update(tea.KeyMsg{Type: tea.KeyUp}) // off the profile row

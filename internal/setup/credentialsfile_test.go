@@ -236,9 +236,16 @@ func TestCheckAWSConfigProfileFree(t *testing.T) {
 				// which section, in which file, and that a static key there
 				// would shadow its settings — or the operator reads it as a
 				// name clash they could resolve by editing the config file.
-				for _, want := range []string{"[profile sentra] is defined in " + path, "shadow"} {
+				// The sentinel alone must already read as a sentence: an
+				// errors.Is caller may print it bare.
+				for _, want := range []string{"[profile sentra]", path, "defined", "shadow"} {
 					if !strings.Contains(err.Error(), want) {
 						t.Fatalf("refusal %q lacks %q", err.Error(), want)
+					}
+				}
+				for _, want := range []string{"defined", "shadow"} {
+					if !strings.Contains(ErrConfigProfileExists.Error(), want) {
+						t.Fatalf("bare sentinel %q lacks %q", ErrConfigProfileExists, want)
 					}
 				}
 			}

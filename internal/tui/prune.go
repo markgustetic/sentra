@@ -11,6 +11,7 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
 )
@@ -77,20 +78,15 @@ func NewPruneView(deps Deps) PruneView {
 		v.loadErr = err.Error()
 		return v
 	}
-	policy := repo.RetentionPolicy{}
-	if deps.Config != nil {
-		policy = repo.RetentionPolicy{
-			KeepLast:    deps.Config.Retention.KeepLast,
-			KeepDaily:   deps.Config.Retention.KeepDaily,
-			KeepWeekly:  deps.Config.Retention.KeepWeekly,
-			KeepMonthly: deps.Config.Retention.KeepMonthly,
-		}
-	}
-	// Pins keep snapshots unconditionally; a load failure degrades to
-	// planning without them — DeleteSnapshot still refuses pinned IDs
-	// at apply time, so the guard holds either way.
-	if pins, err := deps.Repo.Pins(ctxOrBackground(deps.Ctx)); err == nil {
-		policy.Pinned = pins
+	// Keep counts plus the repo's pin set, built where the CLI builds
+	// them. Pins keep snapshots unconditionally, so a plan that cannot
+	// see them would show a drop that apply then refuses at the choke
+	// point; an unreadable pin set is a load error the view reports, not
+	// a plan it half-trusts.
+	policy, err := policycfg.RetentionFromConfig(ctxOrBackground(deps.Ctx), deps.Repo, deps.Config)
+	if err != nil {
+		v.loadErr = err.Error()
+		return v
 	}
 	v.decisions = repo.PlanRetentionExplain(snaps, policy)
 	for _, d := range v.decisions {

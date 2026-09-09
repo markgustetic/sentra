@@ -28,27 +28,14 @@ import (
 // inline credentials like `PGPASSWORD=… pg_dump`), and this process's
 // secrets in its environment — every SENTRA_* variable (the passphrase
 // above all) and the failure-webhook URL named by webhookEnv are
-// dropped; see HookEnv. Callers pass hooks.OnFailureWebhookEnv as
-// webhookEnv so before/after hooks are scrubbed the same as on_failure.
-//
-// webhookEnv is variadic only so callers that predate the parameter
-// (the TUI's before/after hooks) keep compiling; it takes at most ONE
-// name and becomes a plain parameter once every surface passes it. It
-// is never a list: joining two names would build a name matching no
-// variable and let the secret through silently, so more than one is a
-// programming error and panics at the call site instead.
-func RunHook(ctx context.Context, out io.Writer, label, script string, webhookEnv ...string) error {
-	var scrub string
-	switch len(webhookEnv) {
-	case 0:
-	case 1:
-		scrub = webhookEnv[0]
-	default:
-		panic("policy: RunHook takes at most one webhook env name")
-	}
+// dropped; see HookEnv. Every caller passes hooks.OnFailureWebhookEnv
+// as webhookEnv ("" when the policy names none) so before/after hooks
+// are scrubbed exactly as on_failure is — a plain parameter, so a
+// surface cannot forget it and quietly hand the URL to a hook.
+func RunHook(ctx context.Context, out io.Writer, label, script, webhookEnv string) error {
 	fmt.Fprintf(out, "  hook %s: running\n", label)
 	hook := exec.CommandContext(ctx, "sh", "-c", script) //nolint:gosec // operator-authored command from their own config
-	hook.Env = HookEnv(os.Environ(), scrub)
+	hook.Env = HookEnv(os.Environ(), webhookEnv)
 	hook.Stdout = out
 	hook.Stderr = out
 	if err := hook.Run(); err != nil {

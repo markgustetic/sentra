@@ -1136,11 +1136,9 @@ func (m App) routeKey(msg tea.KeyMsg) (tea.Model, tea.Cmd) {
 			// Nothing on screen wants esc: cancel the running op in place — no
 			// confirm. The only guarded action is quit; everything else steps
 			// back cheaply. ctrl+c still force-quits if the operator wants out
-			// entirely.
-			if m.opCancel != nil {
-				m.opCancel()
-			}
-			return m, nil
+			// entirely. Routed through cancelOpMsg so this and a view's own
+			// esc (which emits that message) are one cancel path.
+			return m.Update(cancelOpMsg{})
 		default:
 			m.focus = focusSidebar
 			return m, nil

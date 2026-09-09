@@ -18,7 +18,6 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/scheduler"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // PolicyDeps wires side effects for `sentra policy`.
@@ -260,27 +259,18 @@ func resyncPolicyTimer(cmd *cobra.Command, deps PolicyDeps, out io.Writer, cfgPa
 	if deps.HomeDir != nil {
 		home, _ = deps.HomeDir()
 	}
-	paths, err := scheduler.PathsFor(deps.OS, home, name)
-	if err != nil {
-		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
-		return
-	}
 	exe := ""
 	if deps.Executable != nil {
 		exe, _ = deps.Executable()
 	}
-	exe, err = scheduler.Executable(exe)
-	if err != nil {
+	outcome, err := scheduler.ResyncFor(cmd.Context(), deps.OS, home, exe, cfgPath, name, schedule, deps.Runner)
+	switch {
+	case err != nil && outcome == scheduler.SyncSkipped:
+		// Nothing was touched (target resolution, the installed probe,
+		// or the manual-cadence unload failed): say so, since the OS
+		// timer is still firing the old calendar.
 		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
-		return
-	}
-	absConfig, err := filepath.Abs(cfgPath)
-	if err != nil {
-		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
-		return
-	}
-	outcome, err := scheduler.Resync(cmd.Context(), paths, exe, absConfig, schedule, deps.Runner)
-	if err != nil {
+	case err != nil:
 		fmt.Fprintf(out, "  warning: %v\n", err)
 	}
 	switch outcome {
@@ -588,12 +578,7 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 	}
 
 	out := policyStdout(cmd, deps)
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-		Concurrency:   cfg.Backup.Concurrency,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
+	walkerOpts := policycfg.BackupWalkerOptions(cfg)
 
 	snapshots := make([]repo.SnapshotInfo, 0, len(p.Paths))
 	tag := policySnapshotTag(name, p.Tags)

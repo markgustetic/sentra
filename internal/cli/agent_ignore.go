@@ -10,8 +10,8 @@ import (
 
 	"github.com/markgustetic/sentra/internal/agent/heuristics"
 	"github.com/markgustetic/sentra/internal/config"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // ignoreAdvice aliases the shared heuristics type so the CLI's JSON
@@ -84,12 +84,7 @@ func collectIgnoreAdvice(
 	cfg *config.Config,
 	largeFileBytes int64,
 ) ([]ignoreAdvice, error) {
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
-	return heuristics.CollectIgnoreAdvice(ctx, root, walkerOpts, largeFileBytes)
+	return heuristics.CollectIgnoreAdvice(ctx, root, policycfg.BackupWalkerOptions(cfg), largeFileBytes)
 }
 
 func writeIgnoreAdviceJSON(w io.Writer, advice []ignoreAdvice) error {

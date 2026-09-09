@@ -246,8 +246,11 @@ func (v JobsView) ConsumesEscape() bool {
 // CapturesText instead).
 func (v JobsView) ConsumesTab() bool { return v.stage == jobsDetail }
 
-// jobsHome resolves the home dir used for both ~ expansion and the
-// scheduler stat, honoring the test override.
+// jobsHome resolves the home dir the read-only lookups (last-run
+// matching, the drill-in's newest snapshot) expand "~" against through
+// policycfg.NormalizePath, honoring the test override. Persisting and
+// running go through policycfg.ResolvePath/ResolvePathFrom, which read
+// the process's own home — the timer's `policy run` has no seam either.
 func (v JobsView) jobsHome() string {
 	if v.homeOverride != "" {
 		return v.homeOverride
@@ -347,7 +350,7 @@ func (v *JobsView) reload() tea.Cmd {
 		row.next, row.nextOK = jobNextRun(row, p.Schedule, nowT)
 		abs := make([]string, 0, len(p.Paths))
 		for _, path := range p.Paths {
-			abs = append(abs, expandPathOrRaw(path, home))
+			abs = append(abs, policycfg.NormalizePath(path, home))
 		}
 		if last, ok := policycfg.LastRun(name, abs, v.snaps); ok {
 			row.lastID, row.lastAt = last.ID, last.CreatedAt
@@ -793,7 +796,7 @@ func (v *JobsView) openDetail() tea.Cmd {
 	if v.detailPathIdx >= len(p.Paths) {
 		return nil
 	}
-	pathAbs := expandPathOrRaw(p.Paths[v.detailPathIdx], v.jobsHome())
+	pathAbs := policycfg.NormalizePath(p.Paths[v.detailPathIdx], v.jobsHome())
 	snap, ok := newestJobSnapshot(v.detailName, pathAbs, v.snaps)
 	if !ok {
 		return nil
