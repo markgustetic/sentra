@@ -36,7 +36,7 @@ func AWSCredentialsPath() (string, error) {
 // no IAM mutation it would only have to undo.
 func CheckAWSCredentialsProfileFree(path, profile string) error {
 	profile = strings.TrimSpace(profile)
-	if err := ValidateBackupUserProfile(profile); err != nil {
+	if err := validateBackupUserProfileName(profile); err != nil {
 		return err
 	}
 	existing, err := os.ReadFile(path) //nolint:gosec // path is the operator's own credentials file
@@ -69,7 +69,7 @@ var ErrConfigProfileExists = errors.New("a static key under that name would shad
 // [NAME] section in the config file is not a profile to the SDK or the CLI.
 func CheckAWSConfigProfileFree(path, profile string) error {
 	profile = strings.TrimSpace(profile)
-	if err := ValidateBackupUserProfile(profile); err != nil {
+	if err := validateBackupUserProfileName(profile); err != nil {
 		return err
 	}
 	cfg, err := loadAWSCLIConfigFile(path)
@@ -91,11 +91,11 @@ func CheckAWSConfigProfileFree(path, profile string) error {
 // including comments and unknown keys. The write is temp-file + rename and
 // the result is mode 0600.
 //
-// Refusals (see ValidateBackupUserProfile and ErrCredentialsProfileExists)
+// Refusals (see validateBackupUserProfileName and ErrCredentialsProfileExists)
 // leave the file untouched.
 func WriteAWSCredentialsProfile(path, profile, accessKeyID, secret string) error {
 	profile = strings.TrimSpace(profile)
-	if err := ValidateBackupUserProfile(profile); err != nil {
+	if err := validateBackupUserProfileName(profile); err != nil {
 		return err
 	}
 	existing, err := os.ReadFile(path) //nolint:gosec // path is the operator's own credentials file

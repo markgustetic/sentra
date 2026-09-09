@@ -192,11 +192,14 @@ func ValidateBucketName(bucket string) error {
 // operator's everyday identity; Sentra must never write into it.
 var ErrBackupUserProfileDefault = errors.New("backup user profile must not be \"default\"")
 
-// ValidateBackupUserProfile checks a ~/.aws/credentials section name. The
-// rules are the INI file's, not AWS's: the name becomes a "[name]" header
-// line, so brackets and whitespace would corrupt the file the operator's
-// other tools read.
-func ValidateBackupUserProfile(name string) error {
+// validateBackupUserProfileName checks a ~/.aws/credentials section name.
+// The rules are the INI file's, not AWS's: the name becomes a "[name]"
+// header line, so brackets and whitespace would corrupt the file the
+// operator's other tools read. Unexported on purpose: it is the
+// session-blind half of ValidateBackupUserProfileFor, and a caller outside
+// the package that reached it directly would skip the one rule that needs
+// the plan — the collision with the sign-in profile.
+func validateBackupUserProfileName(name string) error {
 	name = strings.TrimSpace(name)
 	if name == "" {
 		return errors.New("backup user profile is required")
@@ -223,13 +226,14 @@ func ValidateBackupUserProfile(name string) error {
 // to avoid.
 var ErrBackupUserProfileIsSession = errors.New("a static key there would shadow that sign-in for every tool using it")
 
-// ValidateBackupUserProfileFor is ValidateBackupUserProfile plus the one
-// rule that needs the plan: the name must not be sessionProfile. Both
-// drivers and the engine call this form so the refusal is the same
-// wherever the operator meets it.
+// ValidateBackupUserProfileFor is the package's only exported profile-name
+// gate: the section-name rules plus the one that needs the plan — the name
+// must not be sessionProfile. The wizard, the drivers and the engine all
+// call this form, so the refusal is the same wherever the operator meets
+// it and no caller can validate a name without the session rule.
 func ValidateBackupUserProfileFor(name, sessionProfile string) error {
 	name = strings.TrimSpace(name)
-	if err := ValidateBackupUserProfile(name); err != nil {
+	if err := validateBackupUserProfileName(name); err != nil {
 		return err
 	}
 	if name == strings.TrimSpace(sessionProfile) {

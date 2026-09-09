@@ -286,7 +286,7 @@ func TestApplyBackendChoiceInvariant(t *testing.T) {
 	}
 }
 
-func TestValidateBackupUserProfile(t *testing.T) {
+func TestValidateBackupUserProfileName(t *testing.T) {
 	tests := []struct {
 		name    string
 		in      string
@@ -305,9 +305,9 @@ func TestValidateBackupUserProfile(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateBackupUserProfile(tc.in)
+			err := validateBackupUserProfileName(tc.in)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("ValidateBackupUserProfile(%q) err = %v, wantErr %v", tc.in, err, tc.wantErr)
+				t.Fatalf("validateBackupUserProfileName(%q) err = %v, wantErr %v", tc.in, err, tc.wantErr)
 			}
 			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
 				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
