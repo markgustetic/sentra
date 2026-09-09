@@ -13,7 +13,6 @@ import (
 	"github.com/markgustetic/sentra/internal/crypto"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // AgentDeps wires the side-effecting pieces of `sentra agent scan` so
@@ -178,12 +177,7 @@ func runAgentScan(cmd *cobra.Command, deps AgentDeps, flags *agentFlags) error {
 		LocalOnly:  flags.localOnly || flags.noLLM,
 		Categories: flags.categories,
 	}
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
-	agentCfg.Walker = walkerOpts
+	agentCfg.Walker = policycfg.BackupWalkerOptions(cfg)
 	if flags.maxToolCalls > 0 {
 		agentCfg.MaxToolCalls = flags.maxToolCalls
 	}

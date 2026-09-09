@@ -16,9 +16,9 @@ import (
 	"github.com/charmbracelet/lipgloss"
 
 	"github.com/markgustetic/sentra/internal/config"
+	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // backupStage is the wizard's position: three configure steps, then the
@@ -501,14 +501,7 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	v.confirm.blur()
 	r := v.deps.Repo
 	reporter := v.reporter
-	var wopts walker.Options
-	if v.deps.Config != nil {
-		wopts = walker.Options{
-			IgnoreFile:    v.deps.Config.Backup.IgnoreFile,
-			ExcludeCaches: v.deps.Config.Backup.ExcludeCaches,
-			Concurrency:   v.deps.Config.Backup.Concurrency,
-		}
-	}
+	wopts := policycfg.BackupWalkerOptions(v.deps.Config)
 	start := startOpMsg{
 		name: "backup",
 		run: func(ctx context.Context) tea.Msg {

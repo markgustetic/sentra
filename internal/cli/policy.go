@@ -18,7 +18,6 @@ import (
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/scheduler"
 	"github.com/markgustetic/sentra/internal/ui"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // PolicyDeps wires side effects for `sentra policy`.
@@ -579,12 +578,7 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 	}
 
 	out := policyStdout(cmd, deps)
-	walkerOpts := walker.Options{
-		IgnoreFile:    cfg.Backup.IgnoreFile,
-		ExcludeCaches: cfg.Backup.ExcludeCaches,
-		Concurrency:   cfg.Backup.Concurrency,
-	}
-	normalizeBackupWalkerOptions(&walkerOpts)
+	walkerOpts := policycfg.BackupWalkerOptions(cfg)
 
 	snapshots := make([]repo.SnapshotInfo, 0, len(p.Paths))
 	tag := policySnapshotTag(name, p.Tags)

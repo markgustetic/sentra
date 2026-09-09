@@ -15,7 +15,6 @@ import (
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/scheduler"
-	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // Confirm-modal IDs for JobsView's run/install/uninstall/delete flows.
@@ -131,14 +130,9 @@ func (policyRunDoneMsg) opResult() {}
 // loads pins; the job run must too.
 func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter, home string) startOpMsg {
 	r := deps.Repo
-	var wopts walker.Options
+	wopts := policycfg.BackupWalkerOptions(deps.Config)
 	var retention repo.RetentionPolicy
 	if deps.Config != nil {
-		wopts = walker.Options{
-			IgnoreFile:    deps.Config.Backup.IgnoreFile,
-			ExcludeCaches: deps.Config.Backup.ExcludeCaches,
-			Concurrency:   deps.Config.Backup.Concurrency,
-		}
 		retention = repo.RetentionPolicy{
 			KeepLast:    deps.Config.Retention.KeepLast,
 			KeepDaily:   deps.Config.Retention.KeepDaily,
