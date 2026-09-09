@@ -2,7 +2,6 @@ package tui
 
 import (
 	"context"
-	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -13,42 +12,11 @@ import (
 	"github.com/markgustetic/sentra/internal/config"
 )
 
-// TestExpandPath_RefusesTildeWithoutHome pins the rule every persisting
-// site relies on: with no home to expand against, "~" and "~/..." are an
-// error naming the path — never a cwd-relative guess (NormalizePath alone
-// turns "~/docs" + "" into <cwd>/docs). Paths that need no home resolve
-// as before.
-func TestExpandPath_RefusesTildeWithoutHome(t *testing.T) {
-	home := realTempDir(t)
-	cwd := realTempDir(t)
-	t.Chdir(cwd)
-	cases := []struct {
-		p, home, want string
-		refuse        bool
-	}{
-		{p: "~", home: "", refuse: true},
-		{p: "~/docs", home: "", refuse: true},
-		{p: "~/docs", home: home, want: filepath.Join(home, "docs")},
-		{p: "~", home: home, want: home},
-		{p: "rel/dir", home: "", want: filepath.Join(cwd, "rel", "dir")},
-		{p: "/abs/dir", home: "", want: "/abs/dir"},
-	}
-	for _, c := range cases {
-		got, err := expandPath(c.p, c.home)
-		if c.refuse {
-			if !errors.Is(err, errNoHome) || !strings.Contains(err.Error(), c.p) {
-				t.Errorf("expandPath(%q, %q) = %q, %v; want errNoHome naming the path", c.p, c.home, got, err)
-			}
-			if got != "" {
-				t.Errorf("expandPath(%q, %q) returned %q alongside the error; a refused path must yield nothing to persist", c.p, c.home, got)
-			}
-			continue
-		}
-		if err != nil || got != c.want {
-			t.Errorf("expandPath(%q, %q) = %q, %v; want %q", c.p, c.home, got, err, c.want)
-		}
-	}
-}
+// The persisting and running sites all resolve through
+// policycfg.ResolvePath / ResolvePathFrom, whose rule (a tilde with no
+// home is an error naming the path, never a cwd guess) is pinned in
+// internal/policy. The tests here pin that each TUI site actually takes
+// that route and surfaces the refusal where the operator is.
 
 // TestJobs_FormSaveRefusesTildeWithoutHome: with an unreadable home the
 // form save must refuse "~/docs" inline rather than persisting <cwd>/docs
@@ -57,8 +25,7 @@ func TestExpandPath_RefusesTildeWithoutHome(t *testing.T) {
 func TestJobs_FormSaveRefusesTildeWithoutHome(t *testing.T) {
 	deps, path := jobsDeps(t)
 	v := newJobsForTest(t, deps)
-	v.homeOverride = ""
-	v.homeDir = func() (string, error) { return "", errors.New("$HOME is not defined") }
+	t.Setenv("HOME", "")
 	cwd := realTempDir(t)
 	t.Chdir(cwd)
 	v, _ = pressJobsKey(v, 'a')
@@ -95,8 +62,8 @@ func TestBackupWizard_InstallRepeatRefusesTildeWithoutHome(t *testing.T) {
 	t.Chdir(cwd)
 	sched := config.PolicySchedule{Cadence: "daily", At: "02:00"}
 	err := v.installRepeat(context.Background(), "~/docs", "docs", sched, "")
-	if !errors.Is(err, errNoHome) || !strings.Contains(err.Error(), "~/docs") {
-		t.Fatalf("installRepeat(~/docs) = %v; want errNoHome naming the path", err)
+	if err == nil || !strings.Contains(err.Error(), "~/docs") {
+		t.Fatalf("installRepeat(~/docs) = %v; want a refusal naming the path", err)
 	}
 	onDisk, err := config.Load(cfgPath)
 	if err != nil {
@@ -142,6 +109,7 @@ func TestBackupWizard_ChatDirRefusesTildeWithoutHome(t *testing.T) {
 // path instead of snapshotting <cwd>/docs under a policy tag.
 func TestJobRun_RefusesTildeWithoutHome(t *testing.T) {
 	r := newFlowRepo(t)
+	t.Setenv("HOME", "")
 	cwd := realTempDir(t)
 	if err := os.MkdirAll(filepath.Join(cwd, "docs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -149,10 +117,10 @@ func TestJobRun_RefusesTildeWithoutHome(t *testing.T) {
 	t.Chdir(cwd)
 	cfg := config.Defaults()
 	p := config.PolicyConfig{Paths: []string{"~/docs"}, Schedule: config.PolicySchedule{Cadence: "manual"}}
-	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter(), "")
+	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter())
 	done := op.run(context.Background()).(policyRunDoneMsg)
-	if !errors.Is(done.err, errNoHome) || !strings.Contains(done.err.Error(), "~/docs") {
-		t.Fatalf("run err = %v; want errNoHome naming ~/docs", done.err)
+	if done.err == nil || !strings.Contains(done.err.Error(), "~/docs") {
+		t.Fatalf("run err = %v; want a refusal naming ~/docs", done.err)
 	}
 	if snaps, err := r.ListSnapshots(context.Background()); err != nil || len(snaps) != 0 {
 		t.Fatalf("a refused run must create nothing; got %d snapshots (%v)", len(snaps), err)

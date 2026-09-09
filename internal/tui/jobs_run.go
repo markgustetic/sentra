@@ -5,6 +5,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"path/filepath"
 	"strings"
 	"time"
 
@@ -118,41 +119,39 @@ func (policyRunDoneMsg) opResult() {}
 // second run-taking view once shared this function ("policy-run", the
 // deleted PoliciesView).
 //
-// home resolves the policy's paths the way the timer's `policy run`
-// must: "~/docs" or a relative dir stored by an older form save reached
-// CreateSnapshot raw and failed, so every path is normalized here at run
-// time as well as at persist time.
+// The policy's paths are resolved the way the timer's `policy run`
+// resolves them — policycfg.ResolvePathFrom against the config file's
+// directory: "~/docs" or a relative dir stored by an older form save
+// reached CreateSnapshot raw and failed, and a relative path anchored to
+// this process's cwd would snapshot a different tree than the CLI run
+// of the same policy.
 //
 // The retention prune plans around the repo's pin set, loaded inside the
-// op (it is a blobstore read). Without it a pinned snapshot beyond
-// keep_last was planned for deletion, DeleteSnapshot refused it at the
-// choke point, and every run of the job failed — the prune view already
-// loads pins; the job run must too.
-func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter, home string) startOpMsg {
+// op through policycfg.RetentionFromConfig (it is a blobstore read).
+// Without it a pinned snapshot beyond keep_last was planned for
+// deletion, DeleteSnapshot refused it at the choke point, and every run
+// of the job failed — the CLI and the prune view build retention there;
+// the job run must too.
+func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, reporter *opReporter) startOpMsg {
 	r := deps.Repo
-	wopts := policycfg.BackupWalkerOptions(deps.Config)
-	var retention repo.RetentionPolicy
-	if deps.Config != nil {
-		retention = repo.RetentionPolicy{
-			KeepLast:    deps.Config.Retention.KeepLast,
-			KeepDaily:   deps.Config.Retention.KeepDaily,
-			KeepWeekly:  deps.Config.Retention.KeepWeekly,
-			KeepMonthly: deps.Config.Retention.KeepMonthly,
-		}
-	}
+	cfg := deps.Config
+	wopts := policycfg.BackupWalkerOptions(cfg)
 	// Resolve the stored paths now, on the UI goroutine; a tilde with no
 	// home is a run failure (reported through the ordinary done message,
 	// failure hooks included), never a snapshot of <cwd>/docs under the
-	// policy's tag.
+	// policy's tag. Dir("") is ".", so a config-less Deps (tests) anchors
+	// to the cwd exactly as the CLI's policyConfigDir would.
 	paths := make([]string, 0, len(p.Paths))
-	var pathErr error
+	cfgDir, pathErr := filepath.Abs(filepath.Dir(deps.ConfigPath))
 	for _, path := range p.Paths {
-		abs, err := expandPath(path, home)
-		if err != nil {
-			pathErr = err
+		if pathErr != nil {
 			break
 		}
-		paths = append(paths, abs)
+		if abs, err := policycfg.ResolvePathFrom(path, cfgDir); err != nil {
+			pathErr = err
+		} else {
+			paths = append(paths, abs)
+		}
 	}
 	tag := policyRunTag(name, p.Tags)
 	doCheck := p.AfterBackup.Check
@@ -199,14 +198,18 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 						return errors.New("post-backup check found integrity issues")
 					}
 				}
-				// Pins keep snapshots unconditionally; a load failure
-				// degrades to planning without them, and the prune step
-				// then skips the refusal rather than failing the run.
-				if pins, err := r.Pins(ctx); err == nil {
-					retention.Pinned = pins
-				}
-				if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
-					return err
+				if pruneMode == policycfg.PruneApply {
+					// Pins keep snapshots unconditionally; a plan that
+					// cannot see them would drop one and fail at the
+					// choke point anyway, so a load failure fails the
+					// run here, named — as the CLI's run does.
+					retention, err := policycfg.RetentionFromConfig(ctx, r, cfg)
+					if err != nil {
+						return err
+					}
+					if err := runPolicyRetentionPrune(ctx, r, retention, pruneMode); err != nil {
+						return err
+					}
 				}
 				if hooks.After != "" {
 					if err := policycfg.RunHook(ctx, &hookOut, "after", hooks.After, hooks.OnFailureWebhookEnv); err != nil {
@@ -364,9 +367,8 @@ func (v JobsView) startRun() (tea.Model, tea.Cmd) {
 	v.run = policyRunState{reporter: reporter, name: name}
 	v.stage = jobsRunning
 
-	home := v.jobsHome()
 	return v, tea.Batch(func() tea.Msg {
-		return buildPolicyRunOp(v.deps, "job-run", name, p, reporter, home)
+		return buildPolicyRunOp(v.deps, "job-run", name, p, reporter)
 	}, opTick())
 }
 

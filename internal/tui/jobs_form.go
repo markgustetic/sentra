@@ -281,15 +281,13 @@ func (v JobsView) saveForm(replace bool) (tea.Model, tea.Cmd) {
 		v.form.err = err.Error()
 		return v, nil
 	}
-	// Persist absolute paths: "~/docs" or "rel/dir" as typed would be
-	// stored raw and fail under the timer, whose cwd and HOME are not
-	// this shell's. Resolved against the view's home seam so the stored
-	// path is the one the drill-in and last-run lookups already compute.
-	// A tilde with no home is refused inline (see expandPath): the save
-	// must not persist a cwd guess the timer would then back up.
-	home := v.jobsHome()
+	// Persist absolute paths through the resolver `policy add` uses:
+	// "~/docs" or "rel/dir" as typed would be stored raw and fail under
+	// the timer, whose cwd and HOME are not this shell's. A tilde with no
+	// home, a file, or a dangling link is refused inline — the save must
+	// not persist a guess the timer would then back up.
 	for i, path := range p.Paths {
-		abs, err := expandPath(path, home)
+		abs, err := policycfg.ResolvePath(path)
 		if err != nil {
 			v.stage = jobsForm
 			v.form.err = err.Error()

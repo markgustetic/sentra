@@ -1097,7 +1097,7 @@ func TestJobs_RunScrubsWebhookURLFromBeforeAndAfterHooks(t *testing.T) {
 			OnFailureWebhookEnv: "MY_ALERT_URL",
 		},
 	}
-	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter(), "")
+	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter())
 	if done := op.run(context.Background()).(policyRunDoneMsg); done.err != nil {
 		t.Fatalf("run: %v", done.err)
 	}

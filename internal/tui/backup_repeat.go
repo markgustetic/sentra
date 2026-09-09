@@ -54,7 +54,7 @@ func (v BackupView) startRepeatInstall(root, name string, schedule config.Policy
 	if tag = strings.TrimSpace(tag); tag != "" {
 		tags = []string{tag}
 	}
-	root, rootErr := absPath(root)
+	root, rootErr := policycfg.ResolvePath(root)
 	install := v.installRepeat
 	start := startOpMsg{
 		name: repeatInstallOpName,
@@ -144,7 +144,7 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 	// policy the timer runs names the directory that was confirmed
 	// (idempotent on the already-resolved root startRepeatInstall
 	// passes). A tilde with no home is an error, never a cwd guess.
-	root, err := absPath(root)
+	root, err := policycfg.ResolvePath(root)
 	if err != nil {
 		return err
 	}

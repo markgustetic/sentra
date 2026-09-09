@@ -253,12 +253,13 @@ func (v BackupView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 		// root must all name the same absolute directory. An empty dir
 		// stays empty — filepath.Abs("") is the cwd, which checkDir would
 		// happily accept as the intent's directory — and a tilde with no
-		// home is refused outright (absPath), since a cwd that happens to
-		// hold a same-named directory would pass checkDir too.
+		// home is refused outright (policycfg.ResolvePath), since a cwd
+		// that happens to hold a same-named directory would pass checkDir
+		// too.
 		dir := strings.TrimSpace(msg.dir)
 		var dirErr error
 		if dir != "" {
-			dir, dirErr = absPath(dir)
+			dir, dirErr = policycfg.ResolvePath(dir)
 		}
 		if dirErr != nil {
 			v.pathErr = dirErr.Error()

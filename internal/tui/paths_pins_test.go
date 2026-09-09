@@ -48,7 +48,7 @@ func TestJobRun_PrunePlansAroundPins(t *testing.T) {
 		Schedule:    config.PolicySchedule{Cadence: "manual"},
 		AfterBackup: config.PolicyAfterBackup{Prune: policycfg.PruneApply},
 	}
-	op := buildPolicyRunOp(deps, "job-run", "job", p, newOpReporter(), "")
+	op := buildPolicyRunOp(deps, "job-run", "job", p, newOpReporter())
 	done := op.run(context.Background()).(policyRunDoneMsg)
 	if done.err != nil {
 		t.Fatalf("a pinned snapshot beyond keep_last must not fail the run: %v", done.err)
@@ -103,10 +103,12 @@ func TestRunPolicyRetentionPrune_ToleratesPinRefusal(t *testing.T) {
 // TestJobRun_ResolvesPolicyPathsAtRunTime: a stored "~/docs" (or a
 // relative dir) reached CreateSnapshot raw and failed under the timer,
 // whose cwd and HOME are not the operator's shell. The run resolves
-// every path against the home it is handed.
+// every path through policycfg.ResolvePathFrom, whose tilde form reads
+// the process's home.
 func TestJobRun_ResolvesPolicyPathsAtRunTime(t *testing.T) {
 	r := newFlowRepo(t)
 	home := realTempDir(t)
+	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -115,7 +117,7 @@ func TestJobRun_ResolvesPolicyPathsAtRunTime(t *testing.T) {
 	}
 	cfg := config.Defaults()
 	p := config.PolicyConfig{Paths: []string{"~/docs"}, Schedule: config.PolicySchedule{Cadence: "manual"}}
-	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter(), home)
+	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter())
 	done := op.run(context.Background()).(policyRunDoneMsg)
 	if done.err != nil {
 		t.Fatalf("run: %v", done.err)
@@ -129,6 +131,41 @@ func TestJobRun_ResolvesPolicyPathsAtRunTime(t *testing.T) {
 	}
 }
 
+// TestJobRun_RelativePathAnchorsToConfigDir: the TUI run resolves a
+// stored relative path exactly as the CLI's `policy run` does — against
+// the directory of the sentra.yaml the policy came from, never the
+// process cwd. A hand-written `paths: [src]` must mean the src next to
+// the file whichever directory the operator launched `sentra` in.
+func TestJobRun_RelativePathAnchorsToConfigDir(t *testing.T) {
+	r := newFlowRepo(t)
+	cfgDir := realTempDir(t)
+	if err := os.MkdirAll(filepath.Join(cfgDir, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.WriteFile(filepath.Join(cfgDir, "src", "f.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	elsewhere := realTempDir(t)
+	if err := os.MkdirAll(filepath.Join(elsewhere, "src"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(elsewhere)
+	cfg := config.Defaults()
+	p := config.PolicyConfig{Paths: []string{"src"}, Schedule: config.PolicySchedule{Cadence: "manual"}}
+	deps := Deps{Repo: r, Config: &cfg, ConfigPath: filepath.Join(cfgDir, "sentra.yaml")}
+	op := buildPolicyRunOp(deps, "job-run", "job", p, newOpReporter())
+	if done := op.run(context.Background()).(policyRunDoneMsg); done.err != nil {
+		t.Fatalf("run: %v", done.err)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil || len(snaps) != 1 {
+		t.Fatalf("want one snapshot, got %d (%v)", len(snaps), err)
+	}
+	if want := filepath.Join(cfgDir, "src"); snaps[0].Root != want {
+		t.Fatalf("snapshot root = %q, want %q (anchored to the config dir, not the cwd)", snaps[0].Root, want)
+	}
+}
+
 // TestJobs_FormSaveStoresAbsolutePaths: the add/edit form persisted the
 // paths exactly as typed, so "~/docs" and "rel" landed in sentra.yaml
 // and failed under the timer. Saving resolves them first.
@@ -136,7 +173,7 @@ func TestJobs_FormSaveStoresAbsolutePaths(t *testing.T) {
 	deps, path := jobsDeps(t)
 	v := newJobsForTest(t, deps)
 	home := realTempDir(t)
-	v.homeOverride = home
+	t.Setenv("HOME", home) // the persisting resolver reads the process home
 	cwd := realTempDir(t)
 	t.Chdir(cwd)
 	v, _ = pressJobsKey(v, 'a')
