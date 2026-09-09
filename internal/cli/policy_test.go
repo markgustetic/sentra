@@ -30,6 +30,49 @@ func writePolicyConfigFile(t *testing.T, dir string, cfg *config.Config) string 
 	return path
 }
 
+// testPolicyDeps is the one constructor for PolicyDeps in tests that
+// can reach a timer — `add --replace` (scheduler.Resync) and `remove`
+// (scheduler.Deactivate). RULE: it ALWAYS points HomeDir at a fresh
+// t.TempDir() and Runner at fakeSchedRunner, and every such test
+// builds on it rather than on a literal. A zero-value PolicyDeps falls
+// back to the real home and scheduler.ExecRunner, and this developer's
+// Mac carries a real ~/Library/LaunchAgents/com.sentra.*.plist — one
+// future test forgetting either field would rewrite or unload it.
+// Callers overlay OS/Executable/RepoDeps on the result.
+func testPolicyDeps(t *testing.T) (PolicyDeps, *fakeSchedRunner) {
+	t.Helper()
+	home := t.TempDir()
+	runner := &fakeSchedRunner{}
+	return PolicyDeps{
+		RepoDeps: RepoDeps{Stdout: io.Discard},
+		HomeDir:  func() (string, error) { return home, nil },
+		Runner:   runner.run,
+	}, runner
+}
+
+// TestTestPolicyDeps_NeverReachesARealHome pins the constructor's
+// rule: the home it hands out is disposable and the runner is the
+// fake, so no test built on it can touch a real LaunchAgent.
+func TestTestPolicyDeps_NeverReachesARealHome(t *testing.T) {
+	deps, runner := testPolicyDeps(t)
+	home, err := deps.HomeDir()
+	if err != nil || home == "" {
+		t.Fatalf("HomeDir: %q, %v", home, err)
+	}
+	if real, _ := os.UserHomeDir(); real != "" && strings.HasPrefix(home, real+string(filepath.Separator)) {
+		t.Fatalf("test home %q is under the real home %q", home, real)
+	}
+	if deps.Runner == nil {
+		t.Fatal("Runner is nil: the real scheduler.ExecRunner would be used")
+	}
+	if _, err := deps.Runner(context.Background(), "launchctl", "bootstrap"); err != nil {
+		t.Fatalf("fake runner: %v", err)
+	}
+	if !runner.ran("launchctl bootstrap") {
+		t.Fatal("Runner is not the returned fakeSchedRunner")
+	}
+}
+
 // TestPolicyAddRemove_KeepEnvOverridesOutOfFile: `policy add` / `policy remove`
 // edit the policies map, so they must leave repo.s3 exactly as the file had it.
 // Rewriting the resolved config would bake a transient SENTRA_* override in.
@@ -91,6 +134,8 @@ func TestPolicyAddRemove_KeepEnvOverridesOutOfFile(t *testing.T) {
 func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
+	home := t.TempDir()
+	t.Setenv("HOME", home)
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "test-bucket"
 	writePolicyConfigFile(t, dir, &cfg)
@@ -117,7 +162,7 @@ func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 		t.Fatalf("Load: %v", err)
 	}
 	p := got.Policies["home"]
-	if len(p.Paths) != 1 || p.Paths[0] != "~/Documents" {
+	if len(p.Paths) != 1 || p.Paths[0] != filepath.Join(home, "Documents") {
 		t.Fatalf("paths: %+v", p.Paths)
 	}
 	if len(p.Tags) != 2 || p.Tags[0] != "home" || p.Tags[1] != "daily" {

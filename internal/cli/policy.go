@@ -4,7 +4,7 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
+	"path/filepath"
 	"sort"
 	"strings"
 	"time"
@@ -26,13 +26,16 @@ type PolicyDeps struct {
 	RepoDeps
 	Stderr io.Writer
 
-	// OS and HomeDir steer the timer-file cleanup in remove; zero
-	// values fall back to the runtime platform and home directory.
-	// Runner unloads the timer from launchd/systemd before the files go;
-	// nil means scheduler.ExecRunner, so tests must inject a fake.
-	OS      string
-	HomeDir func() (string, error)
-	Runner  scheduler.Runner
+	// OS and HomeDir steer the timer-file cleanup in remove and the
+	// resync in add --replace; zero values fall back to the runtime
+	// platform and home directory. Executable is the binary a
+	// re-rendered timer invokes; nil means os.Executable. Runner
+	// loads/unloads the timer in launchd/systemd; nil means
+	// scheduler.ExecRunner, so tests must inject a fake.
+	OS         string
+	HomeDir    func() (string, error)
+	Executable func() (string, error)
+	Runner     scheduler.Runner
 
 	// Now is the clock `run --if-due` measures the schedule against;
 	// nil means time.Now.
@@ -182,8 +185,20 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	if err != nil {
 		return fmt.Errorf("parse schedule: %w", err)
 	}
+	// Persist absolute paths. This is the one moment the cwd and home
+	// are the operator's own; the timer that later runs this policy
+	// starts in `/` (launchd), where a stored "." is the root filesystem
+	// and a stored "~/x" is a literal directory named "~".
+	paths := make([]string, 0, len(flags.paths))
+	for _, raw := range flags.paths {
+		abs, err := policycfg.ResolvePath(raw)
+		if err != nil {
+			return err
+		}
+		paths = append(paths, abs)
+	}
 	p := config.PolicyConfig{
-		Paths:    append([]string(nil), flags.paths...),
+		Paths:    paths,
 		Tags:     append([]string(nil), flags.tags...),
 		Schedule: schedule,
 		AfterBackup: config.PolicyAfterBackup{
@@ -199,6 +214,8 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	// editing the policies map can't persist this process's SENTRA_*
 	// overrides into repo.s3. The duplicate-name check runs inside the
 	// mutation, against the same on-disk map we're about to write back.
+	replaced := false
+	oldSpec := ""
 	err = config.Update(*flags.configPath, func(cfg *config.Config) error {
 		if cfg.Policies == nil {
 			cfg.Policies = map[string]config.PolicyConfig{}
@@ -211,6 +228,8 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 			// replace carries them forward rather than silently wiping
 			// a hand-written notifier because someone added a path.
 			p.Hooks = existing.Hooks
+			replaced = true
+			oldSpec = policycfg.FormatScheduleSpec(existing.Schedule)
 		}
 		cfg.Policies[name] = p
 		return nil
@@ -224,7 +243,54 @@ func runPolicyAdd(cmd *cobra.Command, deps PolicyDeps, name string, flags *polic
 	fmt.Fprintf(out, "  name:      %s\n", name)
 	fmt.Fprintf(out, "  paths:     %d\n", len(p.Paths))
 	fmt.Fprintf(out, "  schedule:  %s\n", policycfg.FormatScheduleSpec(p.Schedule))
+	if replaced && oldSpec != policycfg.FormatScheduleSpec(p.Schedule) {
+		resyncPolicyTimer(cmd, deps, out, *flags.configPath, name, p.Schedule)
+	}
 	return nil
+}
+
+// resyncPolicyTimer reconciles an installed OS timer after --replace
+// changed the schedule. The config is already rewritten, so a problem
+// here is a warning (with the command to run by hand, via
+// ActivationError) rather than a failed add — but it is loud, because
+// until the label is bootstrapped again launchd keeps firing the OLD
+// calendar while `schedule status` reports the new one.
+func resyncPolicyTimer(cmd *cobra.Command, deps PolicyDeps, out io.Writer, cfgPath, name string, schedule config.PolicySchedule) {
+	home := ""
+	if deps.HomeDir != nil {
+		home, _ = deps.HomeDir()
+	}
+	paths, err := scheduler.PathsFor(deps.OS, home, name)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
+		return
+	}
+	exe := ""
+	if deps.Executable != nil {
+		exe, _ = deps.Executable()
+	}
+	exe, err = scheduler.Executable(exe)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
+		return
+	}
+	absConfig, err := filepath.Abs(cfgPath)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: timer not resynced: %v\n", err)
+		return
+	}
+	outcome, err := scheduler.Resync(cmd.Context(), paths, exe, absConfig, schedule, deps.Runner)
+	if err != nil {
+		fmt.Fprintf(out, "  warning: %v\n", err)
+	}
+	switch outcome {
+	case scheduler.SyncUninstalled:
+		fmt.Fprintln(out, "  timer uninstalled (schedule is now manual)")
+	case scheduler.SyncReinstalled:
+		if err == nil {
+			fmt.Fprintf(out, "  timer reinstalled for %s\n", policycfg.FormatScheduleSpec(schedule))
+		}
+	}
 }
 
 func runPolicyList(cmd *cobra.Command, deps PolicyDeps, cfgPath string) error {
@@ -370,7 +436,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 		var r *repo.Repo
 		if flags.ifDue {
 			var due bool
-			opened, due, err := policyDue(cmd, deps, cfg, name, p)
+			opened, due, err := policyDue(cmd, deps, cfgPath, cfg, name, p)
 			if err != nil {
 				return err
 			}
@@ -383,15 +449,15 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 			defer r.Close()
 		}
 		if p.Hooks.Before != "" {
-			if err := runPolicyHook(cmd, deps, "before", p.Hooks.Before); err != nil {
+			if err := runPolicyHook(cmd, deps, p.Hooks, "before", p.Hooks.Before); err != nil {
 				return err
 			}
 		}
-		if err := runPolicyStages(cmd, deps, cfg, name, p, r); err != nil {
+		if err := runPolicyStages(cmd, deps, cfgPath, cfg, name, p, r); err != nil {
 			return err
 		}
 		if p.Hooks.After != "" {
-			if err := runPolicyHook(cmd, deps, "after", p.Hooks.After); err != nil {
+			if err := runPolicyHook(cmd, deps, p.Hooks, "after", p.Hooks.After); err != nil {
 				return err
 			}
 		}
@@ -419,8 +485,13 @@ var errPolicyNotDue = errors.New("policy not due")
 // snapshots never takes the repo lock, so a skipped run leaves a
 // concurrent backup or GC undisturbed. A manual cadence has no slot
 // and is always due — nothing installs a timer for it, but an operator
-// passing the flag by hand should still get their run.
-func policyDue(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig) (*repo.Repo, bool, error) {
+// passing the flag by hand should still get their run. The lookup
+// resolves the stored paths exactly as runPolicyStages will — anchored
+// to the config dir, never the cwd — because LastRun matches on the
+// snapshot root string: a relative `paths: [src]` resolved against the
+// timer's cwd (`/` under launchd) names a root no run ever wrote, so
+// the run would look overdue at every fire and back up every time.
+func policyDue(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *config.Config, name string, p config.PolicyConfig) (*repo.Repo, bool, error) {
 	r, err := openPolicyRepo(cmd, deps, cfg)
 	if err != nil {
 		return nil, false, err
@@ -439,15 +510,19 @@ func policyDue(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name str
 		r.Close()
 		return nil, false, fmt.Errorf("list snapshots: %w", err)
 	}
-	home := ""
-	if deps.HomeDir != nil {
-		home, _ = deps.HomeDir()
-	} else {
-		home, _ = os.UserHomeDir()
+	cfgDir, err := policyConfigDir(cfgPath)
+	if err != nil {
+		r.Close()
+		return nil, false, err
 	}
 	abs := make([]string, 0, len(p.Paths))
 	for _, path := range p.Paths {
-		abs = append(abs, policycfg.NormalizePath(path, home))
+		resolved, err := policycfg.ResolvePathFrom(path, cfgDir)
+		if err != nil {
+			r.Close()
+			return nil, false, err
+		}
+		abs = append(abs, resolved)
 	}
 	last, found := policycfg.LastRun(name, abs, snaps)
 	if !found || last.CreatedAt.Before(slot) {
@@ -485,10 +560,24 @@ func openPolicyRepo(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config) (*r
 	return r, nil
 }
 
+// policyConfigDir is the one anchor for a relative policy path at run
+// time, shared by the --if-due lookup and the snapshot stage so the
+// root compared against and the root written are the same string.
+func policyConfigDir(cfgPath string) (string, error) {
+	cfgDir, err := filepath.Abs(filepath.Dir(cfgPath))
+	if err != nil {
+		return "", fmt.Errorf("locate config dir: %w", err)
+	}
+	return cfgDir, nil
+}
+
 // runPolicyStages takes the snapshots and runs the post-backup check
 // and prune. r may be an already-open repo (from the --if-due check);
-// nil opens one here and closes it on return.
-func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) error {
+// nil opens one here and closes it on return. cfgPath anchors any
+// relative path still in the config: `policy add` has stored absolute
+// paths since paths were first resolved, but a hand-edited or older
+// sentra.yaml may say `paths: [src]`, and under a timer the cwd is `/`.
+func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) error {
 	if r == nil {
 		opened, err := openPolicyRepo(cmd, deps, cfg)
 		if err != nil {
@@ -508,7 +597,15 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, na
 
 	snapshots := make([]repo.SnapshotInfo, 0, len(p.Paths))
 	tag := policySnapshotTag(name, p.Tags)
-	for _, path := range p.Paths {
+	cfgDir, err := policyConfigDir(cfgPath)
+	if err != nil {
+		return err
+	}
+	for _, stored := range p.Paths {
+		path, err := policycfg.ResolvePathFrom(stored, cfgDir)
+		if err != nil {
+			return err
+		}
 		snap, err := r.CreateSnapshot(cmd.Context(), path, repo.SnapshotOptions{
 			Tag:    tag,
 			Walker: walkerOpts,
@@ -539,8 +636,10 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, na
 // runPolicyHook and firePolicyFailureHooks delegate to internal/policy
 // so a policy run behaves identically from the CLI and the TUI — hook
 // execution lives below both surfaces.
-func runPolicyHook(cmd *cobra.Command, deps PolicyDeps, label, script string) error {
-	return policycfg.RunHook(cmd.Context(), policyStdout(cmd, deps), label, script)
+// The webhook env var name rides along so the URL it holds is scrubbed
+// from before/after hooks too, not only from on_failure.
+func runPolicyHook(cmd *cobra.Command, deps PolicyDeps, hooks config.PolicyHooks, label, script string) error {
+	return policycfg.RunHook(cmd.Context(), policyStdout(cmd, deps), label, script, hooks.OnFailureWebhookEnv)
 }
 
 func firePolicyFailureHooks(cmd *cobra.Command, deps PolicyDeps, name string, hooks config.PolicyHooks, cause error) {
@@ -568,11 +667,11 @@ func runPolicyPrune(cmd *cobra.Command, out io.Writer, r *repo.Repo, cfg *config
 	if err != nil {
 		return fmt.Errorf("list snapshots: %w", err)
 	}
-	policy := repo.RetentionPolicy{
-		KeepLast:    cfg.Retention.KeepLast,
-		KeepDaily:   cfg.Retention.KeepDaily,
-		KeepWeekly:  cfg.Retention.KeepWeekly,
-		KeepMonthly: cfg.Retention.KeepMonthly,
+	// Pins included: a pinned snapshot planned as a drop would surface
+	// as ErrSnapshotPinned below and fail an unattended run.
+	policy, err := policycfg.RetentionFromConfig(cmd.Context(), r, cfg)
+	if err != nil {
+		return err
 	}
 	decisions := repo.PlanRetentionExplain(snaps, policy)
 	keep, drop := splitRetentionDecisions(decisions)

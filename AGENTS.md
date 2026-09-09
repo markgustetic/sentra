@@ -140,9 +140,22 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   post-backup check/prune preferences, but must never include passphrases,
   key material, AWS credentials, or other secrets. `sentra policy run` should
   reuse existing repo snapshot/check/prune primitives instead of duplicating
-  storage logic. `policy remove` uninstalls the policy's OS timer when
-  present — deactivates it, then removes the files (best-effort, warning on
-  failure) — an installed timer for a deleted policy can only fail.
+  storage logic. **Policy paths are stored absolute.** `policy add` resolves
+  every `--path` through `policy.ResolvePath` (`~` → home, relative → the
+  operator's cwd, cleaned) before persisting, and `Validate` rejects a path
+  that cannot resolve. A timer-launched run has no cwd the operator chose
+  (launchd starts jobs in `/`), so `policy run` resolves each stored path
+  again with `policy.ResolvePathFrom`, anchoring any relative path that a
+  hand-edited or pre-resolution `sentra.yaml` still carries to the config
+  file's directory — never the process cwd. `policy add --replace` that
+  changes the schedule resyncs an installed timer through
+  `scheduler.Resync` (manual → deactivate + uninstall; otherwise re-render,
+  reinstall, re-activate): the OS keeps firing whatever calendar it loaded,
+  so rewriting `sentra.yaml` alone leaves `schedule status` lying. An
+  unchanged schedule never shells out. `policy remove` uninstalls the
+  policy's OS timer when present — deactivates it, then removes the files
+  (best-effort, warning on failure) — an installed timer for a deleted
+  policy can only fail.
 - `sentra schedule` installs user-level OS scheduler entries for named
   policies. It generates launchd/systemd files that invoke `sentra policy
   run`; do not introduce a resident Sentra daemon or write secrets into
@@ -251,7 +264,12 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   only the variable NAME may appear in `sentra.yaml`. Hook execution lives in
   `internal/policy` (below both surfaces) and MUST run identically from
   `sentra policy run` and the TUI's policy run — a surface that skips hooks
-  backs up different data.
+  backs up different data. A hook's output goes to the timer log, so
+  `RunHook` echoes only `hook <label>: running` — never the command line,
+  which carries inline credentials (`PGPASSWORD=… pg_dump`) — and the child
+  environment is `HookEnv`: `os.Environ()` minus every `SENTRA_*` variable
+  and the configured webhook variable. Pass `hooks.OnFailureWebhookEnv` to
+  `RunHook` from every surface so before/after are scrubbed like on_failure.
 - Surface contract — the obligation between the two surfaces runs ONE WAY.
   The CLI is the machine and recovery surface: every capability lands in the
   core layer plus a CLI verb, always. Three consumers depend on that and none
