@@ -166,6 +166,13 @@ func ResolveRoot(root string) (string, error) {
 		return "", fmt.Errorf("repo: stat root %q: %w", resolved, err)
 	}
 	if !fi.IsDir() {
+		// Name the path as given and, when a link (or an aliased
+		// mount like macOS's /var) sent it elsewhere, the path that
+		// was judged: the operator who typed the link cannot
+		// otherwise see what it pointed at.
+		if resolved != absRoot {
+			return "", fmt.Errorf("%w: %q (resolves to %q)", ErrRootNotDir, absRoot, resolved)
+		}
 		return "", fmt.Errorf("%w: %q", ErrRootNotDir, absRoot)
 	}
 	return resolved, nil
