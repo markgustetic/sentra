@@ -15,7 +15,8 @@ func snapAt(id, root, tag string, age time.Duration) repo.SnapshotInfo {
 }
 
 func TestNormalizePath(t *testing.T) {
-	home := t.TempDir()
+	// Symlink-resolved: the resolver answers /private/var for a /var TMPDIR.
+	home := realTempDir(t)
 	if got := NormalizePath("~/docs", home); got != filepath.Join(home, "docs") {
 		t.Fatalf("tilde: got %q", got)
 	}

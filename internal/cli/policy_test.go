@@ -134,7 +134,8 @@ func TestPolicyAddRemove_KeepEnvOverridesOutOfFile(t *testing.T) {
 func TestPolicyAdd_WritesConfigPolicy(t *testing.T) {
 	dir := t.TempDir()
 	chDir(t, dir)
-	home := t.TempDir()
+	// Symlink-resolved: policy paths persist in repo.ResolveRoot's form.
+	home := realPath(t, t.TempDir())
 	t.Setenv("HOME", home)
 	cfg := config.Defaults()
 	cfg.Repo.S3.Bucket = "test-bucket"
