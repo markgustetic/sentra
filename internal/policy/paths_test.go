@@ -220,6 +220,68 @@ func TestResolvePath_RejectsFile(t *testing.T) {
 	}
 }
 
+// TestNormalizePath_AbsoluteOnEveryFailure pins the comparison rule:
+// whatever stops the resolver — a file where a directory should be, a
+// file sitting ABOVE the path (ENOTDIR, which is not fs.ErrNotExist), a
+// dangling link — NormalizePath answers with the absolute, cleaned
+// spelling, never the relative string it was handed. The Last-run lookup
+// compares it against snapshot roots, and a relative spelling can only
+// ever miss.
+func TestNormalizePath_AbsoluteOnEveryFailure(t *testing.T) {
+	dir := realTempDir(t)
+	file := filepath.Join(dir, "a.txt")
+	if err := os.WriteFile(file, []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	if err := os.Symlink(filepath.Join(dir, "gone"), filepath.Join(dir, "dangling")); err != nil {
+		t.Fatal(err)
+	}
+	t.Chdir(dir)
+	for _, in := range []string{"a.txt", "a.txt/sub", "a.txt/../a.txt/sub/", "dangling", "dangling/later"} {
+		if _, err := ResolvePath(in); err == nil {
+			t.Errorf("ResolvePath(%q) succeeded; the test needs a failing path", in)
+		}
+		got := NormalizePath(in, "")
+		if want := filepath.Join(dir, filepath.Clean(in)); got != want {
+			t.Errorf("NormalizePath(%q) = %q, want %q", in, got, want)
+		}
+	}
+}
+
+// TestResolvePath_RefusesDanglingSymlink: a link with no target, at the
+// path or anywhere above it, is refused rather than stored as the link's
+// own spelling. Accepting it would persist a string that stops matching
+// the moment the target appears — from then on the resolver follows the
+// link and every snapshot root differs from the policy path, so the
+// Last-run lookup misses forever with nothing in the config to explain
+// why. The walk-up fallback is for a directory that does not exist YET;
+// a dangling link is a directory that exists somewhere else.
+func TestResolvePath_RefusesDanglingSymlink(t *testing.T) {
+	dir := realTempDir(t)
+	link := filepath.Join(dir, "dangling")
+	if err := os.Symlink(filepath.Join(dir, "gone"), link); err != nil {
+		t.Fatal(err)
+	}
+	for _, in := range []string{link, filepath.Join(link, "later"), filepath.Join(link, "later", "deeper")} {
+		got, err := ResolvePath(in)
+		if !errors.Is(err, ErrDanglingSymlink) {
+			t.Errorf("ResolvePath(%q) = %q, %v; want ErrDanglingSymlink", in, got, err)
+		}
+		if err := Validate("d", config.PolicyConfig{Paths: []string{in}}); !errors.Is(err, ErrDanglingSymlink) {
+			t.Errorf("Validate(%q) = %v; want ErrDanglingSymlink", in, err)
+		}
+	}
+	// Once the target exists the same spelling resolves through the link,
+	// which is exactly why the dangling form could not be stored.
+	if err := os.Mkdir(filepath.Join(dir, "gone"), 0o755); err != nil {
+		t.Fatal(err)
+	}
+	want := filepath.Join(dir, "gone", "later")
+	if got, err := ResolvePath(filepath.Join(link, "later")); err != nil || got != want {
+		t.Errorf("ResolvePath through the now-live link = %q, %v; want %q", got, err, want)
+	}
+}
+
 // realTempDir is t.TempDir with symlinks resolved. The resolver answers
 // in repo.ResolveRoot's form, and on macOS a /var TMPDIR is a link to
 // /private/var, so an expectation built from the raw t.TempDir string

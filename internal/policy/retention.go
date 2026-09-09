@@ -16,8 +16,10 @@ import (
 // pinned snapshot in the drop set into a failed run after the backup
 // had already succeeded. Five call sites once built this literal by
 // hand and one of them forgot; this is the one place it is built. cfg
-// nil means zero keep counts (the TUI before a config is loaded) but
-// the pins still apply.
+// nil means ZERO keep counts, not config.Defaults(): a plan built from
+// it drops every unpinned snapshot, so a caller without a config (the
+// TUI before one is loaded) must treat the result as preview-only and
+// never hand it to an apply. The pins still apply either way.
 func RetentionFromConfig(ctx context.Context, r *repo.Repo, cfg *config.Config) (repo.RetentionPolicy, error) {
 	var policy repo.RetentionPolicy
 	if cfg != nil {

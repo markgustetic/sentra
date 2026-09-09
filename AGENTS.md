@@ -163,7 +163,10 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   resolved) before persisting, and `Validate` rejects a path that cannot
   resolve or that exists as a non-directory. A path that does not exist yet
   resolves its longest existing prefix and keeps the rest as spelled, so the
-  stored string is the root a later snapshot of it records. A
+  stored string is the root a later snapshot of it records; a dangling
+  symlink at or above the path is refused (`policy.ErrDanglingSymlink`),
+  since storing the link's spelling would stop matching the moment its
+  target appears. A
   timer-launched run has no cwd the operator chose
   (launchd starts jobs in `/`), so `policy run` resolves each stored path
   again with `policy.ResolvePathFrom`, anchoring any relative path that a
