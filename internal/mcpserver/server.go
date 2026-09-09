@@ -31,6 +31,7 @@ import (
 	"github.com/modelcontextprotocol/go-sdk/mcp"
 
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // tokenTTL bounds how long a plan may sit unconfirmed. Long enough for a
@@ -61,11 +62,27 @@ type pendingPlan struct {
 	paths      []string
 }
 
+// Options configures a Server beyond the repository it serves.
+type Options struct {
+	// Version is reported to MCP clients in the server's implementation
+	// info.
+	Version string
+
+	// Walker is the directory-walk configuration every confirmed backup
+	// runs with. The Server never sees sentra.yaml, so the CLI resolves
+	// backup.ignore_file / exclude_caches / concurrency into this exactly
+	// as `sentra backup` does; leaving it zero means MCP-driven backups
+	// silently fall back to the repo's legacy defaults (.sentraignore,
+	// caches excluded) and diverge from what the operator configured.
+	Walker walker.Options
+}
+
 // Server wraps an opened repository with the MCP tool set. now is a seam
 // for the token-expiry tests.
 type Server struct {
 	repo    *repo.Repo
 	version string
+	walker  walker.Options
 	now     func() time.Time
 
 	mu     sync.Mutex
@@ -74,10 +91,11 @@ type Server struct {
 
 // New builds a Server over an already-opened repository. The caller owns
 // the repo's lifecycle; Run does not close it.
-func New(r *repo.Repo, version string) *Server {
+func New(r *repo.Repo, opts Options) *Server {
 	return &Server{
 		repo:    r,
-		version: version,
+		version: opts.Version,
+		walker:  opts.Walker,
 		now:     time.Now,
 		tokens:  map[string]pendingPlan{},
 	}
@@ -405,7 +423,7 @@ func (s *Server) confirmBackup(ctx context.Context, _ *mcp.CallToolRequest, in c
 	if err != nil {
 		return nil, backupDoneOut{}, err
 	}
-	info, err := s.repo.CreateSnapshot(ctx, p.path, repo.SnapshotOptions{Tag: p.tag})
+	info, err := s.repo.CreateSnapshot(ctx, p.path, repo.SnapshotOptions{Tag: p.tag, Walker: s.walker})
 	if err != nil {
 		return nil, backupDoneOut{}, err
 	}

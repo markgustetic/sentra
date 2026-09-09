@@ -80,12 +80,17 @@ type Store interface {
 	// blob behind; recovery is currently manual (delete the lock
 	// key out-of-band).
 	//
-	// Caveat: at-least-once retry semantics across PutIfAbsent are
-	// awkward. If the first attempt's response is lost in transit
-	// but the write actually landed, the retry sees its own write
-	// and returns ErrAlreadyExists. RetryStore therefore does NOT
-	// retry PutIfAbsent — callers see a definitive yes-or-no on
-	// the first attempt.
+	// PutIfAbsent is atomic, not exactly-once. RetryStore retries it
+	// on transient errors like any other write, and a first attempt
+	// whose write landed but whose response was lost makes the retry
+	// see its own object and return ErrAlreadyExists. So the return
+	// value answers "is the key populated?" — not "did *this call*
+	// populate it?". A caller that must tell "I won" from "I already
+	// wrote it" reads the object back and checks it is theirs, which
+	// is what the repo lock must do with its owner UUID. Content-
+	// addressed chunk writers never need the distinction: an
+	// existing object under the same key is byte-identical, so
+	// ErrAlreadyExists is their dedup success path.
 	PutIfAbsent(ctx context.Context, key string, r io.Reader) error
 }
 

@@ -69,6 +69,9 @@ func DefaultRetryPolicy() RetryPolicy {
 // idempotent (same key + same body = same final object), DeleteObject
 // is idempotent (404s are silent), HeadObject and GetObject are reads.
 // BatchDelete uses S3's DeleteObjects which is also idempotent.
+// PutIfAbsent is the one exception in spirit — a replayed attempt can
+// see its own landed write — and its method comment explains why that
+// is acceptable for every key sentra writes through it.
 //
 // Get and List can be retried but only on the *initial* request — once
 // the underlying Store returned a body, errors during read are the
@@ -121,14 +124,19 @@ func contextSleep(ctx context.Context, d time.Duration) error {
 // timeout — the retry loop re-checks ctx.Err() between attempts so a
 // parent-context expiry still terminates).
 //
-// Not retryable: ErrNotFound (definitive), context.Canceled (caller
-// asked to stop), AWS API errors with client fault, anything else not
-// matching the above.
+// Not retryable: ErrNotFound and ErrAlreadyExists (definitive),
+// context.Canceled (caller asked to stop), AWS API errors with client
+// fault, anything else not matching the above.
 func IsRetryable(err error) bool {
 	if err == nil {
 		return false
 	}
 	if errors.Is(err, ErrNotFound) {
+		return false
+	}
+	// ErrAlreadyExists is PutIfAbsent's definitive "the key is taken";
+	// the object will still be there on the next attempt.
+	if errors.Is(err, ErrAlreadyExists) {
 		return false
 	}
 	if errors.Is(err, context.Canceled) {
@@ -306,16 +314,29 @@ func (r *RetryStore) List(ctx context.Context, prefix string) ([]Info, error) {
 	return retryResult(r, ctx, func() ([]Info, error) { return r.inner.List(ctx, prefix) })
 }
 
-// PutIfAbsent intentionally does NOT retry. The at-least-once
-// nature of the retry loop conflicts with PutIfAbsent's
-// definitive "did it land or not?" contract: a successful first
-// attempt whose response is lost in transit would, on retry, see
-// its own write and report ErrAlreadyExists — even though the
-// caller's intent succeeded. Callers (advisory locks, etc.)
-// expect a single decisive answer, so we delegate straight
-// through to the inner Store.
+// PutIfAbsent retries exactly like Put: the body is buffered once and
+// replayed per attempt. Every chunk upload goes through this method,
+// so without the outer policy a SlowDown burst that exhausts the SDK's
+// own retries would abort a whole backup while the manifest Put next
+// to it sailed through.
+//
+// The at-least-once wrinkle — a first attempt whose write landed but
+// whose response was lost makes the retry see its own object and
+// report ErrAlreadyExists — is harmless here. For a content-addressed
+// chunk that answer IS the dedup success path. For the advisory lock
+// key, the caller must read the object back and recognize its own
+// UUID (acquireLock does this), so it never relies on PutIfAbsent to
+// distinguish winning from having already written.
+// ErrAlreadyExists itself is terminal (IsRetryable says no), so a
+// deduplicated chunk costs one round trip, not a backoff cycle.
 func (r *RetryStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
-	return r.inner.PutIfAbsent(ctx, key, body)
+	raw, err := io.ReadAll(body)
+	if err != nil {
+		return fmt.Errorf("blobstore/retry: buffer body for %q: %w", key, err)
+	}
+	return r.retry(ctx, func() error {
+		return r.inner.PutIfAbsent(ctx, key, bytes.NewReader(raw))
+	})
 }
 
 // BatchDelete retries the inner BatchDelete call. The inner S3

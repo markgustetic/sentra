@@ -93,6 +93,64 @@ func TestScan_NoFindings_ShortCircuits(t *testing.T) {
 	}
 }
 
+// TestConfig_ValidateRejectsNegativeCaps pins the rule: every numeric
+// cap the orchestrator slices or loops on must be non-negative. A
+// negative agent.max_findings_to_llm used to reach `findings[:n]` and
+// panic mid-scan; a negative MaxToolCalls silently budgeted out before
+// the first call. Both are typos, not requests, so they are errors.
+func TestConfig_ValidateRejectsNegativeCaps(t *testing.T) {
+	cases := []struct {
+		name    string
+		cfg     Config
+		wantErr bool
+	}{
+		{"zero values default and pass", Config{}, false},
+		{"positive caps pass", Config{MaxFindingsToLLM: 5, MaxToolCalls: 2}, false},
+		{"negative MaxFindingsToLLM rejected", Config{MaxFindingsToLLM: -1}, true},
+		{"negative MaxToolCalls rejected", Config{MaxToolCalls: -1}, true},
+	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			err := tc.cfg.Validate()
+			if tc.wantErr && !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("Validate() = %v, want ErrInvalidConfig", err)
+			}
+			if !tc.wantErr && err != nil {
+				t.Fatalf("Validate() = %v, want nil", err)
+			}
+		})
+	}
+}
+
+// TestScan_NegativeCapFailsBeforeAnyWork: the config error surfaces
+// before the walk, the heuristics, and the provider run — a bad cap
+// should not cost a full filesystem scan (or a panic) to discover.
+func TestScan_NegativeCapFailsBeforeAnyWork(t *testing.T) {
+	for _, field := range []string{"MaxFindingsToLLM", "MaxToolCalls"} {
+		t.Run(field, func(t *testing.T) {
+			provider := &llm.FakeProvider{}
+			h := &stubHeuristic{name: "secrets", findings: []heuristics.Finding{
+				{ID: "f1", Category: "secrets", Severity: "critical", Target: ".env"},
+			}}
+			agent := newAgentForTest(t, []heuristics.Heuristic{h}, provider)
+			switch field {
+			case "MaxFindingsToLLM":
+				agent.Config.MaxFindingsToLLM = -1
+			case "MaxToolCalls":
+				agent.Config.MaxToolCalls = -1
+			}
+
+			_, err := agent.Scan(context.Background(), t.TempDir(), nil)
+			if !errors.Is(err, ErrInvalidConfig) {
+				t.Fatalf("Scan err = %v, want ErrInvalidConfig", err)
+			}
+			if len(provider.Calls) != 0 {
+				t.Fatalf("provider was called %d times with an invalid config", len(provider.Calls))
+			}
+		})
+	}
+}
+
 func TestScan_LocalOnlySkipsProvider(t *testing.T) {
 	provider := &llm.FakeProvider{} // no Steps; calling Generate would error
 	finding := heuristics.Finding{

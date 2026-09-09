@@ -53,6 +53,13 @@ var ErrBudgetExhausted = errors.New("agent: tool-call budget exhausted")
 // user.
 var ErrInvalidResponse = errors.New("agent: model emitted invalid response")
 
+// ErrInvalidConfig is returned by Config.Validate (and so by Scan, before
+// any work) when a numeric cap is negative. Defaults only replaces zero,
+// so a negative agent.max_findings_to_llm (or the env override) used to
+// survive to `findings[:n]` and panic in the middle of a scan. A negative
+// cap is a typo, not a request, so it is an error rather than a clamp.
+var ErrInvalidConfig = errors.New("agent: invalid config")
+
 // Recommendation is the structured advice the LLM returns for a finding-
 // like situation. The CLI renders these as a styled table; the TUI
 // streams them in as the loop progresses.
@@ -120,6 +127,20 @@ func (c Config) Defaults() Config {
 	return c
 }
 
+// Validate rejects caps the orchestrator cannot honor. Every numeric
+// field that is sliced or looped on belongs here: MaxFindingsToLLM
+// bounds a slice expression and MaxToolCalls bounds the loop budget.
+// Zero is fine (Defaults fills it); negative is ErrInvalidConfig.
+func (c Config) Validate() error {
+	if c.MaxFindingsToLLM < 0 {
+		return fmt.Errorf("%w: max_findings_to_llm must be >= 0, got %d", ErrInvalidConfig, c.MaxFindingsToLLM)
+	}
+	if c.MaxToolCalls < 0 {
+		return fmt.Errorf("%w: MaxToolCalls (--max-tool-calls) must be >= 0, got %d", ErrInvalidConfig, c.MaxToolCalls)
+	}
+	return nil
+}
+
 // Agent is the orchestrator. Repo and Heuristics are required; Provider
 // is required for any non-trivial Scan (no-finding short-circuits skip
 // it). Config governs the loop's safety rails.
@@ -160,6 +181,12 @@ func (a *Agent) actionsOrDefault() *action.Registry {
 // viewport has something to display.
 func (a *Agent) Scan(ctx context.Context, root string, stream chan<- string) ([]Recommendation, error) {
 	cfg := a.Config.Defaults()
+	// Reject a bad cap before the walk: the slice at the LLM hand-off
+	// would panic on it, and a full filesystem scan is a costly way to
+	// find out about a typo in sentra.yaml.
+	if err := cfg.Validate(); err != nil {
+		return nil, err
+	}
 
 	// Phase 1: assemble the heuristic Input.
 	//

@@ -322,8 +322,11 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   plan plus a single-use token (10-minute TTL, bound to its own kind — a
   backup token cannot confirm a restore); only the matching `confirm_*`
   call carrying that token executes. A token is consumed on use, success
-  or failure. Never add an MCP tool that mutates in one call or that can
-  return file contents.
+  or failure. `confirm_backup` walks with the same resolved `backup.*`
+  options (`ignore_file`, `exclude_caches`, `concurrency`) as
+  `sentra backup` — the CLI passes them in via `mcpserver.Options`, since
+  the server never reads `sentra.yaml` itself. Never add an MCP tool that
+  mutates in one call or that can return file contents.
 - The TUI assistant chat overlay (`ctrl+a`, `internal/tui/chat.go`) is a
   conversational command palette, distinct from `sentra agent`. It requires a
   configured LLM provider (`ANTHROPIC_API_KEY`); without one it opens with a

@@ -14,6 +14,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/repo"
+	"github.com/markgustetic/sentra/internal/walker"
 )
 
 // secretBody is a file body planted in every fixture snapshot. The
@@ -54,7 +55,15 @@ func newFixture(t *testing.T) (*mcp.ClientSession, *Server, *repo.Repo) {
 		t.Fatal(err)
 	}
 
-	srv := New(r, "test")
+	srv := New(r, Options{Version: "test"})
+	return connect(t, srv), srv, r
+}
+
+// connect runs srv over an in-memory transport and returns a client
+// session bound to it.
+func connect(t *testing.T, srv *Server) *mcp.ClientSession {
+	t.Helper()
+	ctx := context.Background()
 	ct, st := mcp.NewInMemoryTransports()
 	go func() { _ = srv.Run(ctx, st) }()
 	client := mcp.NewClient(&mcp.Implementation{Name: "test-client", Version: "0"}, nil)
@@ -63,7 +72,56 @@ func newFixture(t *testing.T) (*mcp.ClientSession, *Server, *repo.Repo) {
 		t.Fatal(err)
 	}
 	t.Cleanup(func() { sess.Close() })
-	return sess, srv, r
+	return sess
+}
+
+// An MCP-driven backup must walk with the operator's configured walker
+// options (backup.ignore_file, exclude_caches, concurrency), exactly as
+// `sentra backup` does — not the repo's legacy defaults. The fixture
+// plants BOTH a custom ignore file and a default-named .sentraignore
+// that exclude different files, so honoring the wrong one is visible:
+// only the custom file's exclusion may take effect.
+func TestConfirmBackup_HonorsConfiguredWalkerOptions(t *testing.T) {
+	ctx := context.Background()
+	r, err := repo.Init(ctx, blobstore.NewMemory(), []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() { r.Close() })
+	srv := New(r, Options{Version: "test", Walker: walker.Options{IgnoreFile: "custom.ignore"}})
+	sess := connect(t, srv)
+
+	src := t.TempDir()
+	for name, body := range map[string]string{
+		"custom.ignore": "skipped.txt\n",
+		".sentraignore": "kept.txt\n",
+		"skipped.txt":   "excluded by the configured ignore file",
+		"kept.txt":      "excluded only by the default ignore file",
+	} {
+		if err := os.WriteFile(filepath.Join(src, name), []byte(body), 0o600); err != nil {
+			t.Fatal(err)
+		}
+	}
+
+	_, text := call(t, sess, "plan_backup", map[string]any{"path": src, "tag": "opts"})
+	res, text := call(t, sess, "confirm_backup", map[string]any{"token": extractToken(t, text)})
+	if res.IsError {
+		t.Fatalf("confirm_backup errored: %s", text)
+	}
+	snaps, err := r.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 1 {
+		t.Fatalf("snapshots = %d, want 1", len(snaps))
+	}
+	_, files := call(t, sess, "snapshot_files", map[string]any{"snapshot_id": snaps[0].ID})
+	if strings.Contains(files, "skipped.txt") {
+		t.Errorf("configured ignore file custom.ignore was not honored: %s", files)
+	}
+	if !strings.Contains(files, "kept.txt") {
+		t.Errorf("default .sentraignore was applied instead of the configured one: %s", files)
+	}
 }
 
 // call invokes a tool and returns the raw result plus its combined text.

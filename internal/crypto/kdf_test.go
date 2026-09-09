@@ -51,6 +51,28 @@ func TestDefaultKDFParams_MatchesDesign(t *testing.T) {
 	}
 }
 
+// TestKDFParams_CeilingsAreDoSBounds pins the relationship the
+// ceilings exist for: Validate runs on an untrusted meta/config BEFORE
+// the passphrase check can call it tampered, so the ceilings must be
+// small enough for any client machine to honor — and the design
+// default must sit far inside them, or a legitimate repo would refuse
+// to open.
+func TestKDFParams_CeilingsAreDoSBounds(t *testing.T) {
+	if MaxMemoryKiB > 1<<20 {
+		t.Errorf("MaxMemoryKiB = %d KiB, want at most 1 GiB (a tampered config must not OOM a laptop)", MaxMemoryKiB)
+	}
+	d := DefaultKDFParams()
+	if d.Memory*4 > MaxMemoryKiB {
+		t.Errorf("default Memory %d KiB is within 4x of the ceiling %d — no headroom for future bumps", d.Memory, MaxMemoryKiB)
+	}
+	if d.Time*4 > MaxTime {
+		t.Errorf("default Time %d is within 4x of the ceiling %d", d.Time, MaxTime)
+	}
+	if d.Threads*4 > MaxThreads {
+		t.Errorf("default Threads %d is within 4x of the ceiling %d", d.Threads, MaxThreads)
+	}
+}
+
 func TestKDFParams_Validate(t *testing.T) {
 	tests := []struct {
 		name    string
@@ -94,12 +116,39 @@ func TestKDFParams_Validate(t *testing.T) {
 		},
 		{
 			name:    "Memory above ceiling rejected",
-			params:  KDFParams{Time: 3, Memory: (1 << 24) + 1, Threads: 4, KeyLen: 32},
+			params:  KDFParams{Time: 3, Memory: MaxMemoryKiB + 1, Threads: 4, KeyLen: 32},
 			wantErr: "Memory",
 		},
 		{
 			name:    "Memory at ceiling allowed",
+			params:  KDFParams{Time: 3, Memory: MaxMemoryKiB, Threads: 4, KeyLen: 32},
+			wantErr: "",
+		},
+		{
+			// The old 16 GiB ceiling let a tampered config OOM-kill the
+			// process before the MAC check could call it tampered.
+			name:    "Memory of 16 GiB rejected",
 			params:  KDFParams{Time: 3, Memory: 1 << 24, Threads: 4, KeyLen: 32},
+			wantErr: "Memory",
+		},
+		{
+			name:    "Time above ceiling rejected",
+			params:  KDFParams{Time: MaxTime + 1, Memory: 64 * 1024, Threads: 4, KeyLen: 32},
+			wantErr: "Time",
+		},
+		{
+			name:    "Time at ceiling allowed",
+			params:  KDFParams{Time: MaxTime, Memory: 64 * 1024, Threads: 4, KeyLen: 32},
+			wantErr: "",
+		},
+		{
+			name:    "Threads above ceiling rejected",
+			params:  KDFParams{Time: 3, Memory: 64 * 1024, Threads: MaxThreads + 1, KeyLen: 32},
+			wantErr: "Threads",
+		},
+		{
+			name:    "Threads at ceiling allowed",
+			params:  KDFParams{Time: 3, Memory: 64 * 1024, Threads: MaxThreads, KeyLen: 32},
 			wantErr: "",
 		},
 	}
