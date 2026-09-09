@@ -3,6 +3,8 @@ package repo
 import (
 	"context"
 	"encoding/json"
+	"errors"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -120,5 +122,48 @@ func TestCreateSnapshotFromPlan_RejectsAddedFile(t *testing.T) {
 
 	if _, err := r.CreateSnapshotFromPlan(ctx, plan, SnapshotOptions{}); err == nil {
 		t.Fatal("expected apply to reject added file drift")
+	}
+}
+
+// TestCreateSnapshotFromPlan_RefusesUnresolvedRoot: PlanSnapshot writes
+// the ResolveRoot form of the root, but the plan file is operator-
+// editable JSON, and an older plan or a hand-edited one can carry the
+// symlinked spelling. Apply must refuse that rather than snapshot
+// under it: CreateSnapshot resolves its root, so a manifest recorded
+// under the link would land in a different retention group from every
+// direct backup of the same tree, and prune would count them apart.
+// A symlink the operator typed and the aliased mount macOS hands out
+// under /var both arrive as an unresolved root, so the rule is
+// "equals ResolveRoot", not "is not a symlink", and the error names
+// both spellings so the operator can fix the plan by hand.
+func TestCreateSnapshotFromPlan_RefusesUnresolvedRoot(t *testing.T) {
+	ctx := context.Background()
+	r, _ := newTestRepo(t)
+	base := t.TempDir()
+	real := filepath.Join(base, "real")
+	writeFile(t, filepath.Join(real, "a.txt"), "alpha")
+	link := filepath.Join(base, "link")
+	if err := os.Symlink(real, link); err != nil {
+		t.Skipf("symlink unsupported: %v", err)
+	}
+
+	plan, err := PlanSnapshot(ctx, real, SnapshotOptions{})
+	if err != nil {
+		t.Fatalf("plan: %v", err)
+	}
+	if _, err := r.CreateSnapshotFromPlan(ctx, plan, SnapshotOptions{}); err != nil {
+		t.Fatalf("apply of the canonical plan: %v", err)
+	}
+
+	canonical := plan.Root
+	plan.Root = link
+	_, err = r.CreateSnapshotFromPlan(ctx, plan, SnapshotOptions{})
+	if !errors.Is(err, ErrBackupPlanRootUnresolved) {
+		t.Fatalf("apply with a symlinked root: got %v, want ErrBackupPlanRootUnresolved", err)
+	}
+	for _, want := range []string{link, canonical} {
+		if !strings.Contains(err.Error(), want) {
+			t.Errorf("error %q does not name %q", err, want)
+		}
 	}
 }
