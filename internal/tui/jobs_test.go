@@ -1070,7 +1070,6 @@ func TestRunPolicyRetentionPrune_UnknownModeIsFailClosed(t *testing.T) {
 	}
 }
 
-// TestJobs_RunExecutesHooks is the port of the deleted
 // TestJobs_RunScrubsWebhookURLFromBeforeAndAfterHooks: the TUI's
 // before/after hooks must run under the same scrubbed environment the
 // CLI's do. The failure-webhook URL lives in an env var the policy names
@@ -1112,6 +1111,7 @@ func TestJobs_RunScrubsWebhookURLFromBeforeAndAfterHooks(t *testing.T) {
 	}
 }
 
+// TestJobs_RunExecutesHooks is the port of the deleted
 // TestPoliciesRun_ExecutesHooks: a TUI job run executes the same hooks the
 // CLI run does — a before hook lands its output in the snapshot, and a
 // failing before hook aborts the run and fires on_failure. Skipping hooks
