@@ -416,6 +416,11 @@ type backupDoneOut struct {
 	Files      int    `json:"files"`
 	Bytes      int64  `json:"bytes"`
 	NewBytes   int64  `json:"new_bytes"`
+	// Skipped is the number of folders the walk dropped for a denied
+	// listing. The client has no stderr to watch, so the result is the
+	// only place it can learn the snapshot is short; always emitted so
+	// zero reads as "complete" rather than "field missing".
+	Skipped int `json:"skipped"`
 }
 
 func (s *Server) confirmBackup(ctx context.Context, _ *mcp.CallToolRequest, in confirmIn) (*mcp.CallToolResult, backupDoneOut, error) {
@@ -430,6 +435,7 @@ func (s *Server) confirmBackup(ctx context.Context, _ *mcp.CallToolRequest, in c
 	return nil, backupDoneOut{
 		SnapshotID: info.ID, Files: info.Stats.Files,
 		Bytes: info.Stats.Bytes, NewBytes: info.Stats.NewBytes,
+		Skipped: info.Stats.Skipped,
 	}, nil
 }
 
