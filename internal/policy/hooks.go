@@ -30,10 +30,25 @@ import (
 // above all) and the failure-webhook URL named by webhookEnv are
 // dropped; see HookEnv. Callers pass hooks.OnFailureWebhookEnv as
 // webhookEnv so before/after hooks are scrubbed the same as on_failure.
+//
+// webhookEnv is variadic only so callers that predate the parameter
+// (the TUI's before/after hooks) keep compiling; it takes at most ONE
+// name and becomes a plain parameter once every surface passes it. It
+// is never a list: joining two names would build a name matching no
+// variable and let the secret through silently, so more than one is a
+// programming error and panics at the call site instead.
 func RunHook(ctx context.Context, out io.Writer, label, script string, webhookEnv ...string) error {
+	var scrub string
+	switch len(webhookEnv) {
+	case 0:
+	case 1:
+		scrub = webhookEnv[0]
+	default:
+		panic("policy: RunHook takes at most one webhook env name")
+	}
 	fmt.Fprintf(out, "  hook %s: running\n", label)
 	hook := exec.CommandContext(ctx, "sh", "-c", script) //nolint:gosec // operator-authored command from their own config
-	hook.Env = HookEnv(os.Environ(), strings.Join(webhookEnv, ""))
+	hook.Env = HookEnv(os.Environ(), scrub)
 	hook.Stdout = out
 	hook.Stderr = out
 	if err := hook.Run(); err != nil {
