@@ -15,6 +15,22 @@ type fakeDoneMsg struct{ err error }
 
 func (fakeDoneMsg) opResult() {}
 
+// reloadAfterOp completes a fake op through the shell and pumps the reloads
+// it triggers (the snapshots view's snapshotsReloadedMsg among them), the
+// way TestApp_DataViewsRefreshAfterBackup does. It lives beside execCmds
+// because it is a shell-level helper: the snapshots, jobs and chat tests
+// all use it, and none of them owns it.
+func reloadAfterOp(t *testing.T, app App) App {
+	t.Helper()
+	m, cmd := app.Update(backupDoneMsg{})
+	app = m.(App)
+	for _, msg := range execCmds(t, cmd) {
+		m, _ = app.Update(msg)
+		app = m.(App)
+	}
+	return app
+}
+
 // execCmds runs a tea.Cmd and flattens any BatchMsg into its messages.
 // Flows that start an operation return tea.Batch(start, opTick()); the
 // App unwraps that BatchMsg to find the startOpMsg. Tests need the same
