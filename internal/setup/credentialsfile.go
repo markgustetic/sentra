@@ -90,8 +90,15 @@ func CheckAWSConfigProfileFree(path, profile string) error {
 // WriteAWSCredentialsProfile stores accessKeyID/secret under [profile] in
 // the shared credentials file at path. It is a minimal-touch edit: the file
 // is the operator's, so every byte outside the target section is preserved,
-// including comments and unknown keys. The write is atomic and follows a
-// symlinked path (atomicfile.Write); the result is mode 0600.
+// including comments and unknown keys. The replacement is atomic and
+// written through a symlinked path (atomicfile.Write): a crash mid-write
+// must never leave a truncated credentials file, because the file is
+// shared — a truncation strands every OTHER profile in it, and the AWS
+// CLI, the operator's other tools, and every sentra profile stop
+// authenticating at once. And a credentials file kept in a dotfiles repo
+// behind a symlink must stay a symlink, or the dotfiles repo silently stops
+// seeing the file while the CLI keeps working. The result is mode 0600: it
+// holds a live access key.
 //
 // Refusals (see validateBackupUserProfileName and ErrCredentialsProfileExists)
 // leave the file untouched.
@@ -113,10 +120,8 @@ func WriteAWSCredentialsProfile(path, profile, accessKeyID, secret string) error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	// atomicfile stages, fsyncs and renames, so a crash mid-write can never
-	// leave a half-written credentials file — one that strands every other
-	// profile in it — and a credentials file kept behind a dotfiles symlink
-	// stays a symlink. 0o600: the file holds a live access key.
+	// See the doc comment for why this goes through atomicfile and why
+	// 0o600.
 	return atomicfile.Write(path, updated, 0o600)
 }
 

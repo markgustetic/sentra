@@ -18,10 +18,20 @@ import (
 
 // Write stages body in a temp file beside path, fsyncs it, and renames it
 // over path, leaving the result at perm. A crash at any point leaves either
-// the previous file or the new one, never a truncated or empty file: for
-// sentra.yaml an empty file still counts as configured yet loads as bucket
-// "", and for the credentials file a truncation strands every other
-// profile in it.
+// the previous file or the new one, never a truncated or empty file. What
+// a truncated file would cost is each caller's to say (see config.Write
+// and setup.WriteAWSCredentialsProfile); this package only promises the
+// old-or-new outcome.
+//
+// The directory is deliberately not fsynced after the rename. A directory
+// fsync would only shorten the window in which a power loss reverts the
+// rename and leaves the PREVIOUS file in place — which is one of the two
+// outcomes promised above, not a corruption. The file's own fsync is the
+// one that matters: it is what keeps the new name from ever landing on
+// zero-length content. Both callers re-read the file on the next launch,
+// so a reverted rename shows up as "the setting did not stick", and the
+// extra fsync of the directory would cost every settings toggle a disk
+// flush to close that window.
 //
 // Every failure leg removes the temp file — a stray `.<name>-*.tmp` beside
 // the target would otherwise outlive the crash it was meant to protect
@@ -30,11 +40,11 @@ import (
 // creating it is the caller's decision (config creates its own private
 // one), and a typo'd path must not gain a directory.
 //
-// A symlinked path is written through, not replaced. Operators keep
-// sentra.yaml — and ~/.aws/credentials — in a dotfiles repo behind a
-// symlink (stow, chezmoi, `ln -s`), and renaming the temp file over the
-// link would swap the link for a regular file, severing the dotfiles on
-// every rewrite, which the plain os.WriteFile this replaced never did. So
+// A symlinked path is written through, not replaced. Operators keep the
+// files this writes in a dotfiles repo behind a symlink (stow, chezmoi,
+// `ln -s`), and renaming the temp file over the link would swap the link
+// for a regular file, severing the dotfiles on every rewrite, which the
+// plain os.WriteFile this replaced never did. So
 // when path is a symlink it is resolved with EvalSymlinks and the resolved
 // file is what gets staged beside and renamed over. A dangling link is an
 // error rather than a fresh file: creating a regular file at the link's
@@ -74,8 +84,8 @@ func writeFrom(path string, perm os.FileMode, write func(w io.Writer) error) err
 	}
 	// CreateTemp opens 0o600 and a umask can only clear bits from that, so
 	// for the 0o600 callers this is belt and braces: set perm explicitly in
-	// case a platform's CreateTemp decides otherwise. Both files this
-	// writes name something private — the bucket, or a live access key.
+	// case a platform's CreateTemp decides otherwise. Every caller so far
+	// writes something private, so a looser default must not leak through.
 	if err := tmp.Chmod(perm); err != nil {
 		return fail("chmod", err)
 	}
