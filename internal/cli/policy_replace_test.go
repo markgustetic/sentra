@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"io"
 	"os"
-	"path/filepath"
 	"strings"
 	"testing"
 
@@ -13,10 +12,15 @@ import (
 )
 
 // replaceFixture writes a daily@03:00 policy "home" with its darwin
-// timer installed under a private home, returning the plist path, the
-// fake runner, and deps whose Runner is that fake.
+// timer installed under testPolicyDeps's private home, returning the
+// plist path, the fake runner, and deps whose Runner is that fake.
 func replaceFixture(t *testing.T) (deps PolicyDeps, plist string, runner *fakeSchedRunner, out *bytes.Buffer) {
 	t.Helper()
+	deps, runner = testPolicyDeps(t)
+	home, err := deps.HomeDir()
+	if err != nil {
+		t.Fatal(err)
+	}
 	dir := t.TempDir()
 	chDir(t, dir)
 	cfg := config.Defaults()
@@ -26,7 +30,6 @@ func replaceFixture(t *testing.T) (deps PolicyDeps, plist string, runner *fakeSc
 		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
 	}
 	cfgPath := writePolicyConfigFile(t, dir, &cfg)
-	home := filepath.Join(dir, "home")
 	paths, err := scheduler.PathsFor("darwin", home, "home")
 	if err != nil {
 		t.Fatal(err)
@@ -38,15 +41,10 @@ func replaceFixture(t *testing.T) (deps PolicyDeps, plist string, runner *fakeSc
 	if err := scheduler.Install(files); err != nil {
 		t.Fatal(err)
 	}
-	runner = &fakeSchedRunner{}
 	out = &bytes.Buffer{}
-	deps = PolicyDeps{
-		RepoDeps:   RepoDeps{Stdout: out},
-		OS:         "darwin",
-		HomeDir:    func() (string, error) { return home, nil },
-		Executable: func() (string, error) { return "/usr/local/bin/sentra", nil },
-		Runner:     runner.run,
-	}
+	deps.Stdout = out
+	deps.OS = "darwin"
+	deps.Executable = func() (string, error) { return "/usr/local/bin/sentra", nil }
 	return deps, paths.Files[0], runner, out
 }
 

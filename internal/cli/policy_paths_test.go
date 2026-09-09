@@ -33,7 +33,9 @@ func TestPolicyAdd_PersistsAbsolutePaths(t *testing.T) {
 	writePolicyConfigFile(t, dir, &cfg)
 
 	out := &bytes.Buffer{}
-	cmd := NewPolicy(PolicyDeps{RepoDeps: RepoDeps{Stdout: out}})
+	deps, _ := testPolicyDeps(t)
+	deps.Stdout = out
+	cmd := NewPolicy(deps)
 	cmd.SetOut(out)
 	cmd.SetErr(io.Discard)
 	cmd.SetArgs([]string{"add", "home", "--path", ".", "--path", "~/Documents", "--path", "sub/../other"})
