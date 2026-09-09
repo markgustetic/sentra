@@ -6,6 +6,8 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+
+	"github.com/markgustetic/sentra/internal/atomicfile"
 )
 
 // ErrCredentialsProfileExists is returned when the target section of the
@@ -86,8 +88,8 @@ func CheckAWSConfigProfileFree(path, profile string) error {
 // WriteAWSCredentialsProfile stores accessKeyID/secret under [profile] in
 // the shared credentials file at path. It is a minimal-touch edit: the file
 // is the operator's, so every byte outside the target section is preserved,
-// including comments and unknown keys. The write is temp-file + rename and
-// the result is mode 0600.
+// including comments and unknown keys. The write is atomic and follows a
+// symlinked path (atomicfile.Write); the result is mode 0600.
 //
 // Refusals (see ValidateBackupUserProfile and ErrCredentialsProfileExists)
 // leave the file untouched.
@@ -109,33 +111,11 @@ func WriteAWSCredentialsProfile(path, profile, accessKeyID, secret string) error
 	if err := os.MkdirAll(dir, 0o700); err != nil {
 		return fmt.Errorf("create %s: %w", dir, err)
 	}
-	// CreateTemp opens 0600; rename makes the replacement atomic, so a crash
-	// mid-write can never leave a half-written credentials file behind.
-	tmp, err := os.CreateTemp(dir, ".credentials-*.tmp")
-	if err != nil {
-		return fmt.Errorf("create temp credentials file: %w", err)
-	}
-	tmpPath := tmp.Name()
-	fail := func(step string, err error) error {
-		_ = tmp.Close()
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("%s %s: %w", step, path, err)
-	}
-	if _, err := tmp.Write(updated); err != nil {
-		return fail("write", err)
-	}
-	if err := tmp.Chmod(0o600); err != nil {
-		return fail("chmod", err)
-	}
-	if err := tmp.Close(); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("close %s: %w", path, err)
-	}
-	if err := os.Rename(tmpPath, path); err != nil {
-		_ = os.Remove(tmpPath)
-		return fmt.Errorf("replace %s: %w", path, err)
-	}
-	return nil
+	// atomicfile stages, fsyncs and renames, so a crash mid-write can never
+	// leave a half-written credentials file — one that strands every other
+	// profile in it — and a credentials file kept behind a dotfiles symlink
+	// stays a symlink. 0o600: the file holds a live access key.
+	return atomicfile.Write(path, updated, 0o600)
 }
 
 // upsertCredentialsSection returns existing with [profile] holding the two
