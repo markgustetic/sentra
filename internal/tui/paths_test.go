@@ -19,8 +19,8 @@ import (
 // turns "~/docs" + "" into <cwd>/docs). Paths that need no home resolve
 // as before.
 func TestExpandPath_RefusesTildeWithoutHome(t *testing.T) {
-	home := t.TempDir()
-	cwd := t.TempDir()
+	home := realTempDir(t)
+	cwd := realTempDir(t)
 	t.Chdir(cwd)
 	cases := []struct {
 		p, home, want string
@@ -59,7 +59,7 @@ func TestJobs_FormSaveRefusesTildeWithoutHome(t *testing.T) {
 	v := newJobsForTest(t, deps)
 	v.homeOverride = ""
 	v.homeDir = func() (string, error) { return "", errors.New("$HOME is not defined") }
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	t.Chdir(cwd)
 	v, _ = pressJobsKey(v, 'a')
 	v.form.name.SetValue("gamma")
@@ -88,7 +88,7 @@ func TestJobs_FormSaveRefusesTildeWithoutHome(t *testing.T) {
 func TestBackupWizard_InstallRepeatRefusesTildeWithoutHome(t *testing.T) {
 	v, cfgPath, _ := repeatFixture(t)
 	t.Setenv("HOME", "")
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	if err := os.MkdirAll(filepath.Join(cwd, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -121,7 +121,7 @@ func TestBackupWizard_InstallRepeatRefusesTildeWithoutHome(t *testing.T) {
 // checkDir and aimed the backup at the wrong tree.
 func TestBackupWizard_ChatDirRefusesTildeWithoutHome(t *testing.T) {
 	t.Setenv("HOME", "")
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	if err := os.MkdirAll(filepath.Join(cwd, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -142,7 +142,7 @@ func TestBackupWizard_ChatDirRefusesTildeWithoutHome(t *testing.T) {
 // path instead of snapshotting <cwd>/docs under a policy tag.
 func TestJobRun_RefusesTildeWithoutHome(t *testing.T) {
 	r := newFlowRepo(t)
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	if err := os.MkdirAll(filepath.Join(cwd, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -157,4 +157,17 @@ func TestJobRun_RefusesTildeWithoutHome(t *testing.T) {
 	if snaps, err := r.ListSnapshots(context.Background()); err != nil || len(snaps) != 0 {
 		t.Fatalf("a refused run must create nothing; got %d snapshots (%v)", len(snaps), err)
 	}
+}
+
+// realTempDir is t.TempDir with symlinks resolved. Policy paths now take
+// repo.ResolveRoot's form, and on macOS the temp root is a symlink
+// (/var -> /private/var), so an expectation built from the raw t.TempDir
+// string can never match what the code stores or records.
+func realTempDir(t *testing.T) string {
+	t.Helper()
+	dir, err := filepath.EvalSymlinks(t.TempDir())
+	if err != nil {
+		t.Fatal(err)
+	}
+	return dir
 }

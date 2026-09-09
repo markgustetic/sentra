@@ -13,7 +13,7 @@ import (
 // tempTree builds  root/{alpha, beta, gamma}  plus a file, which must not appear.
 func tempTree(t *testing.T) string {
 	t.Helper()
-	root := t.TempDir()
+	root := realTempDir(t)
 	for _, d := range []string{"beta", "alpha", "gamma"} {
 		if err := os.Mkdir(filepath.Join(root, d), 0o755); err != nil {
 			t.Fatal(err)

@@ -56,7 +56,7 @@ func atDailyConfirm(t *testing.T, v BackupView, dir string) BackupView {
 // "repeating" backup that quietly ran once.
 func TestBackupWizard_ConfirmInstallsPolicyScheduleThenRuns(t *testing.T) {
 	v, cfgPath, home := repeatFixture(t)
-	dir := filepath.Join(t.TempDir(), "docs")
+	dir := filepath.Join(realTempDir(t), "docs")
 	if err := os.Mkdir(dir, 0o755); err != nil {
 		t.Fatal(err)
 	}

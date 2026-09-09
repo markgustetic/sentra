@@ -38,7 +38,7 @@ func TestJobRun_PrunePlansAroundPins(t *testing.T) {
 	if err := r.Pin(context.Background(), pinned); err != nil {
 		t.Fatal(err)
 	}
-	src := t.TempDir()
+	src := realTempDir(t)
 	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0o600); err != nil {
 		t.Fatal(err)
 	}
@@ -106,7 +106,7 @@ func TestRunPolicyRetentionPrune_ToleratesPinRefusal(t *testing.T) {
 // every path against the home it is handed.
 func TestJobRun_ResolvesPolicyPathsAtRunTime(t *testing.T) {
 	r := newFlowRepo(t)
-	home := t.TempDir()
+	home := realTempDir(t)
 	if err := os.MkdirAll(filepath.Join(home, "docs"), 0o755); err != nil {
 		t.Fatal(err)
 	}
@@ -135,9 +135,9 @@ func TestJobRun_ResolvesPolicyPathsAtRunTime(t *testing.T) {
 func TestJobs_FormSaveStoresAbsolutePaths(t *testing.T) {
 	deps, path := jobsDeps(t)
 	v := newJobsForTest(t, deps)
-	home := t.TempDir()
+	home := realTempDir(t)
 	v.homeOverride = home
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	t.Chdir(cwd)
 	v, _ = pressJobsKey(v, 'a')
 	v.form.name.SetValue("gamma")
@@ -162,7 +162,7 @@ func TestJobs_FormSaveStoresAbsolutePaths(t *testing.T) {
 // policy the timer will run.
 func TestBackupWizard_InstallRepeatStoresAbsoluteRoot(t *testing.T) {
 	v, cfgPath, _ := repeatFixture(t)
-	home := t.TempDir()
+	home := realTempDir(t)
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, "docs"), 0o755); err != nil {
 		t.Fatal(err)
@@ -184,12 +184,12 @@ func TestBackupWizard_InstallRepeatStoresAbsoluteRoot(t *testing.T) {
 // resolves it before it becomes pending, so the confirm summary, the
 // policy, and the snapshot root all name the same absolute directory.
 func TestBackupWizard_ChatDirIsResolvedBeforePending(t *testing.T) {
-	home := t.TempDir()
+	home := realTempDir(t)
 	t.Setenv("HOME", home)
 	if err := os.MkdirAll(filepath.Join(home, "src"), 0o755); err != nil {
 		t.Fatal(err)
 	}
-	cwd := t.TempDir()
+	cwd := realTempDir(t)
 	if err := os.MkdirAll(filepath.Join(cwd, "rel"), 0o755); err != nil {
 		t.Fatal(err)
 	}
