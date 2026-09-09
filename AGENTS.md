@@ -255,6 +255,10 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   `Manifest.Root` records the RESOLVED path, so a linked and a real spelling
   of one directory share a retention group; anything that compares a
   configured path against `SnapshotInfo.Root` must resolve the same way.
+  `backup plan` writes the resolved root and `backup apply` refuses a plan
+  whose root is not already that spelling (`ErrBackupPlanRootUnresolved`)
+  rather than rewriting it: a hand-edited or pre-canonical plan must be
+  re-planned, not silently snapshotted under a name nobody reviewed.
   The incremental scan confirms each reused chunk still exists (one Stat per
   unique chunk per snapshot) and re-reads the file when one is gone.
 - `sentra sync` never deletes a snapshot or chunk on the destination; the one

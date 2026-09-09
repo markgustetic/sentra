@@ -3,6 +3,7 @@ package repo
 import (
 	"cmp"
 	"context"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
@@ -20,6 +21,14 @@ import (
 // BackupPlanVersion is the JSON schema version for reviewable backup
 // plan files. Apply rejects unknown versions rather than guessing.
 const BackupPlanVersion = 1
+
+// ErrBackupPlanRootUnresolved is returned by apply when a plan's root
+// is not the canonical (ResolveRoot) spelling of the directory it
+// names. PlanSnapshot always writes the canonical form, so this only
+// fires on a hand-edited or pre-canonical plan — but applying it as
+// written would record the snapshot under the link, in a different
+// retention group from every direct backup of the same tree.
+var ErrBackupPlanRootUnresolved = errors.New("repo: backup plan root is not canonical")
 
 // BackupPlan is the reviewable file produced by `sentra backup plan`
 // and consumed by `sentra backup apply`. It records the exact file set
@@ -241,6 +250,20 @@ func validateBackupPlanShape(plan BackupPlan) error {
 	}
 	if !filepath.IsAbs(plan.Root) {
 		return fmt.Errorf("repo: backup plan root %q is not absolute", plan.Root)
+	}
+	// The root must already be the spelling CreateSnapshot would
+	// derive, not merely resolvable to it: rewriting it here would
+	// snapshot a tree the operator never reviewed under that name,
+	// and the walker does not follow a linked root, so an unresolved
+	// one otherwise surfaces as a baffling "expected N files, found
+	// 0" drift error.
+	resolved, err := ResolveRoot(plan.Root)
+	if err != nil {
+		return fmt.Errorf("repo: backup plan root: %w", err)
+	}
+	if resolved != plan.Root {
+		return fmt.Errorf("%w: %q resolves to %q; re-run `backup plan` against the resolved path",
+			ErrBackupPlanRootUnresolved, plan.Root, resolved)
 	}
 	if plan.Stats.Files != len(plan.Files) {
 		return fmt.Errorf("repo: backup plan stats/files mismatch: stats=%d files=%d",
