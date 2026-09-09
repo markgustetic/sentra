@@ -2,14 +2,18 @@ package tui
 
 import (
 	"context"
+	"errors"
+	"io"
 	"os"
 	"path/filepath"
 	"sort"
 	"strings"
+	"sync/atomic"
 	"testing"
 
 	tea "github.com/charmbracelet/bubbletea"
 
+	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
@@ -73,6 +77,106 @@ func containsStr(xs []string, s string) bool {
 		}
 	}
 	return false
+}
+
+// errPinsUnavailable stands in for a bucket that answers everything but
+// the pin set — a transient S3 error on one key, which is exactly the
+// case a plan built "without pins" would silently mis-handle.
+var errPinsUnavailable = errors.New("simulated pins outage")
+
+// pinsFailStore serves a memory store whose meta/pins read fails while
+// fail is set. Every other key — manifests, chunks, the lock — behaves,
+// so the only thing a caller cannot learn is which snapshots are pinned.
+type pinsFailStore struct {
+	blobstore.Store
+	fail atomic.Bool
+}
+
+func (s *pinsFailStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if key == "meta/pins" && s.fail.Load() {
+		return nil, errPinsUnavailable
+	}
+	return s.Store.Get(ctx, key)
+}
+
+// newPinsFailRepo returns a seeded two-snapshot repo whose pin set is
+// unreadable from the returned store's fail flag onward. Seeding
+// happens before the flag flips: the failure under test is the plan's,
+// not the backup's.
+func newPinsFailRepo(t *testing.T) (*repo.Repo, *pinsFailStore) {
+	t.Helper()
+	store := &pinsFailStore{Store: blobstore.NewMemory()}
+	r, err := repo.Init(context.Background(), store, []byte("flow-test-pass"))
+	if err != nil {
+		t.Fatalf("repo.Init: %v", err)
+	}
+	t.Cleanup(func() { r.Close() })
+	seedTwoSnapshots(t, r)
+	store.fail.Store(true)
+	return r, store
+}
+
+// TestJobRun_PinsLoadFailureFailsClosed is the RULE behind
+// TestJobRun_PrunePlansAroundPins: a retention plan is never computed
+// without the pin set. When meta/pins cannot be read, the job run fails
+// there — named, before a single DeleteSnapshot — and the failure hooks
+// fire as for any failed run. Planning around an empty set instead
+// would drop a pinned snapshot on paper and then either fail at the
+// choke point or, worse, tolerate the refusal (see the test below) and
+// report a clean prune that silently skipped the operator's decision.
+func TestJobRun_PinsLoadFailureFailsClosed(t *testing.T) {
+	r, _ := newPinsFailRepo(t)
+	src := realTempDir(t)
+	if err := os.WriteFile(filepath.Join(src, "f.txt"), []byte("x"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	marker := filepath.Join(t.TempDir(), "failed.marker")
+	deps := pruneDeps(r) // keep_last 1: without pins the plan would drop two
+	p := config.PolicyConfig{
+		Paths:       []string{src},
+		Schedule:    config.PolicySchedule{Cadence: "manual"},
+		AfterBackup: config.PolicyAfterBackup{Prune: policycfg.PruneApply},
+		Hooks:       config.PolicyHooks{OnFailure: "touch " + marker},
+	}
+	op := buildPolicyRunOp(deps, "job-run", "job", p, newOpReporter())
+	done := op.run(context.Background()).(policyRunDoneMsg)
+	if !errors.Is(done.err, errPinsUnavailable) {
+		t.Fatalf("run err = %v, want the pins load failure", done.err)
+	}
+	if done.snapshots != 1 {
+		t.Errorf("the backup itself must complete before the plan fails: snapshots = %d", done.snapshots)
+	}
+	snaps, err := r.ListSnapshots(context.Background())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(snaps) != 3 {
+		t.Fatalf("a run that could not read pins must delete nothing: %d snapshots left, want 3", len(snaps))
+	}
+	if _, err := os.Stat(marker); err != nil {
+		t.Errorf("on_failure hook did not fire for the failed run: %v", err)
+	}
+}
+
+// TestPruneView_PinsLoadFailureIsLoadError: the prune view is the same
+// rule on the interactive surface. An unreadable pin set is a load error
+// the view reports; it never shows a drop list it cannot trust, so
+// there is nothing for the typed confirm to apply.
+func TestPruneView_PinsLoadFailureIsLoadError(t *testing.T) {
+	r, _ := newPinsFailRepo(t)
+	v := NewPruneView(pruneDeps(r))
+	if !strings.Contains(v.loadErr, errPinsUnavailable.Error()) {
+		t.Fatalf("loadErr = %q, want the pins load failure", v.loadErr)
+	}
+	if len(v.drop) != 0 || len(v.keep) != 0 || len(v.decisions) != 0 {
+		t.Fatalf("a view that could not read pins must plan nothing: drop=%v keep=%v", v.drop, v.keep)
+	}
+	if out := v.View(); !strings.Contains(out, errPinsUnavailable.Error()) {
+		t.Errorf("view must surface the load error:\n%s", out)
+	}
+	if _, cmd := v.Update(tea.KeyMsg{Type: tea.KeyEnter}); cmd != nil {
+		t.Errorf("enter on a failed load must not open the confirm: %#v", cmd())
+	}
 }
 
 // TestRunPolicyRetentionPrune_ToleratesPinRefusal is the defense in
