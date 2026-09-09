@@ -294,15 +294,15 @@ func TestCreateSnapshot_ChangedFileIsRechunked(t *testing.T) {
 	}
 }
 
-// statCountingStore counts Stat calls against data/ keys so a test can
+// dataStatCountingStore counts Stat calls against data/ keys so a test can
 // bound the incremental scan's existence checks: one per unique
 // reused chunk per snapshot, not one per file that references it.
-type statCountingStore struct {
+type dataStatCountingStore struct {
 	blobstore.Store
 	dataStats atomic.Int32
 }
 
-func (s *statCountingStore) Stat(ctx context.Context, key string) (blobstore.Info, error) {
+func (s *dataStatCountingStore) Stat(ctx context.Context, key string) (blobstore.Info, error) {
 	if strings.HasPrefix(key, DataPrefix) {
 		s.dataStats.Add(1)
 	}
@@ -323,7 +323,7 @@ func (s *statCountingStore) Stat(ctx context.Context, key string) (blobstore.Inf
 // share one check.
 func TestCreateSnapshot_ReusedChunkDeletedOutOfBandIsReuploaded(t *testing.T) {
 	ctx := context.Background()
-	store := &statCountingStore{Store: blobstore.NewMemory()}
+	store := &dataStatCountingStore{Store: blobstore.NewMemory()}
 	r, err := Init(ctx, store, []byte("hunter2"))
 	if err != nil {
 		t.Fatal(err)
