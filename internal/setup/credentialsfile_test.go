@@ -249,6 +249,17 @@ func TestCheckAWSConfigProfileFree(t *testing.T) {
 			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
 				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
 			}
+			if errors.Is(err, ErrConfigProfileExists) {
+				// The refusal must say WHY a defined profile is off limits —
+				// which section, in which file, and that a static key there
+				// would shadow its settings — or the operator reads it as a
+				// name clash they could resolve by editing the config file.
+				for _, want := range []string{"[profile sentra] is defined in " + path, "shadow"} {
+					if !strings.Contains(err.Error(), want) {
+						t.Fatalf("refusal %q lacks %q", err.Error(), want)
+					}
+				}
+			}
 		})
 	}
 }

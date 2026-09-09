@@ -3,6 +3,7 @@ package setup
 import (
 	"errors"
 	"fmt"
+	"strings"
 	"testing"
 
 	"github.com/markgustetic/sentra/internal/config"
@@ -285,7 +286,7 @@ func TestApplyBackendChoiceInvariant(t *testing.T) {
 	}
 }
 
-func TestValidateBackupUserProfile(t *testing.T) {
+func TestValidateBackupUserProfileName(t *testing.T) {
 	tests := []struct {
 		name    string
 		in      string
@@ -304,9 +305,9 @@ func TestValidateBackupUserProfile(t *testing.T) {
 	}
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
-			err := ValidateBackupUserProfile(tc.in)
+			err := validateBackupUserProfileName(tc.in)
 			if (err != nil) != tc.wantErr {
-				t.Fatalf("ValidateBackupUserProfile(%q) err = %v, wantErr %v", tc.in, err, tc.wantErr)
+				t.Fatalf("validateBackupUserProfileName(%q) err = %v, wantErr %v", tc.in, err, tc.wantErr)
 			}
 			if tc.wantIs != nil && !errors.Is(err, tc.wantIs) {
 				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
@@ -402,6 +403,24 @@ func TestValidateBackupUserProfileFor(t *testing.T) {
 				t.Fatalf("err = %v, want errors.Is %v", err, tc.wantIs)
 			}
 		})
+	}
+}
+
+// The session-profile refusal is the one the operator meets on the default
+// path of this very machine (a [profile sentra] in ~/.aws/config), so its
+// text has to say WHY the name is refused, not just that it is: the name,
+// that it is the sign-in profile, and that a key there would shadow the
+// sign-in for every tool using the profile. "must differ" alone reads as
+// an arbitrary rule and invites working around it.
+func TestValidateBackupUserProfileFor_SessionRefusalExplainsWhy(t *testing.T) {
+	err := ValidateBackupUserProfileFor("sentra", "sentra")
+	if !errors.Is(err, ErrBackupUserProfileIsSession) {
+		t.Fatalf("err = %v, want errors.Is ErrBackupUserProfileIsSession", err)
+	}
+	for _, want := range []string{`"sentra"`, "signs in with", "shadow", "every tool"} {
+		if !strings.Contains(err.Error(), want) {
+			t.Fatalf("refusal %q lacks %q", err.Error(), want)
+		}
 	}
 }
 

@@ -38,7 +38,7 @@ func AWSCredentialsPath() (string, error) {
 // no IAM mutation it would only have to undo.
 func CheckAWSCredentialsProfileFree(path, profile string) error {
 	profile = strings.TrimSpace(profile)
-	if err := ValidateBackupUserProfile(profile); err != nil {
+	if err := validateBackupUserProfileName(profile); err != nil {
 		return err
 	}
 	existing, err := os.ReadFile(path) //nolint:gosec // path is the operator's own credentials file
@@ -58,8 +58,10 @@ func CheckAWSCredentialsProfileFree(path, profile string) error {
 // them ahead of the profile's SSO / role / credential_process settings — so
 // writing the key would silently retarget every tool that uses the profile
 // at the backup user. Sentra never edits ~/.aws/config, so the only safe
-// answer is a different name.
-var ErrConfigProfileExists = errors.New("aws config already defines a profile of that name")
+// answer is a different name. The wrap names the section and the file; the
+// sentinel carries the reason, so the operator reads a trap to avoid rather
+// than a name clash to resolve by editing the config file.
+var ErrConfigProfileExists = errors.New("a static key under that name would shadow its settings")
 
 // CheckAWSConfigProfileFree refuses a backup profile whose [profile NAME]
 // section exists in the AWS CLI config at path. It is the config-file half
@@ -69,7 +71,7 @@ var ErrConfigProfileExists = errors.New("aws config already defines a profile of
 // [NAME] section in the config file is not a profile to the SDK or the CLI.
 func CheckAWSConfigProfileFree(path, profile string) error {
 	profile = strings.TrimSpace(profile)
-	if err := ValidateBackupUserProfile(profile); err != nil {
+	if err := validateBackupUserProfileName(profile); err != nil {
 		return err
 	}
 	cfg, err := loadAWSCLIConfigFile(path)
@@ -80,7 +82,7 @@ func CheckAWSConfigProfileFree(path, profile string) error {
 	// empty [profile NAME] is still a definition — and still one the SDK
 	// would merge the key into.
 	if _, defined := cfg[AWSProfileSection(profile)]; defined {
-		return fmt.Errorf("%w: [profile %s] in %s", ErrConfigProfileExists, profile, path)
+		return fmt.Errorf("[profile %s] is defined in %s; %w", profile, path, ErrConfigProfileExists)
 	}
 	return nil
 }
@@ -91,11 +93,11 @@ func CheckAWSConfigProfileFree(path, profile string) error {
 // including comments and unknown keys. The write is atomic and follows a
 // symlinked path (atomicfile.Write); the result is mode 0600.
 //
-// Refusals (see ValidateBackupUserProfile and ErrCredentialsProfileExists)
+// Refusals (see validateBackupUserProfileName and ErrCredentialsProfileExists)
 // leave the file untouched.
 func WriteAWSCredentialsProfile(path, profile, accessKeyID, secret string) error {
 	profile = strings.TrimSpace(profile)
-	if err := ValidateBackupUserProfile(profile); err != nil {
+	if err := validateBackupUserProfileName(profile); err != nil {
 		return err
 	}
 	existing, err := os.ReadFile(path) //nolint:gosec // path is the operator's own credentials file

@@ -325,8 +325,21 @@ func backupUserCfg() *config.Config {
 
 func okWriter(_, _, _, _ string) error { return nil }
 
-func provision(f *fakeIAM, cfg *config.Config, write credentialsWriter) (BackupUserReport, error) {
-	return provisionBackupUser(context.Background(), f, cfg, BackupUserOptions{Profile: "sentra"}, "/tmp/creds", "/tmp/aws-config", write)
+// testAWSFilePaths returns credentials/config paths under t.TempDir() that
+// do not exist. They must be per-test and absent: the provisioner's
+// pre-checks read both files, so a literal /tmp/creds left behind by
+// anything else on the machine would turn "profile is free" into a
+// refusal and fail every test that provisions through the helper.
+func testAWSFilePaths(t testing.TB) (credsPath, configPath string) {
+	t.Helper()
+	dir := t.TempDir()
+	return filepath.Join(dir, "credentials"), filepath.Join(dir, "config")
+}
+
+func provision(t testing.TB, f *fakeIAM, cfg *config.Config, write credentialsWriter) (BackupUserReport, error) {
+	t.Helper()
+	credsPath, configPath := testAWSFilePaths(t)
+	return provisionBackupUser(context.Background(), f, cfg, BackupUserOptions{Profile: "sentra"}, credsPath, configPath, write)
 }
 
 func TestProvisionBackupUser_HappyPath(t *testing.T) {
@@ -336,14 +349,16 @@ func TestProvisionBackupUser_HappyPath(t *testing.T) {
 		got = writerCall{path, profile, keyID, secret}
 		return nil
 	}
-	report, err := provision(f, backupUserCfg(), write)
+	credsPath, configPath := testAWSFilePaths(t)
+	report, err := provisionBackupUser(context.Background(), f, backupUserCfg(),
+		BackupUserOptions{Profile: "sentra"}, credsPath, configPath, write)
 	if err != nil {
 		t.Fatalf("provisionBackupUser: %v", err)
 	}
 	if !report.UserCreated || report.UserExisted || !report.PolicyCreated || report.PolicyUpdated || !report.PolicyAttached {
 		t.Fatalf("report flags = %+v", report)
 	}
-	if report.UserName != BackupUserName || report.Profile != "sentra" || report.CredentialsPath != "/tmp/creds" {
+	if report.UserName != BackupUserName || report.Profile != "sentra" || report.CredentialsPath != credsPath {
 		t.Fatalf("report identity fields = %+v", report)
 	}
 	if report.PolicyName != "sentra-s3-backup-example-bucket" {
@@ -352,7 +367,7 @@ func TestProvisionBackupUser_HappyPath(t *testing.T) {
 	if report.AccessKeyID != fakeKeyID {
 		t.Fatalf("AccessKeyID = %q", report.AccessKeyID)
 	}
-	if got.secret != fakeSecret || got.profile != "sentra" || got.path != "/tmp/creds" {
+	if got.secret != fakeSecret || got.profile != "sentra" || got.path != credsPath {
 		t.Fatalf("writer got %+v", got)
 	}
 	// The policy must be the exact canonical document for this bucket+prefix
@@ -385,8 +400,9 @@ func TestProvisionBackupUser_BlankProfileDefaults(t *testing.T) {
 	f := newFakeIAM()
 	var gotProfile string
 	write := func(_, profile, _, _ string) error { gotProfile = profile; return nil }
+	credsPath, configPath := testAWSFilePaths(t)
 	report, err := provisionBackupUser(context.Background(), f, backupUserCfg(),
-		BackupUserOptions{}, "/tmp/creds", "/tmp/aws-config", write)
+		BackupUserOptions{}, credsPath, configPath, write)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -400,7 +416,7 @@ func TestProvisionBackupUser_BlankProfileDefaults(t *testing.T) {
 func TestProvisionBackupUser_ReusesExistingUser(t *testing.T) {
 	f := newFakeIAM()
 	f.userExists = true
-	report, err := provision(f, backupUserCfg(), okWriter)
+	report, err := provision(t, f, backupUserCfg(), okWriter)
 	if err != nil {
 		t.Fatalf("existing user must be reused, got %v", err)
 	}
@@ -421,7 +437,7 @@ func TestProvisionBackupUser_SecondBucketAccumulates(t *testing.T) {
 	f.attached = []string{"arn:aws:iam::123456789012:policy/sentra-s3-backup-first-bucket"}
 	cfg := backupUserCfg()
 	cfg.Repo.S3.Bucket = "second-bucket"
-	report, err := provision(f, cfg, okWriter)
+	report, err := provision(t, f, cfg, okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -442,7 +458,7 @@ func TestProvisionBackupUser_SecondBucketAccumulates(t *testing.T) {
 func TestProvisionBackupUser_ExistingPolicySameDocumentReused(t *testing.T) {
 	f := newFakeIAM().withPolicy(t, "example-bucket", "sentra/")
 	f.userExists = true
-	report, err := provision(f, backupUserCfg(), okWriter)
+	report, err := provision(t, f, backupUserCfg(), okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -465,7 +481,7 @@ func TestProvisionBackupUser_ExistingPolicyNewPrefixMergesAsNewVersion(t *testin
 	f.userExists = true
 	cfg := backupUserCfg()
 	cfg.Repo.S3.Prefix = "laptop/"
-	report, err := provision(f, cfg, okWriter)
+	report, err := provision(t, f, cfg, okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -502,7 +518,7 @@ func TestProvisionBackupUser_VersionLimitPrunesOldest(t *testing.T) {
 			isDefault: i == 5, created: i,
 		})
 	}
-	report, err := provision(f, backupUserCfg(), okWriter)
+	report, err := provision(t, f, backupUserCfg(), okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -524,7 +540,7 @@ func TestProvisionBackupUser_UnparseableExistingDocumentReplaced(t *testing.T) {
 	f := newFakeIAM()
 	f.userExists = true
 	f.policies["sentra-s3-backup-example-bucket"] = []fakePolicyVersion{{id: "v1", doc: `{"Version":"2012-10-17","Statement":{"Effect":"Allow"}}`, isDefault: true, created: 1}}
-	report, err := provision(f, backupUserCfg(), okWriter)
+	report, err := provision(t, f, backupUserCfg(), okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -543,7 +559,7 @@ func TestProvisionBackupUser_UnparseableExistingDocumentReplaced(t *testing.T) {
 func TestProvisionBackupUser_LegacyInlinePolicyRemovedAfterAttach(t *testing.T) {
 	f := newFakeIAM().withInlinePolicy(t, "example-bucket", "sentra/")
 	f.userExists = true
-	report, err := provision(f, backupUserCfg(), okWriter)
+	report, err := provision(t, f, backupUserCfg(), okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -561,7 +577,7 @@ func TestProvisionBackupUser_LegacyInlinePolicyRemovedAfterAttach(t *testing.T) 
 func TestProvisionBackupUser_LegacyInlinePolicyForOtherBucketRetained(t *testing.T) {
 	f := newFakeIAM().withInlinePolicy(t, "first-bucket", "sentra/")
 	f.userExists = true
-	report, err := provision(f, backupUserCfg(), okWriter)
+	report, err := provision(t, f, backupUserCfg(), okWriter)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -579,7 +595,7 @@ func TestProvisionBackupUser_LegacyCleanupFailureIsNotAnError(t *testing.T) {
 		t.Run(op, func(t *testing.T) {
 			f := newFakeIAM().withInlinePolicy(t, "example-bucket", "sentra/").fail(op, accessDenied())
 			f.userExists = true
-			report, err := provision(f, backupUserCfg(), okWriter)
+			report, err := provision(t, f, backupUserCfg(), okWriter)
 			if err != nil {
 				t.Fatalf("cleanup failure must not fail provisioning: %v", err)
 			}
@@ -609,7 +625,7 @@ func TestProvisionBackupUser_AccessDeniedClassifiedPerStep(t *testing.T) {
 	for _, tc := range tests {
 		t.Run(tc.name, func(t *testing.T) {
 			tc.f.userExists = tc.exist
-			_, err := provision(tc.f, backupUserCfg(), okWriter)
+			_, err := provision(t, tc.f, backupUserCfg(), okWriter)
 			var perr *BackupUserError
 			if !errors.As(err, &perr) {
 				t.Fatalf("err = %v, want *BackupUserError", err)
@@ -632,7 +648,7 @@ func TestProvisionBackupUser_DeleteVersionDenied(t *testing.T) {
 	for i := 1; i <= 5; i++ {
 		f.policies[name] = append(f.policies[name], fakePolicyVersion{id: fmt.Sprintf("v%d", i), doc: mustMarshalPolicy(t, BuildIAMPolicy("example-bucket", fmt.Sprintf("p%d/", i))), isDefault: i == 5, created: i})
 	}
-	_, err := provision(f, backupUserCfg(), okWriter)
+	_, err := provision(t, f, backupUserCfg(), okWriter)
 	var perr *BackupUserError
 	if !errors.As(err, &perr) || !perr.AccessDenied || perr.Step != "iam:DeletePolicyVersion" {
 		t.Fatalf("err = %v, want AccessDenied at iam:DeletePolicyVersion", err)
@@ -641,7 +657,7 @@ func TestProvisionBackupUser_DeleteVersionDenied(t *testing.T) {
 
 func TestProvisionBackupUser_KeyLimit(t *testing.T) {
 	f := newFakeIAM().fail("CreateAccessKey", &iamtypes.LimitExceededException{Message: aws.String("2 keys")})
-	_, err := provision(f, backupUserCfg(), okWriter)
+	_, err := provision(t, f, backupUserCfg(), okWriter)
 	var perr *BackupUserError
 	if !errors.As(err, &perr) || !perr.KeyLimit || perr.PolicyLimit || perr.Step != "iam:CreateAccessKey" {
 		t.Fatalf("err = %v, want KeyLimit at iam:CreateAccessKey", err)
@@ -652,7 +668,7 @@ func TestProvisionBackupUser_KeyLimit(t *testing.T) {
 // the two-keys quota: it must not be reported as KeyLimit.
 func TestProvisionBackupUser_PolicyLimit(t *testing.T) {
 	f := newFakeIAM().fail("AttachUserPolicy", &iamtypes.LimitExceededException{Message: aws.String("10 policies")})
-	_, err := provision(f, backupUserCfg(), okWriter)
+	_, err := provision(t, f, backupUserCfg(), okWriter)
 	var perr *BackupUserError
 	if !errors.As(err, &perr) || !perr.PolicyLimit || perr.KeyLimit || perr.Step != "iam:AttachUserPolicy" {
 		t.Fatalf("err = %v, want PolicyLimit at iam:AttachUserPolicy", err)
@@ -665,7 +681,7 @@ func TestProvisionBackupUser_PolicyLimit(t *testing.T) {
 // A quota on any other step is neither: those warnings would name the wrong fix.
 func TestProvisionBackupUser_OtherLimitUnclassified(t *testing.T) {
 	f := newFakeIAM().fail("CreatePolicy", &iamtypes.LimitExceededException{Message: aws.String("1500 policies")})
-	_, err := provision(f, backupUserCfg(), okWriter)
+	_, err := provision(t, f, backupUserCfg(), okWriter)
 	var perr *BackupUserError
 	if !errors.As(err, &perr) || perr.KeyLimit || perr.PolicyLimit || perr.Step != "iam:CreatePolicy" {
 		t.Fatalf("err = %v, want unclassified limit at iam:CreatePolicy", err)
@@ -675,7 +691,7 @@ func TestProvisionBackupUser_OtherLimitUnclassified(t *testing.T) {
 // The one ordering hazard: a key minted in AWS with nowhere to live on disk.
 func TestProvisionBackupUser_WriteFailureDeletesKey(t *testing.T) {
 	f := newFakeIAM()
-	_, err := provision(f, backupUserCfg(), func(_, _, _, _ string) error { return errors.New("disk full") })
+	_, err := provision(t, f, backupUserCfg(), func(_, _, _, _ string) error { return errors.New("disk full") })
 	var perr *BackupUserError
 	if !errors.As(err, &perr) || perr.Step != "credentials" {
 		t.Fatalf("err = %v, want credentials-step error", err)
@@ -690,7 +706,7 @@ func TestProvisionBackupUser_WriteFailureDeletesKey(t *testing.T) {
 
 func TestProvisionBackupUser_WriteFailureCleanupFailureFlagsOrphan(t *testing.T) {
 	f := newFakeIAM().fail("DeleteAccessKey", errors.New("nope"))
-	_, err := provision(f, backupUserCfg(), func(_, _, _, _ string) error { return errors.New("disk full") })
+	_, err := provision(t, f, backupUserCfg(), func(_, _, _, _ string) error { return errors.New("disk full") })
 	var perr *BackupUserError
 	if !errors.As(err, &perr) || perr.KeyOrphaned != fakeKeyID {
 		t.Fatalf("err = %v, want KeyOrphaned set to the key ID", err)
@@ -720,7 +736,7 @@ func TestProvisionBackupUser_TakenProfileFailsBeforeIAM(t *testing.T) {
 // dangerous condition, asserted on every failure path that follows minting.
 func TestProvisionBackupUser_SecretNeverInReportOrError(t *testing.T) {
 	f := newFakeIAM().fail("DeleteAccessKey", errors.New("nope"))
-	report, err := provision(f, backupUserCfg(), func(_, _, _, _ string) error { return errors.New("disk full") })
+	report, err := provision(t, f, backupUserCfg(), func(_, _, _, _ string) error { return errors.New("disk full") })
 	if err == nil {
 		t.Fatal("expected a write failure")
 	}
