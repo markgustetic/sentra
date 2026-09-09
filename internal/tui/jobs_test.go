@@ -1071,6 +1071,47 @@ func TestRunPolicyRetentionPrune_UnknownModeIsFailClosed(t *testing.T) {
 }
 
 // TestJobs_RunExecutesHooks is the port of the deleted
+// TestJobs_RunScrubsWebhookURLFromBeforeAndAfterHooks: the TUI's
+// before/after hooks must run under the same scrubbed environment the
+// CLI's do. The failure-webhook URL lives in an env var the policy names
+// (on_failure_webhook_env); a before hook that inherits it — say one that
+// dumps `env` into the tree being backed up — would snapshot the secret.
+// Only on_failure knew the name in the TUI, so before/after leaked it.
+func TestJobs_RunScrubsWebhookURLFromBeforeAndAfterHooks(t *testing.T) {
+	r := newFlowRepo(t)
+	src := realTempDir(t)
+	if err := os.WriteFile(filepath.Join(src, "a.txt"), []byte("alpha"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	const secret = "https://hooks.example/secret-token"
+	t.Setenv("MY_ALERT_URL", secret)
+	before := filepath.Join(t.TempDir(), "before.env")
+	after := filepath.Join(t.TempDir(), "after.env")
+	cfg := config.Defaults()
+	p := config.PolicyConfig{
+		Paths:    []string{src},
+		Schedule: config.PolicySchedule{Cadence: "manual"},
+		Hooks: config.PolicyHooks{
+			Before:              "env > " + before,
+			After:               "env > " + after,
+			OnFailureWebhookEnv: "MY_ALERT_URL",
+		},
+	}
+	op := buildPolicyRunOp(Deps{Repo: r, Config: &cfg}, "job-run", "job", p, newOpReporter(), "")
+	if done := op.run(context.Background()).(policyRunDoneMsg); done.err != nil {
+		t.Fatalf("run: %v", done.err)
+	}
+	for _, dump := range []string{before, after} {
+		env, err := os.ReadFile(dump) //nolint:gosec // test-owned path
+		if err != nil {
+			t.Fatalf("hook never ran: %v", err)
+		}
+		if strings.Contains(string(env), secret) {
+			t.Errorf("%s: the webhook URL reached the hook environment:\n%s", filepath.Base(dump), env)
+		}
+	}
+}
+
 // TestPoliciesRun_ExecutesHooks: a TUI job run executes the same hooks the
 // CLI run does — a before hook lands its output in the snapshot, and a
 // failing before hook aborts the run and fires on_failure. Skipping hooks

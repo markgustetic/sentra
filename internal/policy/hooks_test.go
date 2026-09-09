@@ -21,7 +21,7 @@ import (
 func TestRunHook_EchoesOnlyTheLabel(t *testing.T) {
 	var out bytes.Buffer
 	script := "PGPASSWORD=hunter2 true"
-	if err := RunHook(context.Background(), &out, "before", script); err != nil {
+	if err := RunHook(context.Background(), &out, "before", script, ""); err != nil {
 		t.Fatalf("RunHook: %v", err)
 	}
 	if strings.Contains(out.String(), "hunter2") || strings.Contains(out.String(), "PGPASSWORD") {
@@ -63,26 +63,6 @@ func TestRunHook_ScrubsSecretsFromEnvironment(t *testing.T) {
 			t.Errorf("hook environment lost %s", kept)
 		}
 	}
-}
-
-// TestRunHook_RefusesMoreThanOneWebhookEnvName: the variadic tail is
-// a compatibility shim, not a list. Joining two names would build a
-// name matching no variable, so the secret would pass through to the
-// hook with no error anywhere — a silent scrub failure is worse than
-// a crash at the call site that misused the parameter.
-func TestRunHook_RefusesMoreThanOneWebhookEnvName(t *testing.T) {
-	t.Setenv("MY_ALERT_URL", "https://hooks.example/secret-token")
-	defer func() {
-		r := recover()
-		if r == nil {
-			t.Fatal("RunHook with two webhook env names did not panic")
-		}
-		if msg, ok := r.(string); !ok || !strings.Contains(msg, "at most one webhook env name") {
-			t.Fatalf("panic value = %v, want the at-most-one message", r)
-		}
-	}()
-	var out bytes.Buffer
-	_ = RunHook(context.Background(), &out, "before", "true", "MY_ALERT_URL", "OTHER_URL")
 }
 
 // TestFireFailureHooks_OnFailureHookIsScrubbedToo: the on_failure

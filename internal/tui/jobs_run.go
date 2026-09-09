@@ -180,7 +180,7 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 					return pathErr
 				}
 				if hooks.Before != "" {
-					if err := policycfg.RunHook(ctx, &hookOut, "before", hooks.Before); err != nil {
+					if err := policycfg.RunHook(ctx, &hookOut, "before", hooks.Before, hooks.OnFailureWebhookEnv); err != nil {
 						return err
 					}
 				}
@@ -215,7 +215,7 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 					return err
 				}
 				if hooks.After != "" {
-					if err := policycfg.RunHook(ctx, &hookOut, "after", hooks.After); err != nil {
+					if err := policycfg.RunHook(ctx, &hookOut, "after", hooks.After, hooks.OnFailureWebhookEnv); err != nil {
 						return err
 					}
 				}
