@@ -291,6 +291,87 @@ func TestRetryStore_PutIfAbsentRetriesTransientErrors(t *testing.T) {
 	}
 }
 
+// bodyRecordingStore drains and fails the first `failures` writes the
+// way drainingFailingStore does, and records every body reader it was
+// handed for Put and PutIfAbsent so a test can tell a replayed reader
+// from a fresh copy.
+type bodyRecordingStore struct {
+	Store
+	failures int
+	err      error
+	bodies   []io.Reader
+}
+
+func (s *bodyRecordingStore) attempt(body io.Reader) error {
+	s.bodies = append(s.bodies, body)
+	if len(s.bodies) <= s.failures {
+		_, _ = io.Copy(io.Discard, body)
+		return s.err
+	}
+	return nil
+}
+
+func (s *bodyRecordingStore) Put(ctx context.Context, key string, body io.Reader) error {
+	if err := s.attempt(body); err != nil {
+		return err
+	}
+	return s.Store.Put(ctx, key, body)
+}
+
+func (s *bodyRecordingStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
+	if err := s.attempt(body); err != nil {
+		return err
+	}
+	return s.Store.PutIfAbsent(ctx, key, body)
+}
+
+// TestRetryStore_BytesReaderIsRewoundNotCopied: every sealed chunk and
+// manifest the repo writes is already a whole []byte handed over as a
+// *bytes.Reader, so buffering it again for replay doubles the memory
+// held per in-flight chunk across the walker's pool. A *bytes.Reader
+// can be rewound instead: the inner store must see the caller's own
+// reader on every attempt, at offset zero, and the full body must
+// still land after the drained failures. Both write paths share the
+// rule.
+func TestRetryStore_BytesReaderIsRewoundNotCopied(t *testing.T) {
+	ops := map[string]func(rs *RetryStore, key string, body io.Reader) error{
+		"Put": func(rs *RetryStore, key string, body io.Reader) error { return rs.Put(context.Background(), key, body) },
+		"PutIfAbsent": func(rs *RetryStore, key string, body io.Reader) error {
+			return rs.PutIfAbsent(context.Background(), key, body)
+		},
+	}
+	for name, op := range ops {
+		t.Run(name, func(t *testing.T) {
+			mem := NewMemory()
+			fs := &bodyRecordingStore{Store: mem, failures: 2, err: fakeRetryableError}
+			rs := NewRetryStore(fs, RetryPolicy{MaxAttempts: 4, BaseDelay: time.Millisecond})
+			rs.sleep = noSleep
+
+			body := bytes.NewReader([]byte("sealed-chunk"))
+			if err := op(rs, "data/abc", body); err != nil {
+				t.Fatalf("%s: %v", name, err)
+			}
+			if len(fs.bodies) != 3 {
+				t.Fatalf("attempts = %d, want 3 (2 failures + 1 success)", len(fs.bodies))
+			}
+			for i, got := range fs.bodies {
+				if got != io.Reader(body) {
+					t.Errorf("attempt %d received a %T copy, want the caller's *bytes.Reader rewound", i+1, got)
+				}
+			}
+			rc, err := mem.Get(context.Background(), "data/abc")
+			if err != nil {
+				t.Fatalf("Get after retried %s: %v", name, err)
+			}
+			defer rc.Close()
+			stored, _ := io.ReadAll(rc)
+			if string(stored) != "sealed-chunk" {
+				t.Fatalf("stored body = %q, want the full body on the successful attempt", stored)
+			}
+		})
+	}
+}
+
 // TestRetryStore_PutIfAbsentAlreadyExistsIsTerminal: ErrAlreadyExists
 // is the definitive answer — for a content-addressed chunk it is the
 // dedup success path, for the lock key it means someone holds it.
@@ -437,16 +518,18 @@ type operationFailingStore struct {
 	Store
 	err error
 
-	getFailures         int
-	getCalls            int
-	statFailures        int
-	statCalls           int
-	deleteFailures      int
-	deleteCalls         int
-	listFailures        int
-	listCalls           int
-	putIfAbsentFailures int
-	putIfAbsentCalls    int
+	getFailures    int
+	getCalls       int
+	statFailures   int
+	statCalls      int
+	deleteFailures int
+	deleteCalls    int
+	listFailures   int
+	listCalls      int
+	// putIfAbsentCalls only counts: the AlreadyExists-is-terminal test
+	// asserts a single attempt, and the transient-failure path is
+	// covered by drainingFailingStore.
+	putIfAbsentCalls int
 }
 
 func (s *operationFailingStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
@@ -483,9 +566,6 @@ func (s *operationFailingStore) List(ctx context.Context, prefix string) ([]Info
 
 func (s *operationFailingStore) PutIfAbsent(ctx context.Context, key string, body io.Reader) error {
 	s.putIfAbsentCalls++
-	if s.putIfAbsentCalls <= s.putIfAbsentFailures {
-		return s.err
-	}
 	return s.Store.PutIfAbsent(ctx, key, body)
 }
 
