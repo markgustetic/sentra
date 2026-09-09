@@ -356,3 +356,68 @@ func TestCreateSnapshot_CancelledCtxStillReleasesLock(t *testing.T) {
 		t.Fatalf("meta/lock still present after a cancelled CreateSnapshot (stat err=%v); release ran on the cancelled ctx", err)
 	}
 }
+
+// readLockHolder renders the current lock blob the way ErrRepoLocked's
+// suffix does, "" on any failure. Tests use it to assert on which UUID
+// a blob carries; the production release path compares decoded UUIDs
+// (readLockInfo) and has no use for the formatted string.
+func readLockHolder(ctx context.Context, s blobstore.Store) string {
+	info, err := readLockInfo(ctx, s)
+	if err != nil {
+		return ""
+	}
+	return formatLockHolder(info)
+}
+
+// cancelOnLandStore is lostResponseStore with the caller's context
+// cancelled the moment the lock write lands: the write committed, the
+// response was lost, and by the time the SDK's retry reports
+// ErrAlreadyExists the operation has been asked to stop. Get honours
+// the cancellation the way a real transport does.
+type cancelOnLandStore struct {
+	blobstore.Store
+	cancel context.CancelFunc
+}
+
+func (s *cancelOnLandStore) PutIfAbsent(ctx context.Context, key string, r io.Reader) error {
+	if err := s.Store.PutIfAbsent(ctx, key, r); err != nil {
+		return err
+	}
+	if key == lockKey {
+		s.cancel()
+		return blobstore.ErrAlreadyExists
+	}
+	return nil
+}
+
+func (s *cancelOnLandStore) Get(ctx context.Context, key string) (io.ReadCloser, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	return s.Store.Get(ctx, key)
+}
+
+// TestAcquireLock_OwnUUIDReadBackSurvivesCancellation: the ownership
+// read-back after ErrAlreadyExists runs on the same detached, bounded
+// context the release uses. On the caller's cancelled ctx the read
+// fails, acquire reports ErrRepoLocked for a lock this process just
+// wrote, and nobody releases it — every later backup names a dead
+// process as the holder. Recognising the UUID instead hands the lock
+// to the caller, whose deferred release then clears it.
+func TestAcquireLock_OwnUUIDReadBackSurvivesCancellation(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	store := &cancelOnLandStore{Store: blobstore.NewMemory(), cancel: cancel}
+
+	info, err := acquireLock(ctx, store, "snapshot")
+	if err != nil {
+		t.Fatalf("acquireLock with the ctx cancelled after the write landed: got %v, want success", err)
+	}
+	if !strings.Contains(readLockHolder(context.Background(), store), info.UUID) {
+		t.Fatalf("lock blob does not carry the returned UUID %s", info.UUID)
+	}
+	releaseLock(ctx, store, info)
+	if _, err := store.Stat(context.Background(), lockKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Fatalf("lock still present after release on a cancelled ctx (err=%v)", err)
+	}
+}

@@ -10,7 +10,6 @@ import (
 	"fmt"
 	"log/slog"
 	"os"
-	"strings"
 	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
@@ -30,10 +29,11 @@ import (
 //     and delete by hand.
 const lockKey = "meta/lock"
 
-// lockReleaseTimeout bounds releaseLock's detached context (see the
-// function comment). Generous for a GET + DELETE of a few hundred
-// bytes; short enough that a cancelled operation on a hung endpoint
-// does not hold the process open indefinitely.
+// lockReleaseTimeout bounds lockConfirmCtx, the detached context
+// every ownership check of the lock blob runs on (see releaseLock).
+// Generous for a GET + DELETE of a few hundred bytes; short enough
+// that a cancelled operation on a hung endpoint does not hold the
+// process open indefinitely.
 const lockReleaseTimeout = 30 * time.Second
 
 // ErrRepoLocked is returned by acquireLock when the lock blob is
@@ -106,7 +106,15 @@ func acquireLock(ctx context.Context, store blobstore.Store, op string) (*lockIn
 			// succeeded. Treating it as a conflict would name this
 			// process as its own blocker and strand a lock only it
 			// could release.
-			current, readErr := readLockInfo(ctx, store)
+			//
+			// The read-back runs on the same detached, bounded ctx
+			// as the release: a caller cancelled between the write
+			// landing and the retry reporting would otherwise fail
+			// the read, be told ErrRepoLocked for a lock it holds,
+			// and leave it for an operator to clear by hand.
+			confirmCtx, cancel := lockConfirmCtx(ctx)
+			defer cancel()
+			current, readErr := readLockInfo(confirmCtx, store)
 			if readErr == nil && current.UUID == uuid {
 				return info, nil
 			}
@@ -148,10 +156,10 @@ func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 	if info == nil {
 		return
 	}
-	ctx, cancel := context.WithTimeout(context.WithoutCancel(ctx), lockReleaseTimeout)
+	ctx, cancel := lockConfirmCtx(ctx)
 	defer cancel()
-	current := readLockHolder(ctx, store)
-	if current == "" {
+	current, err := readLockInfo(ctx, store)
+	if err != nil {
 		// The current holder could not be read — either the lock is
 		// already gone or (more dangerously) it is transiently
 		// unreadable. We CANNOT confirm we still own it, so we must not
@@ -165,18 +173,19 @@ func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 		slog.LogAttrs(ctx, slog.LevelWarn,
 			"repo lock holder unreadable, not releasing",
 			slog.String("our_uuid", info.UUID),
+			slog.String("error", err.Error()),
 		)
 		return
 	}
-	// readLockHolder returns " (held by ...)" — check our UUID is inside
-	// before deleting. A mismatch means someone else holds the lock now
-	// (e.g. after a manual stale-lock recovery); log and skip rather than
-	// fail, since our protected work already finished.
-	if !strings.Contains(current, info.UUID) {
+	// Ownership is the decoded UUID, compared whole. A mismatch means
+	// someone else holds the lock now (e.g. after a manual stale-lock
+	// recovery); log and skip rather than fail, since our protected
+	// work already finished.
+	if current.UUID != info.UUID {
 		slog.LogAttrs(ctx, slog.LevelWarn,
 			"repo lock changed under us, not releasing",
 			slog.String("our_uuid", info.UUID),
-			slog.String("found", current),
+			slog.String("found", formatLockHolder(current)),
 		)
 		return
 	}
@@ -190,6 +199,21 @@ func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 			slog.String("error", err.Error()),
 		)
 	}
+}
+
+// lockConfirmCtx derives the context every ownership check of the
+// lock blob runs on: detached from the caller's cancellation and
+// bounded by lockReleaseTimeout. Both places that must CONFIRM
+// ownership — acquire's read-back after a lost response and the
+// fail-closed release — reach the check precisely when the caller
+// is likeliest to have been cancelled, and a read that fails only
+// because of that cancellation turns a lock this process owns into
+// one nobody will release. Keeping the derivation in one place
+// keeps the two checks from drifting apart the way the acquire
+// side already had. The deadline bounds how long a cancelled
+// operation lingers on a hung endpoint.
+func lockConfirmCtx(ctx context.Context) (context.Context, context.CancelFunc) {
+	return context.WithTimeout(context.WithoutCancel(ctx), lockReleaseTimeout)
 }
 
 // readLockInfo loads and decodes the current lock blob. Any failure —
@@ -222,16 +246,6 @@ func formatLockHolder(info *lockInfo) string {
 		info.Host, info.PID, info.Operation,
 		info.StartedAt.Format(time.RFC3339),
 		info.UUID)
-}
-
-// readLockHolder is readLockInfo + formatLockHolder: "" on any
-// failure. releaseLock keys its fail-closed decision off that "".
-func readLockHolder(ctx context.Context, s blobstore.Store) string {
-	info, err := readLockInfo(ctx, s)
-	if err != nil {
-		return ""
-	}
-	return formatLockHolder(info)
 }
 
 // newLockUUID returns a 16-byte random hex string. Used for the
