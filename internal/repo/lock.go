@@ -211,7 +211,10 @@ func releaseLock(ctx context.Context, store blobstore.Store, info *lockInfo) {
 // one nobody will release. Keeping the derivation in one place
 // keeps the two checks from drifting apart the way the acquire
 // side already had. The deadline bounds how long a cancelled
-// operation lingers on a hung endpoint.
+// operation lingers on a hung endpoint. SyncTo's dest-index
+// invalidation takes the same context for the same reason: it is
+// the one write that must still land after a manifest did, and it
+// is reached precisely when the caller has just cancelled.
 func lockConfirmCtx(ctx context.Context) (context.Context, context.CancelFunc) {
 	return context.WithTimeout(context.WithoutCancel(ctx), lockReleaseTimeout)
 }

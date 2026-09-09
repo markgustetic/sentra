@@ -287,11 +287,19 @@ func (r *Repo) SyncTo(ctx context.Context, dest blobstore.Store, opts SyncOption
 	// for good (sync never rolls back), and must not stay hidden.
 	// Wrapped up front so the phase error names its phase whether it
 	// is returned alone or joined with an invalidation failure below.
+	// The Delete runs on the same detached, bounded context as the
+	// lock release: the likeliest way to arrive here with an error is
+	// the operator cancelling mid-phase, and a Delete issued on that
+	// cancelled ctx fails before it reaches the store — leaving the
+	// index in place and the manifest that landed hidden anyway.
 	if err != nil {
 		err = fmt.Errorf("repo: sync snapshots/: %w", err)
 	}
 	if manCopied > 0 && !opts.DryRun {
-		if derr := dest.Delete(ctx, snapshotIndexKey); derr != nil && !errors.Is(derr, blobstore.ErrNotFound) {
+		invalidateCtx, cancel := lockConfirmCtx(ctx)
+		derr := dest.Delete(invalidateCtx, snapshotIndexKey)
+		cancel()
+		if derr != nil && !errors.Is(derr, blobstore.ErrNotFound) {
 			stats.Elapsed = time.Since(start)
 			return stats, errors.Join(err, fmt.Errorf("repo: sync invalidate dest index: %w", derr))
 		}

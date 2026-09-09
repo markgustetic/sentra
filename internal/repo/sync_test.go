@@ -747,6 +747,78 @@ func TestSyncTo_PartialManifestPhaseAndIndexDeleteFailure(t *testing.T) {
 	}
 }
 
+// cancelAfterFirstManifestPutStore cancels the caller's context the
+// moment the first manifest lands on dest, modelling an operator
+// interrupting a sync mid-phase-2: one manifest is on the mirror for
+// good, the rest never arrive, and the caller's ctx is already dead
+// by the time SyncTo reaches its index invalidation.
+type cancelAfterFirstManifestPutStore struct {
+	blobstore.Store
+	cancel       context.CancelFunc
+	manifestPuts atomic.Int32
+}
+
+func (s *cancelAfterFirstManifestPutStore) Put(ctx context.Context, key string, r io.Reader) error {
+	err := s.Store.Put(ctx, key, r)
+	if err == nil && strings.HasPrefix(key, snapshotPrefix) && s.manifestPuts.Add(1) == 1 {
+		s.cancel()
+	}
+	return err
+}
+
+// TestSyncTo_CancelledAfterManifestLandedStillInvalidatesDestIndex: the
+// stale-index invalidation has to run on a context detached from the
+// caller's, the way the lock release does. Cancellation is likeliest
+// to arrive exactly mid-phase-2, and a Delete issued on the cancelled
+// ctx fails before it reaches the store — leaving the index in place
+// and the manifest that landed hidden from every listing on the
+// mirror until some later sync happens to copy another one.
+func TestSyncTo_CancelledAfterManifestLandedStillInvalidatesDestIndex(t *testing.T) {
+	ctx := context.Background()
+	src, _, dstMem := twoRepos(t)
+	seedSourceWithSnapshot(t, src, "first")
+	if _, err := src.SyncTo(ctx, dstMem, SyncOptions{InitDest: true}); err != nil {
+		t.Fatalf("first sync: %v", err)
+	}
+	dst, err := Open(ctx, dstMem, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer dst.Close()
+	if _, err := dst.ListSnapshots(ctx); err != nil { // materialise the index
+		t.Fatal(err)
+	}
+	if _, err := dstMem.Stat(ctx, snapshotIndexKey); err != nil {
+		t.Fatalf("test setup: dest index not materialised: %v", err)
+	}
+
+	seedSourceWithSnapshot(t, src, "second")
+	seedSourceWithSnapshot(t, src, "third")
+	syncCtx, cancel := context.WithCancel(ctx)
+	defer cancel()
+	cancelling := &cancelAfterFirstManifestPutStore{Store: dstMem, cancel: cancel}
+	// One transfer at a time so the cancel lands between the two
+	// manifest copies rather than racing the second one.
+	_, err = src.SyncTo(syncCtx, cancelling, SyncOptions{Concurrency: 1})
+	if !errors.Is(err, context.Canceled) {
+		t.Fatalf("test setup: SyncTo was meant to fail with the cancellation, got %v", err)
+	}
+	if got := cancelling.manifestPuts.Load(); got != 1 {
+		t.Fatalf("test setup: want exactly 1 manifest landed before the cancel, got %d", got)
+	}
+
+	if _, err := dstMem.Stat(ctx, snapshotIndexKey); !errors.Is(err, blobstore.ErrNotFound) {
+		t.Errorf("dest index after a cancelled sync: Stat err %v, want ErrNotFound (a landed manifest must not stay hidden)", err)
+	}
+	infos, err := dst.ListSnapshots(ctx)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(infos) != 2 {
+		t.Errorf("dst ListSnapshots after a cancelled sync: got %d, want 2 (the manifest that landed must be visible)", len(infos))
+	}
+}
+
 // TestSyncTo_DryRunMakesNoWrites confirms DryRun=true is read-only:
 // returns realistic stats but the destination is byte-identical
 // before and after.

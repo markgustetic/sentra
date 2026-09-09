@@ -264,8 +264,12 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
 - `sentra sync` never deletes a snapshot or chunk on the destination; the one
   thing it removes is the mirror's derived `meta/snapshots` index, after
   copying a manifest that index cannot know about, so the next listing on the
-  mirror rebuilds it. A `ListSnapshots` fan-out persists its rebuilt index only
-  if it can take the repo lock without waiting.
+  mirror rebuilds it. That removal runs even when the manifest phase failed
+  or was cancelled, on a context detached from the caller's (bounded like
+  the lock release): a manifest that landed is on the mirror for good and
+  must not stay hidden behind the stale index. A `ListSnapshots` fan-out
+  persists its rebuilt index only if it can take the repo lock without
+  waiting.
 - Snapshot references: everywhere a snapshot ID is accepted, "latest", a
   unique prefix, and a unique suffix resolve via `ResolveSnapshotID`;
   ambiguity is refused with candidates named, never first-match.
