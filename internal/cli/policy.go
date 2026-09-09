@@ -4,7 +4,6 @@ import (
 	"errors"
 	"fmt"
 	"io"
-	"os"
 	"path/filepath"
 	"sort"
 	"strings"
@@ -437,7 +436,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 		var r *repo.Repo
 		if flags.ifDue {
 			var due bool
-			opened, due, err := policyDue(cmd, deps, cfg, name, p)
+			opened, due, err := policyDue(cmd, deps, cfgPath, cfg, name, p)
 			if err != nil {
 				return err
 			}
@@ -486,8 +485,13 @@ var errPolicyNotDue = errors.New("policy not due")
 // snapshots never takes the repo lock, so a skipped run leaves a
 // concurrent backup or GC undisturbed. A manual cadence has no slot
 // and is always due — nothing installs a timer for it, but an operator
-// passing the flag by hand should still get their run.
-func policyDue(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name string, p config.PolicyConfig) (*repo.Repo, bool, error) {
+// passing the flag by hand should still get their run. The lookup
+// resolves the stored paths exactly as runPolicyStages will — anchored
+// to the config dir, never the cwd — because LastRun matches on the
+// snapshot root string: a relative `paths: [src]` resolved against the
+// timer's cwd (`/` under launchd) names a root no run ever wrote, so
+// the run would look overdue at every fire and back up every time.
+func policyDue(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *config.Config, name string, p config.PolicyConfig) (*repo.Repo, bool, error) {
 	r, err := openPolicyRepo(cmd, deps, cfg)
 	if err != nil {
 		return nil, false, err
@@ -506,15 +510,19 @@ func policyDue(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config, name str
 		r.Close()
 		return nil, false, fmt.Errorf("list snapshots: %w", err)
 	}
-	home := ""
-	if deps.HomeDir != nil {
-		home, _ = deps.HomeDir()
-	} else {
-		home, _ = os.UserHomeDir()
+	cfgDir, err := policyConfigDir(cfgPath)
+	if err != nil {
+		r.Close()
+		return nil, false, err
 	}
 	abs := make([]string, 0, len(p.Paths))
 	for _, path := range p.Paths {
-		abs = append(abs, policycfg.NormalizePath(path, home))
+		resolved, err := policycfg.ResolvePathFrom(path, cfgDir)
+		if err != nil {
+			r.Close()
+			return nil, false, err
+		}
+		abs = append(abs, resolved)
 	}
 	last, found := policycfg.LastRun(name, abs, snaps)
 	if !found || last.CreatedAt.Before(slot) {
@@ -552,6 +560,17 @@ func openPolicyRepo(cmd *cobra.Command, deps PolicyDeps, cfg *config.Config) (*r
 	return r, nil
 }
 
+// policyConfigDir is the one anchor for a relative policy path at run
+// time, shared by the --if-due lookup and the snapshot stage so the
+// root compared against and the root written are the same string.
+func policyConfigDir(cfgPath string) (string, error) {
+	cfgDir, err := filepath.Abs(filepath.Dir(cfgPath))
+	if err != nil {
+		return "", fmt.Errorf("locate config dir: %w", err)
+	}
+	return cfgDir, nil
+}
+
 // runPolicyStages takes the snapshots and runs the post-backup check
 // and prune. r may be an already-open repo (from the --if-due check);
 // nil opens one here and closes it on return. cfgPath anchors any
@@ -578,9 +597,9 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 
 	snapshots := make([]repo.SnapshotInfo, 0, len(p.Paths))
 	tag := policySnapshotTag(name, p.Tags)
-	cfgDir, err := filepath.Abs(filepath.Dir(cfgPath))
+	cfgDir, err := policyConfigDir(cfgPath)
 	if err != nil {
-		return fmt.Errorf("locate config dir: %w", err)
+		return err
 	}
 	for _, stored := range p.Paths {
 		path, err := policycfg.ResolvePathFrom(stored, cfgDir)

@@ -6,7 +6,9 @@ import (
 	"io"
 	"os"
 	"path/filepath"
+	"strings"
 	"testing"
+	"time"
 
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
@@ -173,5 +175,50 @@ func TestPolicyRun_RelativePathAnchorsToConfigDir(t *testing.T) {
 	}
 	if got := onlySnapshotRoot(t, store); got != want {
 		t.Fatalf("snapshot root: got %q, want %q (config dir), not the cwd's src", got, want)
+	}
+}
+
+// TestPolicyRun_IfDue_LastRunLookupAnchorsToConfigDir: the third
+// resolver in the rule. --if-due compares the policy's paths against
+// snapshot roots to find the last run; if it anchors a relative stored
+// path to the cwd while the run anchors it to the config dir, the
+// snapshot the run just wrote is invisible to the next fire and the
+// timer backs up every time. From a foreign cwd, a prior snapshot
+// rooted at <cfgDir>/src must satisfy --if-due.
+func TestPolicyRun_IfDue_LastRunLookupAnchorsToConfigDir(t *testing.T) {
+	cfgDir := t.TempDir()
+	chDir(t, t.TempDir())
+	src := filepath.Join(cfgDir, "src")
+	writeSourceFile(t, src, "alpha")
+	deps, store := policyPathFixture(t, cfgDir, "src")
+	cfg := config.Defaults()
+	cfg.Repo.S3.Bucket = "test-bucket"
+	cfg.Policies["home"] = config.PolicyConfig{
+		Paths:    []string{"src"},
+		Schedule: config.PolicySchedule{Cadence: "daily", At: "03:00"},
+	}
+	cfgPath := writePolicyConfigFile(t, cfgDir, &cfg)
+	out := &bytes.Buffer{}
+	deps.Stdout = out
+	deps.Now = time.Now
+
+	// A prior run of this policy, rooted where runPolicyStages roots it.
+	r, err := repo.Open(context.Background(), store, []byte("hunter2"))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := r.CreateSnapshot(context.Background(), src, repo.SnapshotOptions{}); err != nil {
+		t.Fatal(err)
+	}
+	r.Close()
+
+	if err := runPolicyWith(t, deps, context.Background(), "run", "home", "--if-due", "--config", cfgPath); err != nil {
+		t.Fatalf("execute: %v", err)
+	}
+	if got := onlySnapshotRoot(t, store); got != src {
+		t.Fatalf("--if-due ran again: snapshot root %q (a second snapshot means the prior run was not found)", got)
+	}
+	if !strings.Contains(out.String(), "not due") {
+		t.Fatalf("output must report not due:\n%s", out.String())
 	}
 }
