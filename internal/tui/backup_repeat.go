@@ -176,5 +176,6 @@ func (v BackupView) installRepeat(ctx context.Context, root, name string, schedu
 	// failure leaves the policy and files in place and names the command;
 	// the wizard shows it instead of starting a run it cannot promise to
 	// repeat.
-	return scheduler.InstallFor(ctx, v.schedGOOS, v.schedHome, v.schedExe, v.deps.ConfigPath, name, schedule, v.deps.SchedulerRunner)
+	_, err = scheduler.InstallFor(ctx, v.schedGOOS, v.schedHome, v.schedExe, v.deps.ConfigPath, name, schedule, v.deps.SchedulerRunner)
+	return err
 }

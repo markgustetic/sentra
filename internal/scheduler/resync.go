@@ -38,19 +38,24 @@ func target(goos, home, exeOverride, cfgPath, name string) (Paths, string, strin
 // job is activated in the same call; on an activation failure the files
 // stay in place and the error names the command to finish with, which
 // the callers show rather than promising a repeat they cannot keep.
-func InstallFor(ctx context.Context, goos, home, exeOverride, cfgPath, name string, schedule config.PolicySchedule, run Runner) error {
+//
+// The returned Paths names the files on disk once Install succeeded —
+// including alongside an *ActivationError, which is exactly when a
+// caller reporting "installed, but not active" needs the list. It is
+// zero on any earlier failure, when nothing was written.
+func InstallFor(ctx context.Context, goos, home, exeOverride, cfgPath, name string, schedule config.PolicySchedule, run Runner) (Paths, error) {
 	paths, exe, absCfg, err := target(goos, home, exeOverride, cfgPath, name)
 	if err != nil {
-		return err
+		return Paths{}, err
 	}
 	files, err := Render(paths, exe, absCfg, name, schedule)
 	if err != nil {
-		return err
+		return Paths{}, err
 	}
 	if err := Install(files); err != nil {
-		return err
+		return Paths{}, err
 	}
-	return Activate(ctx, paths, run)
+	return paths, Activate(ctx, paths, run)
 }
 
 // ResyncFor is Resync from the raw seams (see target): the CLI's

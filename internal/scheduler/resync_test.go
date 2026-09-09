@@ -2,6 +2,7 @@ package scheduler
 
 import (
 	"context"
+	"errors"
 	"os"
 	"path/filepath"
 	"strings"
@@ -29,7 +30,7 @@ func TestResyncFor_ResolvesTargetLikeInstallFor(t *testing.T) {
 	wantCfg := filepath.Join(cwd, "sentra.yaml")
 
 	run := &fakeRunner{}
-	if err := InstallFor(context.Background(), "darwin", home, "/opt/sentra", "sentra.yaml", "home", daily, run.run); err != nil {
+	if _, err := InstallFor(context.Background(), "darwin", home, "/opt/sentra", "sentra.yaml", "home", daily, run.run); err != nil {
 		t.Fatalf("InstallFor: %v", err)
 	}
 	paths, err := PathsFor("darwin", home, "home")
@@ -164,5 +165,36 @@ func TestResync(t *testing.T) {
 				}
 			}
 		})
+	}
+}
+
+// TestInstallFor_ReportsWrittenFilesOnActivationFailure: the CLI's
+// `schedule install` prints the files it wrote and then reports an
+// activation failure non-zero, so InstallFor must hand back the paths
+// it installed even when the OS refused to load them — otherwise the
+// caller either re-derives them (and can drift from what was written)
+// or prints nothing after the one failure where the list matters most.
+func TestInstallFor_ReportsWrittenFilesOnActivationFailure(t *testing.T) {
+	daily := config.PolicySchedule{Cadence: policycfg.CadenceDaily, At: "03:00"}
+	home := t.TempDir()
+	refuse := func(_ context.Context, _ string, _ ...string) ([]byte, error) {
+		return []byte("Bootstrap failed: 5: Input/output error"), fakeExit(5)
+	}
+	paths, err := InstallFor(context.Background(), "darwin", home, "/opt/sentra", "sentra.yaml", "home", daily, refuse)
+	var aerr *ActivationError
+	if !errors.As(err, &aerr) {
+		t.Fatalf("InstallFor err = %v, want *ActivationError", err)
+	}
+	want, err := PathsFor("darwin", home, "home")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(paths.Files, "\n") != strings.Join(want.Files, "\n") {
+		t.Fatalf("InstallFor paths = %v, want %v", paths.Files, want.Files)
+	}
+	for _, f := range paths.Files {
+		if _, err := os.Stat(f); err != nil {
+			t.Errorf("reported file %s is not on disk after an activation failure: %v", f, err)
+		}
 	}
 }

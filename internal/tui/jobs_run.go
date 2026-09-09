@@ -396,7 +396,7 @@ func (v JobsView) runTimerInstall() (tea.Model, tea.Cmd) {
 		// Files alone wait for the next login (launchd) or forever
 		// (systemd): InstallFor loads them too. On failure the files stay
 		// and the error carries the command to run by hand.
-		if err := scheduler.InstallFor(ctx, goos, home, exeOverride, cfgPath, name, p.Schedule, runner); err != nil {
+		if _, err := scheduler.InstallFor(ctx, goos, home, exeOverride, cfgPath, name, p.Schedule, runner); err != nil {
 			return jobTimerMsg{err: err}
 		}
 		return jobTimerMsg{notice: fmt.Sprintf("installed timer for %q; now active", name)}
