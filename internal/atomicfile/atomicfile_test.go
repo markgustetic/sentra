@@ -164,44 +164,91 @@ func TestWrite_MissingDirFails(t *testing.T) {
 // link with a regular file — silently severing the operator's dotfiles on
 // every rewrite — which is exactly what a plain os.WriteFile never did. No
 // temp file may be left in either directory.
+//
+// The rule holds for every shape a dotfiles link takes: an absolute link
+// (`ln -s`), a relative one (stow and chezmoi emit these, and a relative
+// target resolves against the link's own directory, not the cwd), and a
+// chain (a link to a link, as when a managed file is itself linked
+// onward). Each case hands Write the outermost link; every link in the
+// chain must survive.
 func TestWrite_WritesThroughSymlink(t *testing.T) {
-	dir := t.TempDir()
-	realDir := filepath.Join(dir, "real")
-	if err := os.Mkdir(realDir, 0o700); err != nil {
-		t.Fatal(err)
+	cases := []struct {
+		name string
+		// links creates the chain in dir pointing at target and returns
+		// every link path, outermost first.
+		links func(t *testing.T, dir, target string) []string
+	}{
+		{"absolute", func(t *testing.T, dir, target string) []string {
+			link := filepath.Join(dir, "link")
+			if err := os.Symlink(target, link); err != nil {
+				t.Fatal(err)
+			}
+			return []string{link}
+		}},
+		{"relative", func(t *testing.T, dir, target string) []string {
+			link := filepath.Join(dir, "link")
+			rel, err := filepath.Rel(dir, target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if err := os.Symlink(rel, link); err != nil {
+				t.Fatal(err)
+			}
+			return []string{link}
+		}},
+		{"chained", func(t *testing.T, dir, target string) []string {
+			inner := filepath.Join(dir, "inner")
+			if err := os.Symlink(target, inner); err != nil {
+				t.Fatal(err)
+			}
+			outer := filepath.Join(dir, "outer")
+			if err := os.Symlink("inner", outer); err != nil {
+				t.Fatal(err)
+			}
+			return []string{outer, inner}
+		}},
 	}
-	target := filepath.Join(realDir, "target")
-	if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
-		t.Fatal(err)
-	}
-	link := filepath.Join(dir, "link")
-	if err := os.Symlink(target, link); err != nil {
-		t.Fatal(err)
-	}
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			dir := t.TempDir()
+			realDir := filepath.Join(dir, "real")
+			if err := os.Mkdir(realDir, 0o700); err != nil {
+				t.Fatal(err)
+			}
+			target := filepath.Join(realDir, "target")
+			if err := os.WriteFile(target, []byte("old\n"), 0o600); err != nil {
+				t.Fatal(err)
+			}
+			links := tc.links(t, dir, target)
+			before := dirEntries(t, dir)
 
-	if err := Write(link, []byte("new\n"), 0o600); err != nil {
-		t.Fatalf("Write through symlink: %v", err)
-	}
+			if err := Write(links[0], []byte("new\n"), 0o600); err != nil {
+				t.Fatalf("Write through %s symlink: %v", tc.name, err)
+			}
 
-	fi, err := os.Lstat(link)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if fi.Mode()&os.ModeSymlink == 0 {
-		t.Errorf("Write replaced the symlink with a %v; the dotfiles link is severed", fi.Mode())
-	}
-	got, err := os.ReadFile(target)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if string(got) != "new\n" {
-		t.Errorf("link target does not hold the new body: %q", got)
-	}
-	if names := dirEntries(t, dir); len(names) != 2 {
-		t.Errorf("link dir holds %v after Write", names)
-	}
-	if names := dirEntries(t, realDir); len(names) != 1 || names[0] != "target" {
-		t.Errorf("target dir holds %v after Write", names)
+			for _, link := range links {
+				fi, err := os.Lstat(link)
+				if err != nil {
+					t.Fatal(err)
+				}
+				if fi.Mode()&os.ModeSymlink == 0 {
+					t.Errorf("Write replaced %s with a %v; the dotfiles link is severed", link, fi.Mode())
+				}
+			}
+			got, err := os.ReadFile(target)
+			if err != nil {
+				t.Fatal(err)
+			}
+			if string(got) != "new\n" {
+				t.Errorf("link target does not hold the new body: %q", got)
+			}
+			if names := dirEntries(t, dir); len(names) != len(before) {
+				t.Errorf("link dir holds %v after Write, want %v", names, before)
+			}
+			if names := dirEntries(t, realDir); len(names) != 1 || names[0] != "target" {
+				t.Errorf("target dir holds %v after Write", names)
+			}
+		})
 	}
 }
 
