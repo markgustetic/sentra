@@ -123,7 +123,7 @@ func runRestore(
 	}
 
 	progress := ui.NewByteProgress(0)
-	stop := startProgressPainter(stderr, progress)
+	painter := startProgressPainter(stderr, progress)
 
 	// Manifest peek so we can show file/byte counts in the summary.
 	// Cheap (one extra Get + decompress) and folds neatly into the
@@ -132,7 +132,7 @@ func runRestore(
 	// trip on a few-KB blob — fine.
 	m, err := r.LoadSnapshot(cmd.Context(), snapID)
 	if err != nil {
-		stop()
+		painter.stop()
 		return fmt.Errorf("load snapshot: %w", err)
 	}
 
@@ -141,10 +141,10 @@ func runRestore(
 		Paths:       paths,
 		Concurrency: concurrency,
 	}); err != nil {
-		stop()
+		painter.stop()
 		return fmt.Errorf("restore: %w", err)
 	}
-	stop()
+	painter.stop()
 
 	if asJSON {
 		row := restoreJSONRow{

@@ -606,9 +606,13 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 		if err != nil {
 			return err
 		}
+		// A timer's run has only its log to speak through, so each
+		// dropped folder is named as it happens and counted on the
+		// snapshot's summary line below.
 		snap, err := r.CreateSnapshot(cmd.Context(), path, repo.SnapshotOptions{
 			Tag:    tag,
 			Walker: walkerOpts,
+			OnSkip: func(p string, err error) { fmt.Fprintln(out, skipLine(p, err)) },
 		})
 		if err != nil {
 			return fmt.Errorf("snapshot %s: %w", path, err)
@@ -620,7 +624,11 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 	fmt.Fprintf(out, "  policy:    %s\n", name)
 	fmt.Fprintf(out, "  snapshots: %d\n", len(snapshots))
 	for _, snap := range snapshots {
-		fmt.Fprintf(out, "    - %s  %s  %d files\n", snap.ID, snap.Tag, snap.Stats.Files)
+		fmt.Fprintf(out, "    - %s  %s  %d files", snap.ID, snap.Tag, snap.Stats.Files)
+		if snap.Stats.Skipped > 0 {
+			fmt.Fprintf(out, ", %d skipped", snap.Stats.Skipped)
+		}
+		fmt.Fprintln(out)
 	}
 	if p.AfterBackup.Check {
 		if err := runPolicyCheck(cmd, out, r); err != nil {
