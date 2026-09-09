@@ -42,8 +42,9 @@ func (repeatInstalledMsg) opResult() {}
 // root is resolved ONCE here and the same value goes to both the op and
 // the result: installRepeat resolving on its own would let the path on
 // disk and the in-memory mirror finishRepeatInstall applies diverge. A
-// refused root (a tilde with no home) never reaches the guard — it is
-// the result the confirm stage shows.
+// refused root (a tilde with no home) goes through the guard like any
+// other failure: the op returns it in repeatInstalledMsg and
+// finishRepeatInstall lands on Confirm with the error shown.
 func (v BackupView) startRepeatInstall(root, name string, schedule config.PolicySchedule, tag string) (tea.Model, tea.Cmd) {
 	v.confirm.blur()
 	v.stage = backupInstalling
