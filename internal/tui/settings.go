@@ -20,6 +20,7 @@ type settingsEntryKind int
 const (
 	entryNavigate settingsEntryKind = iota
 	entryToggleSplash
+	entryToggleNotify
 	entryForgetKeyring
 )
 
@@ -31,6 +32,7 @@ const settingsForgetConfirmID = "settings-forget-keyring"
 // bounces exactly the one that was refused.
 const (
 	settingsSplashOpName = "settings-splash"
+	settingsNotifyOpName = "settings-notify"
 	settingsForgetOpName = "settings-forget"
 )
 
@@ -99,6 +101,7 @@ func NewSettingsView(deps Deps) SettingsView {
 			{kind: entryNavigate, label: "Change passphrase", desc: "rotate the repository passphrase", targetID: "password"},
 			{kind: entryNavigate, label: "Re-run setup", desc: "reconfigure the backend and repository", targetID: "setup"},
 			{kind: entryToggleSplash, label: "Welcome splash", desc: "show the logo screen at launch (applies next launch)"},
+			{kind: entryToggleNotify, label: "Desktop notifications", desc: "announce each backup run's result on the desktop, scheduled runs included"},
 			{kind: entryForgetKeyring, label: "Forget keyring passphrase", desc: "remove the OS keyring entry and disable keyring lookup"},
 		},
 	}
@@ -144,6 +147,8 @@ func (v SettingsView) Update(msg tea.Msg) (tea.Model, tea.Cmd) {
 			switch e.kind {
 			case entryToggleSplash:
 				return v.toggleSplash()
+			case entryToggleNotify:
+				return v.toggleNotify()
 			case entryForgetKeyring:
 				modal := NewConfirmModal("Forget keyring passphrase",
 					"Remove the saved passphrase from the OS keyring and disable keyring lookup?\n"+
@@ -242,8 +247,11 @@ func (v SettingsView) View() string {
 	fmt.Fprintf(&b, "%s\n", v.renderSummary())
 	for i, e := range v.entries {
 		line := e.label
-		if e.kind == entryToggleSplash {
+		switch e.kind {
+		case entryToggleSplash:
 			line = e.label + "   [" + v.splashState() + "]"
+		case entryToggleNotify:
+			line = e.label + "   [" + v.notifyState() + "]"
 		}
 		row := ui.SelectRow(i == v.cursor, line)
 		if v.busy && i == v.cursor {
@@ -288,6 +296,40 @@ func (v SettingsView) toggleSplash() (tea.Model, tea.Cmd) {
 		}
 		return settingsSavedMsg{op: settingsSplashOpName, apply: func(c *config.Config) { c.UI.HideSplash = next }}
 	})
+}
+
+// toggleNotify flips notify.disable_desktop the way toggleSplash flips
+// hide_splash: persisted through config.Update against the file on disk,
+// adopted in memory only once the write succeeded, negating the resolved
+// state the row shows.
+func (v SettingsView) toggleNotify() (tea.Model, tea.Cmd) {
+	if v.deps.Config == nil || v.deps.ConfigPath == "" {
+		v.err = "available after setup"
+		return v, nil
+	}
+	next := !v.deps.Config.Notify.DisableDesktop
+	path := v.deps.ConfigPath
+	return v.startOp(settingsNotifyOpName, func(context.Context) tea.Msg {
+		err := config.Update(path, func(c *config.Config) error {
+			c.Notify.DisableDesktop = next
+			return nil
+		})
+		if err != nil {
+			return settingsSavedMsg{op: settingsNotifyOpName, err: fmt.Errorf("could not save: %w", err)}
+		}
+		return settingsSavedMsg{op: settingsNotifyOpName, apply: func(c *config.Config) { c.Notify.DisableDesktop = next }}
+	})
+}
+
+// notifyState renders the notifications toggle's current value.
+func (v SettingsView) notifyState() string {
+	if v.deps.Config == nil {
+		return "—"
+	}
+	if v.deps.Config.Notify.DisableDesktop {
+		return "off"
+	}
+	return "on"
 }
 
 // splashState renders the toggle's current value for the row label.

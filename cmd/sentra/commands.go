@@ -7,6 +7,7 @@ import (
 
 	"github.com/markgustetic/sentra/internal/agent/action"
 	"github.com/markgustetic/sentra/internal/cli"
+	"github.com/markgustetic/sentra/internal/notify"
 )
 
 // addProductionCommands wires every real command dependency. Tests build
@@ -109,6 +110,7 @@ func addProductionCommands(root *cobra.Command, rootFlags *cli.RootFlags, versio
 			Stdout:               os.Stdout,
 		},
 		Stderr: os.Stderr,
+		Notify: notify.ExecRunner,
 	}))
 	root.AddCommand(cli.NewSchedule(cli.ScheduleDeps{
 		Stdout: os.Stdout,

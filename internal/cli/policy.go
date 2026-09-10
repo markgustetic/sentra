@@ -14,6 +14,7 @@ import (
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/notify"
 	policycfg "github.com/markgustetic/sentra/internal/policy"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/scheduler"
@@ -39,6 +40,10 @@ type PolicyDeps struct {
 	// Now is the clock `run --if-due` measures the schedule against;
 	// nil means time.Now.
 	Now func() time.Time
+
+	// Notify posts the desktop notification after a run. nil means OFF
+	// (see notify.Runner); cmd/sentra wires notify.ExecRunner.
+	Notify notify.Runner
 }
 
 // policyRunFlags are the switches the OS timers pass to `policy run`.
@@ -422,6 +427,7 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 	// the due check itself (expired credentials, unreachable bucket)
 	// is exactly the unattended failure on_failure exists for, so the
 	// check runs inside the hook envelope.
+	var outcome policycfg.BackupOutcome
 	runErr := func() error {
 		var r *repo.Repo
 		if flags.ifDue {
@@ -443,7 +449,8 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 				return err
 			}
 		}
-		if err := runPolicyStages(cmd, deps, cfgPath, cfg, name, p, r); err != nil {
+		var err error
+		if outcome, err = runPolicyStages(cmd, deps, cfgPath, cfg, name, p, r); err != nil {
 			return err
 		}
 		if p.Hooks.After != "" {
@@ -459,6 +466,10 @@ func runPolicy(cmd *cobra.Command, deps PolicyDeps, cfgPath, name string, flags 
 	if runErr != nil {
 		firePolicyFailureHooks(cmd, deps, name, p.Hooks, runErr)
 	}
+	// The notification is the run's last word from every surface: a
+	// timer run has only the desktop to speak through.
+	outcome.Name = name
+	policycfg.NotifyBackup(cmd.Context(), policyStdout(cmd, deps), deps.Notify, !cfg.Notify.DisableDesktop, outcome, runErr)
 	return runErr
 }
 
@@ -567,11 +578,12 @@ func policyConfigDir(cfgPath string) (string, error) {
 // relative path still in the config: `policy add` has stored absolute
 // paths since paths were first resolved, but a hand-edited or older
 // sentra.yaml may say `paths: [src]`, and under a timer the cwd is `/`.
-func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) error {
+func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *config.Config, name string, p config.PolicyConfig, r *repo.Repo) (policycfg.BackupOutcome, error) {
+	var outcome policycfg.BackupOutcome
 	if r == nil {
 		opened, err := openPolicyRepo(cmd, deps, cfg)
 		if err != nil {
-			return err
+			return outcome, err
 		}
 		defer opened.Close()
 		r = opened
@@ -584,12 +596,12 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 	tag := policySnapshotTag(name, p.Tags)
 	cfgDir, err := policyConfigDir(cfgPath)
 	if err != nil {
-		return err
+		return outcome, err
 	}
 	for _, stored := range p.Paths {
 		path, err := policycfg.ResolvePathFrom(stored, cfgDir)
 		if err != nil {
-			return err
+			return outcome, err
 		}
 		// A timer's run has only its log to speak through, so each
 		// dropped folder is named as it happens and counted on the
@@ -600,9 +612,12 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 			OnSkip: func(p string, err error) { fmt.Fprintln(out, skipLine(p, err)) },
 		})
 		if err != nil {
-			return fmt.Errorf("snapshot %s: %w", path, err)
+			return outcome, fmt.Errorf("snapshot %s: %w", path, err)
 		}
 		snapshots = append(snapshots, snap)
+		outcome.Files += snap.Stats.Files
+		outcome.NewBytes += snap.Stats.NewBytes
+		outcome.Skipped += snap.Stats.Skipped
 	}
 
 	fmt.Fprintln(out, ui.Success.Render("Policy run complete"))
@@ -617,13 +632,13 @@ func runPolicyStages(cmd *cobra.Command, deps PolicyDeps, cfgPath string, cfg *c
 	}
 	if p.AfterBackup.Check {
 		if err := runPolicyCheck(cmd, out, r); err != nil {
-			return err
+			return outcome, err
 		}
 	}
 	if err := runPolicyPrune(cmd, out, r, cfg, policyPruneMode(p.AfterBackup.Prune)); err != nil {
-		return err
+		return outcome, err
 	}
-	return nil
+	return outcome, nil
 }
 
 // runPolicyHook and firePolicyFailureHooks delegate to internal/policy

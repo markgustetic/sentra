@@ -107,6 +107,9 @@ git worktree remove --force /tmp/chk
   error prose for the TUI)
 - `internal/mcpserver` — `sentra mcp`: stdio MCP server; metadata-only reads,
   two-phase plan→confirm mutations (see AGENTS.md for the contract)
+- `internal/notify` — desktop notifications (osascript / notify-send); a nil
+  `Runner` is OFF, production wires `ExecRunner`; `policy.NotifyBackup` is
+  the one call site shape every run surface uses
 
 **Import direction: `internal/cli` imports `internal/tui`, so `internal/tui`
 must never import `internal/cli`.** `setup`, `recoverykit`, `scheduler`, and

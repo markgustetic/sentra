@@ -3,6 +3,7 @@ package tui
 import (
 	"context"
 	"fmt"
+	"io"
 	"os"
 	"path/filepath"
 	"strings"
@@ -503,6 +504,7 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 	r := v.deps.Repo
 	reporter := v.reporter
 	wopts := policycfg.BackupWalkerOptions(v.deps.Config)
+	notifyRun, notifyOn := v.deps.Notify, v.deps.Config == nil || !v.deps.Config.Notify.DisableDesktop
 	start := startOpMsg{
 		name: "backup",
 		run: func(ctx context.Context) tea.Msg {
@@ -512,6 +514,16 @@ func (v BackupView) startBackup(root string) (tea.Model, tea.Cmd) {
 				Walker:      wopts,
 				ForceRescan: rescan,
 			})
+			// A one-shot run announces itself too: the operator may have
+			// switched away during a long walk. Named after the folder,
+			// since there is no policy. Nothing reads the notifier's log
+			// line here — the done screen carries the result.
+			policycfg.NotifyBackup(ctx, io.Discard, notifyRun, notifyOn, policycfg.BackupOutcome{
+				Name:     filepath.Base(root),
+				Files:    info.Stats.Files,
+				NewBytes: info.Stats.NewBytes,
+				Skipped:  info.Stats.Skipped,
+			}, err)
 			return backupDoneMsg{info: info, err: err}
 		},
 	}

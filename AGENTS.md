@@ -322,6 +322,18 @@ go install github.com/golangci/golangci-lint/cmd/golangci-lint@latest
   environment is `HookEnv`: `os.Environ()` minus every `SENTRA_*` variable
   and the configured webhook variable. Pass `hooks.OnFailureWebhookEnv` to
   `RunHook` from every surface so before/after are scrubbed like on_failure.
+- Every backup run notifies the desktop (`internal/notify`: osascript on
+  darwin with the strings as argv into an `on run` handler, notify-send on
+  linux, no-op elsewhere) through `policy.NotifyBackup`, called from
+  `sentra policy run`, the TUI's policy run, and the TUI's one-shot backup.
+  On by default; `notify.disable_desktop` is the negated opt-out so older
+  files keep notifying. Best-effort: a notifier failure is logged, never
+  returned. A nil `notify.Runner` is OFF — the opposite of
+  `scheduler.Runner` — so a zero-value Deps in tests never pops a real
+  notification; production wires `notify.ExecRunner` explicitly, and
+  `TestProductionWiresNotifyRunner` guards those literals. A not-due
+  `--if-due` launch and config-shape errors notify nothing, like hooks.
+  Ad-hoc `sentra backup` does not notify.
 - Surface contract — the obligation between the two surfaces runs ONE WAY.
   The CLI is the machine and recovery surface: every capability lands in the
   core layer plus a CLI verb, always. Three consumers depend on that and none

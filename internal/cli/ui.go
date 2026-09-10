@@ -14,6 +14,7 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/config"
 	"github.com/markgustetic/sentra/internal/crypto"
+	"github.com/markgustetic/sentra/internal/notify"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/setup"
 	"github.com/markgustetic/sentra/internal/tui"
@@ -202,6 +203,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 			SaveKeyringPassphrase:   deps.SavePassphrase,
 			DeleteKeyringPassphrase: deps.DeletePassphrase,
 			SetupEffects:            setupEffectsForLaunch(deps),
+			Notify:                  notify.ExecRunner,
 			PassphraseFile:          passphraseFile,
 			InitialView:             initial,
 			// Whenever a config exists, not only under forceSetup: an
@@ -262,6 +264,7 @@ func runUI(cmd *cobra.Command, deps UIDeps, cfgPath string, forceSetup bool) err
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
+		Notify:                  notify.ExecRunner,
 		// Reconfiguring from Settings reaches the same wizard as `sentra setup`,
 		// so the flag has to follow the dashboard launch too: without it the
 		// wizard never warned that completing overwrites the config that
@@ -313,6 +316,7 @@ func launchConnectGate(cmd *cobra.Command, deps UIDeps, cfgPath, absCfgPath stri
 		SaveKeyringPassphrase:   deps.SavePassphrase,
 		DeleteKeyringPassphrase: deps.DeletePassphrase,
 		SetupEffects:            setupEffectsForLaunch(deps),
+		Notify:                  notify.ExecRunner,
 		PassphraseFile:          passphraseFile,
 		InitialView:             "connect",
 		ShowSplash:              showSplash,

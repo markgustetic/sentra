@@ -359,6 +359,9 @@ backup:
 ui:
   hide_splash: false              # skip the launch splash
 
+notify:
+  disable_desktop: false          # true silences the after-run desktop notification
+
 retention:
   keep_last: 10
   keep_daily: 7
@@ -374,7 +377,29 @@ policies:
     tags:  ["home"]
     schedule: { cadence: daily, at: "03:00" }
     after_backup: { check: true, prune: dry-run }   # prune: off | dry-run | apply
+    hooks:                                          # optional, run via `sh -c`
+      before: pg_dump mydb > ~/Documents/db.sql     # a failure aborts the run
+      after: echo done                              # runs only after a fully successful run
+      on_failure: say "backup failed"               # runs when any stage fails
+      on_failure_webhook_env: SENTRA_ALERT_URL      # env var NAME holding a URL to POST to
 ```
+
+### Notifications and hooks
+
+Every backup run announces its result on the desktop — **Backup complete**
+with the file count and new bytes, or **Backup failed** with the error —
+whether you ran it from the TUI, from `sentra policy run`, or the OS timer
+ran it at 3am with no terminal attached. It is on by default with nothing to
+set up; switch it off with the **Desktop notifications** toggle in Settings
+or `notify.disable_desktop: true`. macOS posts through `osascript`, Linux
+through `notify-send`; the first notification from a timer on macOS may ask
+you once to allow notifications from Script Editor. The ad-hoc `sentra backup`
+command stays quiet, since its result prints to the terminal you ran it in.
+
+For anything beyond a notification, a policy's `hooks` run your own commands
+around the run, and `on_failure_webhook_env` names an environment variable
+whose URL receives a `{policy, status, error}` JSON POST on failure — only the
+variable's name goes in `sentra.yaml`, never the URL.
 
 ## Security
 

@@ -28,6 +28,7 @@ import (
 	"github.com/markgustetic/sentra/internal/agent/llm"
 	"github.com/markgustetic/sentra/internal/blobstore"
 	"github.com/markgustetic/sentra/internal/config"
+	"github.com/markgustetic/sentra/internal/notify"
 	"github.com/markgustetic/sentra/internal/repo"
 	"github.com/markgustetic/sentra/internal/scheduler"
 	"github.com/markgustetic/sentra/internal/setup"
@@ -112,6 +113,11 @@ type Deps struct {
 	// nil means scheduler.ExecRunner. Tests MUST inject a fake — the real
 	// runner loads a job on the developer's machine.
 	SchedulerRunner scheduler.Runner
+
+	// Notify posts the desktop notification after a backup or policy run.
+	// nil means OFF (see notify.Runner) — a zero-value Deps in tests can
+	// never pop a real notification; runUI wires notify.ExecRunner.
+	Notify notify.Runner
 
 	// PassphraseFile is the --passphrase-file path the process was launched
 	// with, empty when the flag was not given. The setup wizard resolves it

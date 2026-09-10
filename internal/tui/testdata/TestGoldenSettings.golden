@@ -14,6 +14,8 @@ Settings
     reconfigure the backend and repository
   Welcome splash   [on]
     show the logo screen at launch (applies next launch)
+  Desktop notifications   [on]
+    announce each backup run's result on the desktop, scheduled runs included
   Forget keyring passphrase
     remove the OS keyring entry and disable keyring lookup
 

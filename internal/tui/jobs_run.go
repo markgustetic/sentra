@@ -157,6 +157,7 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 	doCheck := p.AfterBackup.Check
 	pruneMode := policyPruneModeOrOff(p.AfterBackup.Prune)
 	hooks := p.Hooks
+	notifyRun, notifyOn := deps.Notify, cfg == nil || !cfg.Notify.DisableDesktop
 
 	return startOpMsg{
 		name: opName,
@@ -168,6 +169,7 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			// buffer whose tail rides along on failure.
 			var hookOut bytes.Buffer
 			count, skipped := 0, 0
+			outcome := policycfg.BackupOutcome{Name: name}
 			runErr := func() error {
 				if pathErr != nil {
 					return pathErr
@@ -188,6 +190,9 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 					}
 					count++
 					skipped += info.Stats.Skipped
+					outcome.Files += info.Stats.Files
+					outcome.NewBytes += info.Stats.NewBytes
+					outcome.Skipped += info.Stats.Skipped
 				}
 				if doCheck {
 					report, err := r.Check(ctx, repo.CheckOptions{StaleLockAfter: 24 * time.Hour})
@@ -220,6 +225,11 @@ func buildPolicyRunOp(deps Deps, opName, name string, p config.PolicyConfig, rep
 			}()
 			if runErr != nil {
 				policycfg.FireFailureHooks(ctx, &hookOut, name, hooks, runErr)
+			}
+			// The same notification the CLI's run posts, from the same
+			// place — a run announces itself whichever surface ran it.
+			policycfg.NotifyBackup(ctx, &hookOut, notifyRun, notifyOn, outcome, runErr)
+			if runErr != nil {
 				return policyRunDoneMsg{name: name, snapshots: count, skipped: skipped, err: runErr}
 			}
 			return policyRunDoneMsg{name: name, snapshots: count, skipped: skipped}
