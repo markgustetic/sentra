@@ -370,3 +370,44 @@ func policyNames(m map[string]PolicyConfig) []string {
 	sort.Strings(out)
 	return out
 }
+
+// TestRender_EmitsNotifyDisableDesktop pins the notify: section into the
+// rendered file so a config rewrite round-trips an operator's opt-out.
+func TestRender_EmitsNotifyDisableDesktop(t *testing.T) {
+	var cfg Config
+	cfg.Notify.DisableDesktop = true
+	body := string(Render(&cfg))
+	for _, want := range []string{"notify:", "disable_desktop: true"} {
+		if !strings.Contains(body, want) {
+			t.Errorf("rendered config missing %q:\n%s", want, body)
+		}
+	}
+}
+
+// TestLoad_MissingNotifySectionDefaultsToOn is why the field is negated:
+// a sentra.yaml written before notifications existed must load as
+// "notify" with no migration and no pointer field.
+func TestLoad_MissingNotifySectionDefaultsToOn(t *testing.T) {
+	path := filepath.Join(t.TempDir(), "sentra.yaml")
+	legacy := "repo:\n  s3:\n    bucket: \"b\"\n"
+	if err := os.WriteFile(path, []byte(legacy), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err := Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if cfg.Notify.DisableDesktop {
+		t.Fatal("a config without a notify: section must notify by default")
+	}
+	if err := os.WriteFile(path, []byte(legacy+"notify:\n  disable_desktop: true\n"), 0o600); err != nil {
+		t.Fatal(err)
+	}
+	cfg, err = Load(path)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if !cfg.Notify.DisableDesktop {
+		t.Fatal("notify.disable_desktop: true must load as disabled")
+	}
+}

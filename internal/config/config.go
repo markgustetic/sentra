@@ -84,6 +84,17 @@ type Config struct {
 	UI struct {
 		HideSplash bool `koanf:"hide_splash"`
 	} `koanf:"ui"`
+
+	// Notify holds notification preferences. Stored under "notify" in
+	// the YAML; carries no secrets.
+	//
+	// DisableDesktop is negated for the same reason HideSplash is: a
+	// sentra.yaml written before notifications existed loads as
+	// "notify", so every backup run announces itself on the desktop by
+	// default with no migration and no pointer field.
+	Notify struct {
+		DisableDesktop bool `koanf:"disable_desktop"`
+	} `koanf:"notify"`
 }
 
 // PolicyConfig is the typed view of one entry under sentra.yaml's

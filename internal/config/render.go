@@ -77,6 +77,9 @@ passphrase:
 
 ui:
   hide_splash: %t         # true skips the welcome splash at launch
+
+notify:
+  disable_desktop: %t     # true silences the desktop notification after each backup run
 %s`,
 		cfg.Repo.S3.Bucket,
 		cfg.Repo.S3.Prefix,
@@ -97,6 +100,7 @@ ui:
 		cfg.Retention.KeepMonthly,
 		cfg.Passphrase.UseKeyring,
 		cfg.UI.HideSplash,
+		cfg.Notify.DisableDesktop,
 		renderPoliciesYAML(cfg.Policies),
 	))
 }
