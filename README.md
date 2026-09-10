@@ -99,15 +99,6 @@ brew install markgustetic/tap/sentra
 </details>
 
 <details>
-<summary><b>Docker (GHCR)</b> (from tagged releases)</summary>
-
-```bash
-docker pull ghcr.io/markgustetic/sentra:latest
-docker run --rm -v "$PWD:/work" -w /work ghcr.io/markgustetic/sentra:latest --version
-```
-</details>
-
-<details>
 <summary><b>Prebuilt binaries (signed)</b> (from tagged releases)</summary>
 
 Download platform archives (macOS and Linux, amd64/arm64) from the
@@ -443,9 +434,8 @@ series, not just the tip.
 
 Push a `v*` tag to trigger [`release.yml`](.github/workflows/release.yml):
 goreleaser cross-compiles `linux/darwin × amd64/arm64` archives, writes a
-SHA-256 `checksums.txt`, signs it with cosign keyless (GitHub OIDC), builds a
-multi-arch GHCR image, updates the Homebrew tap, and attaches a syft SBOM per
-archive. The Homebrew step publishes only when the `HOMEBREW_TAP_TOKEN` secret
+SHA-256 `checksums.txt`, signs it with cosign keyless (GitHub OIDC), updates
+the Homebrew tap, and attaches a syft SBOM per archive. The Homebrew step publishes only when the `HOMEBREW_TAP_TOKEN` secret
 (`contents: write` on `markgustetic/homebrew-tap`) is present — without it the
 cask is skipped and everything else still ships. `GITHUB_TOKEN` is provided
 automatically.

@@ -2,7 +2,7 @@
 #
 # Local snapshot:
 #   goreleaser release --snapshot --clean \
-#     --skip=publish,sign,sbom,docker
+#     --skip=publish,sign,sbom
 #
 # Real release runs in CI on `v*` tag push (.github/workflows/release.yml).
 version: 2
@@ -106,7 +106,6 @@ release:
 
   footer: |
     ---
-    Container image: `ghcr.io/markgustetic/sentra:{{ .Version }}`
     Homebrew: `brew install markgustetic/tap/sentra`
 
 # Homebrew tap formula. The tap repo (markgustetic/homebrew-tap) is updated
@@ -140,29 +139,6 @@ homebrew_casks:
           if system_command("/usr/bin/xattr", args: ["-h"]).exit_status == 0
             system_command "/usr/bin/xattr", args: ["-dr", "com.apple.quarantine", "#{staged_path}/sentra"]
           end
-
-dockers_v2:
-  - id: sentra
-    ids:
-      - sentra
-    images:
-      - "ghcr.io/markgustetic/sentra"
-    tags:
-      - "{{ .Version }}"
-      - latest
-    dockerfile: Dockerfile
-    platforms:
-      - linux/amd64
-      - linux/arm64
-    labels:
-      org.opencontainers.image.title: "{{ .ProjectName }}"
-      org.opencontainers.image.description: "Encrypted, deduplicated, agent-aware backups for S3"
-      org.opencontainers.image.url: "https://github.com/markgustetic/sentra"
-      org.opencontainers.image.source: "https://github.com/markgustetic/sentra"
-      org.opencontainers.image.version: "{{ .Version }}"
-      org.opencontainers.image.created: "{{ .Date }}"
-      org.opencontainers.image.revision: "{{ .FullCommit }}"
-      org.opencontainers.image.licenses: "MIT"
 
 # cosign keyless signing of the checksums file via GitHub OIDC.
 signs:

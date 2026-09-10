@@ -8,8 +8,8 @@ account needed.
 
 - Docker (for MinIO)
 - The `sentra` binary on your `$PATH`. See the [README install
-  section](../README.md#install) for `brew`, `go install`, the GHCR image,
-  or a prebuilt download.
+  section](../README.md#install) for `brew`, `go install`, or a prebuilt
+  download.
 - (Optional) `ANTHROPIC_API_KEY` set — required only for `sentra agent
   scan`. Everything else works without it.
 

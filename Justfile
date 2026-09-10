@@ -56,7 +56,7 @@ AWS_PASSPHRASE_ENV := '''
 # Prefix that points the sentra binary at local MinIO via the AWS SDK env chain.
 LOCAL_ENV := "AWS_ACCESS_KEY_ID=" + MINIO_ACCESS_KEY + " AWS_SECRET_ACCESS_KEY=" + MINIO_SECRET_KEY
 
-RELEASE_SKIP := "publish,sign,sbom,docker"
+RELEASE_SKIP := "publish,sign,sbom"
 SBOM_OUT     := "dist/sentra-source-sbom.spdx.json"
 
 # Show the available recipes.
