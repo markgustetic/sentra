@@ -116,16 +116,21 @@ homebrew_casks:
     # empty HOMEBREW_TAP_TOKEN (release.yml always sets the env var) means
     # skip, so a release without the secret still succeeds — the cask file
     # lands in dist/ and publishes on the next tagged release after the
-    # secret exists. `index` rather than `.Env.HOMEBREW_TAP_TOKEN` because
-    # a plain dereference is a template *error* when the variable is not
-    # set at all, which is the state of every local `just release-local`.
+    # secret exists. `index` here because a plain dereference is a
+    # template *error* when the variable is not set at all, which is the
+    # state of every local `just release-local`.
     skip_upload: '{{ if index .Env "HOMEBREW_TAP_TOKEN" }}false{{ else }}true{{ end }}'
     ids:
       - sentra
     repository:
       owner: markgustetic
       name: homebrew-tap
-      token: '{{ index .Env "HOMEBREW_TAP_TOKEN" }}'
+      # goreleaser accepts ONLY the literal `{{ .Env.NAME }}` form here
+      # (the v0.6.0 tap push failed on the `index` spelling with
+      # "expected {{ .Env.VAR_NAME }} only"). The field is evaluated at
+      # publish time, after skip_upload, so an unset variable in a local
+      # `--skip=publish` run never reaches it.
+      token: '{{ .Env.HOMEBREW_TAP_TOKEN }}'
     directory: Casks
     homepage: "https://github.com/markgustetic/sentra"
     description: "Encrypted, deduplicated, agent-aware backups for S3"
