@@ -50,7 +50,7 @@ func Desktop(ctx context.Context, run Runner, goos, title, subtitle, body string
   <title> <subtitle> <body>`. The strings travel as argv, never inside the
   AppleScript source, so a policy name or error text containing quotes or
   backslashes cannot break out of the script.
-- `linux`: `notify-send --app-name Sentra "<title> — <subtitle>" <body>`.
+- `linux`: `notify-send --app-name Sentra <subtitle> <body>` (the app name is the title; GNOME and KDE render it as the source header).
 - Any other GOOS: no call, nil error.
 - `ExecRunner` bounds the call with a 5 s timeout. Best-effort by contract:
   callers log a failure to the run's output and never let it mask the run's

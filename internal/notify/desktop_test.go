@@ -36,7 +36,7 @@ func TestDesktop_ArgvPerPlatform(t *testing.T) {
 			"Sentra", "Backup complete", body,
 		}}},
 		{goos: "linux", want: &call{name: "notify-send", args: []string{
-			"--app-name", "Sentra", "Sentra — Backup complete", body,
+			"--app-name", "Sentra", "Backup complete", body,
 		}}},
 		{goos: "windows", want: nil},
 		{goos: "freebsd", want: nil},
@@ -80,5 +80,40 @@ func TestDesktop_RunnerErrorIsReturned(t *testing.T) {
 	err := Desktop(context.Background(), recorder(&calls, boom), "darwin", "Sentra", "x", "y")
 	if !errors.Is(err, boom) {
 		t.Fatalf("want wrapped runner error, got %v", err)
+	}
+}
+
+// supportedGOOS is every platform Desktop makes a call on. A new case in
+// Desktop's switch goes here too, or the trailing-argv rule below is not
+// asserted for it.
+var supportedGOOS = []string{"darwin", "linux"}
+
+// TestDesktop_TrailingArgvIsTitleSubtitleBody pins the rule every caller's
+// test relies on: on every supported platform the LAST THREE argv entries
+// are title, subtitle, body, in that order. The cli, tui, and policy
+// suites all decode a recorded notification that way so they can run
+// unchanged on the darwin and linux CI jobs; the linux argv once folded
+// the title into notify-send's summary, which satisfied the per-platform
+// snapshot above while breaking every one of those decoders on Linux
+// only. The snapshot pins what each platform runs; this pins what they
+// share.
+func TestDesktop_TrailingArgvIsTitleSubtitleBody(t *testing.T) {
+	for _, goos := range supportedGOOS {
+		t.Run(goos, func(t *testing.T) {
+			var calls []call
+			if err := Desktop(context.Background(), recorder(&calls, nil), goos, "T", "S", "B"); err != nil {
+				t.Fatalf("Desktop: %v", err)
+			}
+			if len(calls) != 1 {
+				t.Fatalf("want one call, got %+v", calls)
+			}
+			a := calls[0].args
+			if len(a) < 3 {
+				t.Fatalf("argv too short: %q", a)
+			}
+			if got := a[len(a)-3:]; !reflect.DeepEqual(got, []string{"T", "S", "B"}) {
+				t.Errorf("trailing argv = %q, want [T S B]", got)
+			}
+		})
 	}
 }

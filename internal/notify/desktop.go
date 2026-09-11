@@ -59,8 +59,13 @@ func Desktop(ctx context.Context, run Runner, goos, title, subtitle, body string
 			title, subtitle, body,
 		}
 	case "linux":
+		// --app-name is the title: GNOME and KDE render it as the
+		// notification's source header, so folding it into the summary
+		// too printed "Sentra — Backup complete" under a "Sentra" badge.
+		// It also keeps the trailing argv (title, subtitle, body) the
+		// same shape as darwin, which every caller's test decodes.
 		name = "notify-send"
-		args = []string{"--app-name", title, title + " — " + subtitle, body}
+		args = []string{"--app-name", title, subtitle, body}
 	default:
 		return nil
 	}
