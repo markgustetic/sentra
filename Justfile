@@ -88,6 +88,7 @@ test:
 
 # Integration tests (needs Docker; testcontainers + MinIO).
 integration:
+	sh scripts/build-test-minio.sh
 	{{GO}} test -race -tags=integration {{PKG}}
 
 # Lint with golangci-lint.

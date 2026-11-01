@@ -447,6 +447,10 @@ just test         # go test -race with coverage
 just integration  # testcontainers + MinIO (needs Docker; Linux)
 ```
 
+The integration recipe builds MinIO's pinned September 2025 release from its
+immutable source commit before running the tests. The community image is no
+longer available from the registry; building requires Go and network access.
+
 The vendored FastCDC is a **separate module** — test it with
 `go test ./third_party/fastcdc-go/...` when you touch chunking. CI enforces
 `go mod tidy -diff`, gofmt over `cmd/` and `internal/`, `go vet`, `go test -race`,
